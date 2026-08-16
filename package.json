@@ -1,0 +1,40 @@
+{
+  "name": "intellicache-collector",
+  "version": "0.1.0",
+  "description": "Local AI conversation data collector browser extension for the IntelliCache research project",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": [
+    "browser-extension",
+    "manifest-v3",
+    "intellicache",
+    "ai-data-collection"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@crxjs/vite-plugin": "^2.7.1",
+    "@eslint/js": "^10.0.1",
+    "@types/chrome": "^0.2.6",
+    "@types/node": "^26.2.0",
+    "eslint": "^10.8.1",
+    "fake-indexeddb": "^6.2.5",
+    "prettier": "^3.9.6",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.67.0",
+    "vite": "^8.2.1",
+    "vitest": "^4.1.10"
+  },
+  "dependencies": {
+    "dexie": "^4.4.5"
+  }
+}

@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>IntelliCache Collector</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <div class="popup-container">
+      <header class="header">
+        <div class="header-content">
+          <div class="logo-badge">IC</div>
+          <div>
+            <h1 class="title">IntelliCache Collector</h1>
+            <p class="subtitle">Data Collection &bull; Phase 1</p>
+          </div>
+        </div>
+        <div class="badge-status" id="status-badge">
+          <span class="status-dot"></span>
+          <span id="status-text">Checking...</span>
+        </div>
+      </header>
+
+      <main class="main-content">
+        <section class="info-card">
+          <div class="info-row">
+            <span class="info-label">Service Worker</span>
+            <span class="info-value" id="sw-status">Connecting...</span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">Storage Engine</span>
+            <span class="info-value" id="db-status">IndexedDB (v1)</span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">Extension Version</span>
+            <span class="info-value" id="ext-version">0.1.0</span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">Architecture Mode</span>
+            <span class="info-value">Local-Only (Phase 1)</span>
+          </div>
+        </section>
+
+        <section class="action-section">
+          <button id="ping-btn" class="btn btn-primary" type="button">
+            <svg
+              class="btn-icon"
+              viewBox="0 0 24 24"
+              width="16"
+              height="16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
+            </svg>
+            <span>Ping Service Worker</span>
+          </button>
+        </section>
+
+        <section class="log-section">
+          <div class="log-header">
+            <span class="log-title">Diagnostic Log</span>
+            <button id="clear-log-btn" class="btn-link" type="button">Clear</button>
+          </div>
+          <div class="log-box" id="log-output" role="region" aria-label="Diagnostic messages">
+            <div class="log-entry log-entry-info">
+              <span class="log-time">System</span>
+              <span class="log-msg">Ready for communication diagnostics.</span>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <footer class="footer">
+        <span>IntelliCache &bull; Step 2 Local Data Layer</span>
+      </footer>
+    </div>
+
+    <script type="module" src="popup.ts"></script>
+  </body>
+</html>
