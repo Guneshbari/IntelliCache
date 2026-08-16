@@ -8,10 +8,11 @@
 export const CHATGPT_SELECTORS = {
   /**
    * Main conversation turn elements.
-   * Matches articles or conversation-turn wrappers.
+   * Matches specific conversation-turn articles or wrappers with data-testid.
+   * Excludes bare `article` to prevent nested embedded/canvas articles from double-counting.
    */
   TURN_ARTICLE:
-    'article[data-testid^="conversation-turn-"], article, div[data-testid^="conversation-turn-"]',
+    'article[data-testid^="conversation-turn-"], div[data-testid^="conversation-turn-"]',
 
   /**
    * Role-based message identifiers.
@@ -21,8 +22,9 @@ export const CHATGPT_SELECTORS = {
 
   /**
    * User message text containers.
+   * Prioritize semantic attributes and structural classes over generic styling utilities.
    */
-  USER_TEXT: '.whitespace-pre-wrap, div[class*="text-message"], [data-message-author-role="user"]',
+  USER_TEXT: 'div[class*="text-message"], div[class*="content"], [data-message-author-role="user"]',
 
   /**
    * Assistant response text and markdown containers.
@@ -41,14 +43,19 @@ export const CHATGPT_SELECTORS = {
    */
   UI_CONTROLS_TO_EXCLUDE: [
     'button',
+    'time',
     '[data-testid="copy-turn-action-button"]',
     '[data-testid="good-response-turn-action-button"]',
     '[data-testid="bad-response-turn-action-button"]',
     '[data-testid="voice-play-turn-action-button"]',
     '[data-testid="web-search-sources"]',
+    '[data-testid="edit-message-button"]',
+    '[role="toolbar"]',
     '.gizmo-shadow-stroke',
     'svg',
     'form',
+    'nav',
+    'aside',
   ].join(', '),
 
   /**
@@ -59,9 +66,23 @@ export const CHATGPT_SELECTORS = {
     'button[data-testid="stop-button"]',
     'button[aria-label="Stop generating"]',
     'button[aria-label="Stop streaming"]',
+    'button[aria-label="Stop"]',
+    'button[data-testid="fruitjuice-stop-button"]',
     '.result-streaming',
     '.streaming',
     'span.streaming-cursor',
+    '.result-thinking',
+  ].join(', '),
+
+  /**
+   * Stop button specific selectors.
+   */
+  STOP_BUTTON: [
+    'button[data-testid="stop-button"]',
+    'button[aria-label="Stop generating"]',
+    'button[aria-label="Stop streaming"]',
+    'button[aria-label="Stop"]',
+    'button[data-testid="fruitjuice-stop-button"]',
   ].join(', '),
 
   /**
@@ -72,7 +93,13 @@ export const CHATGPT_SELECTORS = {
 
   /**
    * Model selector button / header dropdown.
+   * NOTE: Removed broad `button[id^="radix-"]` to prevent selecting arbitrary Radix buttons.
    */
   MODEL_SWITCHER:
-    'button[data-testid="model-switcher-dropdown-button"], [data-testid="model-selector-dropdown"], button[id^="radix-"]',
+    'button[data-testid="model-switcher-dropdown-button"], [data-testid="model-selector-dropdown"], button[data-testid="model-switcher"]',
+
+  /**
+   * Original timestamp metadata selector if rendered by ChatGPT.
+   */
+  TIMESTAMP: 'time[datetime], [data-timestamp]',
 } as const

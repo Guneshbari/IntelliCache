@@ -190,7 +190,7 @@ export async function sendExtensionMessage<M extends ExtensionMessage, R = unkno
 
   return new Promise((resolve) => {
     chrome.runtime.sendMessage(message, (response: ExtensionResponse<R> | null | undefined) => {
-      const lastError = chrome.runtime.lastError
+      const lastError = chrome?.runtime?.lastError
       if (lastError) {
         resolve(createErrorResponse(lastError.message ?? 'Unknown runtime error'))
       } else if (!response) {

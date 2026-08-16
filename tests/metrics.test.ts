@@ -55,7 +55,10 @@ describe('Data Model Validation', () => {
       platform: 'chatgpt',
       conversation_id: null,
       message_id: null,
+      user_message_id: null,
       observed_at: '2026-08-17T03:00:00.000Z',
+      source_timestamp: null,
+      capture_context: 'on_generate',
       model: {
         provider: null,
         name: null,
@@ -80,6 +83,9 @@ describe('Data Model Validation', () => {
     expect(interaction.fingerprint_strategy).toBe('level_1')
     expect(interaction.conversation_id).toBeNull()
     expect(interaction.message_id).toBeNull()
+    expect(interaction.user_message_id).toBeNull()
+    expect(interaction.source_timestamp).toBeNull()
+    expect(interaction.capture_context).toBe('on_generate')
     expect(interaction.model.provider).toBeNull()
     expect(interaction.model.name).toBeNull()
     expect(interaction.query.estimated_tokens).toBeNull()

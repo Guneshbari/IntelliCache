@@ -5,7 +5,7 @@
  * extracting AI query/response interactions from target web pages.
  */
 
-import type { SupportedPlatform } from '../shared/types'
+import type { CaptureContext, SupportedPlatform } from '../shared/types'
 
 /**
  * Raw conversation turn extracted from the page DOM.
@@ -15,6 +15,7 @@ export interface RawMessageTurn {
   element: Element
   text: string
   messageId: string | null
+  sourceTimestamp: string | null
   isStreaming: boolean
 }
 
@@ -24,7 +25,8 @@ export interface RawMessageTurn {
 export interface ExtractedInteraction {
   platform: SupportedPlatform
   conversationId: string | null
-  messageId: string | null
+  messageId: string | null // Assistant message ID
+  userMessageId: string | null // User message ID
   model: {
     provider: string | null
     name: string | null
@@ -32,7 +34,9 @@ export interface ExtractedInteraction {
   queryText: string
   responseText: string
   conversationTitle: string | null
-  observedAt: string // ISO-8601 string
+  observedAt: string // ISO-8601 string: timestamp when interaction was observed by extension
+  sourceTimestamp: string | null // Original timestamp if exposed by platform DOM, else null
+  captureContext: CaptureContext // 'on_load' | 'on_generate'
 }
 
 /**

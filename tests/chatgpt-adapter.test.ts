@@ -200,4 +200,191 @@ describe('ChatGPTAdapter Integration & Lifecycle', () => {
     // Should NOT persist while stop button or streaming class is active
     expect(await interactionRepo.count()).toBe(0)
   })
+
+  it('handles initial new chat flow: holds interaction until URL transitions to /c/{id} and persists once (Priority 2)', async () => {
+    // 1. Start at root new-chat URL
+    Object.defineProperty(window, 'location', {
+      value: new URL('https://chatgpt.com/'),
+      writable: true,
+    })
+    document.title = 'ChatGPT'
+
+    document.body.innerHTML = `
+      <article data-testid="conversation-turn-0">
+        <div data-message-author-role="user" data-message-id="u-newchat-1">
+          <div>What is semantic caching?</div>
+        </div>
+      </article>
+      <article data-testid="conversation-turn-1">
+        <div data-message-author-role="assistant" data-message-id="a-newchat-1">
+          <div class="markdown">Semantic caching matches queries by semantic similarity.</div>
+        </div>
+      </article>
+    `
+
+    adapter.start()
+    await adapter.processConversation()
+
+    // Immediately after generation at /, should be held in pending queue, NOT yet persisted with null ID
+    expect(await interactionRepo.count()).toBe(0)
+
+    // 2. ChatGPT updates URL to /c/{uuid} and title to conversation title
+    Object.defineProperty(window, 'location', {
+      value: new URL('https://chatgpt.com/c/real-new-conv-uuid-999'),
+      writable: true,
+    })
+    document.title = 'Semantic Caching Intro - ChatGPT'
+
+    // Trigger mutation event / conversation pass
+    await adapter.processConversation()
+
+    // 3. Verify exactly 1 interaction was persisted with the real namespaced conversation ID
+    expect(await interactionRepo.count()).toBe(1)
+    const stored = await interactionRepo.getAll()
+    expect(stored).toHaveLength(1)
+    expect(stored[0].conversation_id).toBe('chatgpt:real-new-conv-uuid-999')
+    expect(stored[0].conversation_title).toBe('Semantic Caching Intro')
+    expect(stored[0].user_message_id).toBe('u-newchat-1')
+    expect(stored[0].message_id).toBe('a-newchat-1')
+
+    // 4. Repeated passes must NOT duplicate
+    await adapter.processConversation()
+    expect(await interactionRepo.count()).toBe(1)
+  })
+
+  it('persists with conversation_id: null if URL transition never occurs after bounded timeout (Priority 2)', async () => {
+    const fastAdapter = new ChatGPTAdapter({ newChatTimeoutMs: 30 })
+
+    Object.defineProperty(window, 'location', {
+      value: new URL('https://chatgpt.com/'),
+      writable: true,
+    })
+
+    document.body.innerHTML = `
+      <article data-testid="conversation-turn-0">
+        <div data-message-author-role="user" data-message-id="u-timeout">
+          <div>Stateless single query</div>
+        </div>
+      </article>
+      <article data-testid="conversation-turn-1">
+        <div data-message-author-role="assistant" data-message-id="a-timeout">
+          <div class="markdown">Stateless response</div>
+        </div>
+      </article>
+    `
+
+    fastAdapter.start()
+    await fastAdapter.processConversation()
+    expect(await interactionRepo.count()).toBe(0)
+
+    // Wait for fast timeout (30ms)
+    await new Promise((resolve) => setTimeout(resolve, 80))
+
+    expect(await interactionRepo.count()).toBe(1)
+    const stored = await interactionRepo.getAll()
+    expect(stored[0].conversation_id).toBeNull()
+    expect(stored[0].fingerprint_strategy).toBe('level_3')
+
+    fastAdapter.stop()
+  })
+
+  it('assigns on_load for historical interactions on start and on_generate for new live interactions (Priority 3)', async () => {
+    Object.defineProperty(window, 'location', {
+      value: new URL('https://chatgpt.com/c/historical-conv-1'),
+      writable: true,
+    })
+
+    // Step 1: Initial page load with existing turn
+    document.body.innerHTML = `
+      <article data-testid="conversation-turn-0">
+        <div data-message-author-role="user" data-message-id="u-hist-1">
+          <div>Old Query</div>
+        </div>
+      </article>
+      <article data-testid="conversation-turn-1">
+        <div data-message-author-role="assistant" data-message-id="a-hist-1">
+          <div class="markdown">Old Response</div>
+        </div>
+      </article>
+    `
+
+    adapter.start()
+    await adapter.processConversation()
+
+    expect(await interactionRepo.count()).toBe(1)
+    const histRecord = (await interactionRepo.getAll())[0]
+    expect(histRecord.capture_context).toBe('on_load')
+
+    // Step 2: User asks new question (live generation)
+    document.body.innerHTML += `
+      <article data-testid="conversation-turn-2">
+        <div data-message-author-role="user" data-message-id="u-live-2">
+          <div>New Live Query</div>
+        </div>
+      </article>
+      <article data-testid="conversation-turn-3">
+        <div data-message-author-role="assistant" data-message-id="a-live-2">
+          <div class="markdown">New Live Response</div>
+        </div>
+      </article>
+    `
+
+    await adapter.processConversation()
+    expect(await interactionRepo.count()).toBe(2)
+
+    const all = await interactionRepo.getAll()
+    expect(all[1].capture_context).toBe('on_generate')
+  })
+
+  it('persists regenerated assistant responses as distinct entries while preserving user_message_id (Priority 7)', async () => {
+    Object.defineProperty(window, 'location', {
+      value: new URL('https://chatgpt.com/c/conv-regen-integration'),
+      writable: true,
+    })
+
+    // Generation 1
+    document.body.innerHTML = `
+      <article data-testid="conversation-turn-0">
+        <div data-message-author-role="user" data-message-id="u-regen-prompt">
+          <div>Tell me a fact</div>
+        </div>
+      </article>
+      <article data-testid="conversation-turn-1">
+        <div data-message-author-role="assistant" data-message-id="a-regen-v1">
+          <div class="markdown">Honey never spoils.</div>
+        </div>
+      </article>
+    `
+
+    adapter.start()
+    await adapter.processConversation()
+    expect(await interactionRepo.count()).toBe(1)
+
+    // User clicks regenerate -> Assistant turn replaced in DOM with new text & message ID
+    document.body.innerHTML = `
+      <article data-testid="conversation-turn-0">
+        <div data-message-author-role="user" data-message-id="u-regen-prompt">
+          <div>Tell me a fact</div>
+        </div>
+      </article>
+      <article data-testid="conversation-turn-1">
+        <div data-message-author-role="assistant" data-message-id="a-regen-v2">
+          <div class="markdown">Octopuses have three hearts.</div>
+        </div>
+      </article>
+    `
+
+    await adapter.processConversation()
+
+    // Both distinct responses preserved
+    expect(await interactionRepo.count()).toBe(2)
+    const records = await interactionRepo.getAll()
+    expect(records[0].user_message_id).toBe('u-regen-prompt')
+    expect(records[0].message_id).toBe('a-regen-v1')
+    expect(records[0].response.text).toBe('Honey never spoils.')
+
+    expect(records[1].user_message_id).toBe('u-regen-prompt')
+    expect(records[1].message_id).toBe('a-regen-v2')
+    expect(records[1].response.text).toBe('Octopuses have three hearts.')
+  })
 })

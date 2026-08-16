@@ -25,6 +25,9 @@ describe('InteractionRepository', () => {
       platform: 'chatgpt',
       conversation_id: 'conv-001',
       message_id: 'msg-001',
+      user_message_id: 'usr-msg-001',
+      source_timestamp: '2026-08-17T03:00:00.000Z',
+      capture_context: 'on_generate',
       query: { text: 'How does semantic caching work?' },
       response: { text: 'It caches based on embedding similarity rather than exact text keys.' },
       conversation_title: 'Semantic Cache Chat',
@@ -37,6 +40,9 @@ describe('InteractionRepository', () => {
     expect(created.platform).toBe('chatgpt')
     expect(created.conversation_id).toBe('chatgpt:conv-001')
     expect(created.message_id).toBe('msg-001')
+    expect(created.user_message_id).toBe('usr-msg-001')
+    expect(created.source_timestamp).toBe('2026-08-17T03:00:00.000Z')
+    expect(created.capture_context).toBe('on_generate')
     expect(created.query.characters).toBe(31)
     expect(created.query.bytes).toBe(31)
     expect(created.query.estimated_tokens).toBeNull()

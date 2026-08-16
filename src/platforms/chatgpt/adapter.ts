@@ -11,18 +11,30 @@ import {
   detectPlatformFromUrl,
   sendExtensionMessage,
 } from '../../shared/messages'
-import type { CreateInteractionInput } from '../../shared/types'
+import type { CaptureContext, CreateInteractionInput } from '../../shared/types'
 import type { ExtractedInteraction, PlatformAdapter } from '../types'
 import {
   extractConversationIdFromUrl,
   extractConversationTitle,
   extractConversationTurns,
   extractModelInfo,
-  isTurnStreaming,
+  isPageGenerating,
   pairTurnsIntoInteractions,
 } from './parser'
 
 const MUTATION_DEBOUNCE_MS = 500
+const NEW_CHAT_URL_TIMEOUT_MS = 4000
+
+interface PendingUnboundInteraction {
+  interaction: ExtractedInteraction
+  key: string
+  timer: ReturnType<typeof setTimeout>
+}
+
+export interface ChatGPTAdapterOptions {
+  mutationDebounceMs?: number
+  newChatTimeoutMs?: number
+}
 
 export class ChatGPTAdapter implements PlatformAdapter {
   public readonly platform = 'chatgpt' as const
@@ -31,11 +43,25 @@ export class ChatGPTAdapter implements PlatformAdapter {
   private observer: MutationObserver | null = null
   private debounceTimer: ReturnType<typeof setTimeout> | null = null
   private lastObservedUrl = ''
+  private isInitialScan = true
+
+  private mutationDebounceMs: number
+  private newChatTimeoutMs: number
 
   /**
    * Set of processed interaction keys for the current tab session to prevent duplicate work.
    */
   private processedKeys = new Set<string>()
+
+  /**
+   * Pending interactions observed before ChatGPT assigns a conversation ID in the URL.
+   */
+  private pendingUnboundInteractions = new Map<string, PendingUnboundInteraction>()
+
+  constructor(options?: ChatGPTAdapterOptions) {
+    this.mutationDebounceMs = options?.mutationDebounceMs ?? MUTATION_DEBOUNCE_MS
+    this.newChatTimeoutMs = options?.newChatTimeoutMs ?? NEW_CHAT_URL_TIMEOUT_MS
+  }
 
   /**
    * Determines if this adapter is applicable for the current URL.
@@ -53,6 +79,7 @@ export class ChatGPTAdapter implements PlatformAdapter {
     }
 
     this.observing = true
+    this.isInitialScan = true
     this.lastObservedUrl = window.location.href
 
     // Initial pass for already-completed turns on page load
@@ -93,6 +120,12 @@ export class ChatGPTAdapter implements PlatformAdapter {
       this.debounceTimer = null
     }
 
+    // Cancel all pending timers cleanly
+    for (const [, pending] of this.pendingUnboundInteractions) {
+      clearTimeout(pending.timer)
+    }
+    this.pendingUnboundInteractions.clear()
+
     this.observing = false
     console.log('[IntelliCache ChatGPT] Adapter stopped.')
   }
@@ -106,16 +139,17 @@ export class ChatGPTAdapter implements PlatformAdapter {
 
   /**
    * Generates a stable in-memory deduplication key for an extracted interaction.
+   * NOTE: Key is independent of conversationId so that transition from null ID to real ID
+   * does not create duplicate in-memory entries or duplicate database records.
    */
   private generateInteractionKey(interaction: ExtractedInteraction): string {
     if (interaction.messageId) {
       return `msg:${interaction.messageId}`
     }
 
-    const conv = interaction.conversationId || 'unbound'
-    const qSnippet = interaction.queryText.slice(0, 40)
-    const rSnippet = interaction.responseText.slice(0, 40)
-    return `pair:${conv}|${qSnippet}|${rSnippet}`
+    const qSnippet = interaction.queryText.slice(0, 60)
+    const rSnippet = interaction.responseText.slice(0, 60)
+    return `pair:${qSnippet}|${rSnippet}`
   }
 
   /**
@@ -130,13 +164,37 @@ export class ChatGPTAdapter implements PlatformAdapter {
     const currentUrl = window.location.href
     if (currentUrl !== this.lastObservedUrl) {
       this.lastObservedUrl = currentUrl
-      // On conversation switch, trigger extraction for newly active conversation
+      const newConvId = extractConversationIdFromUrl(currentUrl)
+
+      // If new conversation ID appeared, flush pending unbound interactions with it
+      if (newConvId && this.pendingUnboundInteractions.size > 0) {
+        this.flushPendingWithConversationId(newConvId)
+      }
+
+      // Mark next scan on new conversation as on_load
+      this.isInitialScan = true
       this.scheduleProcessing(200)
       return
     }
 
     // Debounce mutation handling
-    this.scheduleProcessing(MUTATION_DEBOUNCE_MS)
+    this.scheduleProcessing(this.mutationDebounceMs)
+  }
+
+  /**
+   * Flushes any pending unbound interactions using the newly acquired conversation ID.
+   */
+  private flushPendingWithConversationId(conversationId: string): void {
+    const title = extractConversationTitle(document)
+    for (const [key, pending] of this.pendingUnboundInteractions) {
+      clearTimeout(pending.timer)
+      pending.interaction.conversationId = conversationId
+      if (title) {
+        pending.interaction.conversationTitle = title
+      }
+      this.pendingUnboundInteractions.delete(key)
+      void this.persistInteraction(pending.interaction, key)
+    }
   }
 
   /**
@@ -162,19 +220,26 @@ export class ChatGPTAdapter implements PlatformAdapter {
       return
     }
 
+    // Generation completion guard: If any stop button or active streaming class is present, reschedule
+    if (isPageGenerating(document.body || document)) {
+      this.scheduleProcessing(this.mutationDebounceMs)
+      return
+    }
+
     const currentUrl = window.location.href
     const conversationId = extractConversationIdFromUrl(currentUrl)
     const title = extractConversationTitle(document)
     const model = extractModelInfo(document)
 
-    // Check if the page as a whole is actively generating / streaming
-    if (isTurnStreaming(document.body, document)) {
-      // Still generating, reschedule check
-      this.scheduleProcessing(MUTATION_DEBOUNCE_MS)
-      return
+    // If conversation ID is now present and we have pending unbound items, flush them
+    if (conversationId && this.pendingUnboundInteractions.size > 0) {
+      this.flushPendingWithConversationId(conversationId)
     }
 
-    const turns = extractConversationTurns(document.body)
+    const currentCaptureContext: CaptureContext = this.isInitialScan ? 'on_load' : 'on_generate'
+    this.isInitialScan = false
+
+    const turns = extractConversationTurns(document.body || document)
     if (turns.length === 0) {
       return
     }
@@ -183,12 +248,43 @@ export class ChatGPTAdapter implements PlatformAdapter {
       conversationId,
       title,
       model,
+      captureContext: currentCaptureContext,
     })
 
     for (const interaction of interactions) {
       const key = this.generateInteractionKey(interaction)
+
       if (this.processedKeys.has(key)) {
         continue
+      }
+
+      // If conversation ID is currently null (new chat at /), hold in bounded pending queue
+      if (interaction.conversationId === null) {
+        if (!this.pendingUnboundInteractions.has(key)) {
+          const timer = setTimeout(() => {
+            const pending = this.pendingUnboundInteractions.get(key)
+            if (pending) {
+              this.pendingUnboundInteractions.delete(key)
+              void this.persistInteraction(pending.interaction, key)
+            }
+          }, this.newChatTimeoutMs)
+
+          this.pendingUnboundInteractions.set(key, {
+            interaction,
+            key,
+            timer,
+          })
+        }
+        continue
+      }
+
+      // If already held in pending, clear its pending timer and remove from map
+      if (this.pendingUnboundInteractions.has(key)) {
+        const pending = this.pendingUnboundInteractions.get(key)
+        if (pending) {
+          clearTimeout(pending.timer)
+          this.pendingUnboundInteractions.delete(key)
+        }
       }
 
       await this.persistInteraction(interaction, key)
@@ -203,7 +299,10 @@ export class ChatGPTAdapter implements PlatformAdapter {
       platform: 'chatgpt',
       conversation_id: interaction.conversationId,
       message_id: interaction.messageId,
+      user_message_id: interaction.userMessageId,
       observed_at: interaction.observedAt,
+      source_timestamp: interaction.sourceTimestamp,
+      capture_context: interaction.captureContext,
       model: interaction.model,
       query: {
         text: interaction.queryText,
@@ -221,7 +320,7 @@ export class ChatGPTAdapter implements PlatformAdapter {
       if (response.success) {
         this.processedKeys.add(key)
         console.log(
-          `[IntelliCache ChatGPT] Successfully persisted interaction (Conversation: ${interaction.conversationId || 'unbound'})`
+          `[IntelliCache ChatGPT] Successfully persisted interaction (Conversation: ${interaction.conversationId || 'unbound'}, Context: ${interaction.captureContext})`
         )
       } else {
         // If duplicate in DB, also mark as processed so we don't keep attempting

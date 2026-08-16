@@ -69,6 +69,19 @@ describe('ChatGPT Conversation Title & Model Extraction', () => {
     expect(model.provider).toBe('openai')
     expect(model.name).toBeNull()
   })
+
+  it('proves unrelated Radix UI buttons are NOT extracted as model name (Regression Test for Priority 1)', () => {
+    document.body.innerHTML = `
+      <div>
+        <button id="radix-:r1:">Unrelated Dialog Trigger</button>
+        <button id="radix-:r2:">Settings Dropdown</button>
+        <button id="radix-:r3:">User Profile</button>
+      </div>
+    `
+    const model = extractModelInfo(document)
+    expect(model.provider).toBe('openai')
+    expect(model.name).toBeNull()
+  })
 })
 
 describe('ChatGPT Message ID & Turn Text Extraction', () => {
@@ -135,11 +148,12 @@ describe('ChatGPT Streaming Detection & Turn Pairing', () => {
     expect(isTurnStreaming(completedTurn, document.body)).toBe(false)
   })
 
-  it('extracts conversation turns and pairs complete interactions correctly', () => {
+  it('extracts conversation turns and pairs complete interactions with user_message_id and capture_context', () => {
     document.body.innerHTML = `
       <article data-testid="conversation-turn-0">
         <div data-message-author-role="user" data-message-id="msg-u1">
           <div class="whitespace-pre-wrap">Hello AI</div>
+          <time datetime="2026-08-17T03:00:00.000Z">3:00 PM</time>
         </div>
       </article>
       <article data-testid="conversation-turn-1">
@@ -147,6 +161,7 @@ describe('ChatGPT Streaming Detection & Turn Pairing', () => {
           <div class="markdown prose">
             <p>Hello! How can I assist you today?</p>
           </div>
+          <time datetime="2026-08-17T03:00:05.000Z">3:00 PM</time>
         </div>
       </article>
     `
@@ -155,19 +170,29 @@ describe('ChatGPT Streaming Detection & Turn Pairing', () => {
     expect(turns).toHaveLength(2)
     expect(turns[0].role).toBe('user')
     expect(turns[0].text).toBe('Hello AI')
+    expect(turns[0].messageId).toBe('msg-u1')
+    expect(turns[0].sourceTimestamp).toBe('2026-08-17T03:00:00.000Z')
+
     expect(turns[1].role).toBe('assistant')
     expect(turns[1].text).toContain('Hello! How can I assist you today?')
+    expect(turns[1].messageId).toBe('msg-a1')
+    expect(turns[1].sourceTimestamp).toBe('2026-08-17T03:00:05.000Z')
 
     const interactions = pairTurnsIntoInteractions(turns, {
       conversationId: 'conv-123',
       title: 'Greetings Chat',
       model: { provider: 'openai', name: 'GPT-4o' },
+      captureContext: 'on_generate',
+      observedAt: '2026-08-17T03:00:06.000Z',
     })
 
     expect(interactions).toHaveLength(1)
     expect(interactions[0].platform).toBe('chatgpt')
     expect(interactions[0].conversationId).toBe('conv-123')
     expect(interactions[0].messageId).toBe('msg-a1')
+    expect(interactions[0].userMessageId).toBe('msg-u1')
+    expect(interactions[0].sourceTimestamp).toBe('2026-08-17T03:00:05.000Z')
+    expect(interactions[0].captureContext).toBe('on_generate')
     expect(interactions[0].queryText).toBe('Hello AI')
     expect(interactions[0].responseText).toContain('Hello! How can I assist you today?')
     expect(interactions[0].model.name).toBe('GPT-4o')
@@ -180,6 +205,7 @@ describe('ChatGPT Streaming Detection & Turn Pairing', () => {
         element: document.createElement('div'),
         text: 'Tell me a story',
         messageId: 'u1',
+        sourceTimestamp: null,
         isStreaming: false,
       },
       {
@@ -187,6 +213,7 @@ describe('ChatGPT Streaming Detection & Turn Pairing', () => {
         element: document.createElement('div'),
         text: 'Once upon a time...',
         messageId: 'a1',
+        sourceTimestamp: null,
         isStreaming: true, // Currently streaming!
       },
     ]

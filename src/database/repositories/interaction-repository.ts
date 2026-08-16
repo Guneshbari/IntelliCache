@@ -76,7 +76,10 @@ export class InteractionRepository {
         platform,
         conversation_id: namespacedConvId,
         message_id: input.message_id?.trim() ?? null,
+        user_message_id: input.user_message_id?.trim() ?? null,
         observed_at: observedAt,
+        source_timestamp: input.source_timestamp?.trim() ?? null,
+        capture_context: input.capture_context ?? 'on_generate',
         model: {
           provider: input.model?.provider ?? null,
           name: input.model?.name ?? null,

@@ -7,6 +7,8 @@ import type { FingerprintStrategy } from '../fingerprint/fingerprint'
 
 export type { FingerprintStrategy }
 
+export type CaptureContext = 'on_load' | 'on_generate'
+
 /**
  * Model provider and architecture metadata.
  */
@@ -37,7 +39,10 @@ export interface Interaction {
   platform: string
   conversation_id: string | null
   message_id: string | null
-  observed_at: string // ISO-8601 string
+  user_message_id: string | null
+  observed_at: string // ISO-8601 string: time the extension observed the interaction
+  source_timestamp: string | null // ISO-8601 or raw string if exposed by the platform, else null
+  capture_context: CaptureContext // 'on_load' if discovered from DOM on load, 'on_generate' if captured upon live generation
   model: InteractionModel
   query: InteractionTextMetrics
   response: InteractionTextMetrics
@@ -79,7 +84,10 @@ export interface CreateInteractionInput {
   platform: string
   conversation_id?: string | null
   message_id?: string | null
+  user_message_id?: string | null
   observed_at?: string // ISO-8601 string; defaults to Date.now()
+  source_timestamp?: string | null
+  capture_context?: CaptureContext // defaults to 'on_generate'
   model?: {
     provider?: string | null
     name?: string | null

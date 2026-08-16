@@ -4,6 +4,7 @@
  * Implements pure functions that can be tested in isolation using static HTML fixtures.
  */
 
+import type { CaptureContext } from '../../shared/types'
 import type { ExtractedInteraction, RawMessageTurn } from '../types'
 import { CHATGPT_SELECTORS } from './selectors'
 
@@ -60,6 +61,9 @@ export function extractConversationTitle(docOrElement: Document | Element): stri
 
 /**
  * Extracts model provider and name from the ChatGPT interface if available.
+ *
+ * NOTE: Strictly avoids matching arbitrary Radix UI buttons (`button[id^="radix-"]`).
+ * If a reliable model switcher cannot be found, returns null for model name.
  */
 export function extractModelInfo(root: Document | Element): {
   provider: string | null
@@ -102,21 +106,55 @@ export function extractMessageId(element: Element): string | null {
 }
 
 /**
+ * Extracts original source timestamp from `<time datetime="...">` or `data-timestamp`
+ * if exposed by the platform DOM. Never fabricates timestamps.
+ */
+export function extractSourceTimestamp(element: Element): string | null {
+  const timeEl = element.querySelector('time[datetime]')
+  if (timeEl) {
+    const dt = timeEl.getAttribute('datetime')
+    if (dt && dt.trim()) {
+      return dt.trim()
+    }
+  }
+  const timestampAttr = element.getAttribute('data-timestamp')
+  if (timestampAttr && timestampAttr.trim()) {
+    return timestampAttr.trim()
+  }
+  const childWithTimestamp = element.querySelector('[data-timestamp]')
+  if (childWithTimestamp) {
+    const ts = childWithTimestamp.getAttribute('data-timestamp')
+    if (ts && ts.trim()) {
+      return ts.trim()
+    }
+  }
+  return null
+}
+
+/**
  * Extracts raw user query text from a user turn element.
- * Strips UI controls (e.g. edit buttons) while preserving multiline formatting.
+ * Strips UI controls, navigation, and edit controls while preserving multiline formatting.
  */
 export function extractUserQueryText(element: Element): string {
-  const clone = element.cloneNode(true) as Element
+  const userContainer =
+    element.getAttribute('data-message-author-role') === 'user'
+      ? element
+      : element.querySelector(CHATGPT_SELECTORS.USER_ROLE) || element
 
-  // Strip buttons or edit controls
-  const buttons = clone.querySelectorAll('button, svg')
-  buttons.forEach((b) => b.remove())
+  const clone = userContainer.cloneNode(true) as Element
+
+  // Strip UI controls, edit buttons, action toolbars, forms, and navigation
+  const uiControls = clone.querySelectorAll(CHATGPT_SELECTORS.UI_CONTROLS_TO_EXCLUDE)
+  uiControls.forEach((b) => b.remove())
 
   // Look for text wrapper
-  const textContainer = clone.querySelector(CHATGPT_SELECTORS.USER_TEXT)
-  const rawText = textContainer ? textContainer.textContent : clone.textContent
+  const textContainer = clone.querySelector(CHATGPT_SELECTORS.USER_TEXT) || clone
+  const rawText = textContainer.textContent || ''
 
-  return (rawText || '').trim()
+  return rawText
+    .replace(/\r\n|\r/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
 }
 
 /**
@@ -124,9 +162,14 @@ export function extractUserQueryText(element: Element): string {
  * Strips interactive action buttons, feedback icons, and citations.
  */
 export function extractAssistantResponseText(element: Element): string {
-  const clone = element.cloneNode(true) as Element
+  const asstContainer =
+    element.getAttribute('data-message-author-role') === 'assistant'
+      ? element
+      : element.querySelector(CHATGPT_SELECTORS.ASSISTANT_ROLE) || element
 
-  // Strip UI controls (copy buttons, feedback icons, citations)
+  const clone = asstContainer.cloneNode(true) as Element
+
+  // Strip UI controls (copy buttons, feedback icons, citations, toolbars)
   const uiControls = clone.querySelectorAll(CHATGPT_SELECTORS.UI_CONTROLS_TO_EXCLUDE)
   uiControls.forEach((el) => el.remove())
 
@@ -170,72 +213,114 @@ export function extractAssistantResponseText(element: Element): string {
 }
 
 /**
+ * Checks whether the page as a whole is actively generating / streaming.
+ */
+export function isPageGenerating(root: Document | Element): boolean {
+  // 1. Check for stop button
+  const stopButton = root.querySelector(CHATGPT_SELECTORS.STOP_BUTTON)
+  if (stopButton !== null) {
+    return true
+  }
+
+  // 2. Check for active streaming or thinking classes across the page
+  const streamingEl = root.querySelector(
+    '.result-streaming, .streaming, span.streaming-cursor, .result-thinking'
+  )
+  if (streamingEl !== null) {
+    return true
+  }
+
+  return false
+}
+
+/**
  * Checks whether an assistant turn is actively streaming / generating.
  */
 export function isTurnStreaming(turnElement: Element, root?: Document | Element): boolean {
-  // Check if turn itself has streaming classes or cursor
+  // 1. Check if turn itself has streaming classes or cursor
   if (
     turnElement.classList.contains('result-streaming') ||
     turnElement.classList.contains('streaming') ||
-    turnElement.querySelector('span.streaming-cursor, .result-streaming') !== null
+    turnElement.querySelector('span.streaming-cursor, .result-streaming, .streaming') !== null
   ) {
     return true
   }
 
-  // Check if global stop button is present in root/document
+  // 2. Check if global stop button or page streaming is active
   const context = root || turnElement.ownerDocument || document
-  const stopButton = context.querySelector(
-    'button[data-testid="stop-button"], button[aria-label="Stop generating"], button[aria-label="Stop streaming"]'
-  )
-
-  return stopButton !== null
+  return isPageGenerating(context)
 }
 
 /**
  * Extracts raw conversation turns (User and Assistant) in document order from a root container.
+ * Specifically prevents nested articles or embedded views from creating duplicate turns.
  */
 export function extractConversationTurns(root: Document | Element): RawMessageTurn[] {
   const turns: RawMessageTurn[] = []
 
-  // Query articles or role-based elements
-  const articles = Array.from(root.querySelectorAll(CHATGPT_SELECTORS.TURN_ARTICLE))
+  // 1. Primary: query turn containers with data-testid^="conversation-turn-"
+  const turnContainers = Array.from(root.querySelectorAll(CHATGPT_SELECTORS.TURN_ARTICLE))
 
-  if (articles.length > 0) {
-    for (const article of articles) {
+  if (turnContainers.length > 0) {
+    for (const turnEl of turnContainers) {
       const isUser =
-        article.querySelector(CHATGPT_SELECTORS.USER_ROLE) !== null ||
-        article.getAttribute('data-message-author-role') === 'user'
+        turnEl.getAttribute('data-message-author-role') === 'user' ||
+        turnEl.querySelector(CHATGPT_SELECTORS.USER_ROLE) !== null
       const isAssistant =
-        article.querySelector(CHATGPT_SELECTORS.ASSISTANT_ROLE) !== null ||
-        article.getAttribute('data-message-author-role') === 'assistant'
+        turnEl.getAttribute('data-message-author-role') === 'assistant' ||
+        turnEl.querySelector(CHATGPT_SELECTORS.ASSISTANT_ROLE) !== null
 
       if (isUser) {
+        const userEl =
+          turnEl.getAttribute('data-message-author-role') === 'user'
+            ? turnEl
+            : turnEl.querySelector(CHATGPT_SELECTORS.USER_ROLE)!
         turns.push({
           role: 'user',
-          element: article,
-          text: extractUserQueryText(article),
-          messageId: extractMessageId(article),
+          element: userEl,
+          text: extractUserQueryText(userEl),
+          messageId: extractMessageId(userEl),
+          sourceTimestamp: extractSourceTimestamp(userEl),
           isStreaming: false,
         })
       } else if (isAssistant) {
+        const asstEl =
+          turnEl.getAttribute('data-message-author-role') === 'assistant'
+            ? turnEl
+            : turnEl.querySelector(CHATGPT_SELECTORS.ASSISTANT_ROLE)!
         turns.push({
           role: 'assistant',
-          element: article,
-          text: extractAssistantResponseText(article),
-          messageId: extractMessageId(article),
-          isStreaming: isTurnStreaming(article, root),
+          element: asstEl,
+          text: extractAssistantResponseText(asstEl),
+          messageId: extractMessageId(asstEl),
+          sourceTimestamp: extractSourceTimestamp(asstEl),
+          isStreaming: isTurnStreaming(asstEl, root),
         })
       }
     }
     return turns
   }
 
-  // Fallback: search directly by data-message-author-role
+  // 2. Fallback: Search directly by data-message-author-role (filtering out nested role elements)
   const roleElements = Array.from(
     root.querySelectorAll(`${CHATGPT_SELECTORS.USER_ROLE}, ${CHATGPT_SELECTORS.ASSISTANT_ROLE}`)
   )
 
-  for (const el of roleElements) {
+  const topRoleElements = roleElements.filter((el) => {
+    let parent = el.parentElement
+    while (parent && parent !== root) {
+      if (
+        parent.getAttribute('data-message-author-role') === 'user' ||
+        parent.getAttribute('data-message-author-role') === 'assistant'
+      ) {
+        return false // Exclude nested role element
+      }
+      parent = parent.parentElement
+    }
+    return true
+  })
+
+  for (const el of topRoleElements) {
     const role = el.getAttribute('data-message-author-role')
     if (role === 'user') {
       turns.push({
@@ -243,6 +328,7 @@ export function extractConversationTurns(root: Document | Element): RawMessageTu
         element: el,
         text: extractUserQueryText(el),
         messageId: extractMessageId(el),
+        sourceTimestamp: extractSourceTimestamp(el),
         isStreaming: false,
       })
     } else if (role === 'assistant') {
@@ -251,6 +337,7 @@ export function extractConversationTurns(root: Document | Element): RawMessageTu
         element: el,
         text: extractAssistantResponseText(el),
         messageId: extractMessageId(el),
+        sourceTimestamp: extractSourceTimestamp(el),
         isStreaming: isTurnStreaming(el, root),
       })
     }
@@ -269,10 +356,15 @@ export function pairTurnsIntoInteractions(
     conversationId: string | null
     title: string | null
     model: { provider: string | null; name: string | null }
+    captureContext?: CaptureContext
+    observedAt?: string
   }
 ): ExtractedInteraction[] {
   const interactions: ExtractedInteraction[] = []
   let pendingUserTurn: RawMessageTurn | null = null
+
+  const captureContext = context.captureContext ?? 'on_generate'
+  const observedAt = context.observedAt ?? new Date().toISOString()
 
   for (const turn of turns) {
     if (turn.role === 'user') {
@@ -285,12 +377,15 @@ export function pairTurnsIntoInteractions(
         interactions.push({
           platform: 'chatgpt',
           conversationId: context.conversationId,
-          messageId: turn.messageId,
+          messageId: turn.messageId, // Assistant message ID
+          userMessageId: pendingUserTurn.messageId, // User message ID
           model: context.model,
           queryText: pendingUserTurn.text,
           responseText: turn.text,
           conversationTitle: context.title,
-          observedAt: new Date().toISOString(),
+          observedAt,
+          sourceTimestamp: turn.sourceTimestamp ?? pendingUserTurn.sourceTimestamp ?? null,
+          captureContext,
         })
       }
       // Reset pending user turn once consumed or attempted
