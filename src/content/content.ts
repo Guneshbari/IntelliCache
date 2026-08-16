@@ -5,6 +5,8 @@
  * with the Service Worker. No platform scraping or DOM mutations are performed here yet.
  */
 
+import { getAdapterForUrl } from '../platforms/registry'
+import type { PlatformAdapter } from '../platforms/types'
 import {
   createContentScriptInitMessage,
   createErrorResponse,
@@ -14,6 +16,8 @@ import {
   sendExtensionMessage,
 } from '../shared/messages'
 import type { ExtensionMessage, ExtensionResponse } from '../shared/types'
+
+let activeAdapter: PlatformAdapter | null = null
 
 function initializeContentScript() {
   const currentUrl = window.location.href
@@ -44,6 +48,25 @@ function initializeContentScript() {
         err
       )
     })
+
+  // Discover and start platform adapter if available
+  activeAdapter = getAdapterForUrl(currentUrl)
+  if (activeAdapter) {
+    console.log(
+      `[IntelliCache Content] Activating adapter for platform: ${activeAdapter.platform.toUpperCase()}`
+    )
+    activeAdapter.start()
+  } else {
+    console.log('[IntelliCache Content] No specialized collector adapter required for this page.')
+  }
+
+  // Cleanup on unload
+  window.addEventListener('beforeunload', () => {
+    if (activeAdapter) {
+      activeAdapter.stop()
+      activeAdapter = null
+    }
+  })
 
   // Listen for any test messages sent directly to this tab from Popup or Service Worker
   chrome.runtime.onMessage.addListener(

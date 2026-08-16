@@ -6,9 +6,9 @@ Intelligent semantic caching that reduces LLM latency, API costs, and redundant 
 
 ## Phase 1: AI Conversation Data Collector
 
-### Step 2: Local Data Layer (IndexedDB & Dexie.js)
+### Step 3: ChatGPT Data Collection Adapter
 
-A lightweight, maintainable, local-only Manifest V3 browser extension and local storage layer built with TypeScript, Dexie.js, Web Crypto API, and Vite.
+A specialized, robust, event-driven DOM observation and extraction adapter for ChatGPT conversations. Persists full query-response interactions, code blocks, and conversation metadata locally into IndexedDB through the Step 2 repository layer.
 
 ### Architecture Overview
 
@@ -18,7 +18,7 @@ IntelliCache/
 │   ├── background/
 │   │   └── service-worker.ts       # Manifest V3 service worker & async DB coordinator
 │   ├── content/
-│   │   └── content.ts              # Content script entry point (handshake hook)
+│   │   └── content.ts              # Content script entry point & adapter activator
 │   ├── database/
 │   │   ├── db.ts                   # Dexie database class (IntelliCacheDB) & singleton
 │   │   ├── index.ts                # Database module exports
@@ -32,6 +32,14 @@ IntelliCache/
 │   │   ├── fingerprint.ts          # Web Crypto SHA-256 (3-tier fallback strategy)
 │   │   ├── index.ts                # Fingerprint module exports
 │   │   └── normalize.ts            # Isolated text normalization for hashing
+│   ├── platforms/
+│   │   ├── index.ts                # Platform module exports
+│   │   ├── registry.ts             # Central adapter registry & URL-based discovery
+│   │   ├── types.ts                # PlatformAdapter and ExtractedInteraction types
+│   │   └── chatgpt/
+│   │       ├── adapter.ts          # MutationObserver, streaming stability & persistence
+│   │       ├── parser.ts           # Pure extraction functions & code block preservation
+│   │       └── selectors.ts        # Semantic DOM selector definitions
 │   ├── popup/
 │   │   ├── index.html              # Diagnostic popup UI
 │   │   ├── popup.css               # Clean, accessible styling
@@ -40,6 +48,9 @@ IntelliCache/
 │       ├── types.ts                # Discriminated union messages & domain re-exports
 │       └── messages.ts             # Message builders, type guards & dispatch helpers
 ├── tests/
+│   ├── chatgpt-adapter.test.ts     # Adapter lifecycle, debouncing & DB integration tests
+│   ├── chatgpt-fixtures.test.ts    # Static HTML DOM snapshot tests (multi-turn, streaming, code)
+│   ├── chatgpt-parser.test.ts      # Pure parser unit tests for selectors and extraction
 │   ├── database.test.ts            # Database initialization and lifecycle tests
 │   ├── fingerprint.test.ts         # Deterministic fingerprinting & 3-tier strategy tests
 │   ├── messages.test.ts            # Message contracts and URL detection tests
@@ -55,61 +66,20 @@ IntelliCache/
 └── package.json                    # Scripts and dependencies
 ```
 
-### Data Layer Specifications
+### ChatGPT Extraction & Observation Strategy
 
-#### Interaction Schema (Version 1)
+1. **Semantic DOM Selectors**: Uses stable semantic attributes (`[data-message-author-role]`, `article[data-testid^="conversation-turn-"]`) to isolate user queries and assistant responses.
+2. **Streaming & Completion Guard**: Observes stop button (`button[data-testid="stop-button"]`) and `.result-streaming` classes. Responses are only captured once generation has completely finished and stabilized.
+3. **Code Block Preservation**: Preserves multiline formatting and code blocks with language tags (` ```python ... ``` `).
+4. **UI Noise Exclusion**: Strips copy buttons, regenerate buttons, feedback thumbs, and web search citations from extracted text.
+5. **Deduplication**: Maintains in-memory session tracking alongside database-level SHA-256 fingerprint uniqueness to avoid redundant operations on DOM re-renders.
 
-```typescript
-interface Interaction {
-  schema_version: 1
-  id: string
-  fingerprint: string
-  platform: string
-  conversation_id: string | null
-  message_id: string | null
-  observed_at: string // ISO-8601 string
-  model: {
-    provider: string | null
-    name: string | null
-  }
-  query: {
-    text: string
-    characters: number
-    bytes: number
-    estimated_tokens: number | null
-  }
-  response: {
-    text: string
-    characters: number
-    bytes: number
-    estimated_tokens: number | null
-  }
-  conversation_title: string | null
-  collector_version: string
-}
-```
+### Supported Metadata & Limitations
 
-#### Conversation Schema (Version 1)
-
-```typescript
-interface Conversation {
-  id: string
-  platform: string
-  title: string | null
-  first_observed_at: string // ISO-8601 string
-  last_observed_at: string // ISO-8601 string
-}
-```
-
-### Fingerprinting Strategy
-
-Deterministic SHA-256 fingerprint generation using native Web Crypto API with a 3-tier fallback model:
-
-1. **Level 1** (`L1|platform|conversation_id|message_id`): Direct platform identifiers when message ID and conversation ID exist.
-2. **Level 2** (`L2|platform|conversation_id|normalized_query|normalized_response`): Conversation thread content fallback when message ID is unavailable.
-3. **Level 3** (`L3|platform|normalized_query|normalized_response|observed_at_hourly_bucket`): Content and time bucket fallback for standalone/ephemeral queries.
-
-_Note: Raw query and response texts are preserved unmodified. Normalization is applied strictly during hashing._
+- **Conversation ID**: Extracted reliably from URL (`/c/{uuid}` or Custom GPT `/g/.../c/{uuid}`). If on root `/` prior to URL generation, captured once the URL updates.
+- **Message ID**: Extracted from `data-message-id` attribute when exposed by the ChatGPT interface.
+- **Model Name**: Extracted from model switcher header if visible (e.g. `GPT-4o`, `o1-preview`).
+- **Known Limitations**: If ChatGPT alters major DOM container semantics in future UI updates, selectors in `selectors.ts` can be updated without touching the underlying storage or messaging layers.
 
 ### Development Commands
 
@@ -140,4 +110,4 @@ pnpm format
 3. Enable **Developer mode** (toggle located in the top-right corner).
 4. Click **Load unpacked**.
 5. Select the `dist/` directory within this repository (`/home/trespasser/coding_stuff/IntelliCache/dist`).
-6. Click the IntelliCache Collector extension icon to open the popup and view diagnostic connection and storage stats.
+6. Navigate to `https://chatgpt.com` to observe live query/response collection.
