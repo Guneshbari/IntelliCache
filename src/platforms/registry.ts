@@ -5,9 +5,11 @@
  */
 
 import { ChatGPTAdapter } from './chatgpt/adapter'
+import { ClaudeAdapter } from './claude/adapter'
+import { GeminiAdapter } from './gemini/adapter'
 import type { PlatformAdapter } from './types'
 
-const adapters: PlatformAdapter[] = [new ChatGPTAdapter()]
+const adapters: PlatformAdapter[] = [new ChatGPTAdapter(), new ClaudeAdapter(), new GeminiAdapter()]
 
 /**
  * Registers an adapter instance into the global registry.
