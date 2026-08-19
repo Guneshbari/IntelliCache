@@ -387,4 +387,158 @@ describe('ChatGPTAdapter Integration & Lifecycle', () => {
     expect(records[1].message_id).toBe('a-regen-v2')
     expect(records[1].response.text).toBe('Octopuses have three hearts.')
   })
+
+  // ─── capture_context Regression Tests (Bug: new-chat generation was on_load) ───
+
+  it('REGRESSION: new chat via URL transition (/ → /c/{id}) must produce capture_context = on_generate', async () => {
+    // Start at / (new chat page)
+    Object.defineProperty(window, 'location', {
+      value: new URL('https://chatgpt.com/'),
+      writable: true,
+    })
+    document.title = 'ChatGPT'
+    document.body.innerHTML = ''
+
+    adapter.start()
+
+    // Initial 100ms pass: no turns yet, sets isInitialScan = false
+    await adapter.processConversation()
+
+    // User sends message; DOM updates with completed user + assistant turns
+    document.body.innerHTML = `
+      <article data-testid="conversation-turn-0">
+        <div data-message-author-role="user" data-message-id="u-ctx-1">
+          <div>IntelliCache acceptance test: explain binary search in three sentences.</div>
+        </div>
+      </article>
+      <article data-testid="conversation-turn-1">
+        <div data-message-author-role="assistant" data-message-id="a-ctx-1">
+          <div class="markdown">Binary search repeatedly halves a sorted array to find a target.</div>
+        </div>
+      </article>
+    `
+
+    // Debounce fires while URL still at / → interaction goes into pending queue
+    await adapter.processConversation()
+    expect(await interactionRepo.count()).toBe(0) // still pending
+
+    // ChatGPT assigns conversation ID: URL changes from / to /c/{uuid}
+    Object.defineProperty(window, 'location', {
+      value: new URL('https://chatgpt.com/c/binary-search-conv-001'),
+      writable: true,
+    })
+    document.title = 'Binary Search Explanation - ChatGPT'
+
+    // Simulate the MutationObserver firing due to URL change.
+    // handleDomMutation() must NOT reset isInitialScan to true for this / → /c/{id} transition.
+    // It should flush the pending interaction with the real conversation ID.
+    adapter['handleDomMutation']()
+
+    // Drive the processing pass directly.
+    // flushPendingWithConversationId() was already called inside handleDomMutation()
+    // so the interaction is already enqueued for persistence; processConversation()
+    // completes any remaining work synchronously.
+    await adapter.processConversation()
+
+    // Verify: exactly 1 interaction, classified as on_generate (not on_load)
+    expect(await interactionRepo.count()).toBe(1)
+    const records = await interactionRepo.getAll()
+    expect(records[0].capture_context).toBe('on_generate')
+    expect(records[0].conversation_id).toBe('chatgpt:binary-search-conv-001')
+    expect(records[0].message_id).toBe('a-ctx-1')
+    expect(records[0].user_message_id).toBe('u-ctx-1')
+  })
+
+  it('REGRESSION: existing conversation loaded directly still produces capture_context = on_load', async () => {
+    // Start directly at an existing conversation URL (e.g. a bookmark or shared link)
+    Object.defineProperty(window, 'location', {
+      value: new URL('https://chatgpt.com/c/existing-conv-historical'),
+      writable: true,
+    })
+    document.title = 'Old Conversation - ChatGPT'
+
+    document.body.innerHTML = `
+      <article data-testid="conversation-turn-0">
+        <div data-message-author-role="user" data-message-id="u-hist-load">
+          <div>Historical question from yesterday</div>
+        </div>
+      </article>
+      <article data-testid="conversation-turn-1">
+        <div data-message-author-role="assistant" data-message-id="a-hist-load">
+          <div class="markdown">Historical answer from yesterday.</div>
+        </div>
+      </article>
+    `
+
+    adapter.start() // isInitialScan = true on start
+    await adapter.processConversation()
+
+    expect(await interactionRepo.count()).toBe(1)
+    const records = await interactionRepo.getAll()
+    // Loaded from pre-existing page → must be on_load
+    expect(records[0].capture_context).toBe('on_load')
+    expect(records[0].conversation_id).toBe('chatgpt:existing-conv-historical')
+  })
+
+  it('REGRESSION: SPA navigation from existing conversation A to B marks B turns as on_load, not on_generate', async () => {
+    // ── Conversation A ──
+    Object.defineProperty(window, 'location', {
+      value: new URL('https://chatgpt.com/c/spa-conv-A'),
+      writable: true,
+    })
+    document.body.innerHTML = `
+      <article data-testid="conversation-turn-0">
+        <div data-message-author-role="user" data-message-id="u-spa-A">
+          <div>Question in conversation A</div>
+        </div>
+      </article>
+      <article data-testid="conversation-turn-1">
+        <div data-message-author-role="assistant" data-message-id="a-spa-A">
+          <div class="markdown">Answer in conversation A.</div>
+        </div>
+      </article>
+    `
+
+    adapter.start() // isInitialScan = true
+    await adapter.processConversation() // processes A as on_load, isInitialScan = false
+
+    expect(await interactionRepo.count()).toBe(1)
+    const aRecord = (await interactionRepo.getAll())[0]
+    expect(aRecord.capture_context).toBe('on_load')
+
+    // ── Navigate to Conversation B (SPA: /c/A → /c/B) ──
+    Object.defineProperty(window, 'location', {
+      value: new URL('https://chatgpt.com/c/spa-conv-B'),
+      writable: true,
+    })
+    document.body.innerHTML = `
+      <article data-testid="conversation-turn-0">
+        <div data-message-author-role="user" data-message-id="u-spa-B">
+          <div>Question in conversation B</div>
+        </div>
+      </article>
+      <article data-testid="conversation-turn-1">
+        <div data-message-author-role="assistant" data-message-id="a-spa-B">
+          <div class="markdown">Answer in conversation B.</div>
+        </div>
+      </article>
+    `
+
+    // Simulate the MutationObserver detecting the SPA navigation (/c/A → /c/B).
+    // handleDomMutation() updates lastObservedUrl and sets isInitialScan = true
+    // (because /c/A → /c/B is true SPA navigation between existing conversations).
+    adapter['handleDomMutation']()
+
+    // Drive the processing pass directly (same pattern as all other adapter tests).
+    // The debounce timer from handleDomMutation would fire after 200ms but afterEach
+    // cancels it via adapter.stop(). processConversation() is the unit under test.
+    await adapter.processConversation()
+
+    expect(await interactionRepo.count()).toBe(2)
+    const all = await interactionRepo.getAll()
+    const bRecord = all.find((r) => r.message_id === 'a-spa-B')!
+    // Navigation to pre-existing conversation B → discovered turns must be on_load
+    expect(bRecord.capture_context).toBe('on_load')
+    expect(bRecord.conversation_id).toBe('chatgpt:spa-conv-B')
+  })
 })

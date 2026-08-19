@@ -154,6 +154,21 @@ export class ChatGPTAdapter implements PlatformAdapter {
 
   /**
    * Handles DOM mutation events with debouncing and URL change detection.
+   *
+   * capture_context logic:
+   *
+   * isInitialScan = true  →  next processConversation() assigns "on_load"
+   * isInitialScan = false →  next processConversation() assigns "on_generate"
+   *
+   * URL transition rules:
+   * - /        → /c/{id}  : New chat assignment. The user just generated this interaction.
+   *                         Do NOT reset isInitialScan — it must remain false so the
+   *                         interaction is classified as "on_generate".
+   * - /c/A     → /c/B     : True SPA navigation to a different conversation.
+   *                         Reset isInitialScan = true → "on_load".
+   * - /c/A     → /        : User navigated back to new-chat page.
+   *                         Reset isInitialScan = true (nothing meaningful to extract yet).
+   * - any      → same     : Normal mutations, no URL change, no reset.
    */
   private handleDomMutation(): void {
     if (!this.observing) {
@@ -163,7 +178,10 @@ export class ChatGPTAdapter implements PlatformAdapter {
     // Check for SPA URL changes
     const currentUrl = window.location.href
     if (currentUrl !== this.lastObservedUrl) {
+      const previousUrl = this.lastObservedUrl
       this.lastObservedUrl = currentUrl
+
+      const previousConvId = extractConversationIdFromUrl(previousUrl)
       const newConvId = extractConversationIdFromUrl(currentUrl)
 
       // If new conversation ID appeared, flush pending unbound interactions with it
@@ -171,8 +189,21 @@ export class ChatGPTAdapter implements PlatformAdapter {
         this.flushPendingWithConversationId(newConvId)
       }
 
-      // Mark next scan on new conversation as on_load
-      this.isInitialScan = true
+      // Determine whether this URL change represents true SPA navigation between
+      // conversations (which should produce on_load for discovered turns) or a
+      // new-chat URL assignment (/ → /c/{id}) that must remain on_generate.
+      //
+      // A new-chat URL assignment is when the previous URL had NO conversation ID
+      // and the new URL HAS one. The user just created this conversation; any turns
+      // found in the DOM belong to the active generation session, not historical content.
+      const isNewChatAssignment = !previousConvId && !!newConvId
+      if (!isNewChatAssignment) {
+        // True SPA navigation (A→B, A→/, etc.) — treat next scan as historical content.
+        this.isInitialScan = true
+      }
+      // If isNewChatAssignment: preserve the current isInitialScan value (false after
+      // the initial 100ms pass) so interactions are classified as on_generate.
+
       this.scheduleProcessing(200)
       return
     }
