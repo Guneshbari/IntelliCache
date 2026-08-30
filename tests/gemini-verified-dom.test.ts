@@ -362,4 +362,105 @@ response = llm.generate(query, context=retrieved_docs)</code></pre>
     interactions = await interactionRepo.getAll()
     expect(interactions).toHaveLength(1) // Still exactly 1, deduplicated
   })
+
+  it('12. does not create a pair from a user turn without an assistant response', () => {
+    document.body.innerHTML = `
+      <main>
+        ${sampleVerifiedUserTurnHtml}
+      </main>
+    `
+
+    const turns = extractConversationTurns(document.body)
+    expect(turns).toHaveLength(1)
+    expect(turns[0].role).toBe('user')
+
+    const interactions = pairTurnsIntoInteractions(turns, {
+      conversationId: 'unpaired-conv',
+      title: 'Unpaired',
+      model: { provider: 'google', name: 'gemini' },
+    })
+
+    expect(interactions).toHaveLength(0)
+  })
+
+  it('13. handles missing message IDs without inventing fake IDs', () => {
+    document.body.innerHTML = `
+      <main>
+        <user-query>
+          <div class="query-content">Clean query with no data-message-id</div>
+        </user-query>
+        <model-response>
+          <message-content><div class="markdown">Clean response with no data-message-id</div></message-content>
+        </model-response>
+      </main>
+    `
+
+    const turns = extractConversationTurns(document.body)
+    expect(turns).toHaveLength(2)
+    expect(turns[0].messageId).toBeNull()
+    expect(turns[1].messageId).toBeNull()
+
+    const interactions = pairTurnsIntoInteractions(turns, {
+      conversationId: 'no-id-conv',
+      title: 'No ID',
+      model: { provider: 'google', name: 'gemini' },
+    })
+
+    expect(interactions).toHaveLength(1)
+    expect(interactions[0].messageId).toBeNull()
+    expect(interactions[0].userMessageId).toBeNull()
+  })
+
+  it('14. captures existing /app/<id> on page load as on_load, then new turn as on_generate', async () => {
+    Object.defineProperty(window, 'location', {
+      value: new URL('https://gemini.google.com/app/lifecycle-conv-888'),
+      writable: true,
+    })
+
+    // Turn 1 on initial page load
+    document.body.innerHTML = `
+      <main>
+        <user-query data-message-id="u-hist-1">
+          <div class="query-content">Initial loaded prompt</div>
+        </user-query>
+        <model-response data-message-id="a-hist-1">
+          <message-content><div class="markdown">Initial loaded response</div></message-content>
+        </model-response>
+      </main>
+    `
+
+    adapter.start()
+    await adapter.processConversation()
+
+    let stored = await interactionRepo.getAll()
+    expect(stored).toHaveLength(1)
+    expect(stored[0].capture_context).toBe('on_load')
+    expect(stored[0].conversation_id).toBe('gemini:lifecycle-conv-888')
+
+    // Turn 2 dynamically added later (live generation)
+    document.body.innerHTML = `
+      <main>
+        <user-query data-message-id="u-hist-1">
+          <div class="query-content">Initial loaded prompt</div>
+        </user-query>
+        <model-response data-message-id="a-hist-1">
+          <message-content><div class="markdown">Initial loaded response</div></message-content>
+        </model-response>
+        <user-query data-message-id="u-live-2">
+          <div class="query-content">Live generated prompt</div>
+        </user-query>
+        <model-response data-message-id="a-live-2">
+          <message-content><div class="markdown">Live generated response</div></message-content>
+        </model-response>
+      </main>
+    `
+
+    await adapter.processConversation()
+
+    stored = await interactionRepo.getAll()
+    expect(stored).toHaveLength(2)
+    const liveRecord = stored.find((r) => r.message_id === 'a-live-2')!
+    expect(liveRecord).toBeDefined()
+    expect(liveRecord.capture_context).toBe('on_generate')
+  })
 })

@@ -384,8 +384,38 @@ export class GeminiAdapter implements PlatformAdapter {
       `Conversation ID: ${conversationId ? `present (${conversationId})` : 'null'}`
     )
 
+    const root = document.body || document
+
+    // Step 2 Diagnostic Checks: Query runtime element counts for comprehensive tracing
+    const userQueryCount = root.querySelectorAll('user-query').length
+    const modelResponseCount = root.querySelectorAll('model-response').length
+    const userRoleCount = root.querySelectorAll('[data-message-author-role="user"]').length
+    const asstRoleCount = root.querySelectorAll('[data-message-author-role="assistant"]').length
+    const userTextCount = root.querySelectorAll(
+      'user-query .query-content, [id^="user-query-content"]'
+    ).length
+    const asstTextCount = root.querySelectorAll(
+      'model-response .markdown, model-response message-content'
+    ).length
+    const docReadyState = typeof document !== 'undefined' ? document.readyState : 'unknown'
+    const bodyExists = !!document.body
+
+    logger.debug(
+      'Adapter',
+      'GEMINI',
+      `Runtime DOM check | readyState=${docReadyState} | bodyExists=${bodyExists} | userQueryElements=${userQueryCount} | modelResponseElements=${modelResponseCount} | userRoleElements=${userRoleCount} | asstRoleElements=${asstRoleCount} | userTextElements=${userTextCount} | asstTextElements=${asstTextCount}`
+    )
+
+    if (userQueryCount === 0 && modelResponseCount === 0) {
+      logger.debug(
+        'Adapter',
+        'GEMINI',
+        'Gemini DOM contains 0 user-query and 0 model-response elements at scan time.'
+      )
+    }
+
     // Generation completion guard: If any stop button or active streaming indicator is present, reschedule
-    const generating = isPageGenerating(document.body || document)
+    const generating = isPageGenerating(root)
     logger.debug('Adapter', 'GEMINI', `Generation state: generating=${generating}`)
 
     if (generating) {
@@ -411,16 +441,32 @@ export class GeminiAdapter implements PlatformAdapter {
     this.isInitialScan = false
 
     const turnContainers = Array.from(
-      document.querySelectorAll(
+      root.querySelectorAll(
         'user-query, model-response, [data-message-author-role="user"], [data-message-author-role="assistant"]'
       )
     ).length
-    const turns = extractConversationTurns(document.body || document)
+    const turns = extractConversationTurns(root)
     const userTurns = turns.filter((t) => t.role === 'user').length
     const assistantTurns = turns.filter((t) => t.role === 'assistant').length
 
     diagnosticStats.increment('userTurnsFound', userTurns)
     diagnosticStats.increment('assistantTurnsFound', assistantTurns)
+
+    if (userQueryCount > 0 && userTurns === 0) {
+      logger.warn(
+        'Adapter',
+        'GEMINI',
+        `Parser extraction anomaly: ${userQueryCount} user-query elements found in DOM, but 0 user turns extracted.`
+      )
+    }
+
+    if (userTurns > 0 && assistantTurns === 0) {
+      logger.debug(
+        'Adapter',
+        'GEMINI',
+        `Transient conversation state: ${userTurns} user turn(s) found, but 0 assistant turn(s) yet.`
+      )
+    }
 
     logger.debug(
       'Adapter',
@@ -439,6 +485,14 @@ export class GeminiAdapter implements PlatformAdapter {
       model,
       captureContext: currentCaptureContext,
     })
+
+    if (userTurns > 0 && assistantTurns > 0 && interactions.length === 0) {
+      logger.debug(
+        'Adapter',
+        'GEMINI',
+        `Pairing problem: formed 0 complete pairs from ${userTurns} user turn(s) and ${assistantTurns} assistant turn(s).`
+      )
+    }
 
     diagnosticStats.increment('completePairs', interactions.length)
     diagnosticStats.increment('interactionsExtracted', interactions.length)

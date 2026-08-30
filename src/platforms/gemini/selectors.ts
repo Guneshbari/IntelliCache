@@ -17,7 +17,8 @@ export const GEMINI_SELECTORS = {
   /**
    * User query text content wrapper inside <user-query>.
    */
-  USER_TEXT: '.query-content, user-query-content, .query-text',
+  USER_TEXT:
+    '.query-content, [id^="user-query-content"], user-query-content, .user-query-container, .query-text',
 
   /**
    * Model (Gemini assistant) response turn element.
@@ -28,7 +29,7 @@ export const GEMINI_SELECTORS = {
   /**
    * Assistant markdown text container within <model-response>.
    */
-  ASSISTANT_TEXT: 'message-content .markdown, .markdown, response-container',
+  ASSISTANT_TEXT: '.markdown, message-content, .response-container-content, response-container',
 
   /**
    * Code block containers.
@@ -64,14 +65,13 @@ export const GEMINI_SELECTORS = {
   STREAMING_INDICATORS: [
     'button[aria-label="Stop response"]',
     'button[aria-label="Stop generating"]',
-    'button[aria-label="Stop"]',
+    'button[aria-label="Stop response generation"]',
     'button[data-testid="stop-button"]',
-    '.loading',
-    '.animating',
-    '.streaming',
+    'model-response.streaming',
+    'model-response.loading',
+    'model-response.animating',
     'mat-spinner',
     'sparkle-spinner',
-    'div[class*="loading"]',
     'span.blinking-cursor',
   ].join(', '),
 
@@ -81,7 +81,7 @@ export const GEMINI_SELECTORS = {
   STOP_BUTTON: [
     'button[aria-label="Stop response"]',
     'button[aria-label="Stop generating"]',
-    'button[aria-label="Stop"]',
+    'button[aria-label="Stop response generation"]',
     'button[data-testid="stop-button"]',
   ].join(', '),
 
