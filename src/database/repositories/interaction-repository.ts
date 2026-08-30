@@ -67,8 +67,8 @@ export class InteractionRepository {
         })
         fingerprint = fpResult.fingerprint
         fingerprintStrategy = fpResult.strategy
-        logger.debug(
-          'Database',
+        logger.info(
+          'Lifecycle',
           platformTag,
           `Fingerprint generated: ${fingerprint.slice(0, 16)}... (strategy: ${fingerprintStrategy})`
         )
@@ -81,12 +81,73 @@ export class InteractionRepository {
         logger.info(
           'Database',
           platformTag,
-          `Duplicate interaction detected: fingerprint '${fingerprint.slice(0, 16)}...' already exists in DB (ID: ${existing.id}).`
+          `Existing fingerprint found: '${fingerprint.slice(0, 16)}...' already exists in DB (ID: ${existing.id}).`
         )
+
+        // If existing record was unbound and new input provides conversation_id, bind it
+        if (existing.conversation_id === null && namespacedConvId !== null) {
+          existing.conversation_id = namespacedConvId
+          if (input.conversation_title) existing.conversation_title = input.conversation_title
+          if (input.message_id) existing.message_id = input.message_id.trim()
+          if (input.user_message_id) existing.user_message_id = input.user_message_id.trim()
+          await this.db.interactions.put(existing)
+          logger.info(
+            'Database',
+            platformTag,
+            `Existing interaction updated: ID ${existing.id} bound to conversation ${namespacedConvId}`
+          )
+          logger.info(
+            'Lifecycle',
+            platformTag,
+            `Conversation ID resolved: interaction ID ${existing.id} -> ${namespacedConvId}`
+          )
+          return existing
+        }
+
         throw new DuplicateInteractionError(
           fingerprint,
           `Interaction with fingerprint '${fingerprint}' already exists (ID: ${existing.id}).`
         )
+      }
+
+      // Check if an unbound fallback (Level 3) interaction exists for the same content
+      if (namespacedConvId !== null) {
+        const l3FpResult = await generateInteractionFingerprint({
+          platform,
+          conversation_id: null,
+          message_id: null,
+          query_text: input.query.text,
+          response_text: input.response.text,
+          observed_at: observedAt,
+        })
+        const existingUnbound = await this.db.interactions
+          .where('fingerprint')
+          .equals(l3FpResult.fingerprint)
+          .first()
+        if (existingUnbound && existingUnbound.conversation_id === null) {
+          logger.info(
+            'Database',
+            platformTag,
+            `Existing fingerprint found: unbound interaction '${existingUnbound.fingerprint.slice(0, 16)}...' in DB (ID: ${existingUnbound.id}).`
+          )
+          existingUnbound.conversation_id = namespacedConvId
+          if (input.conversation_title)
+            existingUnbound.conversation_title = input.conversation_title
+          if (input.message_id) existingUnbound.message_id = input.message_id.trim()
+          if (input.user_message_id) existingUnbound.user_message_id = input.user_message_id.trim()
+          await this.db.interactions.put(existingUnbound)
+          logger.info(
+            'Database',
+            platformTag,
+            `Existing interaction updated: unbound interaction ${existingUnbound.id} bound to conversation ${namespacedConvId}`
+          )
+          logger.info(
+            'Lifecycle',
+            platformTag,
+            `Conversation ID resolved: interaction ID ${existingUnbound.id} -> ${namespacedConvId}`
+          )
+          return existingUnbound
+        }
       }
 
       // Construct full canonical interaction entity
@@ -123,7 +184,7 @@ export class InteractionRepository {
         logger.info(
           'Database',
           platformTag,
-          `Interaction successfully persisted to IndexedDB (ID: ${id}, fingerprint: ${fingerprint.slice(0, 16)}..., queryChars: ${interaction.query.characters}, responseChars: ${interaction.response.characters})`
+          `New interaction inserted: ID ${id}, fingerprint ${fingerprint.slice(0, 16)}..., queryChars: ${interaction.query.characters}, responseChars: ${interaction.response.characters}`
         )
       } catch (addError) {
         if (

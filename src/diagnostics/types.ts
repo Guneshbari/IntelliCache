@@ -16,6 +16,8 @@ export type DiagnosticComponent =
   | 'Background'
   | 'Database'
   | 'Navigation'
+  | 'Lifecycle'
+  | 'UI'
 
 export type DiagnosticPlatform = 'CHATGPT' | 'CLAUDE' | 'GEMINI' | 'CORE'
 
