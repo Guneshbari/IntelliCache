@@ -232,6 +232,7 @@ export class ChatGPTAdapter implements PlatformAdapter {
    */
   private flushPendingWithConversationId(conversationId: string): void {
     const title = extractConversationTitle(document)
+    logger.info('Lifecycle', 'CHATGPT', `Conversation ID resolved: ${conversationId}`)
     logger.info(
       'Adapter',
       'CHATGPT',
@@ -362,6 +363,11 @@ export class ChatGPTAdapter implements PlatformAdapter {
     let failureCount = 0
 
     for (const interaction of interactions) {
+      logger.info(
+        'Lifecycle',
+        'CHATGPT',
+        `Candidate interaction detected (convId: ${interaction.conversationId ?? 'null'}, queryChars: ${interaction.queryText.length}, responseChars: ${interaction.responseText.length})`
+      )
       const key = this.generateInteractionKey(interaction)
 
       logger.logExtraction('CHATGPT', {
@@ -476,6 +482,11 @@ export class ChatGPTAdapter implements PlatformAdapter {
       conversation_title: interaction.conversationTitle,
     }
 
+    logger.info(
+      'Lifecycle',
+      'CHATGPT',
+      `Persistence requested (conversationId: ${interaction.conversationId ?? 'null'}, context: ${interaction.captureContext})`
+    )
     logger.debug(
       'Messaging',
       'CHATGPT',

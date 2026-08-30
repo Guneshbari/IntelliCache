@@ -318,6 +318,7 @@ export class ClaudeAdapter implements PlatformAdapter {
    */
   private flushPendingWithConversationId(conversationId: string): void {
     const title = extractConversationTitle(document)
+    logger.info('Lifecycle', 'CLAUDE', `Conversation ID resolved: ${conversationId}`)
     logger.info(
       'Adapter',
       'CLAUDE',
@@ -449,6 +450,11 @@ export class ClaudeAdapter implements PlatformAdapter {
     let failureCount = 0
 
     for (const interaction of interactions) {
+      logger.info(
+        'Lifecycle',
+        'CLAUDE',
+        `Candidate interaction detected (convId: ${interaction.conversationId ?? 'null'}, queryChars: ${interaction.queryText.length}, responseChars: ${interaction.responseText.length})`
+      )
       const key = this.generateInteractionKey(interaction)
 
       logger.logExtraction('CLAUDE', {
@@ -550,6 +556,11 @@ export class ClaudeAdapter implements PlatformAdapter {
       conversation_title: interaction.conversationTitle,
     }
 
+    logger.info(
+      'Lifecycle',
+      'CLAUDE',
+      `Persistence requested (conversationId: ${interaction.conversationId ?? 'null'}, context: ${interaction.captureContext})`
+    )
     logger.debug(
       'Messaging',
       'CLAUDE',
