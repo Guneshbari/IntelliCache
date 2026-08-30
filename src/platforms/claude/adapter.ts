@@ -387,7 +387,7 @@ export class ClaudeAdapter implements PlatformAdapter {
 
     if (generating) {
       diagnosticStats.increment('streamingDeferrals')
-      logger.info(
+      logger.debug(
         'Adapter',
         'CLAUDE',
         `Processing deferred: active generation detected. Rescheduling in ${this.mutationDebounceMs}ms.`

@@ -292,5 +292,45 @@ describe('Diagnostic Instrumentation & Extraction Regression Tests', () => {
     const deferralLog = logSinkEntries.find((e) => e.message.includes('Processing deferred'))
     expect(deferralLog).toBeDefined()
     expect(deferralLog?.message).toContain('[IntelliCache][Adapter][GEMINI]')
+    expect(deferralLog?.level).toBe('debug')
+
+    // Verify no warnings or errors were emitted for normal streaming deferral
+    const warnOrErrorLogs = logSinkEntries.filter((e) => e.level === 'warn' || e.level === 'error')
+    expect(warnOrErrorLogs).toHaveLength(0)
+  })
+
+  it('classifies transient parser states (0 turns, 0 user/asst turns, incomplete pairs) as debug and not warn/error', async () => {
+    // 1. Test ChatGPT transient states
+    logSinkEntries = []
+    document.body.innerHTML = '<div></div>'
+    chatgptAdapter.start()
+    await chatgptAdapter.processConversation()
+
+    let warns = logSinkEntries.filter((e) => e.level === 'warn' || e.level === 'error')
+    expect(warns).toHaveLength(0)
+    let debugScan = logSinkEntries.find((e) => e.message.includes('0 conversation turns found'))
+    expect(debugScan?.level).toBe('debug')
+
+    // 2. Test Claude transient states
+    logSinkEntries = []
+    document.body.innerHTML = '<div></div>'
+    claudeAdapter.start()
+    await claudeAdapter.processConversation()
+
+    warns = logSinkEntries.filter((e) => e.level === 'warn' || e.level === 'error')
+    expect(warns).toHaveLength(0)
+    debugScan = logSinkEntries.find((e) => e.message.includes('0 conversation turns found'))
+    expect(debugScan?.level).toBe('debug')
+
+    // 3. Test Gemini transient states
+    logSinkEntries = []
+    document.body.innerHTML = '<div></div>'
+    geminiAdapter.start()
+    await geminiAdapter.processConversation()
+
+    warns = logSinkEntries.filter((e) => e.level === 'warn' || e.level === 'error')
+    expect(warns).toHaveLength(0)
+    debugScan = logSinkEntries.find((e) => e.message.includes('0 conversation turns found'))
+    expect(debugScan?.level).toBe('debug')
   })
 })

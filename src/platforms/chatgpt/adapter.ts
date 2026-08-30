@@ -187,7 +187,7 @@ export class ChatGPTAdapter implements PlatformAdapter {
       const newConvId = extractConversationIdFromUrl(currentUrl)
 
       logger.info(
-        'Adapter',
+        'Navigation',
         'CHATGPT',
         `Navigation detected: '${previousUrl}' -> '${currentUrl}' (previousConvId: ${previousConvId ?? 'none'}, newConvId: ${newConvId ?? 'none'})`
       )
@@ -195,7 +195,7 @@ export class ChatGPTAdapter implements PlatformAdapter {
       // If new conversation ID appeared, flush pending unbound interactions with it
       if (newConvId && this.pendingUnboundInteractions.size > 0) {
         logger.info(
-          'Adapter',
+          'Navigation',
           'CHATGPT',
           `Releasing ${this.pendingUnboundInteractions.size} pending unbound interaction(s) with new conversation ID: ${newConvId}`
         )
@@ -206,14 +206,14 @@ export class ChatGPTAdapter implements PlatformAdapter {
       if (!isNewChatAssignment) {
         // True SPA navigation (A->B, A->/, etc.) — treat next scan as historical content.
         logger.debug(
-          'Adapter',
+          'Navigation',
           'CHATGPT',
           'URL change classified as true SPA navigation; resetting scan state to on_load.'
         )
         this.isInitialScan = true
       } else {
         logger.debug(
-          'Adapter',
+          'Navigation',
           'CHATGPT',
           'URL change classified as new-chat ID assignment; preserving on_generate capture context.'
         )
@@ -303,7 +303,7 @@ export class ChatGPTAdapter implements PlatformAdapter {
 
     if (generating) {
       diagnosticStats.increment('streamingDeferrals')
-      logger.info(
+      logger.debug(
         'Adapter',
         'CHATGPT',
         `Processing deferred: Active generation/streaming detected (stop button or streaming cursor present). Rescheduling in ${this.mutationDebounceMs}ms.`

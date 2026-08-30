@@ -390,7 +390,7 @@ export class GeminiAdapter implements PlatformAdapter {
 
     if (generating) {
       diagnosticStats.increment('streamingDeferrals')
-      logger.info(
+      logger.debug(
         'Adapter',
         'GEMINI',
         `Processing deferred: active generation detected. Rescheduling in ${this.mutationDebounceMs}ms.`

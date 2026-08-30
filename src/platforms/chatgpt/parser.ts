@@ -372,15 +372,15 @@ export function extractConversationTurns(root: Document | Element): RawMessageTu
   )
 
   if (turns.length === 0) {
-    logger.warn('Parser', 'CHATGPT', 'DOM scan completed: 0 conversation turns found.')
+    logger.debug('Parser', 'CHATGPT', 'DOM scan completed: 0 conversation turns found.')
   } else if (userCount === 0) {
-    logger.warn(
+    logger.debug(
       'Parser',
       'CHATGPT',
       `DOM scan completed: 0 user turns found (${asstCount} assistant turns found).`
     )
   } else if (asstCount === 0) {
-    logger.warn(
+    logger.debug(
       'Parser',
       'CHATGPT',
       `DOM scan completed: 0 assistant turns found (${userCount} user turns found).`
@@ -438,7 +438,7 @@ export function pairTurnsIntoInteractions(
   }
 
   if (interactions.length === 0 && turns.length > 0) {
-    logger.warn(
+    logger.debug(
       'Parser',
       'CHATGPT',
       `Failed to form any complete user/assistant pairs from ${turns.length} turns.`
