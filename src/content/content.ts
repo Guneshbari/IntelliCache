@@ -5,6 +5,7 @@
  * with the Service Worker. No platform scraping or DOM mutations are performed here yet.
  */
 
+import { logger, toDiagnosticPlatform } from '../diagnostics'
 import { getAdapterForUrl } from '../platforms/registry'
 import type { PlatformAdapter } from '../platforms/types'
 import {
@@ -23,47 +24,88 @@ function initializeContentScript() {
   const currentUrl = window.location.href
   const pageTitle = document.title || 'Untitled Page'
   const platform = detectPlatformFromUrl(currentUrl)
+  const platformTag = toDiagnosticPlatform(platform)
 
-  console.log(
-    `[IntelliCache Content] Injected successfully into ${platform.toUpperCase()} page (${currentUrl})`
+  logger.info(
+    'Content',
+    platformTag,
+    `Injected successfully into ${platform.toUpperCase()} page (${currentUrl})`
   )
+  logger.info('Content', platformTag, `Platform detected: ${platform} (URL: ${currentUrl})`)
 
   // Send handshake message to Service Worker to verify content-to-background communication
   const initMessage = createContentScriptInitMessage(currentUrl, pageTitle)
+  logger.debug(
+    'Content',
+    platformTag,
+    'Sending initialization handshake message to service worker...'
+  )
 
   sendExtensionMessage(initMessage)
     .then((response) => {
       if (response && response.success) {
-        console.log('[IntelliCache Content] Service worker acknowledged initialization:', response)
+        logger.info(
+          'Content',
+          platformTag,
+          'Service worker acknowledged content script initialization.'
+        )
       } else {
-        console.warn(
-          '[IntelliCache Content] Service worker returned error on init:',
-          response?.error
+        logger.warn(
+          'Content',
+          platformTag,
+          `Service worker returned error on init: ${response?.error ?? 'Unknown error'}`
         )
       }
     })
     .catch((err: unknown) => {
-      console.error(
-        '[IntelliCache Content] Failed to send initialization message to background:',
-        err
+      logger.error(
+        'Content',
+        platformTag,
+        `Failed to send initialization message to background: ${err instanceof Error ? err.message : String(err)}`
       )
     })
 
   // Discover and start platform adapter if available
   activeAdapter = getAdapterForUrl(currentUrl)
   if (activeAdapter) {
-    console.log(
-      `[IntelliCache Content] Activating adapter for platform: ${activeAdapter.platform.toUpperCase()}`
+    logger.info(
+      'Content',
+      platformTag,
+      `Selected adapter: ${activeAdapter.constructor.name} (platform: ${activeAdapter.platform})`
     )
-    activeAdapter.start()
+    logger.info(
+      'Content',
+      platformTag,
+      `Starting adapter for platform: ${activeAdapter.platform.toUpperCase()}`
+    )
+    try {
+      activeAdapter.start()
+      logger.info(
+        'Content',
+        platformTag,
+        `Adapter started successfully for ${activeAdapter.platform.toUpperCase()}`
+      )
+    } catch (startErr) {
+      logger.error(
+        'Content',
+        platformTag,
+        `Adapter initialization/start failed: ${startErr instanceof Error ? startErr.message : String(startErr)}`
+      )
+    }
   } else {
-    console.log('[IntelliCache Content] No specialized collector adapter required for this page.')
+    logger.info('Content', platformTag, 'No specialized collector adapter required for this page.')
   }
 
   // Cleanup on unload
   window.addEventListener('beforeunload', () => {
     if (activeAdapter) {
+      logger.info(
+        'Content',
+        platformTag,
+        `Page beforeunload triggered. Stopping adapter for ${activeAdapter.platform}...`
+      )
       activeAdapter.stop()
+      logger.info('Content', platformTag, 'Adapter stopped.')
       activeAdapter = null
     }
   })

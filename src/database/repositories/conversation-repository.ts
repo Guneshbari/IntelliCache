@@ -3,6 +3,7 @@
  * Encapsulates all data access and persistence logic for lightweight conversation records.
  */
 
+import { logger, toDiagnosticPlatform } from '../../diagnostics'
 import { getDatabase, type IntelliCacheDB } from '../db'
 import {
   DatabaseOperationError,
@@ -24,6 +25,7 @@ export class ConversationRepository {
    * Guarantees conversation identity is namespaced by platform (`${platform}:${raw_conversation_id}`).
    */
   async createOrUpdate(input: CreateConversationInput | Conversation): Promise<Conversation> {
+    const platformTag = toDiagnosticPlatform(input.platform)
     try {
       const platform = input.platform.trim().toLowerCase()
       const namespacedId = namespaceConversationId(platform, input.id)
@@ -45,6 +47,11 @@ export class ConversationRepository {
               : existing.last_observed_at,
         }
         await this.db.conversations.put(updated)
+        logger.debug(
+          'Database',
+          platformTag,
+          `Conversation '${namespacedId}' updated in IndexedDB (title: ${updated.title ?? 'null'}, last_observed_at: ${updated.last_observed_at})`
+        )
         return updated
       }
 
@@ -64,8 +71,18 @@ export class ConversationRepository {
       }
 
       await this.db.conversations.add(newConversation)
+      logger.info(
+        'Database',
+        platformTag,
+        `New conversation record created in IndexedDB (ID: ${namespacedId}, title: ${newConversation.title ?? 'null'})`
+      )
       return newConversation
     } catch (error) {
+      logger.error(
+        'Database',
+        platformTag,
+        `Failed to create/update conversation (${input.id}): ${error instanceof Error ? error.message : String(error)}`
+      )
       throw new DatabaseOperationError(`createOrUpdate conversation (${input.id})`, error)
     }
   }

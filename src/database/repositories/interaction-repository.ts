@@ -4,6 +4,7 @@
  */
 
 import Dexie from 'dexie'
+import { logger, toDiagnosticPlatform } from '../../diagnostics'
 import { generateInteractionFingerprint } from '../../fingerprint/fingerprint'
 import { getDatabase, type IntelliCacheDB } from '../db'
 import { calculateTextMetrics } from '../metrics'
@@ -31,6 +32,7 @@ export class InteractionRepository {
    */
   async create(input: CreateInteractionInput | Interaction): Promise<Interaction> {
     let computedFingerprint = ''
+    const platformTag = toDiagnosticPlatform(input.platform)
     try {
       const observedAt =
         'observed_at' in input && input.observed_at ? input.observed_at : new Date().toISOString()
@@ -44,7 +46,17 @@ export class InteractionRepository {
       if ('fingerprint' in input && input.fingerprint) {
         fingerprint = input.fingerprint
         fingerprintStrategy = input.fingerprint_strategy ?? 'level_1'
+        logger.debug(
+          'Database',
+          platformTag,
+          `Using pre-computed fingerprint: ${fingerprint.slice(0, 16)}... (strategy: ${fingerprintStrategy})`
+        )
       } else {
+        logger.debug(
+          'Database',
+          platformTag,
+          `Starting fingerprint generation (convId: ${input.conversation_id ?? 'null'}, messageId: ${input.message_id ?? 'null'})`
+        )
         const fpResult = await generateInteractionFingerprint({
           platform,
           conversation_id: input.conversation_id,
@@ -55,12 +67,22 @@ export class InteractionRepository {
         })
         fingerprint = fpResult.fingerprint
         fingerprintStrategy = fpResult.strategy
+        logger.debug(
+          'Database',
+          platformTag,
+          `Fingerprint generated: ${fingerprint.slice(0, 16)}... (strategy: ${fingerprintStrategy})`
+        )
       }
       computedFingerprint = fingerprint
 
       // Check for duplicate fingerprint before insertion
       const existing = await this.db.interactions.where('fingerprint').equals(fingerprint).first()
       if (existing) {
+        logger.info(
+          'Database',
+          platformTag,
+          `Duplicate interaction detected: fingerprint '${fingerprint.slice(0, 16)}...' already exists in DB (ID: ${existing.id}).`
+        )
         throw new DuplicateInteractionError(
           fingerprint,
           `Interaction with fingerprint '${fingerprint}' already exists (ID: ${existing.id}).`
@@ -98,6 +120,11 @@ export class InteractionRepository {
 
       try {
         await this.db.interactions.add(interaction)
+        logger.info(
+          'Database',
+          platformTag,
+          `Interaction successfully persisted to IndexedDB (ID: ${id}, fingerprint: ${fingerprint.slice(0, 16)}..., queryChars: ${interaction.query.characters}, responseChars: ${interaction.response.characters})`
+        )
       } catch (addError) {
         if (
           (addError &&
@@ -106,6 +133,11 @@ export class InteractionRepository {
             addError.name === 'ConstraintError') ||
           addError instanceof Dexie.ConstraintError
         ) {
+          logger.info(
+            'Database',
+            platformTag,
+            `ConstraintError caught during insertion: fingerprint '${fingerprint.slice(0, 16)}...' already exists.`
+          )
           throw new DuplicateInteractionError(
             fingerprint,
             `Interaction with fingerprint '${fingerprint}' already exists (constraint violation).`
@@ -126,11 +158,21 @@ export class InteractionRepository {
           error.name === 'ConstraintError') ||
         error instanceof Dexie.ConstraintError
       ) {
+        logger.info(
+          'Database',
+          platformTag,
+          `ConstraintError caught during insertion: fingerprint '${computedFingerprint.slice(0, 16)}...' already exists.`
+        )
         throw new DuplicateInteractionError(
           computedFingerprint,
           `Interaction with fingerprint '${computedFingerprint}' already exists (constraint violation).`
         )
       }
+      logger.error(
+        'Database',
+        platformTag,
+        `Failed to persist interaction into IndexedDB: ${error instanceof Error ? error.message : String(error)}`
+      )
       throw new DatabaseOperationError('create interaction', error)
     }
   }

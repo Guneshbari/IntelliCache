@@ -6,6 +6,7 @@
  * the existing Step 2 service-worker messaging layer.
  */
 
+import { diagnosticStats, logger } from '../../diagnostics'
 import {
   createDbSaveInteractionMessage,
   detectPlatformFromUrl,
@@ -82,6 +83,13 @@ export class ChatGPTAdapter implements PlatformAdapter {
     this.isInitialScan = true
     this.lastObservedUrl = window.location.href
 
+    logger.info(
+      'Adapter',
+      'CHATGPT',
+      `Starting adapter lifecycle (initial URL: ${this.lastObservedUrl})`
+    )
+    logger.debug('Adapter', 'CHATGPT', 'Scheduling initial DOM scan in 100ms...')
+
     // Initial pass for already-completed turns on page load
     this.scheduleProcessing(100)
 
@@ -99,7 +107,7 @@ export class ChatGPTAdapter implements PlatformAdapter {
       })
     }
 
-    console.log('[IntelliCache ChatGPT] Adapter started and observing conversation DOM.')
+    logger.info('Adapter', 'CHATGPT', 'Adapter started and observing conversation DOM mutations.')
   }
 
   /**
@@ -109,6 +117,8 @@ export class ChatGPTAdapter implements PlatformAdapter {
     if (!this.observing) {
       return
     }
+
+    logger.info('Adapter', 'CHATGPT', 'Stopping adapter and disconnecting observer.')
 
     if (this.observer) {
       this.observer.disconnect()
@@ -120,6 +130,7 @@ export class ChatGPTAdapter implements PlatformAdapter {
       this.debounceTimer = null
     }
 
+    const pendingCount = this.pendingUnboundInteractions.size
     // Cancel all pending timers cleanly
     for (const [, pending] of this.pendingUnboundInteractions) {
       clearTimeout(pending.timer)
@@ -127,7 +138,11 @@ export class ChatGPTAdapter implements PlatformAdapter {
     this.pendingUnboundInteractions.clear()
 
     this.observing = false
-    console.log('[IntelliCache ChatGPT] Adapter stopped.')
+    logger.info(
+      'Adapter',
+      'CHATGPT',
+      `Adapter stopped. Pending buffer cleared: ${pendingCount} items.`
+    )
   }
 
   /**
@@ -154,26 +169,13 @@ export class ChatGPTAdapter implements PlatformAdapter {
 
   /**
    * Handles DOM mutation events with debouncing and URL change detection.
-   *
-   * capture_context logic:
-   *
-   * isInitialScan = true  →  next processConversation() assigns "on_load"
-   * isInitialScan = false →  next processConversation() assigns "on_generate"
-   *
-   * URL transition rules:
-   * - /        → /c/{id}  : New chat assignment. The user just generated this interaction.
-   *                         Do NOT reset isInitialScan — it must remain false so the
-   *                         interaction is classified as "on_generate".
-   * - /c/A     → /c/B     : True SPA navigation to a different conversation.
-   *                         Reset isInitialScan = true → "on_load".
-   * - /c/A     → /        : User navigated back to new-chat page.
-   *                         Reset isInitialScan = true (nothing meaningful to extract yet).
-   * - any      → same     : Normal mutations, no URL change, no reset.
    */
   private handleDomMutation(): void {
     if (!this.observing) {
       return
     }
+
+    logger.debug('Adapter', 'CHATGPT', 'DOM mutation detected.')
 
     // Check for SPA URL changes
     const currentUrl = window.location.href
@@ -184,25 +186,38 @@ export class ChatGPTAdapter implements PlatformAdapter {
       const previousConvId = extractConversationIdFromUrl(previousUrl)
       const newConvId = extractConversationIdFromUrl(currentUrl)
 
+      logger.info(
+        'Adapter',
+        'CHATGPT',
+        `Navigation detected: '${previousUrl}' -> '${currentUrl}' (previousConvId: ${previousConvId ?? 'none'}, newConvId: ${newConvId ?? 'none'})`
+      )
+
       // If new conversation ID appeared, flush pending unbound interactions with it
       if (newConvId && this.pendingUnboundInteractions.size > 0) {
+        logger.info(
+          'Adapter',
+          'CHATGPT',
+          `Releasing ${this.pendingUnboundInteractions.size} pending unbound interaction(s) with new conversation ID: ${newConvId}`
+        )
         this.flushPendingWithConversationId(newConvId)
       }
 
-      // Determine whether this URL change represents true SPA navigation between
-      // conversations (which should produce on_load for discovered turns) or a
-      // new-chat URL assignment (/ → /c/{id}) that must remain on_generate.
-      //
-      // A new-chat URL assignment is when the previous URL had NO conversation ID
-      // and the new URL HAS one. The user just created this conversation; any turns
-      // found in the DOM belong to the active generation session, not historical content.
       const isNewChatAssignment = !previousConvId && !!newConvId
       if (!isNewChatAssignment) {
-        // True SPA navigation (A→B, A→/, etc.) — treat next scan as historical content.
+        // True SPA navigation (A->B, A->/, etc.) — treat next scan as historical content.
+        logger.debug(
+          'Adapter',
+          'CHATGPT',
+          'URL change classified as true SPA navigation; resetting scan state to on_load.'
+        )
         this.isInitialScan = true
+      } else {
+        logger.debug(
+          'Adapter',
+          'CHATGPT',
+          'URL change classified as new-chat ID assignment; preserving on_generate capture context.'
+        )
       }
-      // If isNewChatAssignment: preserve the current isInitialScan value (false after
-      // the initial 100ms pass) so interactions are classified as on_generate.
 
       this.scheduleProcessing(200)
       return
@@ -217,6 +232,12 @@ export class ChatGPTAdapter implements PlatformAdapter {
    */
   private flushPendingWithConversationId(conversationId: string): void {
     const title = extractConversationTitle(document)
+    logger.info(
+      'Adapter',
+      'CHATGPT',
+      `Flushing ${this.pendingUnboundInteractions.size} pending unbound interaction(s) with conversation ID: ${conversationId}`
+    )
+
     for (const [key, pending] of this.pendingUnboundInteractions) {
       clearTimeout(pending.timer)
       pending.interaction.conversationId = conversationId
@@ -238,7 +259,12 @@ export class ChatGPTAdapter implements PlatformAdapter {
 
     this.debounceTimer = setTimeout(() => {
       this.processConversation().catch((err) => {
-        console.error('[IntelliCache ChatGPT] Error processing conversation:', err)
+        diagnosticStats.increment('extractionFailures')
+        logger.error(
+          'Adapter',
+          'CHATGPT',
+          `Unexpected error processing conversation: ${err instanceof Error ? err.message : String(err)}`
+        )
       })
     }, delayMs)
   }
@@ -251,14 +277,41 @@ export class ChatGPTAdapter implements PlatformAdapter {
       return
     }
 
+    diagnosticStats.increment('domScans')
+    const currentUrl = window.location.href
+    const conversationId = extractConversationIdFromUrl(currentUrl)
+    const hasConvId = conversationId !== null
+
+    if (!hasConvId) {
+      diagnosticStats.increment('missingConversationIds')
+    }
+
+    logger.debug(
+      'Adapter',
+      'CHATGPT',
+      `Starting conversation DOM processing pass (URL: ${currentUrl})`
+    )
+    logger.debug(
+      'Adapter',
+      'CHATGPT',
+      `Conversation ID availability: ${conversationId ? `present (${conversationId})` : 'null'}`
+    )
+
     // Generation completion guard: If any stop button or active streaming class is present, reschedule
-    if (isPageGenerating(document.body || document)) {
+    const generating = isPageGenerating(document.body || document)
+    logger.debug('Adapter', 'CHATGPT', `Evaluating page generation state: generating=${generating}`)
+
+    if (generating) {
+      diagnosticStats.increment('streamingDeferrals')
+      logger.info(
+        'Adapter',
+        'CHATGPT',
+        `Processing deferred: Active generation/streaming detected (stop button or streaming cursor present). Rescheduling in ${this.mutationDebounceMs}ms.`
+      )
       this.scheduleProcessing(this.mutationDebounceMs)
       return
     }
 
-    const currentUrl = window.location.href
-    const conversationId = extractConversationIdFromUrl(currentUrl)
     const title = extractConversationTitle(document)
     const model = extractModelInfo(document)
 
@@ -270,8 +323,24 @@ export class ChatGPTAdapter implements PlatformAdapter {
     const currentCaptureContext: CaptureContext = this.isInitialScan ? 'on_load' : 'on_generate'
     this.isInitialScan = false
 
+    const turnContainers = Array.from(
+      document.querySelectorAll('article[data-testid^="conversation-turn-"]')
+    ).length
     const turns = extractConversationTurns(document.body || document)
+    const userTurns = turns.filter((t) => t.role === 'user').length
+    const assistantTurns = turns.filter((t) => t.role === 'assistant').length
+
+    diagnosticStats.increment('userTurnsFound', userTurns)
+    diagnosticStats.increment('assistantTurnsFound', assistantTurns)
+
+    logger.debug(
+      'Adapter',
+      'CHATGPT',
+      `DOM turns discovered: total=${turns.length}, userTurns=${userTurns}, assistantTurns=${assistantTurns}`
+    )
+
     if (turns.length === 0) {
+      logger.debug('Adapter', 'CHATGPT', 'No conversation turns discovered in DOM.')
       return
     }
 
@@ -282,16 +351,53 @@ export class ChatGPTAdapter implements PlatformAdapter {
       captureContext: currentCaptureContext,
     })
 
+    diagnosticStats.increment('completePairs', interactions.length)
+    diagnosticStats.increment('interactionsExtracted', interactions.length)
+
+    logger.debug('Adapter', 'CHATGPT', `Interactions paired: completePairs=${interactions.length}`)
+
+    let queuedCount = 0
+    let savedCount = 0
+    let duplicateCount = 0
+    let failureCount = 0
+
     for (const interaction of interactions) {
       const key = this.generateInteractionKey(interaction)
 
+      logger.logExtraction('CHATGPT', {
+        platform: 'chatgpt',
+        conversationId: interaction.conversationId,
+        userMessageId: interaction.userMessageId,
+        messageId: interaction.messageId,
+        queryCharCount: interaction.queryText.length,
+        responseCharCount: interaction.responseText.length,
+        modelProvider: interaction.model.provider,
+        modelName: interaction.model.name,
+        captureContext: interaction.captureContext,
+        sourceTimestamp: interaction.sourceTimestamp,
+      })
+
       if (this.processedKeys.has(key)) {
+        logger.debug(
+          'Adapter',
+          'CHATGPT',
+          `Skipping interaction (${key}): already processed in this session.`
+        )
+        duplicateCount++
         continue
       }
 
       // If conversation ID is currently null (new chat at /), hold in bounded pending queue
       if (interaction.conversationId === null) {
         if (!this.pendingUnboundInteractions.has(key)) {
+          queuedCount++
+          diagnosticStats.increment('interactionsQueued')
+          logger.info(
+            'Adapter',
+            'CHATGPT',
+            `Conversation ID is null; queuing interaction in pending unbound buffer (key: ${key}, timeout: ${this.newChatTimeoutMs}ms)`
+          )
+
           const timer = setTimeout(() => {
             const pending = this.pendingUnboundInteractions.get(key)
             if (pending) {
@@ -318,14 +424,40 @@ export class ChatGPTAdapter implements PlatformAdapter {
         }
       }
 
-      await this.persistInteraction(interaction, key)
+      const result = await this.persistInteraction(interaction, key)
+      if (result === 'saved') {
+        savedCount++
+      } else if (result === 'duplicate') {
+        duplicateCount++
+      } else {
+        failureCount++
+      }
     }
+
+    // Emit single-line scan summary
+    logger.logScanSummary({
+      platform: 'CHATGPT',
+      conversationId: hasConvId,
+      turnContainers,
+      userTurns,
+      assistantTurns,
+      completePairs: interactions.length,
+      generating: false,
+      extracted: interactions.length,
+      queued: queuedCount,
+      saved: savedCount,
+      duplicates: duplicateCount,
+      failures: failureCount,
+    })
   }
 
   /**
    * Dispatches an interaction to the service worker for persistence.
    */
-  private async persistInteraction(interaction: ExtractedInteraction, key: string): Promise<void> {
+  private async persistInteraction(
+    interaction: ExtractedInteraction,
+    key: string
+  ): Promise<'saved' | 'duplicate' | 'failed'> {
     const input: CreateInteractionInput = {
       platform: 'chatgpt',
       conversation_id: interaction.conversationId,
@@ -344,31 +476,59 @@ export class ChatGPTAdapter implements PlatformAdapter {
       conversation_title: interaction.conversationTitle,
     }
 
+    logger.debug(
+      'Messaging',
+      'CHATGPT',
+      `Dispatching DB_SAVE_INTERACTION to service worker (conversationId: ${interaction.conversationId ?? 'null'}, captureContext: ${interaction.captureContext}, queryChars: ${interaction.queryText.length}, responseChars: ${interaction.responseText.length})`
+    )
+
     try {
       const msg = createDbSaveInteractionMessage('content-script', input)
       const response = await sendExtensionMessage(msg)
 
       if (response.success) {
         this.processedKeys.add(key)
-        console.log(
-          `[IntelliCache ChatGPT] Successfully persisted interaction (Conversation: ${interaction.conversationId || 'unbound'}, Context: ${interaction.captureContext})`
+        diagnosticStats.increment('interactionsSaved')
+        logger.info(
+          'Messaging',
+          'CHATGPT',
+          `Service worker acknowledged DB_SAVE_INTERACTION successfully (conversationId: ${interaction.conversationId || 'unbound'}, context: ${interaction.captureContext})`
         )
+        return 'saved'
       } else {
         // If duplicate in DB, also mark as processed so we don't keep attempting
         if (response.error && response.error.includes('already exists')) {
           this.processedKeys.add(key)
+          diagnosticStats.increment('duplicates')
+          logger.info('Database', 'CHATGPT', `Duplicate interaction detected: ${response.error}`)
+          return 'duplicate'
         } else {
-          console.warn(
-            '[IntelliCache ChatGPT] Service worker error saving interaction:',
-            response.error
+          diagnosticStats.increment('persistenceFailures')
+          logger.error(
+            'Messaging',
+            'CHATGPT',
+            `Service worker returned error saving interaction: ${response.error ?? 'Unknown error'}`
           )
+          return 'failed'
         }
       }
     } catch (err) {
-      console.error(
-        '[IntelliCache ChatGPT] Failed to dispatch save message to service worker:',
-        err
-      )
+      diagnosticStats.increment('persistenceFailures')
+      const errMsg = err instanceof Error ? err.message : String(err)
+      if (/extension context invalidated/i.test(errMsg)) {
+        logger.error(
+          'Messaging',
+          'CHATGPT',
+          'Extension context invalidated! The extension runtime was reloaded or updated while the page remained open.'
+        )
+      } else {
+        logger.error(
+          'Messaging',
+          'CHATGPT',
+          `Failed to dispatch DB_SAVE_INTERACTION to service worker: ${errMsg}`
+        )
+      }
+      return 'failed'
     }
   }
 }

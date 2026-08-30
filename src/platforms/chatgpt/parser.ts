@@ -4,6 +4,7 @@
  * Implements pure functions that can be tested in isolation using static HTML fixtures.
  */
 
+import { logger } from '../../diagnostics'
 import type { CaptureContext } from '../../shared/types'
 import type { ExtractedInteraction, RawMessageTurn } from '../types'
 import { CHATGPT_SELECTORS } from './selectors'
@@ -219,6 +220,11 @@ export function isPageGenerating(root: Document | Element): boolean {
   // 1. Check for stop button
   const stopButton = root.querySelector(CHATGPT_SELECTORS.STOP_BUTTON)
   if (stopButton !== null) {
+    logger.debug(
+      'Parser',
+      'CHATGPT',
+      `Active generation detected: stop button present ('${CHATGPT_SELECTORS.STOP_BUTTON}')`
+    )
     return true
   }
 
@@ -227,6 +233,11 @@ export function isPageGenerating(root: Document | Element): boolean {
     '.result-streaming, .streaming, span.streaming-cursor, .result-thinking'
   )
   if (streamingEl !== null) {
+    logger.debug(
+      'Parser',
+      'CHATGPT',
+      'Active generation detected: streaming/thinking indicator present'
+    )
     return true
   }
 
@@ -260,6 +271,11 @@ export function extractConversationTurns(root: Document | Element): RawMessageTu
 
   // 1. Primary: query turn containers with data-testid^="conversation-turn-"
   const turnContainers = Array.from(root.querySelectorAll(CHATGPT_SELECTORS.TURN_ARTICLE))
+  logger.debug(
+    'Parser',
+    'CHATGPT',
+    `Turn article query found ${turnContainers.length} container(s) matching '${CHATGPT_SELECTORS.TURN_ARTICLE}'`
+  )
 
   if (turnContainers.length > 0) {
     for (const turnEl of turnContainers) {
@@ -298,49 +314,77 @@ export function extractConversationTurns(root: Document | Element): RawMessageTu
         })
       }
     }
-    return turns
+  } else {
+    // 2. Fallback: Search directly by data-message-author-role (filtering out nested role elements)
+    const roleElements = Array.from(
+      root.querySelectorAll(`${CHATGPT_SELECTORS.USER_ROLE}, ${CHATGPT_SELECTORS.ASSISTANT_ROLE}`)
+    )
+    logger.debug(
+      'Parser',
+      'CHATGPT',
+      `Fallback role elements query found ${roleElements.length} candidate(s)`
+    )
+
+    const topRoleElements = roleElements.filter((el) => {
+      let parent = el.parentElement
+      while (parent && parent !== root) {
+        if (
+          parent.getAttribute('data-message-author-role') === 'user' ||
+          parent.getAttribute('data-message-author-role') === 'assistant'
+        ) {
+          return false // Exclude nested role element
+        }
+        parent = parent.parentElement
+      }
+      return true
+    })
+
+    for (const el of topRoleElements) {
+      const role = el.getAttribute('data-message-author-role')
+      if (role === 'user') {
+        turns.push({
+          role: 'user',
+          element: el,
+          text: extractUserQueryText(el),
+          messageId: extractMessageId(el),
+          sourceTimestamp: extractSourceTimestamp(el),
+          isStreaming: false,
+        })
+      } else if (role === 'assistant') {
+        turns.push({
+          role: 'assistant',
+          element: el,
+          text: extractAssistantResponseText(el),
+          messageId: extractMessageId(el),
+          sourceTimestamp: extractSourceTimestamp(el),
+          isStreaming: isTurnStreaming(el, root),
+        })
+      }
+    }
   }
 
-  // 2. Fallback: Search directly by data-message-author-role (filtering out nested role elements)
-  const roleElements = Array.from(
-    root.querySelectorAll(`${CHATGPT_SELECTORS.USER_ROLE}, ${CHATGPT_SELECTORS.ASSISTANT_ROLE}`)
+  const userCount = turns.filter((t) => t.role === 'user').length
+  const asstCount = turns.filter((t) => t.role === 'assistant').length
+  logger.debug(
+    'Parser',
+    'CHATGPT',
+    `Turn extraction complete: total=${turns.length}, userTurns=${userCount}, assistantTurns=${asstCount}`
   )
 
-  const topRoleElements = roleElements.filter((el) => {
-    let parent = el.parentElement
-    while (parent && parent !== root) {
-      if (
-        parent.getAttribute('data-message-author-role') === 'user' ||
-        parent.getAttribute('data-message-author-role') === 'assistant'
-      ) {
-        return false // Exclude nested role element
-      }
-      parent = parent.parentElement
-    }
-    return true
-  })
-
-  for (const el of topRoleElements) {
-    const role = el.getAttribute('data-message-author-role')
-    if (role === 'user') {
-      turns.push({
-        role: 'user',
-        element: el,
-        text: extractUserQueryText(el),
-        messageId: extractMessageId(el),
-        sourceTimestamp: extractSourceTimestamp(el),
-        isStreaming: false,
-      })
-    } else if (role === 'assistant') {
-      turns.push({
-        role: 'assistant',
-        element: el,
-        text: extractAssistantResponseText(el),
-        messageId: extractMessageId(el),
-        sourceTimestamp: extractSourceTimestamp(el),
-        isStreaming: isTurnStreaming(el, root),
-      })
-    }
+  if (turns.length === 0) {
+    logger.warn('Parser', 'CHATGPT', 'DOM scan completed: 0 conversation turns found.')
+  } else if (userCount === 0) {
+    logger.warn(
+      'Parser',
+      'CHATGPT',
+      `DOM scan completed: 0 user turns found (${asstCount} assistant turns found).`
+    )
+  } else if (asstCount === 0) {
+    logger.warn(
+      'Parser',
+      'CHATGPT',
+      `DOM scan completed: 0 assistant turns found (${userCount} user turns found).`
+    )
   }
 
   return turns
@@ -391,6 +435,20 @@ export function pairTurnsIntoInteractions(
       // Reset pending user turn once consumed or attempted
       pendingUserTurn = null
     }
+  }
+
+  if (interactions.length === 0 && turns.length > 0) {
+    logger.warn(
+      'Parser',
+      'CHATGPT',
+      `Failed to form any complete user/assistant pairs from ${turns.length} turns.`
+    )
+  } else {
+    logger.debug(
+      'Parser',
+      'CHATGPT',
+      `Pairing complete: formed ${interactions.length} complete interaction pair(s).`
+    )
   }
 
   return interactions

@@ -8,8 +8,16 @@
 import { ConversationRepository } from '../database/repositories/conversation-repository'
 import { InteractionRepository } from '../database/repositories/interaction-repository'
 import { CURRENT_DB_VERSION, CURRENT_EXTENSION_VERSION, DB_NAME } from '../database/schema'
-import { createErrorResponse, createSuccessResponse, isExtensionMessage } from '../shared/messages'
+import { DatabaseOperationError, DuplicateInteractionError } from '../database/types'
+import { logger, toDiagnosticPlatform } from '../diagnostics'
+import {
+  createErrorResponse,
+  createSuccessResponse,
+  detectPlatformFromUrl,
+  isExtensionMessage,
+} from '../shared/messages'
 import type {
+  BaseMessage,
   DbStatsResponseData,
   ExtensionMessage,
   ExtensionResponse,
@@ -25,13 +33,15 @@ const workerStartTime = Date.now()
 const interactionRepo = new InteractionRepository()
 const conversationRepo = new ConversationRepository()
 
-console.log(
-  `[IntelliCache Background] Service worker active. DB: '${DB_NAME}' (v${CURRENT_DB_VERSION}). Started at: ${new Date(workerStartTime).toISOString()}`
+logger.info(
+  'Background',
+  'CORE',
+  `Service worker active. DB: '${DB_NAME}' (v${CURRENT_DB_VERSION}). Started at: ${new Date(workerStartTime).toISOString()}`
 )
 
 // Lifecycle: Extension installed or updated
 chrome.runtime.onInstalled.addListener((details) => {
-  console.log(`[IntelliCache Background] Extension installed/updated. Reason: ${details.reason}`)
+  logger.info('Background', 'CORE', `Extension installed/updated. Reason: ${details.reason}`)
 })
 
 // Central Message Dispatcher
@@ -42,7 +52,7 @@ chrome.runtime.onMessage.addListener(
     sendResponse: (response: ExtensionResponse) => void
   ): boolean => {
     if (!isExtensionMessage(rawMessage)) {
-      console.warn('[IntelliCache Background] Received malformed message:', rawMessage)
+      logger.warn('Background', 'CORE', 'Received malformed extension message (invalid format).')
       sendResponse(createErrorResponse('Invalid extension message format'))
       return false
     }
@@ -56,6 +66,7 @@ chrome.runtime.onMessage.addListener(
           echoTimestamp: message.timestamp,
           receivedFrom: message.sender,
         }
+        logger.debug('Background', 'CORE', `Handled PING from ${message.sender}`)
         sendResponse(createSuccessResponse(pingData))
         return false
       }
@@ -68,13 +79,17 @@ chrome.runtime.onMessage.addListener(
           manifestVersion: 3,
           uptimeMs: Date.now() - workerStartTime,
         }
+        logger.debug('Background', 'CORE', 'Handled GET_STATUS request')
         sendResponse(createSuccessResponse(statusData))
         return false
       }
 
       case 'CONTENT_SCRIPT_INITIALIZED': {
-        console.log(
-          `[IntelliCache Background] Content script initialized on: ${message.payload.url} ("${message.payload.title}")`
+        const platformTag = toDiagnosticPlatform(detectPlatformFromUrl(message.payload.url))
+        logger.info(
+          'Background',
+          platformTag,
+          `Content script initialized on: ${message.payload.url} ("${message.payload.title}")`
         )
         sendResponse(
           createSuccessResponse({
@@ -99,8 +114,18 @@ chrome.runtime.onMessage.addListener(
               interactionCount,
               conversationCount,
             }
+            logger.debug(
+              'Background',
+              'CORE',
+              `Retrieved DB stats: ${interactionCount} interactions, ${conversationCount} conversations`
+            )
             sendResponse(createSuccessResponse(statsData))
           } catch (err) {
+            logger.error(
+              'Background',
+              'CORE',
+              `Failed to retrieve database stats: ${err instanceof Error ? err.message : String(err)}`
+            )
             sendResponse(
               createErrorResponse(
                 err instanceof Error ? err.message : 'Failed to retrieve database stats'
@@ -112,12 +137,26 @@ chrome.runtime.onMessage.addListener(
       }
 
       case 'DB_SAVE_INTERACTION': {
+        const platformTag = toDiagnosticPlatform(message.payload.platform)
+        logger.info(
+          'Background',
+          platformTag,
+          `Received DB_SAVE_INTERACTION (conversationId: ${message.payload.conversation_id ?? 'null'}, captureContext: ${message.payload.capture_context ?? 'on_generate'}, queryChars: ${message.payload.query.text.length}, responseChars: ${message.payload.response.text.length})`
+        )
+
         // Asynchronous database persistence: return true
         void (async () => {
           try {
+            logger.debug('Background', platformTag, 'Starting database persistence operation...')
             const created = await interactionRepo.create(message.payload)
+
             // If conversation_id is provided, also record/update the conversation
             if (created.conversation_id) {
+              logger.debug(
+                'Background',
+                platformTag,
+                `Recording/updating conversation metadata for '${created.conversation_id}'...`
+              )
               await conversationRepo.createOrUpdate({
                 id: created.conversation_id,
                 platform: created.platform,
@@ -125,8 +164,33 @@ chrome.runtime.onMessage.addListener(
                 observed_at: created.observed_at,
               })
             }
+
+            logger.info(
+              'Background',
+              platformTag,
+              `Interaction persisted successfully (ID: ${created.id}, fingerprint: ${created.fingerprint.slice(0, 16)}..., strategy: ${created.fingerprint_strategy})`
+            )
             sendResponse(createSuccessResponse(created))
           } catch (err) {
+            if (err instanceof DuplicateInteractionError) {
+              logger.info(
+                'Background',
+                platformTag,
+                `Duplicate interaction detected: ${err.message}`
+              )
+            } else if (err instanceof DatabaseOperationError) {
+              logger.error(
+                'Background',
+                platformTag,
+                `Structured database operation error: ${err.message}`
+              )
+            } else {
+              logger.error(
+                'Background',
+                platformTag,
+                `Unexpected error saving interaction: ${err instanceof Error ? err.message : String(err)}`
+              )
+            }
             sendResponse(
               createErrorResponse(err instanceof Error ? err.message : 'Failed to save interaction')
             )
@@ -142,6 +206,11 @@ chrome.runtime.onMessage.addListener(
             const interaction = await interactionRepo.getById(message.payload.id)
             sendResponse(createSuccessResponse(interaction))
           } catch (err) {
+            logger.error(
+              'Background',
+              'CORE',
+              `Failed to retrieve interaction (${message.payload.id}): ${err instanceof Error ? err.message : String(err)}`
+            )
             sendResponse(
               createErrorResponse(
                 err instanceof Error ? err.message : 'Failed to retrieve interaction'
@@ -153,7 +222,12 @@ chrome.runtime.onMessage.addListener(
       }
 
       default: {
-        sendResponse(createErrorResponse(`Unhandled message type`))
+        logger.warn(
+          'Background',
+          'CORE',
+          `Unhandled message type received: ${(message as BaseMessage).type}`
+        )
+        sendResponse(createErrorResponse('Unhandled message type'))
         return false
       }
     }

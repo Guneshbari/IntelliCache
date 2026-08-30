@@ -4,6 +4,7 @@
  * Implements pure functions that can be tested in isolation using static HTML fixtures.
  */
 
+import { logger } from '../../diagnostics'
 import type { CaptureContext } from '../../shared/types'
 import type { ExtractedInteraction, RawMessageTurn } from '../types'
 import { CLAUDE_SELECTORS } from './selectors'
@@ -210,12 +211,22 @@ export function isPageGenerating(root: Document | Element): boolean {
   // 1. Check for stop button
   const stopButton = root.querySelector(CLAUDE_SELECTORS.STOP_BUTTON)
   if (stopButton !== null) {
+    logger.debug(
+      'Parser',
+      'CLAUDE',
+      `Active generation detected: stop button present ('${CLAUDE_SELECTORS.STOP_BUTTON}')`
+    )
     return true
   }
 
   // 2. Check for streaming indicators
   const streamingEl = root.querySelector(CLAUDE_SELECTORS.STREAMING_INDICATORS)
   if (streamingEl !== null) {
+    logger.debug(
+      'Parser',
+      'CLAUDE',
+      `Active generation detected: streaming indicator present ('${CLAUDE_SELECTORS.STREAMING_INDICATORS}')`
+    )
     return true
   }
 
@@ -263,6 +274,12 @@ export function extractConversationTurns(root: Document | Element): RawMessageTu
     return true
   })
 
+  logger.debug(
+    'Parser',
+    'CLAUDE',
+    `Message elements query: matched=${elements.length}, topLevel=${topElements.length}`
+  )
+
   for (const el of topElements) {
     const isUser = el.matches?.(CLAUDE_SELECTORS.USER_MESSAGE)
     const isAssistant = el.matches?.(CLAUDE_SELECTORS.ASSISTANT_MESSAGE)
@@ -290,6 +307,34 @@ export function extractConversationTurns(root: Document | Element): RawMessageTu
         isStreaming: isTurnStreaming(el, root),
       })
     }
+  }
+
+  const userCount = turns.filter((t) => t.role === 'user').length
+  const asstCount = turns.filter((t) => t.role === 'assistant').length
+  logger.debug(
+    'Parser',
+    'CLAUDE',
+    `Turn extraction complete: total=${turns.length}, userTurns=${userCount}, assistantTurns=${asstCount}`
+  )
+
+  if (turns.length === 0) {
+    logger.warn(
+      'Parser',
+      'CLAUDE',
+      `DOM scan completed: 0 conversation turns found matching '${CLAUDE_SELECTORS.USER_MESSAGE}' / '${CLAUDE_SELECTORS.ASSISTANT_MESSAGE}'.`
+    )
+  } else if (userCount === 0) {
+    logger.warn(
+      'Parser',
+      'CLAUDE',
+      `DOM scan completed: 0 user turns found (${asstCount} assistant turns found).`
+    )
+  } else if (asstCount === 0) {
+    logger.warn(
+      'Parser',
+      'CLAUDE',
+      `DOM scan completed: 0 assistant turns found (${userCount} user turns found).`
+    )
   }
 
   return turns
@@ -340,6 +385,20 @@ export function pairTurnsIntoInteractions(
       // Reset pending user turn once consumed or attempted
       pendingUserTurn = null
     }
+  }
+
+  if (interactions.length === 0 && turns.length > 0) {
+    logger.warn(
+      'Parser',
+      'CLAUDE',
+      `Failed to form any complete user/assistant pairs from ${turns.length} turns.`
+    )
+  } else {
+    logger.debug(
+      'Parser',
+      'CLAUDE',
+      `Pairing complete: formed ${interactions.length} complete interaction pair(s).`
+    )
   }
 
   return interactions

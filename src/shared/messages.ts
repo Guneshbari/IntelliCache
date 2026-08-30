@@ -1,8 +1,4 @@
-/**
- * Utility functions for typed message creation, validation, and dispatch
- * across Extension Service Worker, Content Scripts, and Popup.
- */
-
+import { logger } from '../diagnostics'
 import type { CreateInteractionInput } from '../database/types'
 import type {
   ContentScriptInitMessage,
@@ -185,6 +181,11 @@ export async function sendExtensionMessage<M extends ExtensionMessage, R = unkno
   message: M
 ): Promise<ExtensionResponse<R>> {
   if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.sendMessage) {
+    logger.error(
+      'Messaging',
+      'CORE',
+      'Chrome extension runtime API is not available in the current environment.'
+    )
     throw new Error('Chrome extension runtime API is not available in the current environment.')
   }
 
@@ -192,8 +193,27 @@ export async function sendExtensionMessage<M extends ExtensionMessage, R = unkno
     chrome.runtime.sendMessage(message, (response: ExtensionResponse<R> | null | undefined) => {
       const lastError = chrome?.runtime?.lastError
       if (lastError) {
-        resolve(createErrorResponse(lastError.message ?? 'Unknown runtime error'))
+        const errorMsg = lastError.message ?? 'Unknown runtime error'
+        if (/extension context invalidated/i.test(errorMsg)) {
+          logger.error(
+            'Messaging',
+            'CORE',
+            'Extension context invalidated! The extension was reloaded or updated; please refresh the active page.'
+          )
+        } else {
+          logger.warn(
+            'Messaging',
+            'CORE',
+            `Runtime message error on '${message.type}': ${errorMsg}`
+          )
+        }
+        resolve(createErrorResponse(errorMsg))
       } else if (!response) {
+        logger.warn(
+          'Messaging',
+          'CORE',
+          `No response received from extension runtime for '${message.type}'`
+        )
         resolve(createErrorResponse('No response received from extension component'))
       } else {
         resolve(response)
