@@ -4,6 +4,7 @@
  * Implements pure functions that can be tested in isolation using static HTML fixtures.
  */
 
+import { logger } from '../../diagnostics'
 import type { CaptureContext } from '../../shared/types'
 import type { ExtractedInteraction, RawMessageTurn } from '../types'
 import { GEMINI_SELECTORS } from './selectors'
@@ -11,18 +12,23 @@ import { GEMINI_SELECTORS } from './selectors'
 /**
  * Extracts the conversation ID from Gemini URLs.
  * Examples:
- * - https://gemini.google.com/app/6a8617f8-ce44-83ee-b5b6-72eb43d13516 -> "6a8617f8-ce44-83ee-b5b6-72eb43d13516"
+ * - https://gemini.google.com/app/6a8617f8ce4483ee -> "6a8617f8ce4483ee"
  * - https://gemini.google.com/chat/abc-456 -> "abc-456"
+ *
+ * For /app with no ID (or root URLs), returns null.
  */
 export function extractConversationIdFromUrl(url: string): string | null {
   try {
     const parsed = new URL(url)
     const pathname = parsed.pathname
 
-    // Match /app/{id} or /chat/{id}
+    // Match /app/{id} or /chat/{id} where id is non-empty and not just 'app'/'chat'
     const appMatch = pathname.match(/\/(?:app|chat)\/([a-zA-Z0-9_-]+)/)
     if (appMatch && appMatch[1]) {
-      return appMatch[1]
+      const id = appMatch[1].trim()
+      if (id.length > 0 && id !== 'app' && id !== 'chat') {
+        return id
+      }
     }
 
     return null
@@ -140,11 +146,13 @@ export function extractSourceTimestamp(element: Element): string | null {
 }
 
 /**
- * Extracts raw user query text from a user turn element.
+ * Extracts raw user query text from a user turn element (<user-query>).
  * Strips UI controls and navigation while preserving multiline formatting.
  */
 export function extractUserQueryText(element: Element): string {
-  const clone = element.cloneNode(true) as Element
+  // Target .query-content inside user-query if available, else element itself
+  const textContainer = element.querySelector(GEMINI_SELECTORS.USER_TEXT) || element
+  const clone = textContainer.cloneNode(true) as Element
 
   // Strip UI controls, action toolbars, copy buttons, etc.
   const uiControls = clone.querySelectorAll(GEMINI_SELECTORS.UI_CONTROLS_TO_EXCLUDE)
@@ -159,11 +167,13 @@ export function extractUserQueryText(element: Element): string {
 }
 
 /**
- * Extracts assistant response text while preserving code blocks with language annotations.
- * Strips interactive action buttons, copy buttons, and toolbars.
+ * Extracts assistant response text from a model response element (<model-response>).
+ * Preserves code blocks with language annotations and strips interactive UI controls.
  */
 export function extractAssistantResponseText(element: Element): string {
-  const clone = element.cloneNode(true) as Element
+  // Target message-content .markdown or .markdown inside model-response if available
+  const contentContainer = element.querySelector(GEMINI_SELECTORS.ASSISTANT_TEXT) || element
+  const clone = contentContainer.cloneNode(true) as Element
 
   // Strip UI controls (copy buttons, feedback icons, toolbars)
   const uiControls = clone.querySelectorAll(GEMINI_SELECTORS.UI_CONTROLS_TO_EXCLUDE)
@@ -212,12 +222,22 @@ export function isPageGenerating(root: Document | Element): boolean {
   // 1. Check for stop button
   const stopButton = root.querySelector(GEMINI_SELECTORS.STOP_BUTTON)
   if (stopButton !== null) {
+    logger.debug(
+      'Parser',
+      'GEMINI',
+      `Active generation detected: stop button present ('${GEMINI_SELECTORS.STOP_BUTTON}')`
+    )
     return true
   }
 
   // 2. Check for streaming indicators
   const streamingEl = root.querySelector(GEMINI_SELECTORS.STREAMING_INDICATORS)
   if (streamingEl !== null) {
+    logger.debug(
+      'Parser',
+      'GEMINI',
+      `Active generation detected: streaming indicator present ('${GEMINI_SELECTORS.STREAMING_INDICATORS}')`
+    )
     return true
   }
 
@@ -247,6 +267,10 @@ export function isTurnStreaming(turnElement: Element, root?: Document | Element)
 export function extractConversationTurns(root: Document | Element): RawMessageTurn[] {
   const turns: RawMessageTurn[] = []
 
+  // Count raw DOM elements for diagnostics
+  const userQueryElements = Array.from(root.querySelectorAll('user-query'))
+  const modelResponseElements = Array.from(root.querySelectorAll('model-response'))
+
   // Query all user and assistant message containers in document order
   const elements = Array.from(
     root.querySelectorAll(`${GEMINI_SELECTORS.USER_MESSAGE}, ${GEMINI_SELECTORS.ASSISTANT_MESSAGE}`)
@@ -267,6 +291,9 @@ export function extractConversationTurns(root: Document | Element): RawMessageTu
     return true
   })
 
+  let userTextsCount = 0
+  let assistantTextsCount = 0
+
   for (const el of topElements) {
     const isUser = el.matches?.(GEMINI_SELECTORS.USER_MESSAGE)
     const isAssistant = el.matches?.(GEMINI_SELECTORS.ASSISTANT_MESSAGE)
@@ -274,6 +301,7 @@ export function extractConversationTurns(root: Document | Element): RawMessageTu
     if (isUser) {
       const text = extractUserQueryText(el)
       if (text.length > 0) {
+        userTextsCount++
         turns.push({
           role: 'user',
           element: el,
@@ -285,6 +313,9 @@ export function extractConversationTurns(root: Document | Element): RawMessageTu
       }
     } else if (isAssistant) {
       const text = extractAssistantResponseText(el)
+      if (text.length > 0) {
+        assistantTextsCount++
+      }
       turns.push({
         role: 'assistant',
         element: el,
@@ -294,6 +325,35 @@ export function extractConversationTurns(root: Document | Element): RawMessageTu
         isStreaming: isTurnStreaming(el, root),
       })
     }
+  }
+
+  const userCount = turns.filter((t) => t.role === 'user').length
+  const asstCount = turns.filter((t) => t.role === 'assistant').length
+
+  logger.debug(
+    'Parser',
+    'GEMINI',
+    `DOM element counts | userQueries=${userQueryElements.length} | modelResponses=${modelResponseElements.length} | topLevelElements=${topElements.length} | userTexts=${userTextsCount} | assistantTexts=${assistantTextsCount} | extractedUserTurns=${userCount} | extractedAssistantTurns=${asstCount}`
+  )
+
+  if (turns.length === 0) {
+    logger.warn(
+      'Parser',
+      'GEMINI',
+      `DOM scan completed: 0 conversation turns found matching '${GEMINI_SELECTORS.USER_MESSAGE}' / '${GEMINI_SELECTORS.ASSISTANT_MESSAGE}'.`
+    )
+  } else if (userCount === 0) {
+    logger.warn(
+      'Parser',
+      'GEMINI',
+      `DOM scan completed: 0 user turns found (${asstCount} assistant turns found).`
+    )
+  } else if (asstCount === 0) {
+    logger.warn(
+      'Parser',
+      'GEMINI',
+      `DOM scan completed: 0 assistant turns found (${userCount} user turns found).`
+    )
   }
 
   return turns
@@ -319,12 +379,19 @@ export function pairTurnsIntoInteractions(
   const captureContext = context.captureContext ?? 'on_generate'
   const observedAt = context.observedAt ?? new Date().toISOString()
 
+  let userTextsCount = 0
+  let assistantTextsCount = 0
+
   for (const turn of turns) {
     if (turn.role === 'user') {
       if (turn.text.length > 0) {
+        userTextsCount++
         pendingUserTurn = turn
       }
     } else if (turn.role === 'assistant' && pendingUserTurn) {
+      if (turn.text.length > 0) {
+        assistantTextsCount++
+      }
       // Only pair if response is non-empty and NOT streaming
       if (!turn.isStreaming && turn.text.length > 0 && pendingUserTurn.text.length > 0) {
         interactions.push({
@@ -344,6 +411,29 @@ export function pairTurnsIntoInteractions(
       // Reset pending user turn once consumed or attempted
       pendingUserTurn = null
     }
+  }
+
+  const userQueriesCount = turns.filter((t) => t.role === 'user').length
+  const modelResponsesCount = turns.filter((t) => t.role === 'assistant').length
+
+  logger.info(
+    'Parser',
+    'GEMINI',
+    `DOM diagnostics | userQueries=${userQueriesCount} | modelResponses=${modelResponsesCount} | userTexts=${userTextsCount} | assistantTexts=${assistantTextsCount} | completePairs=${interactions.length}`
+  )
+
+  if (interactions.length === 0 && turns.length > 0) {
+    logger.warn(
+      'Parser',
+      'GEMINI',
+      `Failed to form any complete user/assistant pairs from ${turns.length} turns.`
+    )
+  } else {
+    logger.debug(
+      'Parser',
+      'GEMINI',
+      `Pairing complete: formed ${interactions.length} complete interaction pair(s).`
+    )
   }
 
   return interactions
