@@ -264,4 +264,81 @@ export class InteractionRepository {
       throw new DatabaseOperationError('getAll interactions', error)
     }
   }
+
+  /**
+   * Development-only: Performs a full data-integrity scan of the interactions store.
+   * Reports total records, unique fingerprints, and per-platform statistics.
+   * Because `&fingerprint` is a unique index, physical fingerprint duplicates cannot
+   * exist in Dexie; this method verifies that invariant holds and surfaces any anomalies.
+   */
+  async getIntegrityReport(): Promise<{
+    total: number
+    uniqueFingerprints: number
+    duplicateFingerprints: number
+    uniqueIds: number
+    duplicateIds: number
+    byPlatform: Record<
+      string,
+      {
+        total: number
+        uniqueFingerprints: number
+        duplicateFingerprints: number
+      }
+    >
+  }> {
+    try {
+      const all = await this.db.interactions.toArray()
+      const fingerprintSet = new Set<string>()
+      const idSet = new Set<string>()
+      const byPlatform: Record<string, { total: number; fingerprints: Set<string> }> = {}
+
+      for (const interaction of all) {
+        fingerprintSet.add(interaction.fingerprint)
+        idSet.add(interaction.id)
+        const platform = interaction.platform
+        if (!byPlatform[platform]) {
+          byPlatform[platform] = { total: 0, fingerprints: new Set() }
+        }
+        byPlatform[platform].total++
+        byPlatform[platform].fingerprints.add(interaction.fingerprint)
+      }
+
+      const total = all.length
+      const uniqueFingerprints = fingerprintSet.size
+      const duplicateFingerprints = total - uniqueFingerprints
+      const uniqueIds = idSet.size
+      const duplicateIds = total - uniqueIds
+
+      const byPlatformResult: Record<
+        string,
+        { total: number; uniqueFingerprints: number; duplicateFingerprints: number }
+      > = {}
+
+      for (const [platform, { total: pt, fingerprints }] of Object.entries(byPlatform)) {
+        const uf = fingerprints.size
+        byPlatformResult[platform] = {
+          total: pt,
+          uniqueFingerprints: uf,
+          duplicateFingerprints: pt - uf,
+        }
+      }
+
+      logger.debug(
+        'Database',
+        'CORE',
+        `[Database integrity check] Interactions: total=${total}, uniqueFingerprints=${uniqueFingerprints}, duplicateFingerprints=${duplicateFingerprints}, uniqueIds=${uniqueIds}, duplicateIds=${duplicateIds}`
+      )
+
+      return {
+        total,
+        uniqueFingerprints,
+        duplicateFingerprints,
+        uniqueIds,
+        duplicateIds,
+        byPlatform: byPlatformResult,
+      }
+    } catch (error) {
+      throw new DatabaseOperationError('getIntegrityReport interactions', error)
+    }
+  }
 }
