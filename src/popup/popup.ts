@@ -3,6 +3,7 @@
  * Manages minimal diagnostic UI and communications testing with the Service Worker & Data Layer.
  */
 
+import { logger } from '../diagnostics'
 import {
   createDbGetStatsMessage,
   createGetStatusMessage,
@@ -83,6 +84,11 @@ document.addEventListener('DOMContentLoaded', () => {
           appendLog(
             `Database '${stats.dbName}' connected (v${stats.dbVersion}): ${stats.interactionCount} interactions, ${stats.conversationCount} conversations`,
             'info'
+          )
+          logger.info(
+            'UI',
+            'CORE',
+            `Query result | platform=all | conversations=${stats.conversationCount} | interactions=${stats.interactionCount} | rendered=${stats.interactionCount}`
           )
         }
       } else {
