@@ -2,6 +2,7 @@ import { logger } from '../diagnostics'
 import type { CreateInteractionInput } from '../database/types'
 import type {
   ContentScriptInitMessage,
+  DbGetIntegrityReportMessage,
   DbGetInteractionMessage,
   DbGetStatsMessage,
   DbSaveInteractionMessage,
@@ -96,6 +97,20 @@ export function createDbGetInteractionMessage(
 }
 
 /**
+ * Creates a development-only DB_GET_INTEGRITY_REPORT message.
+ * Triggers a full database integrity scan in the service worker.
+ */
+export function createDbGetIntegrityReportMessage(
+  sender: MessageSenderType
+): DbGetIntegrityReportMessage {
+  return {
+    type: 'DB_GET_INTEGRITY_REPORT',
+    sender,
+    timestamp: Date.now(),
+  }
+}
+
+/**
  * Wraps a successful response payload in the standard response envelope.
  */
 export function createSuccessResponse<T>(data: T): ExtensionResponse<T> {
@@ -124,6 +139,7 @@ const VALID_MESSAGE_TYPES = new Set([
   'DB_GET_STATS',
   'DB_SAVE_INTERACTION',
   'DB_GET_INTERACTION',
+  'DB_GET_INTEGRITY_REPORT',
 ])
 
 const VALID_SENDER_TYPES = new Set(['popup', 'content-script', 'service-worker'])

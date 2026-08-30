@@ -82,6 +82,14 @@ export interface DbGetInteractionMessage extends BaseMessage {
 }
 
 /**
+ * Development-only message sent to request a full database integrity report.
+ * Returns duplicate counts for both conversations and interactions.
+ */
+export interface DbGetIntegrityReportMessage extends BaseMessage {
+  type: 'DB_GET_INTEGRITY_REPORT'
+}
+
+/**
  * Discriminated union of all messages supported across the extension architecture.
  */
 export type ExtensionMessage =
@@ -91,6 +99,7 @@ export type ExtensionMessage =
   | DbGetStatsMessage
   | DbSaveInteractionMessage
   | DbGetInteractionMessage
+  | DbGetIntegrityReportMessage
 
 /**
  * Standardized response envelope returned by message handlers.
@@ -130,4 +139,27 @@ export interface DbStatsResponseData {
   dbVersion: number
   interactionCount: number
   conversationCount: number
+}
+
+/**
+ * Payload data returned for database integrity report requests.
+ */
+export interface DbIntegrityReportData {
+  conversations: {
+    total: number
+    unique: number
+    duplicates: number
+    byPlatform: Record<string, { total: number; unique: number; duplicates: number }>
+  }
+  interactions: {
+    total: number
+    uniqueFingerprints: number
+    duplicateFingerprints: number
+    uniqueIds: number
+    duplicateIds: number
+    byPlatform: Record<
+      string,
+      { total: number; uniqueFingerprints: number; duplicateFingerprints: number }
+    >
+  }
 }

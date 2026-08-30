@@ -18,6 +18,7 @@ import {
 } from '../shared/messages'
 import type {
   BaseMessage,
+  DbIntegrityReportData,
   DbStatsResponseData,
   ExtensionMessage,
   ExtensionResponse,
@@ -214,6 +215,43 @@ chrome.runtime.onMessage.addListener(
             sendResponse(
               createErrorResponse(
                 err instanceof Error ? err.message : 'Failed to retrieve interaction'
+              )
+            )
+          }
+        })()
+        return true
+      }
+
+      case 'DB_GET_INTEGRITY_REPORT': {
+        // Development-only: full database integrity scan
+        void (async () => {
+          try {
+            const [convReport, interactionReport] = await Promise.all([
+              conversationRepo.getIntegrityReport(),
+              interactionRepo.getIntegrityReport(),
+            ])
+
+            const reportData: DbIntegrityReportData = {
+              conversations: convReport,
+              interactions: interactionReport,
+            }
+
+            logger.info(
+              'Background',
+              'CORE',
+              `[Database integrity check] Conversations: total=${convReport.total}, unique=${convReport.unique}, duplicates=${convReport.duplicates} | Interactions: total=${interactionReport.total}, uniqueFingerprints=${interactionReport.uniqueFingerprints}, duplicateFingerprints=${interactionReport.duplicateFingerprints}`
+            )
+
+            sendResponse(createSuccessResponse(reportData))
+          } catch (err) {
+            logger.error(
+              'Background',
+              'CORE',
+              `Failed to generate integrity report: ${err instanceof Error ? err.message : String(err)}`
+            )
+            sendResponse(
+              createErrorResponse(
+                err instanceof Error ? err.message : 'Failed to generate integrity report'
               )
             )
           }
