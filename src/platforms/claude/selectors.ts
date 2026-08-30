@@ -12,28 +12,47 @@
 export const CLAUDE_SELECTORS = {
   /**
    * User message containers.
-   * Claude uses `data-testid="user-message"` on user turn wrappers.
+   * Primary: data-testid="user-message" (standard Claude UI)
+   * Fallback: transcript-row[data-perf-row="human"] (observed in Claude transcript DOM)
    */
-  USER_MESSAGE: '[data-testid="user-message"]',
+  USER_MESSAGE: [
+    '[data-testid="user-message"]',
+    '[data-testid="transcript-row"][data-perf-row="human"]',
+  ].join(', '),
 
   /**
    * Assistant (Claude) response containers.
-   * Claude renders assistant responses within elements that carry the
-   * `.font-claude-message` class or within the content grid structure.
-   * We use a broad but semantically-grounded selector set.
+   * Primary: data-testid="assistant-message"
+   * Secondary: .font-claude-message
+   * Fallback: transcript-row[data-perf-row="assistant"] (observed in Claude transcript DOM)
    */
-  ASSISTANT_MESSAGE: ['[data-testid="assistant-message"]', '.font-claude-message'].join(', '),
+  ASSISTANT_MESSAGE: [
+    '[data-testid="assistant-message"]',
+    '.font-claude-message',
+    '[data-testid="transcript-row"][data-perf-row="assistant"]',
+  ].join(', '),
 
   /**
-   * A conversation "turn" wrapper that encloses both a user message and the
-   * subsequent assistant response. Claude renders these as sibling block
-   * elements inside the scrollable conversation container.
-   *
-   * We identify turns by their user-message or assistant-message children.
-   * There is no single consistent turn-level data-testid on Claude.ai, so
-   * extraction iterates direct role elements rather than wrapper articles.
+   * Transcript list container (observed in real Claude DOM via inspection).
+   * Claude renders the full conversation inside this container.
    */
-  TURN_WRAPPER: '[data-testid="user-message"], [data-testid="assistant-message"]',
+  TRANSCRIPT_LIST: '[data-testid="transcript-list"]',
+
+  /**
+   * Individual transcript row elements (observed in real Claude DOM).
+   * data-perf-row attribute distinguishes human vs. assistant rows.
+   */
+  TRANSCRIPT_ROW: '[data-testid="transcript-row"]',
+
+  /**
+   * User transcript rows — data-perf-row="human"
+   */
+  TRANSCRIPT_USER_ROW: '[data-testid="transcript-row"][data-perf-row="human"]',
+
+  /**
+   * Assistant transcript rows — data-perf-row="assistant"
+   */
+  TRANSCRIPT_ASSISTANT_ROW: '[data-testid="transcript-row"][data-perf-row="assistant"]',
 
   /**
    * Code block containers.

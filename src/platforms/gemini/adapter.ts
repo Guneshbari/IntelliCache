@@ -4,8 +4,20 @@
  * Implements event-driven DOM observation and extraction for Gemini (gemini.google.com) web sessions.
  * Manages streaming response stability, deduplication, and persistence through
  * the existing Step 2 service-worker messaging layer.
+ *
+ * Navigation detection uses a dedicated NavigationWatcher (popstate + polling) rather than
+ * relying solely on the MutationObserver to detect URL changes. Gemini navigates via
+ * history.pushState/replaceState which does NOT fire popstate and may not produce DOM
+ * mutations large enough to trigger the observer before URL comparison is needed.
+ *
+ * Navigation state machine:
+ *   new_chat_without_id  -> conversation_with_id  (/app -> /app/{id}, preserve on_generate)
+ *   conversation_with_id -> conversation_with_id  (A -> B, reset to on_load, clear cache)
+ *   conversation_with_id -> new_chat_without_id   (navigate to new chat, reset to on_load)
  */
 
+import { diagnosticStats, logger } from '../../diagnostics'
+import { NavigationWatcher } from '../../shared/navigation-watcher'
 import {
   createDbSaveInteractionMessage,
   detectPlatformFromUrl,
@@ -24,6 +36,13 @@ import {
 
 const MUTATION_DEBOUNCE_MS = 500
 const NEW_CHAT_URL_TIMEOUT_MS = 4000
+const NAV_POLL_INTERVAL_MS = 250
+
+/**
+ * Explicit navigation state for the current conversation context.
+ * Replaces the implicit isInitialScan flag for navigation classification.
+ */
+type ConversationNavState = 'new_chat_without_id' | 'conversation_with_id' | 'unknown'
 
 interface PendingUnboundInteraction {
   interaction: ExtractedInteraction
@@ -34,6 +53,7 @@ interface PendingUnboundInteraction {
 export interface GeminiAdapterOptions {
   mutationDebounceMs?: number
   newChatTimeoutMs?: number
+  navPollIntervalMs?: number
 }
 
 export class GeminiAdapter implements PlatformAdapter {
@@ -42,25 +62,24 @@ export class GeminiAdapter implements PlatformAdapter {
   private observing = false
   private observer: MutationObserver | null = null
   private debounceTimer: ReturnType<typeof setTimeout> | null = null
-  private lastObservedUrl = ''
   private isInitialScan = true
+  private navState: ConversationNavState = 'unknown'
+  private navWatcher: NavigationWatcher | null = null
 
   private mutationDebounceMs: number
   private newChatTimeoutMs: number
+  private navPollIntervalMs: number
 
-  /**
-   * Set of processed interaction keys for the current tab session to prevent duplicate work.
-   */
+  /** Processed interaction keys for the current tab session to prevent duplicate work. */
   private processedKeys = new Set<string>()
 
-  /**
-   * Pending interactions observed before Gemini assigns a conversation ID in the URL.
-   */
+  /** Pending interactions observed before Gemini assigns a conversation ID in the URL. */
   private pendingUnboundInteractions = new Map<string, PendingUnboundInteraction>()
 
   constructor(options?: GeminiAdapterOptions) {
     this.mutationDebounceMs = options?.mutationDebounceMs ?? MUTATION_DEBOUNCE_MS
     this.newChatTimeoutMs = options?.newChatTimeoutMs ?? NEW_CHAT_URL_TIMEOUT_MS
+    this.navPollIntervalMs = options?.navPollIntervalMs ?? NAV_POLL_INTERVAL_MS
   }
 
   /**
@@ -71,7 +90,7 @@ export class GeminiAdapter implements PlatformAdapter {
   }
 
   /**
-   * Starts DOM observation and triggers initial extraction pass.
+   * Starts DOM observation, navigation watching, and triggers initial extraction pass.
    */
   start(): void {
     if (this.observing) {
@@ -80,12 +99,34 @@ export class GeminiAdapter implements PlatformAdapter {
 
     this.observing = true
     this.isInitialScan = true
-    this.lastObservedUrl = window.location.href
 
-    // Initial pass for already-completed turns on page load
+    const initialUrl = window.location.href
+    const initialConvId = extractConversationIdFromUrl(initialUrl)
+    this.navState = initialConvId ? 'conversation_with_id' : 'new_chat_without_id'
+
+    logger.info(
+      'Adapter',
+      'GEMINI',
+      `Starting adapter lifecycle (initialUrl: ${initialUrl}, navState: ${this.navState}, conversationId: ${initialConvId ?? 'none'})`
+    )
+
+    // Set up the dedicated navigation watcher (popstate + polling).
+    // This is independent of MutationObserver and reliably handles history.pushState/replaceState.
+    this.navWatcher = new NavigationWatcher(
+      (prevUrl, newUrl) => this.handleNavigation(prevUrl, newUrl),
+      { pollIntervalMs: this.navPollIntervalMs }
+    )
+    this.navWatcher.start(initialUrl)
+    logger.info(
+      'Navigation',
+      'GEMINI',
+      `Navigation listener installed (popstate event listener + polling every ${this.navPollIntervalMs}ms).`
+    )
+
+    // Schedule initial DOM scan for already-completed turns on page load
     this.scheduleProcessing(100)
 
-    // Observe DOM mutations
+    // Set up MutationObserver for conversation content changes (NOT URL detection)
     this.observer = new MutationObserver(() => {
       this.handleDomMutation()
     })
@@ -99,15 +140,27 @@ export class GeminiAdapter implements PlatformAdapter {
       })
     }
 
-    console.log('[IntelliCache Gemini] Adapter started and observing conversation DOM.')
+    logger.info('Adapter', 'GEMINI', 'Adapter started and observing conversation DOM mutations.')
   }
 
   /**
-   * Stops DOM observation and releases resources.
+   * Stops DOM observation, navigation watching, and releases resources.
    */
   stop(): void {
     if (!this.observing) {
       return
+    }
+
+    logger.info('Adapter', 'GEMINI', 'Stopping adapter and disconnecting observer.')
+
+    if (this.navWatcher) {
+      this.navWatcher.stop()
+      this.navWatcher = null
+      logger.info(
+        'Navigation',
+        'GEMINI',
+        'Navigation listener removed (popstate + polling stopped).'
+      )
     }
 
     if (this.observer) {
@@ -120,6 +173,7 @@ export class GeminiAdapter implements PlatformAdapter {
       this.debounceTimer = null
     }
 
+    const pendingCount = this.pendingUnboundInteractions.size
     // Cancel all pending timers cleanly
     for (const [, pending] of this.pendingUnboundInteractions) {
       clearTimeout(pending.timer)
@@ -127,7 +181,11 @@ export class GeminiAdapter implements PlatformAdapter {
     this.pendingUnboundInteractions.clear()
 
     this.observing = false
-    console.log('[IntelliCache Gemini] Adapter stopped.')
+    logger.info(
+      'Adapter',
+      'GEMINI',
+      `Adapter stopped. Pending buffer cleared: ${pendingCount} items.`
+    )
   }
 
   /**
@@ -139,52 +197,120 @@ export class GeminiAdapter implements PlatformAdapter {
 
   /**
    * Generates a stable in-memory deduplication key for an extracted interaction.
+   * NOTE: Key is independent of conversationId so that transition from null ID to real ID
+   * does not create duplicate in-memory entries or duplicate database records.
    */
   private generateInteractionKey(interaction: ExtractedInteraction): string {
     if (interaction.messageId) {
       return `msg:${interaction.messageId}`
     }
-
     const qSnippet = interaction.queryText.slice(0, 60)
     const rSnippet = interaction.responseText.slice(0, 60)
     return `pair:${qSnippet}|${rSnippet}`
   }
 
   /**
-   * Handles DOM mutation events with debouncing and URL change detection.
+   * Handles URL transitions detected by NavigationWatcher.
+   * Fires independently of DOM mutations — this is what catches history.pushState/replaceState
+   * and popstate navigation that Gemini uses for SPA routing (/app -> /app/{id}).
+   *
+   * Navigation classification:
+   *   new_chat_assignment: /app -> /app/{id}  — preserve on_generate, flush pending
+   *   existing_conversation_navigation: A -> B  — reset to on_load, clear session cache
+   *   new_to_new: /app -> /app  — no action needed
+   */
+  handleNavigation(prevUrl: string, newUrl: string): void {
+    if (!this.observing) {
+      return
+    }
+
+    const prevConvId = extractConversationIdFromUrl(prevUrl)
+    const newConvId = extractConversationIdFromUrl(newUrl)
+    const prevPathname = (() => {
+      try {
+        return new URL(prevUrl).pathname
+      } catch {
+        return prevUrl
+      }
+    })()
+    const newPathname = (() => {
+      try {
+        return new URL(newUrl).pathname
+      } catch {
+        return newUrl
+      }
+    })()
+
+    const isNewChatAssignment = !prevConvId && !!newConvId
+    const isConversationToConversation = !!prevConvId && !!newConvId && prevConvId !== newConvId
+    const isNewToNew = !prevConvId && !newConvId
+
+    const classification = isNewChatAssignment
+      ? 'new_chat_assignment'
+      : isConversationToConversation
+        ? 'existing_conversation_navigation'
+        : isNewToNew
+          ? 'new_to_new'
+          : 'unknown'
+
+    logger.info(
+      'Navigation',
+      'GEMINI',
+      `URL transition | from=${prevPathname} | to=${newPathname} | classification=${classification} | conversationId=${newConvId ?? 'none'}`
+    )
+
+    if (isNewChatAssignment) {
+      // /app -> /app/{id}: new conversation ID was assigned.
+      // DO NOT reset isInitialScan — this was a live generation, preserve on_generate context.
+      this.navState = 'conversation_with_id'
+      if (this.pendingUnboundInteractions.size > 0) {
+        logger.info(
+          'Navigation',
+          'GEMINI',
+          `New-chat assignment: flushing ${this.pendingUnboundInteractions.size} pending interaction(s) with conversationId=${newConvId}`
+        )
+        this.flushPendingWithConversationId(newConvId!)
+      } else {
+        logger.debug(
+          'Navigation',
+          'GEMINI',
+          'New-chat assignment: no pending interactions to flush; scheduling DOM scan.'
+        )
+      }
+    } else if (isConversationToConversation || isNewToNew) {
+      // True SPA navigation — treat new content as historical (on_load).
+      // Clear session key cache so new conversation's historical turns are not skipped.
+      this.navState = newConvId ? 'conversation_with_id' : 'new_chat_without_id'
+      this.isInitialScan = true
+      this.processedKeys.clear()
+      logger.info(
+        'Navigation',
+        'GEMINI',
+        `Existing-conversation navigation: resetting scan state to on_load, clearing session key cache (prevConvId=${prevConvId ?? 'none'} -> newConvId=${newConvId ?? 'none'}).`
+      )
+    } else {
+      this.navState = newConvId ? 'conversation_with_id' : 'new_chat_without_id'
+      logger.debug(
+        'Navigation',
+        'GEMINI',
+        `URL transition classified as unknown; updating navState=${this.navState}.`
+      )
+    }
+
+    logger.debug('Navigation', 'GEMINI', 'DOM scan scheduled after navigation (delay: 250ms).')
+    this.scheduleProcessing(250)
+  }
+
+  /**
+   * Handles DOM mutation events.
+   * URL detection is handled separately by NavigationWatcher.
+   * This only schedules the debounced content processing pass.
    */
   private handleDomMutation(): void {
     if (!this.observing) {
       return
     }
-
-    // Check for SPA URL changes
-    const currentUrl = window.location.href
-    if (currentUrl !== this.lastObservedUrl) {
-      const previousUrl = this.lastObservedUrl
-      this.lastObservedUrl = currentUrl
-
-      const previousConvId = extractConversationIdFromUrl(previousUrl)
-      const newConvId = extractConversationIdFromUrl(currentUrl)
-
-      // If new conversation ID appeared, flush pending unbound interactions with it
-      if (newConvId && this.pendingUnboundInteractions.size > 0) {
-        this.flushPendingWithConversationId(newConvId)
-      }
-
-      // If this is a new-chat URL assignment (e.g. / or /app -> /app/{id}),
-      // preserve isInitialScan value (false after initial pass) so interactions
-      // are classified as on_generate. Only reset to true for true SPA navigation.
-      const isNewChatAssignment = !previousConvId && !!newConvId
-      if (!isNewChatAssignment) {
-        this.isInitialScan = true
-      }
-
-      this.scheduleProcessing(200)
-      return
-    }
-
-    // Debounce mutation handling
+    logger.debug('Adapter', 'GEMINI', 'DOM mutation detected.')
     this.scheduleProcessing(this.mutationDebounceMs)
   }
 
@@ -193,6 +319,12 @@ export class GeminiAdapter implements PlatformAdapter {
    */
   private flushPendingWithConversationId(conversationId: string): void {
     const title = extractConversationTitle(document)
+    logger.info(
+      'Adapter',
+      'GEMINI',
+      `Flushing ${this.pendingUnboundInteractions.size} pending unbound interaction(s) with conversation ID: ${conversationId}`
+    )
+
     for (const [key, pending] of this.pendingUnboundInteractions) {
       clearTimeout(pending.timer)
       pending.interaction.conversationId = conversationId
@@ -214,7 +346,12 @@ export class GeminiAdapter implements PlatformAdapter {
 
     this.debounceTimer = setTimeout(() => {
       this.processConversation().catch((err) => {
-        console.error('[IntelliCache Gemini] Error processing conversation:', err)
+        diagnosticStats.increment('extractionFailures')
+        logger.error(
+          'Adapter',
+          'GEMINI',
+          `Unexpected error processing conversation: ${err instanceof Error ? err.message : String(err)}`
+        )
       })
     }, delayMs)
   }
@@ -227,14 +364,41 @@ export class GeminiAdapter implements PlatformAdapter {
       return
     }
 
-    // Generation completion guard: If any stop button or active streaming class is present, reschedule
-    if (isPageGenerating(document.body || document)) {
+    diagnosticStats.increment('domScans')
+    const currentUrl = window.location.href
+    const conversationId = extractConversationIdFromUrl(currentUrl)
+    const hasConvId = conversationId !== null
+
+    if (!hasConvId) {
+      diagnosticStats.increment('missingConversationIds')
+    }
+
+    logger.debug(
+      'Adapter',
+      'GEMINI',
+      `DOM scan started (URL: ${currentUrl}, navState: ${this.navState})`
+    )
+    logger.debug(
+      'Adapter',
+      'GEMINI',
+      `Conversation ID: ${conversationId ? `present (${conversationId})` : 'null'}`
+    )
+
+    // Generation completion guard: If any stop button or active streaming indicator is present, reschedule
+    const generating = isPageGenerating(document.body || document)
+    logger.debug('Adapter', 'GEMINI', `Generation state: generating=${generating}`)
+
+    if (generating) {
+      diagnosticStats.increment('streamingDeferrals')
+      logger.info(
+        'Adapter',
+        'GEMINI',
+        `Processing deferred: active generation detected. Rescheduling in ${this.mutationDebounceMs}ms.`
+      )
       this.scheduleProcessing(this.mutationDebounceMs)
       return
     }
 
-    const currentUrl = window.location.href
-    const conversationId = extractConversationIdFromUrl(currentUrl)
     const title = extractConversationTitle(document)
     const model = extractModelInfo(document)
 
@@ -246,8 +410,26 @@ export class GeminiAdapter implements PlatformAdapter {
     const currentCaptureContext: CaptureContext = this.isInitialScan ? 'on_load' : 'on_generate'
     this.isInitialScan = false
 
+    const turnContainers = Array.from(
+      document.querySelectorAll(
+        'user-query, model-response, [data-message-author-role="user"], [data-message-author-role="assistant"]'
+      )
+    ).length
     const turns = extractConversationTurns(document.body || document)
+    const userTurns = turns.filter((t) => t.role === 'user').length
+    const assistantTurns = turns.filter((t) => t.role === 'assistant').length
+
+    diagnosticStats.increment('userTurnsFound', userTurns)
+    diagnosticStats.increment('assistantTurnsFound', assistantTurns)
+
+    logger.debug(
+      'Adapter',
+      'GEMINI',
+      `DOM scan completed: total=${turns.length}, userTurns=${userTurns}, assistantTurns=${assistantTurns}, captureContext=${currentCaptureContext}`
+    )
+
     if (turns.length === 0) {
+      logger.debug('Adapter', 'GEMINI', 'No conversation turns discovered in DOM.')
       return
     }
 
@@ -258,16 +440,53 @@ export class GeminiAdapter implements PlatformAdapter {
       captureContext: currentCaptureContext,
     })
 
+    diagnosticStats.increment('completePairs', interactions.length)
+    diagnosticStats.increment('interactionsExtracted', interactions.length)
+
+    logger.debug('Adapter', 'GEMINI', `Interactions paired: completePairs=${interactions.length}`)
+
+    let queuedCount = 0
+    let savedCount = 0
+    let duplicateCount = 0
+    let failureCount = 0
+
     for (const interaction of interactions) {
       const key = this.generateInteractionKey(interaction)
 
+      logger.logExtraction('GEMINI', {
+        platform: 'gemini',
+        conversationId: interaction.conversationId,
+        userMessageId: interaction.userMessageId,
+        messageId: interaction.messageId,
+        queryCharCount: interaction.queryText.length,
+        responseCharCount: interaction.responseText.length,
+        modelProvider: interaction.model.provider,
+        modelName: interaction.model.name,
+        captureContext: interaction.captureContext,
+        sourceTimestamp: interaction.sourceTimestamp,
+      })
+
       if (this.processedKeys.has(key)) {
+        logger.debug(
+          'Adapter',
+          'GEMINI',
+          `Skipping interaction (${key}): already processed in this session.`
+        )
+        duplicateCount++
         continue
       }
 
-      // If conversation ID is currently null (new chat), hold in bounded pending queue
+      // If conversation ID is currently null (new chat at /app), hold in bounded pending queue
       if (interaction.conversationId === null) {
         if (!this.pendingUnboundInteractions.has(key)) {
+          queuedCount++
+          diagnosticStats.increment('interactionsQueued')
+          logger.info(
+            'Adapter',
+            'GEMINI',
+            `Conversation ID is null; queuing interaction in pending buffer (key: ${key}, timeout: ${this.newChatTimeoutMs}ms)`
+          )
+
           const timer = setTimeout(() => {
             const pending = this.pendingUnboundInteractions.get(key)
             if (pending) {
@@ -294,14 +513,40 @@ export class GeminiAdapter implements PlatformAdapter {
         }
       }
 
-      await this.persistInteraction(interaction, key)
+      const result = await this.persistInteraction(interaction, key)
+      if (result === 'saved') {
+        savedCount++
+      } else if (result === 'duplicate') {
+        duplicateCount++
+      } else {
+        failureCount++
+      }
     }
+
+    // Emit single-line scan summary
+    logger.logScanSummary({
+      platform: 'GEMINI',
+      conversationId: hasConvId,
+      turnContainers,
+      userTurns,
+      assistantTurns,
+      completePairs: interactions.length,
+      generating: false,
+      extracted: interactions.length,
+      queued: queuedCount,
+      saved: savedCount,
+      duplicates: duplicateCount,
+      failures: failureCount,
+    })
   }
 
   /**
    * Dispatches an interaction to the service worker for persistence.
    */
-  private async persistInteraction(interaction: ExtractedInteraction, key: string): Promise<void> {
+  private async persistInteraction(
+    interaction: ExtractedInteraction,
+    key: string
+  ): Promise<'saved' | 'duplicate' | 'failed'> {
     const input: CreateInteractionInput = {
       platform: 'gemini',
       conversation_id: interaction.conversationId,
@@ -320,28 +565,59 @@ export class GeminiAdapter implements PlatformAdapter {
       conversation_title: interaction.conversationTitle,
     }
 
+    logger.debug(
+      'Messaging',
+      'GEMINI',
+      `Dispatching DB_SAVE_INTERACTION (conversationId: ${interaction.conversationId ?? 'null'}, captureContext: ${interaction.captureContext}, queryChars: ${interaction.queryText.length}, responseChars: ${interaction.responseText.length})`
+    )
+
     try {
       const msg = createDbSaveInteractionMessage('content-script', input)
       const response = await sendExtensionMessage(msg)
 
       if (response.success) {
         this.processedKeys.add(key)
-        console.log(
-          `[IntelliCache Gemini] Successfully persisted interaction (Conversation: ${interaction.conversationId || 'unbound'}, Context: ${interaction.captureContext})`
+        diagnosticStats.increment('interactionsSaved')
+        logger.info(
+          'Messaging',
+          'GEMINI',
+          `DB_SAVE_INTERACTION acknowledged successfully (conversationId: ${interaction.conversationId || 'unbound'}, context: ${interaction.captureContext})`
         )
+        return 'saved'
       } else {
         // If duplicate in DB, also mark as processed so we don't keep attempting
         if (response.error && response.error.includes('already exists')) {
           this.processedKeys.add(key)
+          diagnosticStats.increment('duplicates')
+          logger.info('Database', 'GEMINI', `Duplicate interaction detected: ${response.error}`)
+          return 'duplicate'
         } else {
-          console.warn(
-            '[IntelliCache Gemini] Service worker error saving interaction:',
-            response.error
+          diagnosticStats.increment('persistenceFailures')
+          logger.error(
+            'Messaging',
+            'GEMINI',
+            `Service worker returned error saving interaction: ${response.error ?? 'Unknown error'}`
           )
+          return 'failed'
         }
       }
     } catch (err) {
-      console.error('[IntelliCache Gemini] Failed to dispatch save message to service worker:', err)
+      diagnosticStats.increment('persistenceFailures')
+      const errMsg = err instanceof Error ? err.message : String(err)
+      if (/extension context invalidated/i.test(errMsg)) {
+        logger.error(
+          'Messaging',
+          'GEMINI',
+          'Extension context invalidated! The extension runtime was reloaded or updated while the page remained open.'
+        )
+      } else {
+        logger.error(
+          'Messaging',
+          'GEMINI',
+          `Failed to dispatch DB_SAVE_INTERACTION to service worker: ${errMsg}`
+        )
+      }
+      return 'failed'
     }
   }
 }

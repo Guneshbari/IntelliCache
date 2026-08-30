@@ -287,7 +287,7 @@ describe('ClaudeAdapter Integration & Lifecycle', () => {
         <div data-testid="assistant-message" data-message-id="a-B"><div class="font-claude-message">Response B</div></div>
       </div>
     `
-    adapter['handleDomMutation']()
+    adapter.handleNavigation('https://claude.ai/chat/conv-A', 'https://claude.ai/chat/conv-B')
     await adapter.processConversation()
 
     expect(await interactionRepo.count()).toBe(2)

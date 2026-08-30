@@ -216,7 +216,10 @@ describe('GeminiAdapter Integration & Lifecycle', () => {
     })
     document.title = 'Bloom Filter Deep Dive - Gemini'
 
-    adapter['handleDomMutation']()
+    adapter.handleNavigation(
+      'https://gemini.google.com/app',
+      'https://gemini.google.com/app/bloom-filter-uuid-999'
+    )
     await adapter.processConversation()
 
     expect(await interactionRepo.count()).toBe(1)
@@ -288,7 +291,10 @@ describe('GeminiAdapter Integration & Lifecycle', () => {
         <model-response data-message-id="a-B"><div class="response-container">Response B</div></model-response>
       </div>
     `
-    adapter['handleDomMutation']()
+    adapter.handleNavigation(
+      'https://gemini.google.com/app/conv-gemini-A',
+      'https://gemini.google.com/app/conv-gemini-B'
+    )
     await adapter.processConversation()
 
     expect(await interactionRepo.count()).toBe(2)
