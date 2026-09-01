@@ -297,6 +297,18 @@ export class InteractionRepository {
   }
 
   /**
+   * Retrieves all interactions belonging to a specific platform.
+   */
+  async getByPlatform(platform: string): Promise<Interaction[]> {
+    try {
+      const normalized = platform.trim().toLowerCase()
+      return await this.db.interactions.where('platform').equals(normalized).sortBy('observed_at')
+    } catch (error) {
+      throw new DatabaseOperationError(`getByPlatform (${platform})`, error)
+    }
+  }
+
+  /**
    * Counts the total number of interactions in IndexedDB without loading records into memory.
    */
   async count(): Promise<number> {
