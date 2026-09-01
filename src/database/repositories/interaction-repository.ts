@@ -132,24 +132,37 @@ export class InteractionRepository {
           .where('fingerprint')
           .equals(l3FpResult.fingerprint)
           .first()
-        if (existingUnbound && existingUnbound.conversation_id === null) {
-          existingUnbound.conversation_id = namespacedConvId
-          if (input.conversation_title)
-            existingUnbound.conversation_title = input.conversation_title
-          if (input.message_id) existingUnbound.message_id = input.message_id.trim()
-          if (input.user_message_id) existingUnbound.user_message_id = input.user_message_id.trim()
-          await this.db.interactions.put(existingUnbound)
-          logger.info(
-            'Database',
-            platformTag,
-            `updated trace=${traceId} (bound existing unbound ID: ${existingUnbound.id} -> ${namespacedConvId})`
-          )
-          logger.info(
-            'Lifecycle',
-            platformTag,
-            `conversation-bound trace=${traceId} (interaction ID: ${existingUnbound.id} -> ${namespacedConvId})`
-          )
-          return existingUnbound
+        if (existingUnbound) {
+          if (existingUnbound.conversation_id === null) {
+            existingUnbound.conversation_id = namespacedConvId
+            if (input.conversation_title)
+              existingUnbound.conversation_title = input.conversation_title
+            if (input.message_id) existingUnbound.message_id = input.message_id.trim()
+            if (input.user_message_id)
+              existingUnbound.user_message_id = input.user_message_id.trim()
+            await this.db.interactions.put(existingUnbound)
+            logger.info(
+              'Database',
+              platformTag,
+              `updated trace=${traceId} (bound existing unbound ID: ${existingUnbound.id} -> ${namespacedConvId})`
+            )
+            logger.info(
+              'Lifecycle',
+              platformTag,
+              `conversation-bound trace=${traceId} (interaction ID: ${existingUnbound.id} -> ${namespacedConvId})`
+            )
+            return existingUnbound
+          } else if (existingUnbound.conversation_id === namespacedConvId) {
+            logger.info(
+              'Database',
+              platformTag,
+              `duplicate trace=${traceId} (existing ID: ${existingUnbound.id}, fp=${existingUnbound.fingerprint.slice(0, 16)}...)`
+            )
+            throw new DuplicateInteractionError(
+              fingerprint,
+              `Interaction with fingerprint '${fingerprint}' already exists (ID: ${existingUnbound.id}).`
+            )
+          }
         }
       }
 
