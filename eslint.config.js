@@ -14,6 +14,6 @@ export default tseslint.config(
     },
   },
   {
-    ignores: ['dist/**', 'node_modules/**'],
+    ignores: ['dist/**', 'dist-firefox/**', 'node_modules/**', 'scripts/**'],
   }
 )

@@ -1,3 +1,4 @@
 dist
+dist-firefox
 node_modules
 pnpm-lock.yaml

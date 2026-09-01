@@ -26,4 +26,16 @@ export default defineManifest({
     },
   ],
   permissions: [],
+  host_permissions: [
+    'https://chatgpt.com/*',
+    'https://chat.openai.com/*',
+    'https://claude.ai/*',
+    'https://gemini.google.com/*',
+  ],
+  browser_specific_settings: {
+    gecko: {
+      id: 'intellicache-collector@research.local',
+      strict_min_version: '109.0',
+    },
+  },
 })
