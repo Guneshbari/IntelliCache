@@ -102,6 +102,7 @@ export interface CreateInteractionInput {
   }
   conversation_title?: string | null
   collector_version?: string
+  trace_id?: string
 }
 
 /**

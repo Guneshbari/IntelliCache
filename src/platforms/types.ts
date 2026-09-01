@@ -37,6 +37,7 @@ export interface ExtractedInteraction {
   observedAt: string // ISO-8601 string: timestamp when interaction was observed by extension
   sourceTimestamp: string | null // Original timestamp if exposed by platform DOM, else null
   captureContext: CaptureContext // 'on_load' | 'on_generate'
+  traceId?: string // Temporary diagnostic lifecycle trace ID (not persisted to DB)
 }
 
 /**

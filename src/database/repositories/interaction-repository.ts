@@ -33,6 +33,10 @@ export class InteractionRepository {
   async create(input: CreateInteractionInput | Interaction): Promise<Interaction> {
     let computedFingerprint = ''
     const platformTag = toDiagnosticPlatform(input.platform)
+    const traceId =
+      'trace_id' in input && input.trace_id
+        ? input.trace_id
+        : `trace_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
     try {
       const observedAt =
         'observed_at' in input && input.observed_at ? input.observed_at : new Date().toISOString()
@@ -70,20 +74,19 @@ export class InteractionRepository {
         logger.info(
           'Lifecycle',
           platformTag,
-          `Fingerprint generated: ${fingerprint.slice(0, 16)}... (strategy: ${fingerprintStrategy})`
+          `fingerprint trace=${traceId} (strategy=${fingerprintStrategy}, fp=${fingerprint.slice(0, 16)}...)`
         )
       }
       computedFingerprint = fingerprint
 
       // Check for duplicate fingerprint before insertion
+      logger.info(
+        'Database',
+        platformTag,
+        `fingerprint-check trace=${traceId} (fp=${fingerprint.slice(0, 16)}...)`
+      )
       const existing = await this.db.interactions.where('fingerprint').equals(fingerprint).first()
       if (existing) {
-        logger.info(
-          'Database',
-          platformTag,
-          `Existing fingerprint found: '${fingerprint.slice(0, 16)}...' already exists in DB (ID: ${existing.id}).`
-        )
-
         // If existing record was unbound and new input provides conversation_id, bind it
         if (existing.conversation_id === null && namespacedConvId !== null) {
           existing.conversation_id = namespacedConvId
@@ -94,16 +97,21 @@ export class InteractionRepository {
           logger.info(
             'Database',
             platformTag,
-            `Existing interaction updated: ID ${existing.id} bound to conversation ${namespacedConvId}`
+            `updated trace=${traceId} (bound existing ID: ${existing.id} -> ${namespacedConvId})`
           )
           logger.info(
             'Lifecycle',
             platformTag,
-            `Conversation ID resolved: interaction ID ${existing.id} -> ${namespacedConvId}`
+            `conversation-bound trace=${traceId} (interaction ID: ${existing.id} -> ${namespacedConvId})`
           )
           return existing
         }
 
+        logger.info(
+          'Database',
+          platformTag,
+          `duplicate trace=${traceId} (existing ID: ${existing.id}, fp=${fingerprint.slice(0, 16)}...)`
+        )
         throw new DuplicateInteractionError(
           fingerprint,
           `Interaction with fingerprint '${fingerprint}' already exists (ID: ${existing.id}).`
@@ -125,11 +133,6 @@ export class InteractionRepository {
           .equals(l3FpResult.fingerprint)
           .first()
         if (existingUnbound && existingUnbound.conversation_id === null) {
-          logger.info(
-            'Database',
-            platformTag,
-            `Existing fingerprint found: unbound interaction '${existingUnbound.fingerprint.slice(0, 16)}...' in DB (ID: ${existingUnbound.id}).`
-          )
           existingUnbound.conversation_id = namespacedConvId
           if (input.conversation_title)
             existingUnbound.conversation_title = input.conversation_title
@@ -139,12 +142,12 @@ export class InteractionRepository {
           logger.info(
             'Database',
             platformTag,
-            `Existing interaction updated: unbound interaction ${existingUnbound.id} bound to conversation ${namespacedConvId}`
+            `updated trace=${traceId} (bound existing unbound ID: ${existingUnbound.id} -> ${namespacedConvId})`
           )
           logger.info(
             'Lifecycle',
             platformTag,
-            `Conversation ID resolved: interaction ID ${existingUnbound.id} -> ${namespacedConvId}`
+            `conversation-bound trace=${traceId} (interaction ID: ${existingUnbound.id} -> ${namespacedConvId})`
           )
           return existingUnbound
         }
@@ -184,7 +187,7 @@ export class InteractionRepository {
         logger.info(
           'Database',
           platformTag,
-          `New interaction inserted: ID ${id}, fingerprint ${fingerprint.slice(0, 16)}..., queryChars: ${interaction.query.characters}, responseChars: ${interaction.response.characters}`
+          `inserted trace=${traceId} (ID: ${id}, fp=${fingerprint.slice(0, 16)}..., queryChars: ${interaction.query.characters}, responseChars: ${interaction.response.characters})`
         )
       } catch (addError) {
         if (
