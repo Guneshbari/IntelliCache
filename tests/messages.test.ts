@@ -214,13 +214,15 @@ describe('sendExtensionMessage Runtime Dispatcher', () => {
     expect(res).toEqual(expectedResponse)
   })
 
-  it('throws an error if chrome runtime is not available in environment', async () => {
-    // @ts-expect-error - intentionally testing environment without chrome
+  it('throws an error if extension runtime is not available in environment', async () => {
+    // @ts-expect-error - intentionally testing environment without runtime
     delete globalThis.chrome
+    // @ts-expect-error - intentionally testing environment without runtime
+    delete globalThis.browser
 
     const ping = createPingMessage('popup')
     await expect(sendExtensionMessage(ping)).rejects.toThrow(
-      'Chrome extension runtime API is not available in the current environment.'
+      /Extension runtime API is not available in the current environment/i
     )
   })
 })
