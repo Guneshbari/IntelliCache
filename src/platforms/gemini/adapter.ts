@@ -319,7 +319,6 @@ export class GeminiAdapter implements PlatformAdapter {
    */
   private flushPendingWithConversationId(conversationId: string): void {
     const title = extractConversationTitle(document)
-    logger.info('Lifecycle', 'GEMINI', `Conversation ID resolved: ${conversationId}`)
     logger.info(
       'Adapter',
       'GEMINI',
@@ -331,6 +330,13 @@ export class GeminiAdapter implements PlatformAdapter {
       pending.interaction.conversationId = conversationId
       if (title) {
         pending.interaction.conversationTitle = title
+      }
+      if (pending.interaction.traceId) {
+        logger.info(
+          'Lifecycle',
+          'GEMINI',
+          `conversation-bound trace=${pending.interaction.traceId} (convId=${conversationId})`
+        )
       }
       this.pendingUnboundInteractions.delete(key)
       void this.persistInteraction(pending.interaction, key)
@@ -506,10 +512,19 @@ export class GeminiAdapter implements PlatformAdapter {
     let failureCount = 0
 
     for (const interaction of interactions) {
+      const traceId =
+        interaction.traceId || `trace_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+      interaction.traceId = traceId
+
       logger.info(
         'Lifecycle',
         'GEMINI',
-        `Candidate interaction detected (convId: ${interaction.conversationId ?? 'null'}, queryChars: ${interaction.queryText.length}, responseChars: ${interaction.responseText.length})`
+        `candidate-detected trace=${traceId} (convId=${interaction.conversationId ?? 'null'}, queryChars=${interaction.queryText.length}, responseChars=${interaction.responseText.length})`
+      )
+      logger.info(
+        'Lifecycle',
+        'GEMINI',
+        `extracted trace=${traceId} (convId=${interaction.conversationId ?? 'null'}, userMsgId=${interaction.userMessageId ?? 'null'}, asstMsgId=${interaction.messageId ?? 'null'})`
       )
       const key = this.generateInteractionKey(interaction)
 
@@ -607,6 +622,10 @@ export class GeminiAdapter implements PlatformAdapter {
     interaction: ExtractedInteraction,
     key: string
   ): Promise<'saved' | 'duplicate' | 'failed'> {
+    const traceId =
+      interaction.traceId || `trace_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+    interaction.traceId = traceId
+
     const input: CreateInteractionInput = {
       platform: 'gemini',
       conversation_id: interaction.conversationId,
@@ -623,12 +642,13 @@ export class GeminiAdapter implements PlatformAdapter {
         text: interaction.responseText,
       },
       conversation_title: interaction.conversationTitle,
+      trace_id: traceId,
     }
 
     logger.info(
       'Lifecycle',
       'GEMINI',
-      `Persistence requested (conversationId: ${interaction.conversationId ?? 'null'}, context: ${interaction.captureContext})`
+      `persistence-request trace=${traceId} (conversationId=${interaction.conversationId ?? 'null'}, context=${interaction.captureContext})`
     )
     logger.debug(
       'Messaging',

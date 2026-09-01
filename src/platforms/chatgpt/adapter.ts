@@ -232,7 +232,6 @@ export class ChatGPTAdapter implements PlatformAdapter {
    */
   private flushPendingWithConversationId(conversationId: string): void {
     const title = extractConversationTitle(document)
-    logger.info('Lifecycle', 'CHATGPT', `Conversation ID resolved: ${conversationId}`)
     logger.info(
       'Adapter',
       'CHATGPT',
@@ -244,6 +243,13 @@ export class ChatGPTAdapter implements PlatformAdapter {
       pending.interaction.conversationId = conversationId
       if (title) {
         pending.interaction.conversationTitle = title
+      }
+      if (pending.interaction.traceId) {
+        logger.info(
+          'Lifecycle',
+          'CHATGPT',
+          `conversation-bound trace=${pending.interaction.traceId} (convId=${conversationId})`
+        )
       }
       this.pendingUnboundInteractions.delete(key)
       void this.persistInteraction(pending.interaction, key)
@@ -363,10 +369,19 @@ export class ChatGPTAdapter implements PlatformAdapter {
     let failureCount = 0
 
     for (const interaction of interactions) {
+      const traceId =
+        interaction.traceId || `trace_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+      interaction.traceId = traceId
+
       logger.info(
         'Lifecycle',
         'CHATGPT',
-        `Candidate interaction detected (convId: ${interaction.conversationId ?? 'null'}, queryChars: ${interaction.queryText.length}, responseChars: ${interaction.responseText.length})`
+        `candidate-detected trace=${traceId} (convId=${interaction.conversationId ?? 'null'}, queryChars=${interaction.queryText.length}, responseChars=${interaction.responseText.length})`
+      )
+      logger.info(
+        'Lifecycle',
+        'CHATGPT',
+        `extracted trace=${traceId} (convId=${interaction.conversationId ?? 'null'}, userMsgId=${interaction.userMessageId ?? 'null'}, asstMsgId=${interaction.messageId ?? 'null'})`
       )
       const key = this.generateInteractionKey(interaction)
 
@@ -464,6 +479,10 @@ export class ChatGPTAdapter implements PlatformAdapter {
     interaction: ExtractedInteraction,
     key: string
   ): Promise<'saved' | 'duplicate' | 'failed'> {
+    const traceId =
+      interaction.traceId || `trace_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+    interaction.traceId = traceId
+
     const input: CreateInteractionInput = {
       platform: 'chatgpt',
       conversation_id: interaction.conversationId,
@@ -480,12 +499,13 @@ export class ChatGPTAdapter implements PlatformAdapter {
         text: interaction.responseText,
       },
       conversation_title: interaction.conversationTitle,
+      trace_id: traceId,
     }
 
     logger.info(
       'Lifecycle',
       'CHATGPT',
-      `Persistence requested (conversationId: ${interaction.conversationId ?? 'null'}, context: ${interaction.captureContext})`
+      `persistence-request trace=${traceId} (conversationId=${interaction.conversationId ?? 'null'}, context=${interaction.captureContext})`
     )
     logger.debug(
       'Messaging',
