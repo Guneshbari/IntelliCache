@@ -88,7 +88,17 @@ document.addEventListener('DOMContentLoaded', () => {
           logger.info(
             'UI',
             'CORE',
-            `Query result | platform=all | conversations=${stats.conversationCount} | interactions=${stats.interactionCount} | rendered=${stats.interactionCount}`
+            `query=interactions raw=${stats.interactionCount} filtered=${stats.interactionCount} grouped=${stats.interactionCount} rendered=${stats.interactionCount}`
+          )
+          logger.info(
+            'UI',
+            'CORE',
+            `query=conversations raw=${stats.conversationCount} filtered=${stats.conversationCount} grouped=${stats.conversationCount} rendered=${stats.conversationCount}`
+          )
+          logger.info(
+            'UI',
+            'CORE',
+            `query-result | platform=all | conversations=${stats.conversationCount} | interactions=${stats.interactionCount} | rendered=${stats.interactionCount}`
           )
         }
       } else {
