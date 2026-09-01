@@ -8,11 +8,95 @@ Intelligent semantic caching that reduces LLM latency, API costs, and redundant 
 
 ### Multi-Platform & Multi-Browser Data Collection Support
 
-A unified, event-driven DOM observation and extraction extension for collecting real AI interaction datasets across multiple LLM web platforms (**ChatGPT**, **Claude**, and **Gemini**) and running reliably across major Chromium-based browsers (**Google Chrome**, **Microsoft Edge**, and **Brave**).
+A unified, event-driven DOM observation and extraction extension for collecting real AI interaction datasets across multiple LLM web platforms (**ChatGPT**, **Claude**, and **Gemini**) and running reliably across major Chromium-based browsers (**Google Chrome**, **Microsoft Edge**, and **Brave**) and **Mozilla Firefox**.
 
 Persists full query-response interactions, code blocks, and conversation metadata locally into IndexedDB through the repository layer.
 
-### Architecture Overview
+### Cross-Browser Compatibility Architecture
+
+IntelliCache employs a clean, unified browser runtime abstraction (`src/shared/browser.ts`) that standardizes:
+
+- **Runtime Resolution**: Auto-resolves `browser.runtime` (Firefox) and `chrome.runtime` (Chromium).
+- **Dual Message Semantics**: Seamlessly handles both Promise-based messaging in Firefox and callback/`sendResponse` channel keeping in Chromium.
+- **Event-Driven Background Handling**: Compatible with both Service Workers (Chromium MV3) and Event Pages (`background.scripts` in Firefox MV3).
+- **Extension Identity**: Configured with Gecko ID (`intellicache-collector@research.local`) for stable IndexedDB namespace persistence.
+
+---
+
+### Development & Build Commands
+
+```bash
+# Install dependencies
+pnpm install
+
+# Start Vite in development mode (with HMR)
+pnpm dev
+
+# Build the unpacked extension for Chromium (outputs to dist/)
+pnpm build
+
+# Build the unpacked extension for Mozilla Firefox (outputs to dist-firefox/)
+pnpm build:firefox
+
+# Build both Chromium and Firefox distribution targets
+pnpm build:all
+
+# Run Vitest unit & integration tests (28 test suites)
+pnpm test
+
+# Run TypeScript typecheck
+pnpm exec tsc --noEmit
+
+# Run ESLint
+pnpm lint
+
+# Check code formatting with Prettier
+pnpm format:check
+
+# Auto-format code with Prettier
+pnpm format
+```
+
+---
+
+### Multi-Browser Loading Guide (Chrome, Edge, Brave, Firefox)
+
+#### 1. Google Chrome
+
+1. Run `pnpm build`.
+2. Navigate to `chrome://extensions` in the address bar.
+3. Enable **Developer mode** using the toggle switch in the top-right corner.
+4. Click **Load unpacked** in the top-left toolbar.
+5. Select the `dist/` directory inside this repository.
+
+#### 2. Microsoft Edge
+
+1. Run `pnpm build`.
+2. Navigate to `edge://extensions` in the address bar.
+3. Enable **Developer mode** in the left sidebar.
+4. Click **Load unpacked** at the top.
+5. Select the `dist/` directory.
+
+#### 3. Brave Browser
+
+1. Run `pnpm build`.
+2. Navigate to `brave://extensions` in the address bar.
+3. Enable **Developer mode** toggle in the top-right corner.
+4. Click **Load unpacked**.
+5. Select the `dist/` directory.
+
+#### 4. Mozilla Firefox
+
+1. Run `pnpm build:firefox`.
+2. Open Firefox and navigate to `about:debugging#/runtime/this-firefox` in the address bar.
+3. Click **Load Temporary Add-on...**.
+4. Select `manifest.json` inside the `dist-firefox/` directory (or any file within `dist-firefox/`).
+5. The extension is now active with full ChatGPT, Claude, and Gemini collection support.
+
+**Verified Firefox Compatibility**:
+
+- **Supported Versions**: Firefox 109.0+ (Manifest V3 support), Firefox 115+ ESR, Firefox 128+ ESR, Firefox 130+ Current Release.
+- **Private Browsing Note**: In Firefox Private Browsing mode, IndexedDB persistence is partitioned or restricted by Firefox by default. For reliable local collection, standard browsing mode is recommended.
 
 ```
 IntelliCache/
@@ -126,66 +210,6 @@ Every platform adapter (`ChatGPTAdapter`, `ClaudeAdapter`, `GeminiAdapter`) extr
    - **Assistant selector**: `model-response, [data-message-author-role="assistant"], .model-response-container`
    - **Streaming guard**: `button[aria-label="Stop response"]`, `mat-spinner`, `.loading`
    - **URL pattern**: `/app/{id}`, `/chat/{id}`
-
----
-
-### Development Commands
-
-```bash
-# Install dependencies
-pnpm install
-
-# Start Vite in development mode (with HMR)
-pnpm dev
-
-# Build the unpacked extension for production (outputs to dist/)
-pnpm build
-
-# Run Vitest unit & integration tests
-pnpm test
-
-# Run TypeScript typecheck
-pnpm exec tsc --noEmit
-
-# Run ESLint
-pnpm lint
-
-# Check code formatting with Prettier
-pnpm format:check
-
-# Auto-format code with Prettier
-pnpm format
-```
-
----
-
-### Multi-Browser Loading Guide (Chrome, Edge, Brave)
-
-The extension is standard **Manifest V3** with zero browser-specific proprietary APIs. The single production build in `dist/` can be loaded into any Chromium browser.
-
-#### 1. Google Chrome
-
-1. Run `pnpm build`.
-2. Navigate to `chrome://extensions` in the address bar.
-3. Enable **Developer mode** using the toggle switch in the top-right corner.
-4. Click **Load unpacked** in the top-left toolbar.
-5. Select the `dist/` directory inside this repository.
-
-#### 2. Microsoft Edge
-
-1. Run `pnpm build`.
-2. Navigate to `edge://extensions` in the address bar.
-3. Enable **Developer mode** in the left sidebar.
-4. Click **Load unpacked** at the top.
-5. Select the `dist/` directory.
-
-#### 3. Brave Browser
-
-1. Run `pnpm build`.
-2. Navigate to `brave://extensions` in the address bar.
-3. Enable **Developer mode** toggle in the top-right corner.
-4. Click **Load unpacked**.
-5. Select the `dist/` directory.
 
 ---
 
