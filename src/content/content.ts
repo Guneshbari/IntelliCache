@@ -8,6 +8,7 @@
 import { logger, toDiagnosticPlatform } from '../diagnostics'
 import { getAdapterForUrl } from '../platforms/registry'
 import type { PlatformAdapter } from '../platforms/types'
+import { addRuntimeMessageListener, type WebExtensionSender } from '../shared/browser'
 import {
   createContentScriptInitMessage,
   createErrorResponse,
@@ -111,10 +112,10 @@ function initializeContentScript() {
   })
 
   // Listen for any test messages sent directly to this tab from Popup or Service Worker
-  chrome.runtime.onMessage.addListener(
+  addRuntimeMessageListener(
     (
       rawMessage: unknown,
-      _sender: chrome.runtime.MessageSender,
+      _sender: WebExtensionSender,
       sendResponse: (response: ExtensionResponse) => void
     ): boolean => {
       if (!isExtensionMessage(rawMessage)) {

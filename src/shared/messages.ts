@@ -1,4 +1,3 @@
-import { logger } from '../diagnostics'
 import type { CreateInteractionInput } from '../database/types'
 import type {
   ContentScriptInitMessage,
@@ -189,51 +188,15 @@ export function detectPlatformFromUrl(url: string): SupportedPlatform {
   }
 }
 
+import { sendBrowserRuntimeMessage } from './browser'
+
 /**
- * Dispatches a typed message to the extension runtime (Service Worker).
- * Handles runtime.lastError, null/undefined responses, and valid responses safely.
+ * Dispatches a typed message to the extension runtime (Service Worker / Background).
+ * Handles both Promise-based (Firefox) and callback-based (Chromium) runtimes safely,
+ * classifying runtime errors and context invalidation.
  */
 export async function sendExtensionMessage<M extends ExtensionMessage, R = unknown>(
   message: M
 ): Promise<ExtensionResponse<R>> {
-  if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.sendMessage) {
-    logger.error(
-      'Messaging',
-      'CORE',
-      'Chrome extension runtime API is not available in the current environment.'
-    )
-    throw new Error('Chrome extension runtime API is not available in the current environment.')
-  }
-
-  return new Promise((resolve) => {
-    chrome.runtime.sendMessage(message, (response: ExtensionResponse<R> | null | undefined) => {
-      const lastError = chrome?.runtime?.lastError
-      if (lastError) {
-        const errorMsg = lastError.message ?? 'Unknown runtime error'
-        if (/extension context invalidated/i.test(errorMsg)) {
-          logger.error(
-            'Messaging',
-            'CORE',
-            'Extension context invalidated! The extension was reloaded or updated; please refresh the active page.'
-          )
-        } else {
-          logger.warn(
-            'Messaging',
-            'CORE',
-            `Runtime message error on '${message.type}': ${errorMsg}`
-          )
-        }
-        resolve(createErrorResponse(errorMsg))
-      } else if (!response) {
-        logger.warn(
-          'Messaging',
-          'CORE',
-          `No response received from extension runtime for '${message.type}'`
-        )
-        resolve(createErrorResponse('No response received from extension component'))
-      } else {
-        resolve(response)
-      }
-    })
-  })
+  return sendBrowserRuntimeMessage<M, R>(message)
 }

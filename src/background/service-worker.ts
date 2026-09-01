@@ -34,6 +34,12 @@ const workerStartTime = Date.now()
 const interactionRepo = new InteractionRepository()
 const conversationRepo = new ConversationRepository()
 
+import {
+  addRuntimeMessageListener,
+  onRuntimeInstalled,
+  type WebExtensionSender,
+} from '../shared/browser'
+
 logger.info(
   'Background',
   'CORE',
@@ -41,15 +47,15 @@ logger.info(
 )
 
 // Lifecycle: Extension installed or updated
-chrome.runtime.onInstalled.addListener((details) => {
+onRuntimeInstalled((details) => {
   logger.info('Background', 'CORE', `Extension installed/updated. Reason: ${details.reason}`)
 })
 
 // Central Message Dispatcher
-chrome.runtime.onMessage.addListener(
+addRuntimeMessageListener(
   (
     rawMessage: unknown,
-    _sender: chrome.runtime.MessageSender,
+    _sender: WebExtensionSender,
     sendResponse: (response: ExtensionResponse) => void
   ): boolean => {
     if (!isExtensionMessage(rawMessage)) {
