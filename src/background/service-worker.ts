@@ -111,20 +111,37 @@ addRuntimeMessageListener(
         // Asynchronous database queries: return true to keep the message channel open
         void (async () => {
           try {
-            const [interactionCount, conversationCount] = await Promise.all([
+            const [
+              interactionCount,
+              conversationCount,
+              chatgptCount,
+              claudeCount,
+              geminiCount,
+              recentInteractions,
+            ] = await Promise.all([
               interactionRepo.count(),
               conversationRepo.count(),
+              interactionRepo.countByPlatform('chatgpt'),
+              interactionRepo.countByPlatform('claude'),
+              interactionRepo.countByPlatform('gemini'),
+              interactionRepo.getRecent(50),
             ])
             const statsData: DbStatsResponseData = {
               dbName: DB_NAME,
               dbVersion: CURRENT_DB_VERSION,
               interactionCount,
               conversationCount,
+              platformCounts: {
+                chatgpt: chatgptCount,
+                claude: claudeCount,
+                gemini: geminiCount,
+              },
+              recentInteractions,
             }
             logger.debug(
               'Background',
               'CORE',
-              `Retrieved DB stats: ${interactionCount} interactions, ${conversationCount} conversations`
+              `Retrieved DB stats: ${interactionCount} interactions (${chatgptCount} ChatGPT, ${claudeCount} Claude, ${geminiCount} Gemini), ${conversationCount} conversations`
             )
             sendResponse(createSuccessResponse(statsData))
           } catch (err) {

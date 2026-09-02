@@ -309,6 +309,29 @@ export class InteractionRepository {
   }
 
   /**
+   * Counts the number of interactions belonging to a specific platform.
+   */
+  async countByPlatform(platform: string): Promise<number> {
+    try {
+      const normalized = platform.trim().toLowerCase()
+      return await this.db.interactions.where('platform').equals(normalized).count()
+    } catch (error) {
+      throw new DatabaseOperationError(`countByPlatform (${platform})`, error)
+    }
+  }
+
+  /**
+   * Retrieves the most recent interactions ordered by observed_at descending.
+   */
+  async getRecent(limit: number = 20): Promise<Interaction[]> {
+    try {
+      return await this.db.interactions.orderBy('observed_at').reverse().limit(limit).toArray()
+    } catch (error) {
+      throw new DatabaseOperationError(`getRecent (${limit})`, error)
+    }
+  }
+
+  /**
    * Counts the total number of interactions in IndexedDB without loading records into memory.
    */
   async count(): Promise<number> {

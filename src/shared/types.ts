@@ -3,7 +3,7 @@
  * Defines message protocols, extension lifecycle states, and platform identifiers.
  */
 
-import type { CreateInteractionInput } from '../database/types'
+import type { CreateInteractionInput, Interaction } from '../database/types'
 
 export * from '../database/types'
 export * from '../fingerprint/fingerprint'
@@ -139,6 +139,12 @@ export interface DbStatsResponseData {
   dbVersion: number
   interactionCount: number
   conversationCount: number
+  platformCounts?: {
+    chatgpt: number
+    claude: number
+    gemini: number
+  }
+  recentInteractions?: Interaction[]
 }
 
 /**
