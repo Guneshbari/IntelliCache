@@ -221,14 +221,31 @@ document.addEventListener('DOMContentLoaded', () => {
       case 'claude':
         return `
           <div class="recent-item-logo badge-claude" title="Claude">
-            <span class="claude-text-mark" style="font-size: 9px;">AI</span>
+            <svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor">
+              <path d="M12 9.5a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5z" />
+              <rect x="11.2" y="1" width="1.6" height="8.5" rx="0.8" />
+              <rect x="11.2" y="14.5" width="1.6" height="8.5" rx="0.8" />
+              <rect x="11.2" y="1" width="1.6" height="8.5" rx="0.8" transform="rotate(25.7 12 12)" />
+              <rect x="11.2" y="1" width="1.6" height="8.5" rx="0.8" transform="rotate(51.4 12 12)" />
+              <rect x="11.2" y="1" width="1.6" height="8.5" rx="0.8" transform="rotate(77.1 12 12)" />
+              <rect x="11.2" y="1" width="1.6" height="8.5" rx="0.8" transform="rotate(102.8 12 12)" />
+              <rect x="11.2" y="1" width="1.6" height="8.5" rx="0.8" transform="rotate(128.5 12 12)" />
+              <rect x="11.2" y="1" width="1.6" height="8.5" rx="0.8" transform="rotate(154.2 12 12)" />
+              <rect x="11.2" y="1" width="1.6" height="8.5" rx="0.8" transform="rotate(180 12 12)" />
+              <rect x="11.2" y="1" width="1.6" height="8.5" rx="0.8" transform="rotate(205.7 12 12)" />
+              <rect x="11.2" y="1" width="1.6" height="8.5" rx="0.8" transform="rotate(231.4 12 12)" />
+              <rect x="11.2" y="1" width="1.6" height="8.5" rx="0.8" transform="rotate(257.1 12 12)" />
+              <rect x="11.2" y="1" width="1.6" height="8.5" rx="0.8" transform="rotate(282.8 12 12)" />
+              <rect x="11.2" y="1" width="1.6" height="8.5" rx="0.8" transform="rotate(308.5 12 12)" />
+              <rect x="11.2" y="1" width="1.6" height="8.5" rx="0.8" transform="rotate(334.2 12 12)" />
+            </svg>
           </div>
         `
       case 'gemini':
         return `
           <div class="recent-item-logo badge-gemini" title="Gemini">
             <svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor">
-              <path d="M12 2C12 7.52 7.52 12 2 12c4.48 0 10 4.48 10 10 0-5.52 4.48-10 10-10-4.48 0-10-4.48-10-10z" />
+              <path d="M12 1.5C12 7.3 7.3 12 1.5 12C7.3 12 12 16.7 12 22.5C12 16.7 16.7 12 22.5 12C16.7 12 12 7.3 12 1.5Z" />
             </svg>
           </div>
         `
