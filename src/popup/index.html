@@ -8,75 +8,396 @@
   </head>
   <body>
     <div class="popup-container">
+      <!-- 1. Header -->
       <header class="header">
-        <div class="header-content">
-          <div class="logo-badge">IC</div>
-          <div>
-            <h1 class="title">IntelliCache Collector</h1>
-            <p class="subtitle">Data Collection &bull; Phase 1</p>
+        <div class="header-left">
+          <div class="logo-icon" aria-hidden="true">
+            <svg
+              viewBox="0 0 24 24"
+              width="18"
+              height="18"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path
+                d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"
+              ></path>
+              <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
+              <line x1="12" y1="22.08" x2="12" y2="12"></line>
+            </svg>
+          </div>
+          <div class="header-titles">
+            <h1 class="app-title">IntelliCache</h1>
+            <p class="app-subtitle">AI Interaction Collector &bull; Phase 1</p>
           </div>
         </div>
-        <div class="badge-status" id="status-badge">
+        <div class="status-pill" id="status-badge" title="Extension communication status">
           <span class="status-dot"></span>
-          <span id="status-text">Checking...</span>
+          <span id="status-text">CONNECTING</span>
         </div>
       </header>
 
-      <main class="main-content">
-        <section class="info-card">
-          <div class="info-row">
-            <span class="info-label">Service Worker</span>
-            <span class="info-value" id="sw-status">Connecting...</span>
+      <!-- Main Scrollable Content -->
+      <main class="main-content" id="main-content">
+        <!-- 2. Overview Metric Cards -->
+        <section class="metrics-grid">
+          <div class="metric-card metric-card-interactions">
+            <div class="metric-icon-wrap">
+              <svg
+                viewBox="0 0 24 24"
+                width="16"
+                height="16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+              </svg>
+            </div>
+            <div class="metric-info">
+              <div class="metric-value-wrap">
+                <span class="metric-value" id="total-interactions-count">0</span>
+              </div>
+              <span class="metric-label">Interactions</span>
+            </div>
           </div>
-          <div class="info-row">
-            <span class="info-label">Storage Engine</span>
-            <span class="info-value" id="db-status">IndexedDB (v1)</span>
-          </div>
-          <div class="info-row">
-            <span class="info-label">Extension Version</span>
-            <span class="info-value" id="ext-version">0.1.0</span>
-          </div>
-          <div class="info-row">
-            <span class="info-label">Architecture Mode</span>
-            <span class="info-value">Local-Only (Phase 1)</span>
+
+          <div class="metric-card metric-card-conversations">
+            <div class="metric-icon-wrap">
+              <svg
+                viewBox="0 0 24 24"
+                width="16"
+                height="16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                <polyline points="14 2 14 8 20 8"></polyline>
+                <line x1="16" y1="13" x2="8" y2="13"></line>
+                <line x1="16" y1="17" x2="8" y2="17"></line>
+                <polyline points="10 9 9 9 8 9"></polyline>
+              </svg>
+            </div>
+            <div class="metric-info">
+              <div class="metric-value-wrap">
+                <span class="metric-value" id="total-conversations-count">0</span>
+              </div>
+              <span class="metric-label">Conversations</span>
+            </div>
           </div>
         </section>
 
-        <section class="action-section">
-          <button id="ping-btn" class="btn btn-primary" type="button">
+        <!-- 3. Platform Breakdown Cards -->
+        <section class="section platform-section">
+          <div class="section-header">
+            <h2 class="section-title">Collection by Platform</h2>
+            <span class="section-tag" id="platform-active-tag">3 Platforms</span>
+          </div>
+
+          <div class="platform-grid">
+            <!-- ChatGPT -->
+            <div class="platform-card platform-chatgpt" data-platform="chatgpt">
+              <div class="platform-card-top">
+                <div class="platform-brand">
+                  <span class="platform-bullet bullet-chatgpt"></span>
+                  <span class="platform-name">ChatGPT</span>
+                </div>
+                <span class="platform-count" id="count-chatgpt">0</span>
+              </div>
+              <div class="platform-bar-track">
+                <div class="platform-bar-fill bar-chatgpt" id="bar-chatgpt" style="width: 0%"></div>
+              </div>
+            </div>
+
+            <!-- Claude -->
+            <div class="platform-card platform-claude" data-platform="claude">
+              <div class="platform-card-top">
+                <div class="platform-brand">
+                  <span class="platform-bullet bullet-claude"></span>
+                  <span class="platform-name">Claude</span>
+                </div>
+                <span class="platform-count" id="count-claude">0</span>
+              </div>
+              <div class="platform-bar-track">
+                <div class="platform-bar-fill bar-claude" id="bar-claude" style="width: 0%"></div>
+              </div>
+            </div>
+
+            <!-- Gemini -->
+            <div class="platform-card platform-gemini" data-platform="gemini">
+              <div class="platform-card-top">
+                <div class="platform-brand">
+                  <span class="platform-bullet bullet-gemini"></span>
+                  <span class="platform-name">Gemini</span>
+                </div>
+                <span class="platform-count" id="count-gemini">0</span>
+              </div>
+              <div class="platform-bar-track">
+                <div class="platform-bar-fill bar-gemini" id="bar-gemini" style="width: 0%"></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 4. Recent Activity & Explorer Entry -->
+        <section class="section recent-section">
+          <div class="section-header">
+            <div class="section-header-left">
+              <h2 class="section-title">Recent Activity</h2>
+              <span class="activity-badge" id="recent-count-badge">0</span>
+            </div>
+            <button class="btn-text" id="toggle-explorer-btn" type="button">
+              <span id="toggle-explorer-text">Explore All</span>
+              <svg
+                viewBox="0 0 24 24"
+                width="14"
+                height="14"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <polyline points="9 18 15 12 9 6"></polyline>
+              </svg>
+            </button>
+          </div>
+
+          <div class="recent-list" id="recent-activity-list">
+            <!-- Empty state default -->
+            <div class="empty-state" id="empty-recent-state">
+              <div class="empty-icon">
+                <svg
+                  viewBox="0 0 24 24"
+                  width="22"
+                  height="22"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.8"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <circle cx="12" cy="12" r="10"></circle>
+                  <line x1="12" y1="8" x2="12" y2="12"></line>
+                  <line x1="12" y1="16" x2="12.01" y2="16"></line>
+                </svg>
+              </div>
+              <h3 class="empty-title">No interactions collected yet</h3>
+              <p class="empty-desc">
+                Start a conversation on ChatGPT, Claude, or Gemini and IntelliCache will capture it
+                locally.
+              </p>
+            </div>
+          </div>
+        </section>
+
+        <!-- 5. Interaction Explorer Section (Expandable/Collapsible) -->
+        <section class="section explorer-section collapsed" id="explorer-section">
+          <div class="section-header explorer-header" id="explorer-header-toggle">
+            <div class="section-header-left">
+              <h2 class="section-title">Interaction Explorer</h2>
+              <span class="section-badge" id="explorer-match-count">0 items</span>
+            </div>
+            <button
+              class="btn-icon-link"
+              id="explorer-close-btn"
+              type="button"
+              aria-label="Toggle explorer"
+            >
+              <svg
+                class="chevron-icon"
+                id="explorer-chevron"
+                viewBox="0 0 24 24"
+                width="16"
+                height="16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <polyline points="6 9 12 15 18 9"></polyline>
+              </svg>
+            </button>
+          </div>
+
+          <div class="explorer-body" id="explorer-body">
+            <!-- Search & Filter Controls -->
+            <div class="explorer-controls">
+              <div class="search-input-wrap">
+                <svg
+                  class="search-icon"
+                  viewBox="0 0 24 24"
+                  width="14"
+                  height="14"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <circle cx="11" cy="11" r="8"></circle>
+                  <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                </svg>
+                <input
+                  type="text"
+                  id="explorer-search"
+                  class="search-input"
+                  placeholder="Search queries, responses, titles..."
+                  autocomplete="off"
+                />
+                <button type="button" id="explorer-search-clear" class="search-clear-btn" hidden>
+                  &times;
+                </button>
+              </div>
+
+              <!-- Filter Chips -->
+              <div class="filter-chips" id="filter-chips">
+                <button class="chip active" data-filter="all">All</button>
+                <button class="chip chip-chatgpt" data-filter="chatgpt">ChatGPT</button>
+                <button class="chip chip-claude" data-filter="claude">Claude</button>
+                <button class="chip chip-gemini" data-filter="gemini">Gemini</button>
+              </div>
+            </div>
+
+            <!-- Explorer Items List -->
+            <div class="explorer-list" id="explorer-items-list">
+              <!-- Rendered items with expandable details -->
+            </div>
+          </div>
+        </section>
+
+        <!-- 6. System Health Card -->
+        <section class="section health-section">
+          <div class="section-header">
+            <h2 class="section-title">System Health</h2>
+            <span class="health-status-badge" id="health-summary-badge">Healthy</span>
+          </div>
+
+          <div class="health-card">
+            <div class="health-row">
+              <span class="health-label">Service Worker</span>
+              <span class="health-val" id="sw-status-val">Active (MV3)</span>
+            </div>
+            <div class="health-row">
+              <span class="health-label">Storage Engine</span>
+              <span class="health-val" id="db-storage-val">IndexedDB (Dexie)</span>
+            </div>
+            <div class="health-row">
+              <span class="health-label">Database Status</span>
+              <span class="health-val" id="db-connection-val">Connected (v1)</span>
+            </div>
+            <div class="health-row">
+              <span class="health-label">Extension Version</span>
+              <span class="health-val" id="ext-version-val">0.1.0</span>
+            </div>
+            <div class="health-row">
+              <span class="health-label">Architecture</span>
+              <span class="health-val">Local-Only &bull; Phase 1</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- 7. Diagnostics & Tools (Accordion, Collapsed by default) -->
+        <section class="section diagnostics-section">
+          <button
+            class="accordion-trigger"
+            id="diagnostics-toggle"
+            type="button"
+            aria-expanded="false"
+          >
+            <div class="accordion-title-wrap">
+              <svg
+                viewBox="0 0 24 24"
+                width="15"
+                height="15"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path
+                  d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"
+                ></path>
+              </svg>
+              <span>Diagnostics & Tools</span>
+            </div>
             <svg
-              class="btn-icon"
+              class="accordion-chevron"
+              id="diagnostics-chevron"
               viewBox="0 0 24 24"
-              width="16"
-              height="16"
+              width="15"
+              height="15"
               fill="none"
               stroke="currentColor"
               stroke-width="2"
               stroke-linecap="round"
               stroke-linejoin="round"
             >
-              <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
+              <polyline points="6 9 12 15 18 9"></polyline>
             </svg>
-            <span>Ping Service Worker</span>
           </button>
-        </section>
 
-        <section class="log-section">
-          <div class="log-header">
-            <span class="log-title">Diagnostic Log</span>
-            <button id="clear-log-btn" class="btn-link" type="button">Clear</button>
-          </div>
-          <div class="log-box" id="log-output" role="region" aria-label="Diagnostic messages">
-            <div class="log-entry log-entry-info">
-              <span class="log-time">System</span>
-              <span class="log-msg">Ready for communication diagnostics.</span>
+          <div class="accordion-content" id="diagnostics-content" hidden>
+            <div class="diagnostics-toolbar">
+              <button id="ping-btn" class="btn btn-secondary btn-sm" type="button">
+                <svg
+                  viewBox="0 0 24 24"
+                  width="13"
+                  height="13"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
+                </svg>
+                <span>Ping Worker</span>
+              </button>
+
+              <button id="integrity-btn" class="btn btn-secondary btn-sm" type="button">
+                <svg
+                  viewBox="0 0 24 24"
+                  width="13"
+                  height="13"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                  <polyline points="22 4 12 14.01 9 11.01"></polyline>
+                </svg>
+                <span>Integrity Audit</span>
+              </button>
+
+              <button id="clear-log-btn" class="btn btn-link btn-sm" type="button">Clear</button>
+            </div>
+
+            <div class="log-box" id="log-output" role="region" aria-label="Diagnostic messages">
+              <div class="log-entry log-entry-info">
+                <span class="log-time">System</span>
+                <span class="log-msg">Ready for communication diagnostics.</span>
+              </div>
             </div>
           </div>
         </section>
       </main>
 
+      <!-- 8. Footer -->
       <footer class="footer">
-        <span>IntelliCache &bull; Step 2 Local Data Layer</span>
+        <span>IntelliCache &bull; Phase 1 Local AI Data Layer</span>
       </footer>
     </div>
 
