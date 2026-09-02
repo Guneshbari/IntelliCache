@@ -108,6 +108,7 @@
                 <span class="metric-value" id="total-interactions-count">0</span>
               </div>
               <span class="metric-label">Interactions</span>
+              <span class="metric-sublabel">Captured so far &uarr;</span>
             </div>
           </div>
 
@@ -135,11 +136,12 @@
                 <span class="metric-value" id="total-conversations-count">0</span>
               </div>
               <span class="metric-label">Conversations</span>
+              <span class="metric-sublabel">Across all platforms &uarr;</span>
             </div>
           </div>
         </section>
 
-        <!-- 3. Platform Breakdown Cards -->
+        <!-- 3. Platform Breakdown Cards with Official Provider Logos -->
         <section class="section platform-section">
           <div class="section-header">
             <h2 class="section-title">Collection by Platform</h2>
@@ -151,7 +153,13 @@
             <div class="platform-card platform-chatgpt" data-platform="chatgpt">
               <div class="platform-card-top">
                 <div class="platform-brand">
-                  <span class="platform-bullet bullet-chatgpt"></span>
+                  <div class="provider-logo-badge badge-chatgpt" aria-label="ChatGPT">
+                    <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor">
+                      <path
+                        d="M22.28 9.82a5.98 5.98 0 0 0-.52-4.91 6.05 6.05 0 0 0-6.51-2.9A6.06 6.06 0 0 0 4.98 4.18a5.98 5.98 0 0 0-4 2.9 6.05 6.05 0 0 0 .74 7.1 5.98 5.98 0 0 0 .51 4.91 6.05 6.05 0 0 0 6.51 2.9A5.98 5.98 0 0 0 13.26 24a6.06 6.06 0 0 0 5.77-4.2 5.99 5.99 0 0 0 4-2.9 6.06 6.06 0 0 0-.75-7.08zm-9.02 12.61a4.48 4.48 0 0 1-2.88-1.04l.14-.08 4.78-2.76a.8.8 0 0 0 .39-.68v-6.74l2.02 1.17a.07.07 0 0 1 .04.05v5.58a4.5 4.5 0 0 1-4.49 4.5zm-9.66-4.13a4.47 4.47 0 0 1-.53-3.01l.14.08 4.78 2.76a.77.77 0 0 0 .78 0l5.84-3.37v2.33a.08.08 0 0 1-.03.06L9.74 19.95a4.5 4.5 0 0 1-6.14-1.65zM2.34 7.9a4.49 4.49 0 0 1 2.37-1.98v5.68a.77.77 0 0 0 .38.68l5.82 3.35-2.02 1.17a.08.08 0 0 1-.07 0l-4.83-2.79A4.5 4.5 0 0 1 2.34 7.9zm16.1 3.86L12.6 8.38l2.02-1.16a.08.08 0 0 1 .07 0l4.83 2.79a4.5 4.5 0 0 1-.68 8.1v-5.68a.79.79 0 0 0-.4-.68zm2.01-3.03l-.14-.08-4.78-2.78a.78.78 0 0 0-.79 0L8.91 9.23V6.9a.07.07 0 0 1 .03-.06l4.83-2.79a4.5 4.5 0 0 1 6.68 4.68zm-12.64 4.14a.77.77 0 0 0-.39-.68L2.59 9.35a4.5 4.5 0 0 1 6.55-2.52v5.59a.79.79 0 0 0 .39.68l5.83 3.37-2.02 1.17a.08.08 0 0 1-.07 0l-4.83-2.79z"
+                      />
+                    </svg>
+                  </div>
                   <span class="platform-name">ChatGPT</span>
                 </div>
                 <span class="platform-count" id="count-chatgpt">0</span>
@@ -159,13 +167,16 @@
               <div class="platform-bar-track">
                 <div class="platform-bar-fill bar-chatgpt" id="bar-chatgpt" style="width: 0%"></div>
               </div>
+              <span class="platform-subtext" id="percent-chatgpt">0% of interactions</span>
             </div>
 
             <!-- Claude -->
             <div class="platform-card platform-claude" data-platform="claude">
               <div class="platform-card-top">
                 <div class="platform-brand">
-                  <span class="platform-bullet bullet-claude"></span>
+                  <div class="provider-logo-badge badge-claude" aria-label="Claude">
+                    <span class="claude-text-mark">AI</span>
+                  </div>
                   <span class="platform-name">Claude</span>
                 </div>
                 <span class="platform-count" id="count-claude">0</span>
@@ -173,13 +184,20 @@
               <div class="platform-bar-track">
                 <div class="platform-bar-fill bar-claude" id="bar-claude" style="width: 0%"></div>
               </div>
+              <span class="platform-subtext" id="percent-claude">0% of interactions</span>
             </div>
 
             <!-- Gemini -->
             <div class="platform-card platform-gemini" data-platform="gemini">
               <div class="platform-card-top">
                 <div class="platform-brand">
-                  <span class="platform-bullet bullet-gemini"></span>
+                  <div class="provider-logo-badge badge-gemini" aria-label="Gemini">
+                    <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor">
+                      <path
+                        d="M12 2C12 7.52 7.52 12 2 12c4.48 0 10 4.48 10 10 0-5.52 4.48-10 10-10-4.48 0-10-4.48-10-10z"
+                      />
+                    </svg>
+                  </div>
                   <span class="platform-name">Gemini</span>
                 </div>
                 <span class="platform-count" id="count-gemini">0</span>
@@ -187,6 +205,7 @@
               <div class="platform-bar-track">
                 <div class="platform-bar-fill bar-gemini" id="bar-gemini" style="width: 0%"></div>
               </div>
+              <span class="platform-subtext" id="percent-gemini">0% of interactions</span>
             </div>
           </div>
         </section>
@@ -199,7 +218,7 @@
               <span class="activity-badge" id="recent-count-badge">0</span>
             </div>
             <button class="btn-text" id="toggle-explorer-btn" type="button">
-              <span id="toggle-explorer-text">Explore All</span>
+              <span id="toggle-explorer-text">View All</span>
               <svg
                 viewBox="0 0 24 24"
                 width="14"
@@ -240,6 +259,45 @@
                 locally.
               </p>
             </div>
+          </div>
+
+          <!-- Open Explorer Banner Card -->
+          <div class="explorer-banner-btn" id="open-explorer-banner" role="button" tabindex="0">
+            <div class="explorer-banner-left">
+              <div class="explorer-banner-icon">
+                <svg
+                  viewBox="0 0 24 24"
+                  width="16"
+                  height="16"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <circle cx="11" cy="11" r="8"></circle>
+                  <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                </svg>
+              </div>
+              <div>
+                <div class="explorer-banner-title">OPEN INTERACTION EXPLORER</div>
+                <div class="explorer-banner-sub" id="explorer-banner-sub">
+                  Browse, search and filter all 0 interactions
+                </div>
+              </div>
+            </div>
+            <svg
+              viewBox="0 0 24 24"
+              width="16"
+              height="16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <polyline points="9 18 15 12 9 6"></polyline>
+            </svg>
           </div>
         </section>
 
@@ -319,44 +377,152 @@
           </div>
         </section>
 
-        <!-- 6. System Health Card -->
+        <!-- 6. System Health Card with Distinct Status Icons -->
         <section class="section health-section">
           <div class="section-header">
             <h2 class="section-title">System Health</h2>
-            <span class="health-status-badge" id="health-summary-badge">Healthy</span>
+            <span class="health-status-badge" id="health-summary-badge">
+              <svg
+                viewBox="0 0 24 24"
+                width="11"
+                height="11"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+              </svg>
+              <span>Healthy</span>
+            </span>
           </div>
 
-          <div class="health-card">
-            <div class="health-row">
-              <span class="health-label">Service Worker</span>
-              <span class="health-val" id="sw-status-val">Active (MV3)</span>
+          <div class="health-grid">
+            <div class="health-item-card">
+              <div class="health-item-icon icon-sw">
+                <svg
+                  viewBox="0 0 24 24"
+                  width="14"
+                  height="14"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <circle cx="12" cy="12" r="3"></circle>
+                  <path
+                    d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"
+                  ></path>
+                </svg>
+              </div>
+              <div class="health-item-text">
+                <span class="health-label">Service Worker</span>
+                <span class="health-val status-val-active" id="sw-status-val">Active (MV3)</span>
+              </div>
             </div>
-            <div class="health-row">
-              <span class="health-label">Storage Engine</span>
-              <span class="health-val" id="db-storage-val">IndexedDB (Dexie)</span>
+
+            <div class="health-item-card">
+              <div class="health-item-icon icon-db">
+                <svg
+                  viewBox="0 0 24 24"
+                  width="14"
+                  height="14"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>
+                  <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path>
+                  <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>
+                </svg>
+              </div>
+              <div class="health-item-text">
+                <span class="health-label">Storage Engine</span>
+                <span class="health-val" id="db-storage-val">IndexedDB (0 items)</span>
+              </div>
             </div>
-            <div class="health-row">
-              <span class="health-label">Database Status</span>
-              <span class="health-val" id="db-connection-val">Connected (v1)</span>
+
+            <div class="health-item-card">
+              <div class="health-item-icon icon-conn">
+                <svg
+                  viewBox="0 0 24 24"
+                  width="14"
+                  height="14"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+                  <polyline points="15 3 21 3 21 9"></polyline>
+                  <line x1="10" y1="14" x2="21" y2="3"></line>
+                </svg>
+              </div>
+              <div class="health-item-text">
+                <span class="health-label">Database Status</span>
+                <span class="health-val status-val-active" id="db-connection-val"
+                  >Connected (v1)</span
+                >
+              </div>
             </div>
-            <div class="health-row">
-              <span class="health-label">Extension Version</span>
-              <span class="health-val" id="ext-version-val">0.1.0</span>
+
+            <div class="health-item-card">
+              <div class="health-item-icon icon-code">
+                <svg
+                  viewBox="0 0 24 24"
+                  width="14"
+                  height="14"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <polyline points="16 18 22 12 16 6"></polyline>
+                  <polyline points="8 6 2 12 8 18"></polyline>
+                </svg>
+              </div>
+              <div class="health-item-text">
+                <span class="health-label">Extension Version</span>
+                <span class="health-val" id="ext-version-val">0.1.0</span>
+              </div>
             </div>
-            <div class="health-row">
-              <span class="health-label">Architecture</span>
-              <span class="health-val">Local-Only &bull; Phase 1</span>
+
+            <div class="health-item-card health-item-full">
+              <div class="health-item-icon icon-arch">
+                <svg
+                  viewBox="0 0 24 24"
+                  width="14"
+                  height="14"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+                </svg>
+              </div>
+              <div class="health-item-text">
+                <span class="health-label">Architecture</span>
+                <span class="health-val">Local-Only &bull; Phase 1</span>
+              </div>
             </div>
           </div>
         </section>
 
-        <!-- 7. Diagnostics & Tools (Accordion, Collapsed by default) -->
+        <!-- 7. Diagnostics & Tools (Open & Rich Interactive Actions) -->
         <section class="section diagnostics-section">
           <button
             class="accordion-trigger"
             id="diagnostics-toggle"
             type="button"
-            aria-expanded="false"
+            aria-expanded="true"
           >
             <div class="accordion-title-wrap">
               <svg
@@ -391,9 +557,14 @@
             </svg>
           </button>
 
-          <div class="accordion-content" id="diagnostics-content" hidden>
+          <div class="accordion-content" id="diagnostics-content">
             <div class="diagnostics-toolbar">
-              <button id="ping-btn" class="btn btn-secondary btn-sm" type="button">
+              <button
+                id="ping-btn"
+                class="tool-btn tool-ping"
+                type="button"
+                title="Test worker latency"
+              >
                 <svg
                   viewBox="0 0 24 24"
                   width="13"
@@ -409,7 +580,12 @@
                 <span>Ping Worker</span>
               </button>
 
-              <button id="integrity-btn" class="btn btn-secondary btn-sm" type="button">
+              <button
+                id="integrity-btn"
+                class="tool-btn tool-audit"
+                type="button"
+                title="Verify IndexedDB consistency"
+              >
                 <svg
                   viewBox="0 0 24 24"
                   width="13"
@@ -420,18 +596,63 @@
                   stroke-linecap="round"
                   stroke-linejoin="round"
                 >
-                  <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
-                  <polyline points="22 4 12 14.01 9 11.01"></polyline>
+                  <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+                  <polyline points="9 12 11 14 15 10"></polyline>
                 </svg>
                 <span>Integrity Audit</span>
               </button>
 
-              <button id="clear-log-btn" class="btn btn-link btn-sm" type="button">Clear</button>
+              <button
+                id="export-btn"
+                class="tool-btn tool-export"
+                type="button"
+                title="Export collected records to JSON"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  width="13"
+                  height="13"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                  <polyline points="7 10 12 15 17 10"></polyline>
+                  <line x1="12" y1="15" x2="12" y2="3"></line>
+                </svg>
+                <span>Export JSON</span>
+              </button>
+
+              <button
+                id="clear-log-btn"
+                class="tool-btn tool-clear"
+                type="button"
+                title="Clear console log"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  width="13"
+                  height="13"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <polyline points="3 6 5 6 21 6"></polyline>
+                  <path
+                    d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"
+                  ></path>
+                </svg>
+                <span>Clear Logs</span>
+              </button>
             </div>
 
             <div class="log-box" id="log-output" role="region" aria-label="Diagnostic messages">
               <div class="log-entry log-entry-info">
-                <span class="log-time">System</span>
+                <span class="log-time">[System]</span>
                 <span class="log-msg">Ready for communication diagnostics.</span>
               </div>
             </div>

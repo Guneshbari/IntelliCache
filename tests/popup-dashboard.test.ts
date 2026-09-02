@@ -22,6 +22,7 @@ describe('Popup Dashboard & Interaction Explorer Unit Tests', () => {
     document.body.innerHTML = `
       <div class="popup-container">
         <header class="header">
+          <button id="theme-toggle-btn"></button>
           <div class="status-pill" id="status-badge">
             <span class="status-dot"></span>
             <span id="status-text">CONNECTING</span>
@@ -40,20 +41,24 @@ describe('Popup Dashboard & Interaction Explorer Unit Tests', () => {
             <div class="platform-card" data-platform="chatgpt">
               <span class="platform-count" id="count-chatgpt">0</span>
               <div class="platform-bar-fill" id="bar-chatgpt" style="width: 0%"></div>
+              <span id="percent-chatgpt">0% of interactions</span>
             </div>
             <div class="platform-card" data-platform="claude">
               <span class="platform-count" id="count-claude">0</span>
               <div class="platform-bar-fill" id="bar-claude" style="width: 0%"></div>
+              <span id="percent-claude">0% of interactions</span>
             </div>
             <div class="platform-card" data-platform="gemini">
               <span class="platform-count" id="count-gemini">0</span>
               <div class="platform-bar-fill" id="bar-gemini" style="width: 0%"></div>
+              <span id="percent-gemini">0% of interactions</span>
             </div>
           </div>
 
           <div class="recent-list" id="recent-activity-list"></div>
           <span class="activity-badge" id="recent-count-badge">0</span>
-          <button id="toggle-explorer-btn"><span id="toggle-explorer-text">Explore All</span></button>
+          <button id="toggle-explorer-btn"><span id="toggle-explorer-text">View All</span></button>
+          <div id="open-explorer-banner"><span id="explorer-banner-sub"></span></div>
 
           <section class="explorer-section collapsed" id="explorer-section">
             <div id="explorer-header-toggle"></div>
@@ -78,10 +83,11 @@ describe('Popup Dashboard & Interaction Explorer Unit Tests', () => {
             <span id="health-summary-badge">Unknown</span>
           </div>
 
-          <button id="diagnostics-toggle" aria-expanded="false"></button>
-          <div id="diagnostics-content" hidden>
+          <button id="diagnostics-toggle" aria-expanded="true"></button>
+          <div id="diagnostics-content">
             <button id="ping-btn"></button>
             <button id="integrity-btn"></button>
+            <button id="export-btn"></button>
             <button id="clear-log-btn"></button>
             <div id="log-output"></div>
           </div>

@@ -1,7 +1,7 @@
 /**
  * IntelliCache Collector - Modern Popup Dashboard Controller
- * Manages live IndexedDB stats, platform collection breakdown, recent interaction preview,
- * interactive interaction explorer, system health monitoring, and collapsed diagnostics.
+ * Manages live IndexedDB stats, platform collection breakdown with provider logos,
+ * recent interaction preview, interactive explorer, system health, and diagnostics & tools suite.
  */
 
 import { logger } from '../diagnostics'
@@ -46,7 +46,7 @@ const state: PopupState = {
   explorerFilter: 'all',
   explorerSearchQuery: '',
   isExplorerExpanded: false,
-  isDiagnosticsExpanded: false,
+  isDiagnosticsExpanded: true,
 }
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -65,10 +65,16 @@ document.addEventListener('DOMContentLoaded', () => {
   const barClaudeEl = document.getElementById('bar-claude')
   const barGeminiEl = document.getElementById('bar-gemini')
 
+  const percentChatgptEl = document.getElementById('percent-chatgpt')
+  const percentClaudeEl = document.getElementById('percent-claude')
+  const percentGeminiEl = document.getElementById('percent-gemini')
+
   const recentListEl = document.getElementById('recent-activity-list')
   const recentCountBadgeEl = document.getElementById('recent-count-badge')
   const toggleExplorerBtn = document.getElementById('toggle-explorer-btn')
   const toggleExplorerText = document.getElementById('toggle-explorer-text')
+  const openExplorerBanner = document.getElementById('open-explorer-banner')
+  const explorerBannerSubEl = document.getElementById('explorer-banner-sub')
 
   const explorerSectionEl = document.getElementById('explorer-section')
   const explorerHeaderToggleEl = document.getElementById('explorer-header-toggle')
@@ -89,6 +95,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const diagnosticsContentEl = document.getElementById('diagnostics-content')
   const pingBtn = document.getElementById('ping-btn') as HTMLButtonElement | null
   const integrityBtn = document.getElementById('integrity-btn') as HTMLButtonElement | null
+  const exportBtn = document.getElementById('export-btn') as HTMLButtonElement | null
   const clearLogBtn = document.getElementById('clear-log-btn') as HTMLButtonElement | null
   const logOutputEl = document.getElementById('log-output')
 
@@ -140,7 +147,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const timeSpan = document.createElement('span')
     timeSpan.className = 'log-time'
-    timeSpan.textContent = new Date().toLocaleTimeString()
+    timeSpan.textContent = `[${new Date().toLocaleTimeString()}]`
 
     const msgSpan = document.createElement('span')
     msgSpan.className = 'log-msg'
@@ -201,6 +208,35 @@ document.addEventListener('DOMContentLoaded', () => {
       .replace(/'/g, '&#039;')
   }
 
+  function getProviderLogoHtml(platform: string): string {
+    switch (platform) {
+      case 'chatgpt':
+        return `
+          <div class="recent-item-logo badge-chatgpt" title="ChatGPT">
+            <svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor">
+              <path d="M22.28 9.82a5.98 5.98 0 0 0-.52-4.91 6.05 6.05 0 0 0-6.51-2.9A6.06 6.06 0 0 0 4.98 4.18a5.98 5.98 0 0 0-4 2.9 6.05 6.05 0 0 0 .74 7.1 5.98 5.98 0 0 0 .51 4.91 6.05 6.05 0 0 0 6.51 2.9A5.98 5.98 0 0 0 13.26 24a6.06 6.06 0 0 0 5.77-4.2 5.99 5.99 0 0 0 4-2.9 6.06 6.06 0 0 0-.75-7.08zm-9.02 12.61a4.48 4.48 0 0 1-2.88-1.04l.14-.08 4.78-2.76a.8.8 0 0 0 .39-.68v-6.74l2.02 1.17a.07.07 0 0 1 .04.05v5.58a4.5 4.5 0 0 1-4.49 4.5zm-9.66-4.13a4.47 4.47 0 0 1-.53-3.01l.14.08 4.78 2.76a.77.77 0 0 0 .78 0l5.84-3.37v2.33a.08.08 0 0 1-.03.06L9.74 19.95a4.5 4.5 0 0 1-6.14-1.65zM2.34 7.9a4.49 4.49 0 0 1 2.37-1.98v5.68a.77.77 0 0 0 .38.68l5.82 3.35-2.02 1.17a.08.08 0 0 1-.07 0l-4.83-2.79A4.5 4.5 0 0 1 2.34 7.9zm16.1 3.86L12.6 8.38l2.02-1.16a.08.08 0 0 1 .07 0l4.83 2.79a4.5 4.5 0 0 1-.68 8.1v-5.68a.79.79 0 0 0-.4-.68zm2.01-3.03l-.14-.08-4.78-2.78a.78.78 0 0 0-.79 0L8.91 9.23V6.9a.07.07 0 0 1 .03-.06l4.83-2.79a4.5 4.5 0 0 1 6.68 4.68zm-12.64 4.14a.77.77 0 0 0-.39-.68L2.59 9.35a4.5 4.5 0 0 1 6.55-2.52v5.59a.79.79 0 0 0 .39.68l5.83 3.37-2.02 1.17a.08.08 0 0 1-.07 0l-4.83-2.79z" />
+            </svg>
+          </div>
+        `
+      case 'claude':
+        return `
+          <div class="recent-item-logo badge-claude" title="Claude">
+            <span class="claude-text-mark" style="font-size: 9px;">AI</span>
+          </div>
+        `
+      case 'gemini':
+        return `
+          <div class="recent-item-logo badge-gemini" title="Gemini">
+            <svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor">
+              <path d="M12 2C12 7.52 7.52 12 2 12c4.48 0 10 4.48 10 10 0-5.52 4.48-10 10-10-4.48 0-10-4.48-10-10z" />
+            </svg>
+          </div>
+        `
+      default:
+        return `<div class="recent-item-logo badge-chatgpt"><span style="font-size: 8px;">AI</span></div>`
+    }
+  }
+
   // ─── RENDERERS ───────────────────────────────────────────────────────────
 
   function renderMetricsAndBreakdown(): void {
@@ -223,6 +259,14 @@ document.addEventListener('DOMContentLoaded', () => {
     if (barChatgptEl) barChatgptEl.style.width = `${state.totalInteractions > 0 ? gptPercent : 0}%`
     if (barClaudeEl) barClaudeEl.style.width = `${state.totalInteractions > 0 ? claudePercent : 0}%`
     if (barGeminiEl) barGeminiEl.style.width = `${state.totalInteractions > 0 ? geminiPercent : 0}%`
+
+    if (percentChatgptEl) percentChatgptEl.textContent = `${gptPercent}% of interactions`
+    if (percentClaudeEl) percentClaudeEl.textContent = `${claudePercent}% of interactions`
+    if (percentGeminiEl) percentGeminiEl.textContent = `${geminiPercent}% of interactions`
+
+    if (explorerBannerSubEl) {
+      explorerBannerSubEl.textContent = `Browse, search and filter all ${state.totalInteractions} interactions`
+    }
   }
 
   function renderRecentActivity(): void {
@@ -252,10 +296,9 @@ document.addEventListener('DOMContentLoaded', () => {
     recentListEl.innerHTML = ''
     items.forEach((item) => {
       const card = document.createElement('div')
-      card.className = 'recent-item'
+      card.className = `recent-item item-${item.platform}`
       card.title = 'Click to open in Explorer'
 
-      const platformClass = `pill-${item.platform}`
       const platformName =
         item.platform === 'chatgpt'
           ? 'ChatGPT'
@@ -266,12 +309,16 @@ document.addEventListener('DOMContentLoaded', () => {
               : 'AI'
 
       const title = item.conversation_title || 'Untitled Thread'
-      const querySnippet = item.query?.text ? item.query.text.slice(0, 90) : '(Empty prompt)'
+      const querySnippet = item.query?.text ? item.query.text.slice(0, 85) : '(Empty prompt)'
       const timeStr = formatRelativeTime(item.observed_at)
+      const logoHtml = getProviderLogoHtml(item.platform)
 
       card.innerHTML = `
         <div class="recent-item-header">
-          <span class="platform-pill ${platformClass}">${platformName}</span>
+          <div class="recent-item-brand">
+            ${logoHtml}
+            <span class="recent-platform-label recent-platform-${item.platform}">${platformName}</span>
+          </div>
           <span class="recent-time">${escapeHtml(timeStr)}</span>
         </div>
         <div class="recent-title">${escapeHtml(title)}</div>
@@ -328,7 +375,6 @@ document.addEventListener('DOMContentLoaded', () => {
       const card = document.createElement('div')
       card.className = 'explorer-card'
 
-      const platformClass = `pill-${item.platform}`
       const platformName =
         item.platform === 'chatgpt'
           ? 'ChatGPT'
@@ -346,11 +392,13 @@ document.addEventListener('DOMContentLoaded', () => {
       const fpShort = item.fingerprint ? `${item.fingerprint.slice(0, 12)}...` : 'n/a'
       const queryChars = item.query?.characters ?? promptText.length
       const respChars = item.response?.characters ?? respText.length
+      const logoHtml = getProviderLogoHtml(item.platform)
 
       card.innerHTML = `
         <div class="explorer-card-header">
           <div class="explorer-badges">
-            <span class="platform-pill ${platformClass}">${platformName}</span>
+            ${logoHtml}
+            <span class="recent-platform-label recent-platform-${item.platform}">${platformName}</span>
             <span class="context-tag">${escapeHtml(context)}</span>
           </div>
           <span class="recent-time">${escapeHtml(timeStr)}</span>
@@ -359,38 +407,20 @@ document.addEventListener('DOMContentLoaded', () => {
         <div class="recent-title">${escapeHtml(title)}</div>
 
         <div class="explorer-content-block">
-          <span class="explorer-label">Prompt (${queryChars} chars)</span>
-          <div class="explorer-text collapsed-text" data-type="prompt">${escapeHtml(promptText)}</div>
+          <div class="explorer-label">User Query (${queryChars} chars)</div>
+          <div class="explorer-text">${escapeHtml(promptText)}</div>
         </div>
 
         <div class="explorer-content-block">
-          <span class="explorer-label">Response (${respChars} chars)</span>
-          <div class="explorer-text collapsed-text" data-type="response">${escapeHtml(respText)}</div>
+          <div class="explorer-label">Assistant Response (${respChars} chars)</div>
+          <div class="explorer-text">${escapeHtml(respText)}</div>
         </div>
 
         <div class="explorer-footer-row">
-          <span class="fingerprint-tag">FP: ${escapeHtml(fpShort)}</span>
-          <button class="btn-text btn-expand-card" type="button">Expand details</button>
+          <span class="fingerprint-tag" title="SHA-256: ${escapeHtml(item.fingerprint || '')}">fp: ${escapeHtml(fpShort)}</span>
+          <span>turn: ${item.message_id ? escapeHtml(item.message_id.slice(0, 8)) : 'turn-0'}</span>
         </div>
       `
-
-      // Toggle expand on card text containers
-      const expandBtn = card.querySelector('.btn-expand-card') as HTMLButtonElement | null
-      const textBlocks = card.querySelectorAll('.explorer-text')
-
-      expandBtn?.addEventListener('click', () => {
-        const isCollapsed = textBlocks[0]?.classList.contains('collapsed-text')
-        textBlocks.forEach((tb) => {
-          if (isCollapsed) {
-            tb.classList.remove('collapsed-text')
-          } else {
-            tb.classList.add('collapsed-text')
-          }
-        })
-        if (expandBtn) {
-          expandBtn.textContent = isCollapsed ? 'Collapse details' : 'Expand details'
-        }
-      })
 
       explorerItemsListEl.appendChild(card)
     })
@@ -398,109 +428,99 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function updateFilterChipUI(): void {
     if (!filterChipsEl) return
-    const chips = filterChipsEl.querySelectorAll('.chip')
-    chips.forEach((c) => {
-      const filterVal = c.getAttribute('data-filter')
-      if (filterVal === state.explorerFilter) {
-        c.classList.add('active')
+    const chips = filterChipsEl.querySelectorAll<HTMLButtonElement>('.chip')
+    chips.forEach((chip) => {
+      const f = chip.getAttribute('data-filter')
+      if (f === state.explorerFilter) {
+        chip.classList.add('active')
       } else {
-        c.classList.remove('active')
+        chip.classList.remove('active')
       }
     })
   }
 
   function expandExplorer(): void {
     state.isExplorerExpanded = true
-    explorerSectionEl?.classList.remove('collapsed')
+    if (explorerSectionEl) explorerSectionEl.classList.remove('collapsed')
     if (toggleExplorerText) toggleExplorerText.textContent = 'Collapse'
     renderExplorerItems()
+    explorerSectionEl?.scrollIntoView({ behavior: 'smooth' })
   }
 
   function collapseExplorer(): void {
     state.isExplorerExpanded = false
-    explorerSectionEl?.classList.add('collapsed')
-    if (toggleExplorerText) toggleExplorerText.textContent = 'Explore All'
+    if (explorerSectionEl) explorerSectionEl.classList.add('collapsed')
+    if (toggleExplorerText) toggleExplorerText.textContent = 'View All'
   }
 
-  // ─── INITIALIZATION & DATA LOADING ────────────────────────────────────────
+  // ─── STATUS & STATS LOADER ───────────────────────────────────────────────
 
   async function checkInitialStatus(): Promise<void> {
     try {
       updateStatusPill('CONNECTING')
+      appendLog('Connecting to IntelliCache background service worker...', 'info')
 
-      // Query service worker runtime status
-      const statusMessage = createGetStatusMessage('popup')
-      const statusResponse = await sendExtensionMessage<typeof statusMessage, StatusResponseData>(
-        statusMessage
-      )
+      const statusMsg = createGetStatusMessage('popup')
+      const statusRes = await sendExtensionMessage<typeof statusMsg, StatusResponseData>(statusMsg)
 
-      if (statusResponse && statusResponse.success && statusResponse.data) {
-        const statusData = statusResponse.data
-        if (extVersionValEl) extVersionValEl.textContent = statusData.version
-        if (swStatusValEl) swStatusValEl.textContent = 'Active (MV3)'
+      if (statusRes && statusRes.success && statusRes.data) {
         updateStatusPill('ACTIVE')
-
-        appendLog(
-          `Service Worker connected (v${statusData.version}, manifest v${statusData.manifestVersion})`,
-          'success'
-        )
-
-        // Query database statistics and recent interactions
-        const statsMessage = createDbGetStatsMessage('popup')
-        const statsResponse = await sendExtensionMessage<typeof statsMessage, DbStatsResponseData>(
-          statsMessage
-        )
-
-        if (statsResponse && statsResponse.success && statsResponse.data) {
-          const stats = statsResponse.data
-
-          state.totalInteractions = stats.interactionCount
-          state.totalConversations = stats.conversationCount
-          state.chatgptCount = stats.platformCounts?.chatgpt ?? 0
-          state.claudeCount = stats.platformCounts?.claude ?? 0
-          state.geminiCount = stats.platformCounts?.gemini ?? 0
-          state.recentInteractions = stats.recentInteractions || []
-
-          if (dbConnectionValEl) {
-            dbConnectionValEl.textContent = `Connected (v${stats.dbVersion})`
-          }
-          if (dbStorageValEl) {
-            dbStorageValEl.textContent = `IndexedDB (${stats.interactionCount} items)`
-          }
-          if (healthSummaryBadgeEl) {
-            healthSummaryBadgeEl.textContent = 'Healthy'
-            healthSummaryBadgeEl.style.color = 'var(--success)'
-          }
-
-          renderMetricsAndBreakdown()
-          renderRecentActivity()
-          renderExplorerItems()
-
-          appendLog(
-            `Database '${stats.dbName}' connected: ${stats.interactionCount} interactions, ${stats.conversationCount} conversations`,
-            'info'
-          )
-
-          logger.info(
-            'UI',
-            'CORE',
-            `query=interactions raw=${stats.interactionCount} filtered=${stats.interactionCount} grouped=${stats.interactionCount} rendered=${stats.interactionCount}`
-          )
-        }
+        if (swStatusValEl) swStatusValEl.textContent = 'Active (MV3)'
+        if (extVersionValEl) extVersionValEl.textContent = statusRes.data.version
+        appendLog(`Service Worker connected (v${statusRes.data.version}, manifest v3)`, 'success')
       } else {
         updateStatusPill('OFFLINE')
-        if (swStatusValEl) swStatusValEl.textContent = 'Inactive'
-        if (healthSummaryBadgeEl) {
-          healthSummaryBadgeEl.textContent = 'Disconnected'
-          healthSummaryBadgeEl.style.color = 'var(--warning)'
+        if (swStatusValEl) swStatusValEl.textContent = 'Offline'
+        appendLog(
+          'Service worker not responding to GET_STATUS. Checking database directly...',
+          'warn'
+        )
+      }
+
+      // Fetch live database metrics
+      const statsMsg = createDbGetStatsMessage('popup')
+      const statsRes = await sendExtensionMessage<typeof statsMsg, DbStatsResponseData>(statsMsg)
+
+      if (statsRes && statsRes.success && statsRes.data) {
+        const d = statsRes.data
+        state.totalInteractions = d.interactionCount
+        state.totalConversations = d.conversationCount
+        state.chatgptCount = d.platformCounts?.chatgpt ?? 0
+        state.claudeCount = d.platformCounts?.claude ?? 0
+        state.geminiCount = d.platformCounts?.gemini ?? 0
+        state.recentInteractions = d.recentInteractions ?? []
+
+        if (dbStorageValEl) {
+          dbStorageValEl.textContent = `IndexedDB (${state.totalInteractions} items)`
         }
-        appendLog(`Service worker unreachable: ${statusResponse?.error ?? 'No response'}`, 'warn')
+        if (dbConnectionValEl) {
+          dbConnectionValEl.textContent = 'Connected (v1)'
+        }
+        if (healthSummaryBadgeEl) {
+          healthSummaryBadgeEl.innerHTML = `
+            <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+            </svg>
+            <span>Healthy</span>`
+        }
+
+        renderMetricsAndBreakdown()
+        renderRecentActivity()
+        renderExplorerItems()
+
+        appendLog(
+          `Database 'intelliCache' connected: ${state.totalInteractions} interactions, ${state.totalConversations} conversations`,
+          'success'
+        )
+      } else {
+        appendLog(`Failed to fetch database stats: ${statsRes?.error ?? 'Unknown error'}`, 'error')
       }
     } catch (err) {
+      logger.error('UI', 'CORE', 'Error during initial popup status check', { error: err })
       updateStatusPill('ERROR')
       if (swStatusValEl) swStatusValEl.textContent = 'Error'
       if (healthSummaryBadgeEl) {
-        healthSummaryBadgeEl.textContent = 'Error'
+        healthSummaryBadgeEl.innerHTML = `<span>Error</span>`
         healthSummaryBadgeEl.style.color = 'var(--error)'
       }
       appendLog(`Status check failed: ${err instanceof Error ? err.message : String(err)}`, 'error')
@@ -516,6 +536,10 @@ document.addEventListener('DOMContentLoaded', () => {
     } else {
       expandExplorer()
     }
+  })
+
+  openExplorerBanner?.addEventListener('click', () => {
+    expandExplorer()
   })
 
   // Header click / close icon in explorer
@@ -633,11 +657,57 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   })
 
+  // Export JSON Dataset
+  exportBtn?.addEventListener('click', () => {
+    if (!exportBtn) return
+    exportBtn.disabled = true
+    appendLog('Preparing dataset export...', 'info')
+
+    try {
+      const exportPayload = {
+        meta: {
+          exported_at: new Date().toISOString(),
+          collector: 'IntelliCache',
+          version: '0.1.0',
+          total_interactions: state.totalInteractions,
+          total_conversations: state.totalConversations,
+          breakdown: {
+            chatgpt: state.chatgptCount,
+            claude: state.claudeCount,
+            gemini: state.geminiCount,
+          },
+        },
+        interactions: state.recentInteractions,
+      }
+
+      const jsonStr = JSON.stringify(exportPayload, null, 2)
+      const blob = new Blob([jsonStr], { type: 'application/json' })
+      const blobUrl = URL.createObjectURL(blob)
+
+      const downloadAnchor = document.createElement('a')
+      downloadAnchor.href = blobUrl
+      downloadAnchor.download = `intellicache-export-${new Date().toISOString().slice(0, 10)}.json`
+      document.body.appendChild(downloadAnchor)
+      downloadAnchor.click()
+      document.body.removeChild(downloadAnchor)
+      URL.revokeObjectURL(blobUrl)
+
+      appendLog(
+        `Exported ${state.recentInteractions.length} interaction records to JSON`,
+        'success'
+      )
+    } catch (err) {
+      appendLog(`Export error: ${err instanceof Error ? err.message : String(err)}`, 'error')
+    } finally {
+      exportBtn.disabled = false
+    }
+  })
+
   // Clear Diagnostic Log
   clearLogBtn?.addEventListener('click', () => {
     if (logOutputEl) {
       logOutputEl.innerHTML = ''
-      appendLog('Log cleared.', 'info')
+      appendLog('Diagnostic log cleared.', 'info')
     }
   })
 
