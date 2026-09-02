@@ -8,6 +8,7 @@
     "build": "tsc --noEmit && vite build",
     "build:firefox": "tsc --noEmit && vite build && node scripts/build-firefox.mjs",
     "build:all": "tsc --noEmit && vite build && node scripts/build-firefox.mjs",
+    "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
