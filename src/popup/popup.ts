@@ -22,6 +22,7 @@ import type {
 
 // Global in-memory UI state (reset atomically on each fresh query)
 interface PopupState {
+  theme: 'dark' | 'light'
   totalInteractions: number
   totalConversations: number
   chatgptCount: number
@@ -35,6 +36,7 @@ interface PopupState {
 }
 
 const state: PopupState = {
+  theme: 'dark',
   totalInteractions: 0,
   totalConversations: 0,
   chatgptCount: 0,
@@ -49,6 +51,7 @@ const state: PopupState = {
 
 document.addEventListener('DOMContentLoaded', () => {
   // DOM Elements
+  const themeToggleBtn = document.getElementById('theme-toggle-btn') as HTMLButtonElement | null
   const statusBadge = document.getElementById('status-badge')
   const statusText = document.getElementById('status-text')
   const totalInteractionsEl = document.getElementById('total-interactions-count')
@@ -88,6 +91,45 @@ document.addEventListener('DOMContentLoaded', () => {
   const integrityBtn = document.getElementById('integrity-btn') as HTMLButtonElement | null
   const clearLogBtn = document.getElementById('clear-log-btn') as HTMLButtonElement | null
   const logOutputEl = document.getElementById('log-output')
+
+  // ─── THEME MANAGEMENT ───────────────────────────────────────────────────
+
+  function applyTheme(theme: 'dark' | 'light'): void {
+    state.theme = theme
+    document.documentElement.setAttribute('data-theme', theme)
+    if (themeToggleBtn) {
+      themeToggleBtn.setAttribute(
+        'aria-label',
+        theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'
+      )
+      themeToggleBtn.title = theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'
+    }
+    try {
+      localStorage.setItem('intellicache_theme', theme)
+    } catch {
+      // ignore storage errors
+    }
+  }
+
+  function initTheme(): void {
+    try {
+      const savedTheme = localStorage.getItem('intellicache_theme')
+      if (savedTheme === 'light' || savedTheme === 'dark') {
+        applyTheme(savedTheme)
+        return
+      }
+    } catch {
+      // ignore
+    }
+    // Default to dark mode with pure black background
+    applyTheme('dark')
+  }
+
+  function toggleTheme(): void {
+    const nextTheme: 'dark' | 'light' = state.theme === 'dark' ? 'light' : 'dark'
+    applyTheme(nextTheme)
+    appendLog(`Theme switched to ${nextTheme.toUpperCase()} mode`, 'info')
+  }
 
   // ─── UTILITY & LOGGING ───────────────────────────────────────────────────
 
@@ -598,6 +640,12 @@ document.addEventListener('DOMContentLoaded', () => {
       appendLog('Log cleared.', 'info')
     }
   })
+
+  // Theme Toggle
+  themeToggleBtn?.addEventListener('click', toggleTheme)
+
+  // Initialize theme
+  initTheme()
 
   // Run initial status check
   void checkInitialStatus()

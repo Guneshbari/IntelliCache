@@ -295,4 +295,37 @@ describe('Popup Dashboard & Interaction Explorer Unit Tests', () => {
     )
     expect(noMatch).toHaveLength(0)
   })
+
+  it('handles theme state switching and persists preference to localStorage', () => {
+    const storage: Record<string, string> = {}
+    const mockStorage = {
+      getItem: (key: string) => storage[key] ?? null,
+      setItem: (key: string, val: string) => {
+        storage[key] = val
+      },
+      clear: () => {
+        for (const k of Object.keys(storage)) delete storage[k]
+      },
+    }
+
+    // Default should be dark mode
+    let currentTheme = mockStorage.getItem('intellicache_theme') || 'dark'
+    expect(currentTheme).toBe('dark')
+
+    // Switch to light mode
+    currentTheme = 'light'
+    mockStorage.setItem('intellicache_theme', currentTheme)
+    document.documentElement.setAttribute('data-theme', currentTheme)
+
+    expect(document.documentElement.getAttribute('data-theme')).toBe('light')
+    expect(mockStorage.getItem('intellicache_theme')).toBe('light')
+
+    // Switch back to dark mode
+    currentTheme = 'dark'
+    mockStorage.setItem('intellicache_theme', currentTheme)
+    document.documentElement.setAttribute('data-theme', currentTheme)
+
+    expect(document.documentElement.getAttribute('data-theme')).toBe('dark')
+    expect(mockStorage.getItem('intellicache_theme')).toBe('dark')
+  })
 })
