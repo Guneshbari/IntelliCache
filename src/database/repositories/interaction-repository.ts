@@ -76,7 +76,6 @@ export class InteractionRepository {
           `fingerprint trace=${traceId} (strategy=${fingerprintStrategy}, fp=${fingerprint.slice(0, 16)}...)`
         )
       }
-      computedFingerprint = fingerprint
 
       // Check for duplicate fingerprint before insertion
       logger.info(

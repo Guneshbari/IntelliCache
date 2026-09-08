@@ -327,7 +327,7 @@ response = llm.generate(query, context=retrieved_docs)</code></pre>
     const domDiagLog = logSinkEntries.find((e) => e.message.includes('DOM diagnostics'))
     expect(domDiagLog).toBeDefined()
     expect(domDiagLog?.message).toContain(
-      '[IntelliCache][Parser][GEMINI] DOM diagnostics | userQueries=1 | modelResponses=1 | userTexts=1 | assistantTexts=1 | completePairs=1'
+      '[IntelliCache][Parser][GEMINI] DOM diagnostics | userQueries=1 | modelResponses=1 | completePairs=1'
     )
 
     const scanSummaryLog = logSinkEntries.find((e) => e.message.includes('SCAN SUMMARY'))
