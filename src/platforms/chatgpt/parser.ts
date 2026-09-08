@@ -145,7 +145,11 @@ export function isPageGenerating(root: Document | Element): boolean {
     root.querySelector('.result-streaming, .streaming, span.streaming-cursor, .result-thinking') !==
     null
   ) {
-    logger.debug('Parser', 'CHATGPT', 'Active generation detected: streaming/thinking indicator present')
+    logger.debug(
+      'Parser',
+      'CHATGPT',
+      'Active generation detected: streaming/thinking indicator present'
+    )
     return true
   }
 
@@ -279,9 +283,17 @@ export function extractConversationTurns(root: Document | Element): RawMessageTu
   if (turns.length === 0) {
     logger.debug('Parser', 'CHATGPT', 'DOM scan completed: 0 conversation turns found.')
   } else if (userCount === 0) {
-    logger.debug('Parser', 'CHATGPT', `DOM scan completed: 0 user turns found (${asstCount} assistant turns found).`)
+    logger.debug(
+      'Parser',
+      'CHATGPT',
+      `DOM scan completed: 0 user turns found (${asstCount} assistant turns found).`
+    )
   } else if (asstCount === 0) {
-    logger.debug('Parser', 'CHATGPT', `DOM scan completed: 0 assistant turns found (${userCount} user turns found).`)
+    logger.debug(
+      'Parser',
+      'CHATGPT',
+      `DOM scan completed: 0 assistant turns found (${userCount} user turns found).`
+    )
   }
 
   return turns
@@ -304,9 +316,17 @@ export function pairTurnsIntoInteractions(
   const interactions = sharedPairTurns('chatgpt', turns, context)
 
   if (interactions.length === 0 && turns.length > 0) {
-    logger.debug('Parser', 'CHATGPT', `Failed to form any complete user/assistant pairs from ${turns.length} turns.`)
+    logger.debug(
+      'Parser',
+      'CHATGPT',
+      `Failed to form any complete user/assistant pairs from ${turns.length} turns.`
+    )
   } else {
-    logger.debug('Parser', 'CHATGPT', `Pairing complete: formed ${interactions.length} complete interaction pair(s).`)
+    logger.debug(
+      'Parser',
+      'CHATGPT',
+      `Pairing complete: formed ${interactions.length} complete interaction pair(s).`
+    )
   }
 
   return interactions

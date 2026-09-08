@@ -89,7 +89,10 @@ export function formatCodeBlock(pre: Element, ownerDocument: Document): void {
  * - Trims surrounding whitespace
  */
 export function normalizeExtractedText(rawText: string): string {
-  return rawText.replace(/\r\n|\r/g, '\n').replace(/\n{3,}/g, '\n\n').trim()
+  return rawText
+    .replace(/\r\n|\r/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
 }
 
 /**

@@ -230,9 +230,17 @@ export function extractConversationTurns(root: Document | Element): RawMessageTu
       `DOM scan completed: 0 conversation turns found matching '${CLAUDE_SELECTORS.USER_MESSAGE}' / '${CLAUDE_SELECTORS.ASSISTANT_MESSAGE}'.`
     )
   } else if (userCount === 0) {
-    logger.debug('Parser', 'CLAUDE', `DOM scan completed: 0 user turns found (${asstCount} assistant turns found).`)
+    logger.debug(
+      'Parser',
+      'CLAUDE',
+      `DOM scan completed: 0 user turns found (${asstCount} assistant turns found).`
+    )
   } else if (asstCount === 0) {
-    logger.debug('Parser', 'CLAUDE', `DOM scan completed: 0 assistant turns found (${userCount} user turns found).`)
+    logger.debug(
+      'Parser',
+      'CLAUDE',
+      `DOM scan completed: 0 assistant turns found (${userCount} user turns found).`
+    )
   }
 
   return turns
@@ -255,9 +263,17 @@ export function pairTurnsIntoInteractions(
   const interactions = sharedPairTurns('claude', turns, context)
 
   if (interactions.length === 0 && turns.length > 0) {
-    logger.debug('Parser', 'CLAUDE', `Failed to form any complete user/assistant pairs from ${turns.length} turns.`)
+    logger.debug(
+      'Parser',
+      'CLAUDE',
+      `Failed to form any complete user/assistant pairs from ${turns.length} turns.`
+    )
   } else {
-    logger.debug('Parser', 'CLAUDE', `Pairing complete: formed ${interactions.length} complete interaction pair(s).`)
+    logger.debug(
+      'Parser',
+      'CLAUDE',
+      `Pairing complete: formed ${interactions.length} complete interaction pair(s).`
+    )
   }
 
   return interactions
