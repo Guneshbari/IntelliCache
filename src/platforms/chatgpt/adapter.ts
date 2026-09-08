@@ -48,7 +48,11 @@ export class ChatGPTAdapter extends BaseAdapter {
     this.isInitialScan = true
     this.lastObservedUrl = window.location.href
 
-    logger.info('Adapter', 'CHATGPT', `Starting adapter lifecycle (initial URL: ${this.lastObservedUrl})`)
+    logger.info(
+      'Adapter',
+      'CHATGPT',
+      `Starting adapter lifecycle (initial URL: ${this.lastObservedUrl})`
+    )
     logger.debug('Adapter', 'CHATGPT', 'Scheduling initial DOM scan in 100ms...')
 
     this.scheduleProcessing(100)
@@ -98,10 +102,18 @@ export class ChatGPTAdapter extends BaseAdapter {
 
       const isNewChatAssignment = !previousConvId && !!newConvId
       if (!isNewChatAssignment) {
-        logger.debug('Navigation', 'CHATGPT', 'URL change classified as true SPA navigation; resetting scan state to on_load.')
+        logger.debug(
+          'Navigation',
+          'CHATGPT',
+          'URL change classified as true SPA navigation; resetting scan state to on_load.'
+        )
         this.isInitialScan = true
       } else {
-        logger.debug('Navigation', 'CHATGPT', 'URL change classified as new-chat ID assignment; preserving on_generate capture context.')
+        logger.debug(
+          'Navigation',
+          'CHATGPT',
+          'URL change classified as new-chat ID assignment; preserving on_generate capture context.'
+        )
       }
 
       this.scheduleProcessing(200)
@@ -126,8 +138,16 @@ export class ChatGPTAdapter extends BaseAdapter {
       diagnosticStats.increment('missingConversationIds')
     }
 
-    logger.debug('Adapter', 'CHATGPT', `Starting conversation DOM processing pass (URL: ${currentUrl})`)
-    logger.debug('Adapter', 'CHATGPT', `Conversation ID: ${conversationId ? `present (${conversationId})` : 'null'}`)
+    logger.debug(
+      'Adapter',
+      'CHATGPT',
+      `Starting conversation DOM processing pass (URL: ${currentUrl})`
+    )
+    logger.debug(
+      'Adapter',
+      'CHATGPT',
+      `Conversation ID: ${conversationId ? `present (${conversationId})` : 'null'}`
+    )
 
     const generating = isPageGenerating(document.body || document)
     logger.debug('Adapter', 'CHATGPT', `Evaluating page generation state: generating=${generating}`)

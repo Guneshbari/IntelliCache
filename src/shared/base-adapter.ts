@@ -8,16 +8,16 @@
  * Concrete subclasses only implement platform-specific DOM extraction.
  */
 
-import { diagnosticStats, logger } from '../../diagnostics'
-import { NavigationWatcher } from '../navigation-watcher'
+import { diagnosticStats, logger } from '../diagnostics'
+import { NavigationWatcher } from './navigation-watcher'
 import {
   createDbSaveInteractionMessage,
   detectPlatformFromUrl,
   sendExtensionMessage,
-} from '../messages'
-import type { CaptureContext, CreateInteractionInput } from '../types'
-import type { DiagnosticPlatform } from '../../diagnostics/types'
-import type { ExtractedInteraction, PlatformAdapter } from '../../platforms/types'
+} from './messages'
+import type { CaptureContext, CreateInteractionInput } from './types'
+import type { DiagnosticPlatform } from '../diagnostics/types'
+import type { ExtractedInteraction, PlatformAdapter } from '../platforms/types'
 
 export const MUTATION_DEBOUNCE_MS = 500
 export const NEW_CHAT_URL_TIMEOUT_MS = 4000
@@ -213,7 +213,11 @@ export abstract class BaseAdapter implements PlatformAdapter {
       )
     }
 
-    logger.debug('Navigation', this.platformTag, 'DOM scan scheduled after navigation (delay: 250ms).')
+    logger.debug(
+      'Navigation',
+      this.platformTag,
+      'DOM scan scheduled after navigation (delay: 250ms).'
+    )
     this.scheduleProcessing(250)
   }
 
@@ -222,9 +226,12 @@ export abstract class BaseAdapter implements PlatformAdapter {
    * queues unbound interactions, and persists new ones.
    * Returns counters for the scan summary log.
    */
-  protected async processInteractions(
-    interactions: ExtractedInteraction[]
-  ): Promise<{ queuedCount: number; savedCount: number; duplicateCount: number; failureCount: number }> {
+  protected async processInteractions(interactions: ExtractedInteraction[]): Promise<{
+    queuedCount: number
+    savedCount: number
+    duplicateCount: number
+    failureCount: number
+  }> {
     let queuedCount = 0
     let savedCount = 0
     let duplicateCount = 0
@@ -370,7 +377,11 @@ export abstract class BaseAdapter implements PlatformAdapter {
       if (response.error?.includes('already exists')) {
         this.processedKeys.add(key)
         diagnosticStats.increment('duplicates')
-        logger.info('Database', this.platformTag, `Duplicate interaction detected: ${response.error}`)
+        logger.info(
+          'Database',
+          this.platformTag,
+          `Duplicate interaction detected: ${response.error}`
+        )
         return 'duplicate'
       }
 
@@ -409,7 +420,11 @@ export abstract class BaseAdapter implements PlatformAdapter {
     if (this.navWatcher) {
       this.navWatcher.stop()
       this.navWatcher = null
-      logger.info('Navigation', this.platformTag, 'Navigation listener removed (popstate + polling stopped).')
+      logger.info(
+        'Navigation',
+        this.platformTag,
+        'Navigation listener removed (popstate + polling stopped).'
+      )
     }
 
     if (this.observer) {

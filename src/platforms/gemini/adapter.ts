@@ -76,11 +76,8 @@ export class GeminiAdapter extends BaseAdapter {
 
   /** Delegates to the shared handleNavigation from BaseAdapter. */
   handleNavigation(prevUrl: string, newUrl: string): void {
-    super.handleNavigation(
-      prevUrl,
-      newUrl,
-      extractConversationIdFromUrl,
-      () => extractConversationTitle(document)
+    super.handleNavigation(prevUrl, newUrl, extractConversationIdFromUrl, () =>
+      extractConversationTitle(document)
     )
   }
 
@@ -109,8 +106,16 @@ export class GeminiAdapter extends BaseAdapter {
       diagnosticStats.increment('missingConversationIds')
     }
 
-    logger.debug('Adapter', 'GEMINI', `DOM scan started (URL: ${currentUrl}, navState: ${this.navState})`)
-    logger.debug('Adapter', 'GEMINI', `Conversation ID: ${conversationId ? `present (${conversationId})` : 'null'}`)
+    logger.debug(
+      'Adapter',
+      'GEMINI',
+      `DOM scan started (URL: ${currentUrl}, navState: ${this.navState})`
+    )
+    logger.debug(
+      'Adapter',
+      'GEMINI',
+      `Conversation ID: ${conversationId ? `present (${conversationId})` : 'null'}`
+    )
 
     const root = document.body || document
 
@@ -119,8 +124,12 @@ export class GeminiAdapter extends BaseAdapter {
     const modelResponseCount = root.querySelectorAll('model-response').length
     const userRoleCount = root.querySelectorAll('[data-message-author-role="user"]').length
     const asstRoleCount = root.querySelectorAll('[data-message-author-role="assistant"]').length
-    const userTextCount = root.querySelectorAll('user-query .query-content, [id^="user-query-content"]').length
-    const asstTextCount = root.querySelectorAll('model-response .markdown, model-response message-content').length
+    const userTextCount = root.querySelectorAll(
+      'user-query .query-content, [id^="user-query-content"]'
+    ).length
+    const asstTextCount = root.querySelectorAll(
+      'model-response .markdown, model-response message-content'
+    ).length
     const docReadyState = typeof document !== 'undefined' ? document.readyState : 'unknown'
 
     logger.debug(
@@ -130,7 +139,11 @@ export class GeminiAdapter extends BaseAdapter {
     )
 
     if (userQueryCount === 0 && modelResponseCount === 0) {
-      logger.debug('Adapter', 'GEMINI', 'Gemini DOM contains 0 user-query and 0 model-response elements at scan time.')
+      logger.debug(
+        'Adapter',
+        'GEMINI',
+        'Gemini DOM contains 0 user-query and 0 model-response elements at scan time.'
+      )
     }
 
     const generating = isPageGenerating(root)

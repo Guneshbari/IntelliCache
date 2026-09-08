@@ -76,11 +76,8 @@ export class ClaudeAdapter extends BaseAdapter {
 
   /** Delegates to the shared handleNavigation from BaseAdapter. */
   handleNavigation(prevUrl: string, newUrl: string): void {
-    super.handleNavigation(
-      prevUrl,
-      newUrl,
-      extractConversationIdFromUrl,
-      () => extractConversationTitle(document)
+    super.handleNavigation(prevUrl, newUrl, extractConversationIdFromUrl, () =>
+      extractConversationTitle(document)
     )
   }
 
@@ -109,8 +106,16 @@ export class ClaudeAdapter extends BaseAdapter {
       diagnosticStats.increment('missingConversationIds')
     }
 
-    logger.debug('Adapter', 'CLAUDE', `DOM scan started (URL: ${currentUrl}, navState: ${this.navState})`)
-    logger.debug('Adapter', 'CLAUDE', `Conversation ID: ${conversationId ? `present (${conversationId})` : 'null'}`)
+    logger.debug(
+      'Adapter',
+      'CLAUDE',
+      `DOM scan started (URL: ${currentUrl}, navState: ${this.navState})`
+    )
+    logger.debug(
+      'Adapter',
+      'CLAUDE',
+      `Conversation ID: ${conversationId ? `present (${conversationId})` : 'null'}`
+    )
 
     const generating = isPageGenerating(document.body || document)
     logger.debug('Adapter', 'CLAUDE', `Generation state: generating=${generating}`)
