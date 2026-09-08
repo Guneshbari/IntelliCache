@@ -7,7 +7,16 @@
 import { logger } from '../../diagnostics'
 import type { CaptureContext } from '../../shared/types'
 import type { ExtractedInteraction, RawMessageTurn } from '../types'
+import {
+  extractMessageId,
+  extractSourceTimestamp,
+  formatCodeBlock,
+  normalizeExtractedText,
+  pairTurnsIntoInteractions as sharedPairTurns,
+} from '../shared/parser-utils'
 import { GEMINI_SELECTORS } from './selectors'
+
+export { extractMessageId, extractSourceTimestamp }
 
 /**
  * Extracts the conversation ID from Gemini URLs.
@@ -19,18 +28,14 @@ import { GEMINI_SELECTORS } from './selectors'
  */
 export function extractConversationIdFromUrl(url: string): string | null {
   try {
-    const parsed = new URL(url)
-    const pathname = parsed.pathname
-
-    // Match /app/{id} or /chat/{id} where id is non-empty and not just 'app'/'chat'
-    const appMatch = pathname.match(/\/(?:app|chat)\/([a-zA-Z0-9_-]+)/)
-    if (appMatch && appMatch[1]) {
-      const id = appMatch[1].trim()
+    const pathname = new URL(url).pathname
+    const match = pathname.match(/\/(?:app|chat)\/([a-zA-Z0-9_-]+)/)
+    if (match?.[1]) {
+      const id = match[1].trim()
       if (id.length > 0 && id !== 'app' && id !== 'chat') {
         return id
       }
     }
-
     return null
   } catch {
     return null
@@ -50,11 +55,8 @@ export function extractConversationTitle(docOrElement: Document | Element): stri
     title = docOrElement.ownerDocument.title
   }
 
-  if (!title) {
-    return null
-  }
+  if (!title) return null
 
-  // Clean brand suffixes
   const cleaned = title
     .replace(/\s*-\s*Google\s+Gemini$/i, '')
     .replace(/\s*-\s*Gemini$/i, '')
@@ -76,7 +78,6 @@ export function extractConversationTitle(docOrElement: Document | Element): stri
 
 /**
  * Extracts model provider and name from the Gemini interface if available.
- * Returns provider: 'google', name: string | null.
  */
 export function extractModelInfo(root: Document | Element): {
   provider: string | null
@@ -92,57 +93,7 @@ export function extractModelInfo(root: Document | Element): {
     }
   }
 
-  return {
-    provider: 'google',
-    name: name ?? null,
-  }
-}
-
-/**
- * Extracts message ID attribute (`data-message-id` or similar) from an element if present.
- * Returns null if not exposed by Gemini's DOM.
- */
-export function extractMessageId(element: Element): string | null {
-  const directId = element.getAttribute('data-message-id')
-  if (directId && directId.trim()) {
-    return directId.trim()
-  }
-
-  const childWithId = element.querySelector('[data-message-id]')
-  if (childWithId) {
-    const childId = childWithId.getAttribute('data-message-id')
-    if (childId && childId.trim()) {
-      return childId.trim()
-    }
-  }
-
-  return null
-}
-
-/**
- * Extracts original source timestamp from `<time datetime="...">` or `data-timestamp`
- * if exposed by the platform DOM. Never fabricates timestamps.
- */
-export function extractSourceTimestamp(element: Element): string | null {
-  const timeEl = element.querySelector('time[datetime]')
-  if (timeEl) {
-    const dt = timeEl.getAttribute('datetime')
-    if (dt && dt.trim()) {
-      return dt.trim()
-    }
-  }
-  const timestampAttr = element.getAttribute('data-timestamp')
-  if (timestampAttr && timestampAttr.trim()) {
-    return timestampAttr.trim()
-  }
-  const childWithTimestamp = element.querySelector('[data-timestamp]')
-  if (childWithTimestamp) {
-    const ts = childWithTimestamp.getAttribute('data-timestamp')
-    if (ts && ts.trim()) {
-      return ts.trim()
-    }
-  }
-  return null
+  return { provider: 'google', name }
 }
 
 /**
@@ -150,20 +101,10 @@ export function extractSourceTimestamp(element: Element): string | null {
  * Strips UI controls and navigation while preserving multiline formatting.
  */
 export function extractUserQueryText(element: Element): string {
-  // Target .query-content inside user-query if available, else element itself
   const textContainer = element.querySelector(GEMINI_SELECTORS.USER_TEXT) || element
   const clone = textContainer.cloneNode(true) as Element
-
-  // Strip UI controls, action toolbars, copy buttons, etc.
-  const uiControls = clone.querySelectorAll(GEMINI_SELECTORS.UI_CONTROLS_TO_EXCLUDE)
-  uiControls.forEach((b) => b.remove())
-
-  const rawText = clone.textContent || ''
-
-  return rawText
-    .replace(/\r\n|\r/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
+  clone.querySelectorAll(GEMINI_SELECTORS.UI_CONTROLS_TO_EXCLUDE).forEach((b) => b.remove())
+  return normalizeExtractedText(clone.textContent || '')
 }
 
 /**
@@ -171,57 +112,28 @@ export function extractUserQueryText(element: Element): string {
  * Preserves code blocks with language annotations and strips interactive UI controls.
  */
 export function extractAssistantResponseText(element: Element): string {
-  // Target message-content .markdown or .markdown inside model-response if available
   const contentContainer = element.querySelector(GEMINI_SELECTORS.ASSISTANT_TEXT) || element
   const clone = contentContainer.cloneNode(true) as Element
 
-  // Strip UI controls (copy buttons, feedback icons, toolbars)
-  const uiControls = clone.querySelectorAll(GEMINI_SELECTORS.UI_CONTROLS_TO_EXCLUDE)
-  uiControls.forEach((el) => el.remove())
+  clone.querySelectorAll(GEMINI_SELECTORS.UI_CONTROLS_TO_EXCLUDE).forEach((el) => el.remove())
 
-  // Format code blocks before getting textContent
-  const codeBlocks = clone.querySelectorAll(GEMINI_SELECTORS.CODE_BLOCK)
-  codeBlocks.forEach((pre) => {
-    const codeElement = pre.querySelector('code')
-    const rawCode = codeElement ? codeElement.textContent || '' : pre.textContent || ''
-
-    // Detect language from class (e.g. "language-python" -> "python")
-    let lang = ''
-    if (codeElement && codeElement.className) {
-      const match = codeElement.className.match(/language-([a-zA-Z0-9_-]+)/)
-      if (match && match[1]) {
-        lang = match[1]
-      }
-    }
-
-    // Replace <pre> with a formatted text node
-    const formattedBlock = `\n\`\`\`${lang}\n${rawCode.trim()}\n\`\`\`\n`
-    const textNode = (element.ownerDocument || document).createTextNode(formattedBlock)
-    pre.replaceWith(textNode)
+  const ownerDoc = element.ownerDocument || document
+  clone.querySelectorAll(GEMINI_SELECTORS.CODE_BLOCK).forEach((pre) => {
+    formatCodeBlock(pre, ownerDoc)
   })
 
-  // Format paragraph line breaks properly
-  const paragraphs = clone.querySelectorAll('p, h1, h2, h3, h4, h5, h6, li')
-  paragraphs.forEach((p) => {
+  clone.querySelectorAll('p, h1, h2, h3, h4, h5, h6, li').forEach((p) => {
     p.textContent = `${p.textContent || ''}\n`
   })
 
-  const rawText = clone.textContent || ''
-
-  // Normalize excessive newlines from block concatenation
-  return rawText
-    .replace(/\r\n|\r/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
+  return normalizeExtractedText(clone.textContent || '')
 }
 
 /**
  * Checks whether the page as a whole is actively generating / streaming.
  */
 export function isPageGenerating(root: Document | Element): boolean {
-  // 1. Check for stop button
-  const stopButton = root.querySelector(GEMINI_SELECTORS.STOP_BUTTON)
-  if (stopButton !== null) {
+  if (root.querySelector(GEMINI_SELECTORS.STOP_BUTTON) !== null) {
     logger.debug(
       'Parser',
       'GEMINI',
@@ -230,9 +142,7 @@ export function isPageGenerating(root: Document | Element): boolean {
     return true
   }
 
-  // 2. Check for streaming indicators
-  const streamingEl = root.querySelector(GEMINI_SELECTORS.STREAMING_INDICATORS)
-  if (streamingEl !== null) {
+  if (root.querySelector(GEMINI_SELECTORS.STREAMING_INDICATORS) !== null) {
     logger.debug(
       'Parser',
       'GEMINI',
@@ -271,12 +181,10 @@ export function extractConversationTurns(root: Document | Element): RawMessageTu
   const userQueryElements = Array.from(root.querySelectorAll('user-query'))
   const modelResponseElements = Array.from(root.querySelectorAll('model-response'))
 
-  // Query all user and assistant message containers in document order
   const elements = Array.from(
     root.querySelectorAll(`${GEMINI_SELECTORS.USER_MESSAGE}, ${GEMINI_SELECTORS.ASSISTANT_MESSAGE}`)
   )
 
-  // Filter out any elements that are nested inside another matched turn element
   const topElements = elements.filter((el) => {
     let parent = el.parentElement
     while (parent && parent !== root) {
@@ -343,17 +251,9 @@ export function extractConversationTurns(root: Document | Element): RawMessageTu
       `DOM scan completed: 0 conversation turns found matching '${GEMINI_SELECTORS.USER_MESSAGE}' / '${GEMINI_SELECTORS.ASSISTANT_MESSAGE}'.`
     )
   } else if (userCount === 0) {
-    logger.debug(
-      'Parser',
-      'GEMINI',
-      `DOM scan completed: 0 user turns found (${asstCount} assistant turns found).`
-    )
+    logger.debug('Parser', 'GEMINI', `DOM scan completed: 0 user turns found (${asstCount} assistant turns found).`)
   } else if (asstCount === 0) {
-    logger.debug(
-      'Parser',
-      'GEMINI',
-      `DOM scan completed: 0 assistant turns found (${userCount} user turns found).`
-    )
+    logger.debug('Parser', 'GEMINI', `DOM scan completed: 0 assistant turns found (${userCount} user turns found).`)
   }
 
   return turns
@@ -373,67 +273,21 @@ export function pairTurnsIntoInteractions(
     observedAt?: string
   }
 ): ExtractedInteraction[] {
-  const interactions: ExtractedInteraction[] = []
-  let pendingUserTurn: RawMessageTurn | null = null
-
-  const captureContext = context.captureContext ?? 'on_generate'
-  const observedAt = context.observedAt ?? new Date().toISOString()
-
-  let userTextsCount = 0
-  let assistantTextsCount = 0
-
-  for (const turn of turns) {
-    if (turn.role === 'user') {
-      if (turn.text.length > 0) {
-        userTextsCount++
-        pendingUserTurn = turn
-      }
-    } else if (turn.role === 'assistant' && pendingUserTurn) {
-      if (turn.text.length > 0) {
-        assistantTextsCount++
-      }
-      // Only pair if response is non-empty and NOT streaming
-      if (!turn.isStreaming && turn.text.length > 0 && pendingUserTurn.text.length > 0) {
-        interactions.push({
-          platform: 'gemini',
-          conversationId: context.conversationId,
-          messageId: turn.messageId, // Assistant message ID (or null)
-          userMessageId: pendingUserTurn.messageId, // User message ID (or null)
-          model: context.model,
-          queryText: pendingUserTurn.text,
-          responseText: turn.text,
-          conversationTitle: context.title,
-          observedAt,
-          sourceTimestamp: turn.sourceTimestamp ?? pendingUserTurn.sourceTimestamp ?? null,
-          captureContext,
-        })
-      }
-      // Reset pending user turn once consumed or attempted
-      pendingUserTurn = null
-    }
-  }
-
   const userQueriesCount = turns.filter((t) => t.role === 'user').length
   const modelResponsesCount = turns.filter((t) => t.role === 'assistant').length
+
+  const interactions = sharedPairTurns('gemini', turns, context)
 
   logger.info(
     'Parser',
     'GEMINI',
-    `DOM diagnostics | userQueries=${userQueriesCount} | modelResponses=${modelResponsesCount} | userTexts=${userTextsCount} | assistantTexts=${assistantTextsCount} | completePairs=${interactions.length}`
+    `DOM diagnostics | userQueries=${userQueriesCount} | modelResponses=${modelResponsesCount} | completePairs=${interactions.length}`
   )
 
   if (interactions.length === 0 && turns.length > 0) {
-    logger.debug(
-      'Parser',
-      'GEMINI',
-      `Failed to form any complete user/assistant pairs from ${turns.length} turns.`
-    )
+    logger.debug('Parser', 'GEMINI', `Failed to form any complete user/assistant pairs from ${turns.length} turns.`)
   } else {
-    logger.debug(
-      'Parser',
-      'GEMINI',
-      `Pairing complete: formed ${interactions.length} complete interaction pair(s).`
-    )
+    logger.debug('Parser', 'GEMINI', `Pairing complete: formed ${interactions.length} complete interaction pair(s).`)
   }
 
   return interactions

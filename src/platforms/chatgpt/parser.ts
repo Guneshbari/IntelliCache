@@ -7,7 +7,16 @@
 import { logger } from '../../diagnostics'
 import type { CaptureContext } from '../../shared/types'
 import type { ExtractedInteraction, RawMessageTurn } from '../types'
+import {
+  extractMessageId,
+  extractSourceTimestamp,
+  formatCodeBlock,
+  normalizeExtractedText,
+  pairTurnsIntoInteractions as sharedPairTurns,
+} from '../shared/parser-utils'
 import { CHATGPT_SELECTORS } from './selectors'
+
+export { extractMessageId, extractSourceTimestamp }
 
 /**
  * Extracts the UUID or slug conversation ID from ChatGPT URLs.
@@ -18,16 +27,9 @@ import { CHATGPT_SELECTORS } from './selectors'
  */
 export function extractConversationIdFromUrl(url: string): string | null {
   try {
-    const parsed = new URL(url)
-    const pathname = parsed.pathname
-
-    // Match /c/{id}
-    const standardMatch = pathname.match(/\/c\/([a-zA-Z0-9_-]+)/)
-    if (standardMatch && standardMatch[1]) {
-      return standardMatch[1]
-    }
-
-    return null
+    const pathname = new URL(url).pathname
+    const match = pathname.match(/\/c\/([a-zA-Z0-9_-]+)/)
+    return match?.[1] ?? null
   } catch {
     return null
   }
@@ -46,11 +48,8 @@ export function extractConversationTitle(docOrElement: Document | Element): stri
     title = docOrElement.ownerDocument.title
   }
 
-  if (!title) {
-    return null
-  }
+  if (!title) return null
 
-  // Clean brand suffix
   const cleaned = title.replace(/\s*-\s*ChatGPT$/i, '').trim()
 
   if (!cleaned || cleaned.toLowerCase() === 'chatgpt' || cleaned.toLowerCase() === 'new chat') {
@@ -80,56 +79,7 @@ export function extractModelInfo(root: Document | Element): {
     }
   }
 
-  return {
-    provider: 'openai',
-    name: name ?? null,
-  }
-}
-
-/**
- * Extracts message ID attribute (`data-message-id`) from an element if present.
- */
-export function extractMessageId(element: Element): string | null {
-  const directId = element.getAttribute('data-message-id')
-  if (directId && directId.trim()) {
-    return directId.trim()
-  }
-
-  const childWithId = element.querySelector('[data-message-id]')
-  if (childWithId) {
-    const childId = childWithId.getAttribute('data-message-id')
-    if (childId && childId.trim()) {
-      return childId.trim()
-    }
-  }
-
-  return null
-}
-
-/**
- * Extracts original source timestamp from `<time datetime="...">` or `data-timestamp`
- * if exposed by the platform DOM. Never fabricates timestamps.
- */
-export function extractSourceTimestamp(element: Element): string | null {
-  const timeEl = element.querySelector('time[datetime]')
-  if (timeEl) {
-    const dt = timeEl.getAttribute('datetime')
-    if (dt && dt.trim()) {
-      return dt.trim()
-    }
-  }
-  const timestampAttr = element.getAttribute('data-timestamp')
-  if (timestampAttr && timestampAttr.trim()) {
-    return timestampAttr.trim()
-  }
-  const childWithTimestamp = element.querySelector('[data-timestamp]')
-  if (childWithTimestamp) {
-    const ts = childWithTimestamp.getAttribute('data-timestamp')
-    if (ts && ts.trim()) {
-      return ts.trim()
-    }
-  }
-  return null
+  return { provider: 'openai', name }
 }
 
 /**
@@ -144,18 +94,10 @@ export function extractUserQueryText(element: Element): string {
 
   const clone = userContainer.cloneNode(true) as Element
 
-  // Strip UI controls, edit buttons, action toolbars, forms, and navigation
-  const uiControls = clone.querySelectorAll(CHATGPT_SELECTORS.UI_CONTROLS_TO_EXCLUDE)
-  uiControls.forEach((b) => b.remove())
+  clone.querySelectorAll(CHATGPT_SELECTORS.UI_CONTROLS_TO_EXCLUDE).forEach((b) => b.remove())
 
-  // Look for text wrapper
   const textContainer = clone.querySelector(CHATGPT_SELECTORS.USER_TEXT) || clone
-  const rawText = textContainer.textContent || ''
-
-  return rawText
-    .replace(/\r\n|\r/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
+  return normalizeExtractedText(textContainer.textContent || '')
 }
 
 /**
@@ -170,56 +112,27 @@ export function extractAssistantResponseText(element: Element): string {
 
   const clone = asstContainer.cloneNode(true) as Element
 
-  // Strip UI controls (copy buttons, feedback icons, citations, toolbars)
-  const uiControls = clone.querySelectorAll(CHATGPT_SELECTORS.UI_CONTROLS_TO_EXCLUDE)
-  uiControls.forEach((el) => el.remove())
+  clone.querySelectorAll(CHATGPT_SELECTORS.UI_CONTROLS_TO_EXCLUDE).forEach((el) => el.remove())
 
-  // Locate main markdown container
   const markdownContainer = clone.querySelector(CHATGPT_SELECTORS.ASSISTANT_TEXT) || clone
+  const ownerDoc = element.ownerDocument || document
 
-  // Format code blocks before getting textContent
-  const codeBlocks = markdownContainer.querySelectorAll(CHATGPT_SELECTORS.CODE_BLOCK)
-  codeBlocks.forEach((pre) => {
-    const codeElement = pre.querySelector('code')
-    const rawCode = codeElement ? codeElement.textContent || '' : pre.textContent || ''
-
-    // Detect language from class (e.g. "language-python" -> "python")
-    let lang = ''
-    if (codeElement && codeElement.className) {
-      const match = codeElement.className.match(/language-([a-zA-Z0-9_-]+)/)
-      if (match && match[1]) {
-        lang = match[1]
-      }
-    }
-
-    // Replace <pre> with a formatted text node
-    const formattedBlock = `\n\`\`\`${lang}\n${rawCode.trim()}\n\`\`\`\n`
-    const textNode = (element.ownerDocument || document).createTextNode(formattedBlock)
-    pre.replaceWith(textNode)
+  markdownContainer.querySelectorAll(CHATGPT_SELECTORS.CODE_BLOCK).forEach((pre) => {
+    formatCodeBlock(pre, ownerDoc)
   })
 
-  // Format paragraph line breaks properly
-  const paragraphs = markdownContainer.querySelectorAll('p, h1, h2, h3, h4, h5, h6, li')
-  paragraphs.forEach((p) => {
+  markdownContainer.querySelectorAll('p, h1, h2, h3, h4, h5, h6, li').forEach((p) => {
     p.textContent = `${p.textContent || ''}\n`
   })
 
-  const rawText = markdownContainer.textContent || ''
-
-  // Normalize excessive newlines from block concatenation
-  return rawText
-    .replace(/\r\n|\r/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
+  return normalizeExtractedText(markdownContainer.textContent || '')
 }
 
 /**
  * Checks whether the page as a whole is actively generating / streaming.
  */
 export function isPageGenerating(root: Document | Element): boolean {
-  // 1. Check for stop button
-  const stopButton = root.querySelector(CHATGPT_SELECTORS.STOP_BUTTON)
-  if (stopButton !== null) {
+  if (root.querySelector(CHATGPT_SELECTORS.STOP_BUTTON) !== null) {
     logger.debug(
       'Parser',
       'CHATGPT',
@@ -228,16 +141,11 @@ export function isPageGenerating(root: Document | Element): boolean {
     return true
   }
 
-  // 2. Check for active streaming or thinking classes across the page
-  const streamingEl = root.querySelector(
-    '.result-streaming, .streaming, span.streaming-cursor, .result-thinking'
-  )
-  if (streamingEl !== null) {
-    logger.debug(
-      'Parser',
-      'CHATGPT',
-      'Active generation detected: streaming/thinking indicator present'
-    )
+  if (
+    root.querySelector('.result-streaming, .streaming, span.streaming-cursor, .result-thinking') !==
+    null
+  ) {
+    logger.debug('Parser', 'CHATGPT', 'Active generation detected: streaming/thinking indicator present')
     return true
   }
 
@@ -248,7 +156,6 @@ export function isPageGenerating(root: Document | Element): boolean {
  * Checks whether an assistant turn is actively streaming / generating.
  */
 export function isTurnStreaming(turnElement: Element, root?: Document | Element): boolean {
-  // 1. Check if turn itself has streaming classes or cursor
   if (
     turnElement.classList.contains('result-streaming') ||
     turnElement.classList.contains('streaming') ||
@@ -257,7 +164,6 @@ export function isTurnStreaming(turnElement: Element, root?: Document | Element)
     return true
   }
 
-  // 2. Check if global stop button or page streaming is active
   const context = root || turnElement.ownerDocument || document
   return isPageGenerating(context)
 }
@@ -269,7 +175,6 @@ export function isTurnStreaming(turnElement: Element, root?: Document | Element)
 export function extractConversationTurns(root: Document | Element): RawMessageTurn[] {
   const turns: RawMessageTurn[] = []
 
-  // 1. Primary: query turn containers with data-testid^="conversation-turn-"
   const turnContainers = Array.from(root.querySelectorAll(CHATGPT_SELECTORS.TURN_ARTICLE))
   logger.debug(
     'Parser',
@@ -315,7 +220,7 @@ export function extractConversationTurns(root: Document | Element): RawMessageTu
       }
     }
   } else {
-    // 2. Fallback: Search directly by data-message-author-role (filtering out nested role elements)
+    // Fallback: Search directly by data-message-author-role
     const roleElements = Array.from(
       root.querySelectorAll(`${CHATGPT_SELECTORS.USER_ROLE}, ${CHATGPT_SELECTORS.ASSISTANT_ROLE}`)
     )
@@ -332,7 +237,7 @@ export function extractConversationTurns(root: Document | Element): RawMessageTu
           parent.getAttribute('data-message-author-role') === 'user' ||
           parent.getAttribute('data-message-author-role') === 'assistant'
         ) {
-          return false // Exclude nested role element
+          return false
         }
         parent = parent.parentElement
       }
@@ -374,17 +279,9 @@ export function extractConversationTurns(root: Document | Element): RawMessageTu
   if (turns.length === 0) {
     logger.debug('Parser', 'CHATGPT', 'DOM scan completed: 0 conversation turns found.')
   } else if (userCount === 0) {
-    logger.debug(
-      'Parser',
-      'CHATGPT',
-      `DOM scan completed: 0 user turns found (${asstCount} assistant turns found).`
-    )
+    logger.debug('Parser', 'CHATGPT', `DOM scan completed: 0 user turns found (${asstCount} assistant turns found).`)
   } else if (asstCount === 0) {
-    logger.debug(
-      'Parser',
-      'CHATGPT',
-      `DOM scan completed: 0 assistant turns found (${userCount} user turns found).`
-    )
+    logger.debug('Parser', 'CHATGPT', `DOM scan completed: 0 assistant turns found (${userCount} user turns found).`)
   }
 
   return turns
@@ -404,51 +301,12 @@ export function pairTurnsIntoInteractions(
     observedAt?: string
   }
 ): ExtractedInteraction[] {
-  const interactions: ExtractedInteraction[] = []
-  let pendingUserTurn: RawMessageTurn | null = null
-
-  const captureContext = context.captureContext ?? 'on_generate'
-  const observedAt = context.observedAt ?? new Date().toISOString()
-
-  for (const turn of turns) {
-    if (turn.role === 'user') {
-      if (turn.text.length > 0) {
-        pendingUserTurn = turn
-      }
-    } else if (turn.role === 'assistant' && pendingUserTurn) {
-      // Only pair if response is non-empty and NOT streaming
-      if (!turn.isStreaming && turn.text.length > 0 && pendingUserTurn.text.length > 0) {
-        interactions.push({
-          platform: 'chatgpt',
-          conversationId: context.conversationId,
-          messageId: turn.messageId, // Assistant message ID
-          userMessageId: pendingUserTurn.messageId, // User message ID
-          model: context.model,
-          queryText: pendingUserTurn.text,
-          responseText: turn.text,
-          conversationTitle: context.title,
-          observedAt,
-          sourceTimestamp: turn.sourceTimestamp ?? pendingUserTurn.sourceTimestamp ?? null,
-          captureContext,
-        })
-      }
-      // Reset pending user turn once consumed or attempted
-      pendingUserTurn = null
-    }
-  }
+  const interactions = sharedPairTurns('chatgpt', turns, context)
 
   if (interactions.length === 0 && turns.length > 0) {
-    logger.debug(
-      'Parser',
-      'CHATGPT',
-      `Failed to form any complete user/assistant pairs from ${turns.length} turns.`
-    )
+    logger.debug('Parser', 'CHATGPT', `Failed to form any complete user/assistant pairs from ${turns.length} turns.`)
   } else {
-    logger.debug(
-      'Parser',
-      'CHATGPT',
-      `Pairing complete: formed ${interactions.length} complete interaction pair(s).`
-    )
+    logger.debug('Parser', 'CHATGPT', `Pairing complete: formed ${interactions.length} complete interaction pair(s).`)
   }
 
   return interactions

@@ -1,4 +1,5 @@
 import type { CreateInteractionInput } from '../database/types'
+import { sendBrowserRuntimeMessage } from './browser'
 import type {
   ContentScriptInitMessage,
   DbGetIntegrityReportMessage,
@@ -162,7 +163,6 @@ export function isExtensionMessage(value: unknown): value is ExtensionMessage {
 
 /**
  * Pure helper function to determine AI platform based on current URL.
- * Ready for future platform-specific adapters in Step 3.
  */
 export function detectPlatformFromUrl(url: string): SupportedPlatform {
   try {
@@ -188,15 +188,9 @@ export function detectPlatformFromUrl(url: string): SupportedPlatform {
   }
 }
 
-import { sendBrowserRuntimeMessage } from './browser'
-
 /**
  * Dispatches a typed message to the extension runtime (Service Worker / Background).
  * Handles both Promise-based (Firefox) and callback-based (Chromium) runtimes safely,
  * classifying runtime errors and context invalidation.
  */
-export async function sendExtensionMessage<M extends ExtensionMessage, R = unknown>(
-  message: M
-): Promise<ExtensionResponse<R>> {
-  return sendBrowserRuntimeMessage<M, R>(message)
-}
+export const sendExtensionMessage = sendBrowserRuntimeMessage

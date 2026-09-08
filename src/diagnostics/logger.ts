@@ -81,7 +81,7 @@ export class DiagnosticLogger {
   /**
    * Formats the standardized log prefix: `[IntelliCache][<Component>][<Platform>]`.
    */
-  formatPrefix(component: DiagnosticComponent, platform: DiagnosticPlatform): string {
+  private formatPrefix(component: DiagnosticComponent, platform: DiagnosticPlatform): string {
     return `[IntelliCache][${component}][${platform}]`
   }
 
@@ -95,6 +95,14 @@ export class DiagnosticLogger {
   ): string {
     return `${this.formatPrefix(component, platform)} ${message}`
   }
+
+  /** Valid DiagnosticPlatform literal values that require no re-normalization. */
+  private static readonly VALID_PLATFORMS: ReadonlySet<string> = new Set([
+    'CHATGPT',
+    'CLAUDE',
+    'GEMINI',
+    'CORE',
+  ])
 
   /**
    * Internal dispatcher for logging with severity filtering and formatting.
@@ -110,14 +118,9 @@ export class DiagnosticLogger {
       return
     }
 
-    const platform =
-      typeof rawPlatform === 'string' &&
-      (rawPlatform === 'CHATGPT' ||
-        rawPlatform === 'CLAUDE' ||
-        rawPlatform === 'GEMINI' ||
-        rawPlatform === 'CORE')
-        ? (rawPlatform as DiagnosticPlatform)
-        : toDiagnosticPlatform(rawPlatform)
+    const platform = DiagnosticLogger.VALID_PLATFORMS.has(rawPlatform)
+      ? (rawPlatform as DiagnosticPlatform)
+      : toDiagnosticPlatform(rawPlatform)
 
     const formatted = this.formatMessage(component, platform, message)
 
@@ -126,35 +129,19 @@ export class DiagnosticLogger {
       return
     }
 
-    switch (level) {
-      case 'debug':
-        if (extra !== undefined) {
-          console.debug(formatted, extra)
-        } else {
-          console.debug(formatted)
-        }
-        break
-      case 'info':
-        if (extra !== undefined) {
-          console.info(formatted, extra)
-        } else {
-          console.info(formatted)
-        }
-        break
-      case 'warn':
-        if (extra !== undefined) {
-          console.warn(formatted, extra)
-        } else {
-          console.warn(formatted)
-        }
-        break
-      case 'error':
-        if (extra !== undefined) {
-          console.error(formatted, extra)
-        } else {
-          console.error(formatted)
-        }
-        break
+    const consoleFn =
+      level === 'debug'
+        ? console.debug
+        : level === 'info'
+          ? console.info
+          : level === 'warn'
+            ? console.warn
+            : console.error
+
+    if (extra !== undefined) {
+      consoleFn(formatted, extra)
+    } else {
+      consoleFn(formatted)
     }
   }
 

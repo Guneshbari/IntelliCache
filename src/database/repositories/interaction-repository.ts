@@ -31,7 +31,6 @@ export class InteractionRepository {
    * Throws DuplicateInteractionError if an interaction with the same fingerprint exists.
    */
   async create(input: CreateInteractionInput | Interaction): Promise<Interaction> {
-    let computedFingerprint = ''
     const platformTag = toDiagnosticPlatform(input.platform)
     const traceId =
       'trace_id' in input && input.trace_id
@@ -227,23 +226,6 @@ export class InteractionRepository {
     } catch (error) {
       if (error instanceof DuplicateInteractionError) {
         throw error
-      }
-      if (
-        (error &&
-          typeof error === 'object' &&
-          'name' in error &&
-          error.name === 'ConstraintError') ||
-        error instanceof Dexie.ConstraintError
-      ) {
-        logger.info(
-          'Database',
-          platformTag,
-          `ConstraintError caught during insertion: fingerprint '${computedFingerprint.slice(0, 16)}...' already exists.`
-        )
-        throw new DuplicateInteractionError(
-          computedFingerprint,
-          `Interaction with fingerprint '${computedFingerprint}' already exists (constraint violation).`
-        )
       }
       logger.error(
         'Database',

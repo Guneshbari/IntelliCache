@@ -27,7 +27,6 @@ import type {
 } from '../shared/types'
 
 const EXTENSION_NAME = 'IntelliCache Collector'
-const EXTENSION_VERSION = CURRENT_EXTENSION_VERSION
 const workerStartTime = Date.now()
 
 // Initialize repositories (singleton database)
@@ -81,7 +80,7 @@ addRuntimeMessageListener(
       case 'GET_STATUS': {
         const statusData: StatusResponseData = {
           extensionName: EXTENSION_NAME,
-          version: EXTENSION_VERSION,
+          version: CURRENT_EXTENSION_VERSION,
           serviceWorkerStatus: 'active',
           manifestVersion: 3,
           uptimeMs: Date.now() - workerStartTime,

@@ -570,11 +570,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   explorerCloseBtn?.addEventListener('click', (e) => {
     e.stopPropagation()
-    if (state.isExplorerExpanded) {
-      collapseExplorer()
-    } else {
-      expandExplorer()
-    }
+    collapseExplorer()
   })
 
   // Search input debounced

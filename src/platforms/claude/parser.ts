@@ -7,7 +7,16 @@
 import { logger } from '../../diagnostics'
 import type { CaptureContext } from '../../shared/types'
 import type { ExtractedInteraction, RawMessageTurn } from '../types'
+import {
+  extractMessageId,
+  extractSourceTimestamp,
+  formatCodeBlock,
+  normalizeExtractedText,
+  pairTurnsIntoInteractions as sharedPairTurns,
+} from '../shared/parser-utils'
 import { CLAUDE_SELECTORS } from './selectors'
+
+export { extractMessageId, extractSourceTimestamp }
 
 /**
  * Extracts the UUID or slug conversation ID from Claude URLs.
@@ -17,16 +26,9 @@ import { CLAUDE_SELECTORS } from './selectors'
  */
 export function extractConversationIdFromUrl(url: string): string | null {
   try {
-    const parsed = new URL(url)
-    const pathname = parsed.pathname
-
-    // Match /chat/{id}
-    const standardMatch = pathname.match(/\/chat\/([a-zA-Z0-9_-]+)/)
-    if (standardMatch && standardMatch[1]) {
-      return standardMatch[1]
-    }
-
-    return null
+    const pathname = new URL(url).pathname
+    const match = pathname.match(/\/chat\/([a-zA-Z0-9_-]+)/)
+    return match?.[1] ?? null
   } catch {
     return null
   }
@@ -45,11 +47,8 @@ export function extractConversationTitle(docOrElement: Document | Element): stri
     title = docOrElement.ownerDocument.title
   }
 
-  if (!title) {
-    return null
-  }
+  if (!title) return null
 
-  // Clean brand suffixes
   const cleaned = title
     .replace(/\s*-\s*Claude$/i, '')
     .replace(/\s*\|\s*Claude$/i, '')
@@ -69,7 +68,6 @@ export function extractConversationTitle(docOrElement: Document | Element): stri
 
 /**
  * Extracts model provider and name from the Claude interface if available.
- * Returns provider: 'claude', name: string | null.
  */
 export function extractModelInfo(root: Document | Element): {
   provider: string | null
@@ -85,57 +83,7 @@ export function extractModelInfo(root: Document | Element): {
     }
   }
 
-  return {
-    provider: 'claude',
-    name: name ?? null,
-  }
-}
-
-/**
- * Extracts message ID attribute (`data-message-id` or similar) from an element if present.
- * Returns null if not exposed by Claude's DOM.
- */
-export function extractMessageId(element: Element): string | null {
-  const directId = element.getAttribute('data-message-id')
-  if (directId && directId.trim()) {
-    return directId.trim()
-  }
-
-  const childWithId = element.querySelector('[data-message-id]')
-  if (childWithId) {
-    const childId = childWithId.getAttribute('data-message-id')
-    if (childId && childId.trim()) {
-      return childId.trim()
-    }
-  }
-
-  return null
-}
-
-/**
- * Extracts original source timestamp from `<time datetime="...">` or `data-timestamp`
- * if exposed by the platform DOM. Never fabricates timestamps.
- */
-export function extractSourceTimestamp(element: Element): string | null {
-  const timeEl = element.querySelector('time[datetime]')
-  if (timeEl) {
-    const dt = timeEl.getAttribute('datetime')
-    if (dt && dt.trim()) {
-      return dt.trim()
-    }
-  }
-  const timestampAttr = element.getAttribute('data-timestamp')
-  if (timestampAttr && timestampAttr.trim()) {
-    return timestampAttr.trim()
-  }
-  const childWithTimestamp = element.querySelector('[data-timestamp]')
-  if (childWithTimestamp) {
-    const ts = childWithTimestamp.getAttribute('data-timestamp')
-    if (ts && ts.trim()) {
-      return ts.trim()
-    }
-  }
-  return null
+  return { provider: 'claude', name }
 }
 
 /**
@@ -144,17 +92,8 @@ export function extractSourceTimestamp(element: Element): string | null {
  */
 export function extractUserQueryText(element: Element): string {
   const clone = element.cloneNode(true) as Element
-
-  // Strip UI controls, action toolbars, copy buttons, etc.
-  const uiControls = clone.querySelectorAll(CLAUDE_SELECTORS.UI_CONTROLS_TO_EXCLUDE)
-  uiControls.forEach((b) => b.remove())
-
-  const rawText = clone.textContent || ''
-
-  return rawText
-    .replace(/\r\n|\r/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
+  clone.querySelectorAll(CLAUDE_SELECTORS.UI_CONTROLS_TO_EXCLUDE).forEach((b) => b.remove())
+  return normalizeExtractedText(clone.textContent || '')
 }
 
 /**
@@ -164,53 +103,25 @@ export function extractUserQueryText(element: Element): string {
 export function extractAssistantResponseText(element: Element): string {
   const clone = element.cloneNode(true) as Element
 
-  // Strip UI controls (copy buttons, feedback icons, toolbars)
-  const uiControls = clone.querySelectorAll(CLAUDE_SELECTORS.UI_CONTROLS_TO_EXCLUDE)
-  uiControls.forEach((el) => el.remove())
+  clone.querySelectorAll(CLAUDE_SELECTORS.UI_CONTROLS_TO_EXCLUDE).forEach((el) => el.remove())
 
-  // Format code blocks before getting textContent
-  const codeBlocks = clone.querySelectorAll(CLAUDE_SELECTORS.CODE_BLOCK)
-  codeBlocks.forEach((pre) => {
-    const codeElement = pre.querySelector('code')
-    const rawCode = codeElement ? codeElement.textContent || '' : pre.textContent || ''
-
-    // Detect language from class (e.g. "language-python" -> "python")
-    let lang = ''
-    if (codeElement && codeElement.className) {
-      const match = codeElement.className.match(/language-([a-zA-Z0-9_-]+)/)
-      if (match && match[1]) {
-        lang = match[1]
-      }
-    }
-
-    // Replace <pre> with a formatted text node
-    const formattedBlock = `\n\`\`\`${lang}\n${rawCode.trim()}\n\`\`\`\n`
-    const textNode = (element.ownerDocument || document).createTextNode(formattedBlock)
-    pre.replaceWith(textNode)
+  const ownerDoc = element.ownerDocument || document
+  clone.querySelectorAll(CLAUDE_SELECTORS.CODE_BLOCK).forEach((pre) => {
+    formatCodeBlock(pre, ownerDoc)
   })
 
-  // Format paragraph line breaks properly
-  const paragraphs = clone.querySelectorAll('p, h1, h2, h3, h4, h5, h6, li')
-  paragraphs.forEach((p) => {
+  clone.querySelectorAll('p, h1, h2, h3, h4, h5, h6, li').forEach((p) => {
     p.textContent = `${p.textContent || ''}\n`
   })
 
-  const rawText = clone.textContent || ''
-
-  // Normalize excessive newlines from block concatenation
-  return rawText
-    .replace(/\r\n|\r/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
+  return normalizeExtractedText(clone.textContent || '')
 }
 
 /**
  * Checks whether the page as a whole is actively generating / streaming.
  */
 export function isPageGenerating(root: Document | Element): boolean {
-  // 1. Check for stop button
-  const stopButton = root.querySelector(CLAUDE_SELECTORS.STOP_BUTTON)
-  if (stopButton !== null) {
+  if (root.querySelector(CLAUDE_SELECTORS.STOP_BUTTON) !== null) {
     logger.debug(
       'Parser',
       'CLAUDE',
@@ -219,9 +130,7 @@ export function isPageGenerating(root: Document | Element): boolean {
     return true
   }
 
-  // 2. Check for streaming indicators
-  const streamingEl = root.querySelector(CLAUDE_SELECTORS.STREAMING_INDICATORS)
-  if (streamingEl !== null) {
+  if (root.querySelector(CLAUDE_SELECTORS.STREAMING_INDICATORS) !== null) {
     logger.debug(
       'Parser',
       'CLAUDE',
@@ -254,12 +163,10 @@ export function isTurnStreaming(turnElement: Element, root?: Document | Element)
 export function extractConversationTurns(root: Document | Element): RawMessageTurn[] {
   const turns: RawMessageTurn[] = []
 
-  // Query all user and assistant message containers in document order
   const elements = Array.from(
     root.querySelectorAll(`${CLAUDE_SELECTORS.USER_MESSAGE}, ${CLAUDE_SELECTORS.ASSISTANT_MESSAGE}`)
   )
 
-  // Filter out any elements that are nested inside another matched turn element
   const topElements = elements.filter((el) => {
     let parent = el.parentElement
     while (parent && parent !== root) {
@@ -297,11 +204,10 @@ export function extractConversationTurns(root: Document | Element): RawMessageTu
         })
       }
     } else if (isAssistant) {
-      const text = extractAssistantResponseText(el)
       turns.push({
         role: 'assistant',
         element: el,
-        text,
+        text: extractAssistantResponseText(el),
         messageId: extractMessageId(el),
         sourceTimestamp: extractSourceTimestamp(el),
         isStreaming: isTurnStreaming(el, root),
@@ -324,17 +230,9 @@ export function extractConversationTurns(root: Document | Element): RawMessageTu
       `DOM scan completed: 0 conversation turns found matching '${CLAUDE_SELECTORS.USER_MESSAGE}' / '${CLAUDE_SELECTORS.ASSISTANT_MESSAGE}'.`
     )
   } else if (userCount === 0) {
-    logger.debug(
-      'Parser',
-      'CLAUDE',
-      `DOM scan completed: 0 user turns found (${asstCount} assistant turns found).`
-    )
+    logger.debug('Parser', 'CLAUDE', `DOM scan completed: 0 user turns found (${asstCount} assistant turns found).`)
   } else if (asstCount === 0) {
-    logger.debug(
-      'Parser',
-      'CLAUDE',
-      `DOM scan completed: 0 assistant turns found (${userCount} user turns found).`
-    )
+    logger.debug('Parser', 'CLAUDE', `DOM scan completed: 0 assistant turns found (${userCount} user turns found).`)
   }
 
   return turns
@@ -354,51 +252,12 @@ export function pairTurnsIntoInteractions(
     observedAt?: string
   }
 ): ExtractedInteraction[] {
-  const interactions: ExtractedInteraction[] = []
-  let pendingUserTurn: RawMessageTurn | null = null
-
-  const captureContext = context.captureContext ?? 'on_generate'
-  const observedAt = context.observedAt ?? new Date().toISOString()
-
-  for (const turn of turns) {
-    if (turn.role === 'user') {
-      if (turn.text.length > 0) {
-        pendingUserTurn = turn
-      }
-    } else if (turn.role === 'assistant' && pendingUserTurn) {
-      // Only pair if response is non-empty and NOT streaming
-      if (!turn.isStreaming && turn.text.length > 0 && pendingUserTurn.text.length > 0) {
-        interactions.push({
-          platform: 'claude',
-          conversationId: context.conversationId,
-          messageId: turn.messageId, // Assistant message ID (or null)
-          userMessageId: pendingUserTurn.messageId, // User message ID (or null)
-          model: context.model,
-          queryText: pendingUserTurn.text,
-          responseText: turn.text,
-          conversationTitle: context.title,
-          observedAt,
-          sourceTimestamp: turn.sourceTimestamp ?? pendingUserTurn.sourceTimestamp ?? null,
-          captureContext,
-        })
-      }
-      // Reset pending user turn once consumed or attempted
-      pendingUserTurn = null
-    }
-  }
+  const interactions = sharedPairTurns('claude', turns, context)
 
   if (interactions.length === 0 && turns.length > 0) {
-    logger.debug(
-      'Parser',
-      'CLAUDE',
-      `Failed to form any complete user/assistant pairs from ${turns.length} turns.`
-    )
+    logger.debug('Parser', 'CLAUDE', `Failed to form any complete user/assistant pairs from ${turns.length} turns.`)
   } else {
-    logger.debug(
-      'Parser',
-      'CLAUDE',
-      `Pairing complete: formed ${interactions.length} complete interaction pair(s).`
-    )
+    logger.debug('Parser', 'CLAUDE', `Pairing complete: formed ${interactions.length} complete interaction pair(s).`)
   }
 
   return interactions
