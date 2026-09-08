@@ -7,7 +7,7 @@
 
 import { ConversationRepository } from '../database/repositories/conversation-repository'
 import { InteractionRepository } from '../database/repositories/interaction-repository'
-import { CURRENT_DB_VERSION, CURRENT_EXTENSION_VERSION, DB_NAME } from '../database/schema'
+import { CURRENT_COLLECTOR_VERSION, CURRENT_DB_VERSION, DB_NAME } from '../database/schema'
 import { DatabaseOperationError, DuplicateInteractionError } from '../database/types'
 import { logger, toDiagnosticPlatform } from '../diagnostics'
 import {
@@ -80,7 +80,7 @@ addRuntimeMessageListener(
       case 'GET_STATUS': {
         const statusData: StatusResponseData = {
           extensionName: EXTENSION_NAME,
-          version: CURRENT_EXTENSION_VERSION,
+          version: CURRENT_COLLECTOR_VERSION,
           serviceWorkerStatus: 'active',
           manifestVersion: 3,
           uptimeMs: Date.now() - workerStartTime,

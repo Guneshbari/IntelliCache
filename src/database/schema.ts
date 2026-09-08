@@ -5,7 +5,6 @@
 export const DB_NAME = 'intelliCache'
 export const CURRENT_DB_VERSION = 1
 export const CURRENT_COLLECTOR_VERSION = '0.1.0'
-export const CURRENT_EXTENSION_VERSION = '0.1.0'
 
 /**
  * Dexie table index schema definitions.
