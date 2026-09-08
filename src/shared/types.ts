@@ -6,8 +6,6 @@
 import type { CreateInteractionInput, Interaction } from '../database/types'
 
 export * from '../database/types'
-export * from '../fingerprint/fingerprint'
-export * from '../fingerprint/normalize'
 
 /**
  * Known AI platforms targeted for collection adapters.
