@@ -45,15 +45,11 @@ export async function sha256(input: string): Promise<string> {
  * E.g., "2026-08-17T03:26:18.123Z" -> "2026-08-17T03"
  */
 export function getHourlyBucket(isoString: string): string {
-  try {
-    const date = new Date(isoString)
-    if (isNaN(date.getTime())) {
-      return new Date().toISOString().slice(0, 13)
-    }
-    return date.toISOString().slice(0, 13)
-  } catch {
+  const date = new Date(isoString)
+  if (isNaN(date.getTime())) {
     return new Date().toISOString().slice(0, 13)
   }
+  return date.toISOString().slice(0, 13)
 }
 
 /**
