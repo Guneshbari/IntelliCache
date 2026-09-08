@@ -40,11 +40,11 @@ describe('Diagnostic Logger Unit & Privacy Tests', () => {
   })
 
   it('formats standardized log prefix [IntelliCache][<Component>][<Platform>]', () => {
-    const prefix = logger.formatPrefix('Adapter', 'CHATGPT')
-    expect(prefix).toBe('[IntelliCache][Adapter][CHATGPT]')
+    const fullMessage = logger.formatMessage('Adapter', 'CHATGPT', 'test')
+    expect(fullMessage).toBe('[IntelliCache][Adapter][CHATGPT] test')
 
-    const fullMessage = logger.formatMessage('Parser', 'CLAUDE', 'Turn extraction started')
-    expect(fullMessage).toBe('[IntelliCache][Parser][CLAUDE] Turn extraction started')
+    const fullMessage2 = logger.formatMessage('Parser', 'CLAUDE', 'Turn extraction started')
+    expect(fullMessage2).toBe('[IntelliCache][Parser][CLAUDE] Turn extraction started')
   })
 
   it('logs across all supported components and platforms', () => {
