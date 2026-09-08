@@ -10,8 +10,8 @@
 
 import type { DiagnosticCounters } from './types'
 
-export class DiagnosticStats {
-  private counters: DiagnosticCounters = {
+function createDefaultCounters(): DiagnosticCounters {
+  return {
     domScans: 0,
     userTurnsFound: 0,
     assistantTurnsFound: 0,
@@ -25,19 +25,23 @@ export class DiagnosticStats {
     extractionFailures: 0,
     persistenceFailures: 0,
   }
+}
+
+export class DiagnosticStats {
+  private counters: DiagnosticCounters = createDefaultCounters()
 
   /**
    * Increments a diagnostic counter by a given amount (default: 1).
    */
   increment(counter: keyof DiagnosticCounters, amount = 1): void {
-    this.counters[counter] = (this.counters[counter] || 0) + amount
+    this.counters[counter] += amount
   }
 
   /**
    * Retrieves the current value of a specific counter.
    */
   get(counter: keyof DiagnosticCounters): number {
-    return this.counters[counter] || 0
+    return this.counters[counter]
   }
 
   /**
@@ -51,10 +55,7 @@ export class DiagnosticStats {
    * Resets all counters back to zero.
    */
   reset(): void {
-    const keys = Object.keys(this.counters) as (keyof DiagnosticCounters)[]
-    for (const key of keys) {
-      this.counters[key] = 0
-    }
+    this.counters = createDefaultCounters()
   }
 }
 
