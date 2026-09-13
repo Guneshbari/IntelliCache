@@ -15,7 +15,7 @@
  * 6. Trimming outer leading and trailing whitespace.
  */
 export function normalizeTextForFingerprint(text: string): string {
-  if (!text) {
+  if (typeof text !== 'string' || !text) {
     return ''
   }
 

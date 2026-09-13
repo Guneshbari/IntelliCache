@@ -109,7 +109,7 @@ export function onRuntimeInstalled(
   callback: (details: { reason: string; previousVersion?: string }) => void
 ): void {
   const runtime = getBrowserRuntime()
-  if (runtime?.onInstalled) {
+  if (runtime?.onInstalled?.addListener) {
     runtime.onInstalled.addListener(callback)
   }
 }
@@ -120,7 +120,7 @@ export function onRuntimeInstalled(
  */
 export function addRuntimeMessageListener(listener: WebExtensionMessageListener): void {
   const runtime = getBrowserRuntime()
-  if (!runtime?.onMessage) {
+  if (!runtime?.onMessage?.addListener) {
     logger.warn(
       'Messaging',
       'CORE',
@@ -137,10 +137,15 @@ export function addRuntimeMessageListener(listener: WebExtensionMessageListener)
     ): boolean => {
       const result = listener(rawMessage, sender as WebExtensionSender, sendResponse)
 
-      // If the listener returned a Promise (standard in Firefox browser.runtime.onMessage),
+      // If the listener returned a Promise or Thenable (standard in Firefox browser.runtime.onMessage),
       // forward the resolved response to sendResponse
-      if (result instanceof Promise) {
-        result
+      if (
+        result instanceof Promise ||
+        (result !== null &&
+          typeof result === 'object' &&
+          typeof (result as Promise<unknown>).then === 'function')
+      ) {
+        Promise.resolve(result)
           .then((res) => {
             if (res) {
               sendResponse(res)

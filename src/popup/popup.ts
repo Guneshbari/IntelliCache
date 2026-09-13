@@ -199,8 +199,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  function escapeHtml(str: string): string {
-    return str
+  function escapeHtml(str: unknown): string {
+    if (str === null || str === undefined) return ''
+    return String(str)
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
@@ -312,9 +313,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     recentListEl.innerHTML = ''
     items.forEach((item) => {
+      const safePlatform = escapeHtml(item.platform.replace(/[^a-zA-Z0-9_-]/g, ''))
       const card = document.createElement('div')
-      card.className = `recent-item item-${item.platform}`
-      card.title = 'Click to open in Explorer'
+      card.className = `recent-item item-${safePlatform}`
+      card.title = 'Click or press Enter to open in Explorer'
+      card.setAttribute('role', 'button')
+      card.setAttribute('tabindex', '0')
 
       const platformName =
         item.platform === 'chatgpt'
@@ -334,7 +338,7 @@ document.addEventListener('DOMContentLoaded', () => {
         <div class="recent-item-header">
           <div class="recent-item-brand">
             ${logoHtml}
-            <span class="recent-platform-label recent-platform-${item.platform}">${platformName}</span>
+            <span class="recent-platform-label recent-platform-${safePlatform}">${platformName}</span>
           </div>
           <span class="recent-time">${escapeHtml(timeStr)}</span>
         </div>
@@ -342,11 +346,19 @@ document.addEventListener('DOMContentLoaded', () => {
         <div class="recent-query">${escapeHtml(querySnippet)}</div>
       `
 
-      card.addEventListener('click', () => {
+      const openItemInExplorer = () => {
         expandExplorer()
         state.explorerFilter = item.platform as typeof state.explorerFilter
         updateFilterChipUI()
         renderExplorerItems()
+      }
+
+      card.addEventListener('click', openItemInExplorer)
+      card.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          openItemInExplorer()
+        }
       })
 
       recentListEl.appendChild(card)
@@ -389,8 +401,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     explorerItemsListEl.innerHTML = ''
     filtered.forEach((item) => {
+      const safePlatform = escapeHtml(item.platform.replace(/[^a-zA-Z0-9_-]/g, ''))
       const card = document.createElement('div')
-      card.className = 'explorer-card'
+      card.className = `explorer-card explorer-card-${safePlatform}`
 
       const platformName =
         item.platform === 'chatgpt'
@@ -415,7 +428,7 @@ document.addEventListener('DOMContentLoaded', () => {
         <div class="explorer-card-header">
           <div class="explorer-badges">
             ${logoHtml}
-            <span class="recent-platform-label recent-platform-${item.platform}">${platformName}</span>
+            <span class="recent-platform-label recent-platform-${safePlatform}">${platformName}</span>
             <span class="context-tag">${escapeHtml(context)}</span>
           </div>
           <span class="recent-time">${escapeHtml(timeStr)}</span>
@@ -703,7 +716,9 @@ document.addEventListener('DOMContentLoaded', () => {
       document.body.appendChild(downloadAnchor)
       downloadAnchor.click()
       document.body.removeChild(downloadAnchor)
-      URL.revokeObjectURL(blobUrl)
+      setTimeout(() => {
+        URL.revokeObjectURL(blobUrl)
+      }, 1000)
 
       appendLog(
         `Exported ${state.recentInteractions.length} interaction records to JSON`,

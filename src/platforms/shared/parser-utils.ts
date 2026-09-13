@@ -13,6 +13,10 @@ import type { ExtractedInteraction, RawMessageTurn } from '../types'
  * Checks the element itself first, then its descendants.
  */
 export function extractMessageId(element: Element): string | null {
+  if (!element || typeof element.getAttribute !== 'function') {
+    return null
+  }
+
   const directId = element.getAttribute('data-message-id')
   if (directId?.trim()) {
     return directId.trim()
@@ -34,6 +38,10 @@ export function extractMessageId(element: Element): string | null {
  * if exposed by the platform DOM. Never fabricates timestamps.
  */
 export function extractSourceTimestamp(element: Element): string | null {
+  if (!element || typeof element.getAttribute !== 'function') {
+    return null
+  }
+
   const timeEl = element.querySelector('time[datetime]')
   if (timeEl) {
     const dt = timeEl.getAttribute('datetime')
@@ -63,22 +71,28 @@ export function extractSourceTimestamp(element: Element): string | null {
  * Detects language from `language-*` class, replaces the `<pre>` node in place.
  *
  * @param pre - The `<pre>` element to transform.
- * @param ownerDocument - The document used to create text nodes (use element.ownerDocument).
+ * @param ownerDocument - Optional document used to create text nodes (defaults to pre.ownerDocument).
  */
-export function formatCodeBlock(pre: Element, ownerDocument: Document): void {
+export function formatCodeBlock(pre: Element, ownerDocument?: Document): void {
+  if (!pre) return
+  const doc =
+    ownerDocument || pre.ownerDocument || (typeof document !== 'undefined' ? document : null)
+  if (!doc) return
+
   const codeElement = pre.querySelector('code')
   const rawCode = codeElement ? codeElement.textContent || '' : pre.textContent || ''
 
   let lang = ''
-  if (codeElement?.className) {
-    const match = codeElement.className.match(/language-([a-zA-Z0-9_-]+)/)
+  const classAttr = codeElement?.getAttribute('class') || ''
+  if (classAttr) {
+    const match = classAttr.match(/language-([a-zA-Z0-9_-]+)/)
     if (match?.[1]) {
       lang = match[1]
     }
   }
 
   const formattedBlock = `\n\`\`\`${lang}\n${rawCode.trim()}\n\`\`\`\n`
-  const textNode = ownerDocument.createTextNode(formattedBlock)
+  const textNode = doc.createTextNode(formattedBlock)
   pre.replaceWith(textNode)
 }
 

@@ -228,7 +228,9 @@ describe('Cross-Browser Compatibility Layer (Chromium & Firefox)', () => {
 
       const keepChannelOpen = registeredListener!({}, {}, mockSendResponse)
       expect(keepChannelOpen).toBe(true)
-      expect(mockSendResponse).toHaveBeenCalledWith(createSuccessResponse({ test: true }))
+      expect(mockSendResponse).toHaveBeenCalledWith(
+        expect.objectContaining({ success: true, data: { test: true } })
+      )
     })
 
     it('supports Firefox Promise return model seamlessly', async () => {

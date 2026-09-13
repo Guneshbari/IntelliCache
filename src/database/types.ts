@@ -58,7 +58,7 @@ export function namespaceConversationId(
   platform: string,
   conversationId?: string | null
 ): string | null {
-  if (!conversationId) {
+  if (!platform || typeof platform !== 'string' || !conversationId) {
     return null
   }
   const normPlatform = platform.trim().toLowerCase()

@@ -35,7 +35,6 @@ export const GEMINI_SELECTORS = {
    * Code block containers.
    */
   CODE_BLOCK: 'pre',
-  CODE_ELEMENT: 'pre code, code',
 
   /**
    * Interactive UI elements that must be stripped from extracted text.
@@ -93,9 +92,4 @@ export const GEMINI_SELECTORS = {
     'button[aria-label*="Gemini"]',
     'div[class*="model-select"]',
   ].join(', '),
-
-  /**
-   * Original timestamp metadata selector if rendered.
-   */
-  TIMESTAMP: 'time[datetime], [data-timestamp]',
 } as const

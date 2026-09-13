@@ -58,8 +58,10 @@ export class NavigationWatcher {
       initialUrl ?? (typeof window !== 'undefined' ? window.location.href : this.lastKnownUrl)
 
     // popstate: handles browser back/forward (browser fires popstate on history.back/forward).
-    this.popstateHandler = () => this.checkForUrlChange()
-    window.addEventListener('popstate', this.popstateHandler)
+    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+      this.popstateHandler = () => this.checkForUrlChange()
+      window.addEventListener('popstate', this.popstateHandler)
+    }
 
     // Polling: handles pushState/replaceState (no event fired natively in content-script isolated world).
     this.pollIntervalId = setInterval(() => {
@@ -76,7 +78,11 @@ export class NavigationWatcher {
     }
     this.isWatching = false
 
-    if (this.popstateHandler) {
+    if (
+      this.popstateHandler &&
+      typeof window !== 'undefined' &&
+      typeof window.removeEventListener === 'function'
+    ) {
       window.removeEventListener('popstate', this.popstateHandler)
       this.popstateHandler = null
     }

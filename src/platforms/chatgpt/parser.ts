@@ -141,10 +141,7 @@ export function isPageGenerating(root: Document | Element): boolean {
     return true
   }
 
-  if (
-    root.querySelector('.result-streaming, .streaming, span.streaming-cursor, .result-thinking') !==
-    null
-  ) {
+  if (root.querySelector(CHATGPT_SELECTORS.STREAMING_INDICATORS) !== null) {
     logger.debug(
       'Parser',
       'CHATGPT',

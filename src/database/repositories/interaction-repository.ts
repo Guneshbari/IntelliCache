@@ -31,6 +31,31 @@ export class InteractionRepository {
    * Throws DuplicateInteractionError if an interaction with the same fingerprint exists.
    */
   async create(input: CreateInteractionInput | Interaction): Promise<Interaction> {
+    if (!input || typeof input !== 'object') {
+      throw new DatabaseOperationError(
+        'create interaction',
+        new Error('Invalid interaction input: payload must be an object')
+      )
+    }
+    if (!input.platform || typeof input.platform !== 'string') {
+      throw new DatabaseOperationError(
+        'create interaction',
+        new Error('Invalid interaction input: platform is required and must be a string')
+      )
+    }
+    if (!input.query || typeof input.query.text !== 'string') {
+      throw new DatabaseOperationError(
+        'create interaction',
+        new Error('Invalid interaction input: query.text is required and must be a string')
+      )
+    }
+    if (!input.response || typeof input.response.text !== 'string') {
+      throw new DatabaseOperationError(
+        'create interaction',
+        new Error('Invalid interaction input: response.text is required and must be a string')
+      )
+    }
+
     const platformTag = toDiagnosticPlatform(input.platform)
     const traceId =
       'trace_id' in input && input.trace_id
@@ -39,7 +64,12 @@ export class InteractionRepository {
     try {
       const observedAt =
         'observed_at' in input && input.observed_at ? input.observed_at : new Date().toISOString()
-      const id = 'id' in input && input.id ? input.id : crypto.randomUUID()
+      const id =
+        'id' in input && input.id
+          ? input.id
+          : typeof globalThis.crypto?.randomUUID === 'function'
+            ? globalThis.crypto.randomUUID()
+            : `int_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`
       const platform = input.platform.trim().toLowerCase()
       const namespacedConvId = namespaceConversationId(platform, input.conversation_id)
 
@@ -380,12 +410,13 @@ export class InteractionRepository {
     >
   }> {
     try {
-      const all = await this.db.interactions.toArray()
+      let total = 0
       const fingerprintSet = new Set<string>()
       const idSet = new Set<string>()
       const byPlatform: Record<string, { total: number; fingerprints: Set<string> }> = {}
 
-      for (const interaction of all) {
+      await this.db.interactions.each((interaction) => {
+        total++
         fingerprintSet.add(interaction.fingerprint)
         idSet.add(interaction.id)
         const platform = interaction.platform
@@ -394,9 +425,7 @@ export class InteractionRepository {
         }
         byPlatform[platform].total++
         byPlatform[platform].fingerprints.add(interaction.fingerprint)
-      }
-
-      const total = all.length
+      })
       const uniqueFingerprints = fingerprintSet.size
       const duplicateFingerprints = total - uniqueFingerprints
       const uniqueIds = idSet.size

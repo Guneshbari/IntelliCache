@@ -97,19 +97,21 @@ function initializeContentScript() {
     logger.info('Content', platformTag, 'No specialized collector adapter required for this page.')
   }
 
-  // Cleanup on unload
-  window.addEventListener('beforeunload', () => {
+  // Cleanup on unload or page hide
+  const cleanupAdapter = () => {
     if (activeAdapter) {
       logger.info(
         'Content',
         platformTag,
-        `Page beforeunload triggered. Stopping adapter for ${activeAdapter.platform}...`
+        `Page unloading/hidden. Stopping adapter for ${activeAdapter.platform}...`
       )
       activeAdapter.stop()
       logger.info('Content', platformTag, 'Adapter stopped.')
       activeAdapter = null
     }
-  })
+  }
+  window.addEventListener('beforeunload', cleanupAdapter)
+  window.addEventListener('pagehide', cleanupAdapter)
 
   // Listen for any test messages sent directly to this tab from Popup or Service Worker
   addRuntimeMessageListener(

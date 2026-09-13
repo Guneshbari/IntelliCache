@@ -11,6 +11,11 @@ import { CURRENT_COLLECTOR_VERSION, CURRENT_DB_VERSION, DB_NAME } from '../datab
 import { DatabaseOperationError, DuplicateInteractionError } from '../database/types'
 import { logger, toDiagnosticPlatform } from '../diagnostics'
 import {
+  addRuntimeMessageListener,
+  onRuntimeInstalled,
+  type WebExtensionSender,
+} from '../shared/browser'
+import {
   createErrorResponse,
   createSuccessResponse,
   detectPlatformFromUrl,
@@ -32,12 +37,6 @@ const workerStartTime = Date.now()
 // Initialize repositories (singleton database)
 const interactionRepo = new InteractionRepository()
 const conversationRepo = new ConversationRepository()
-
-import {
-  addRuntimeMessageListener,
-  onRuntimeInstalled,
-  type WebExtensionSender,
-} from '../shared/browser'
 
 logger.info(
   'Background',
@@ -160,11 +159,23 @@ addRuntimeMessageListener(
       }
 
       case 'DB_SAVE_INTERACTION': {
+        if (!message.payload || typeof message.payload !== 'object') {
+          logger.warn(
+            'Background',
+            'CORE',
+            'DB_SAVE_INTERACTION rejected: payload is missing or invalid'
+          )
+          sendResponse(createErrorResponse('Invalid interaction payload'))
+          return false
+        }
+
         const platformTag = toDiagnosticPlatform(message.payload.platform)
+        const queryLen = message.payload.query?.text?.length ?? 0
+        const respLen = message.payload.response?.text?.length ?? 0
         logger.info(
           'Background',
           platformTag,
-          `Received DB_SAVE_INTERACTION (conversationId: ${message.payload.conversation_id ?? 'null'}, captureContext: ${message.payload.capture_context ?? 'on_generate'}, queryChars: ${message.payload.query.text.length}, responseChars: ${message.payload.response.text.length})`
+          `Received DB_SAVE_INTERACTION (conversationId: ${message.payload.conversation_id ?? 'null'}, captureContext: ${message.payload.capture_context ?? 'on_generate'}, queryChars: ${queryLen}, responseChars: ${respLen})`
         )
 
         // Asynchronous database persistence: return true
@@ -223,6 +234,12 @@ addRuntimeMessageListener(
       }
 
       case 'DB_GET_INTERACTION': {
+        if (!message.payload?.id || typeof message.payload.id !== 'string') {
+          logger.warn('Background', 'CORE', 'DB_GET_INTERACTION rejected: missing or invalid ID')
+          sendResponse(createErrorResponse('Missing or invalid interaction ID'))
+          return false
+        }
+
         // Asynchronous database query: return true
         void (async () => {
           try {

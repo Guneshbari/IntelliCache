@@ -453,8 +453,10 @@ export abstract class BaseAdapter implements PlatformAdapter {
 
   /** Shared start helper: installs MutationObserver targeting document.body. */
   protected startMutationObserver(onMutation: () => void): void {
+    if (typeof MutationObserver === 'undefined') return
     this.observer = new MutationObserver(onMutation)
-    const targetNode = document.body || document.documentElement
+    const targetNode =
+      typeof document !== 'undefined' ? document.body || document.documentElement : null
     if (targetNode) {
       this.observer.observe(targetNode, {
         childList: true,

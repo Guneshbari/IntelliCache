@@ -39,28 +39,11 @@ export const CLAUDE_SELECTORS = {
   TRANSCRIPT_LIST: '[data-testid="transcript-list"]',
 
   /**
-   * Individual transcript row elements (observed in real Claude DOM).
-   * data-perf-row attribute distinguishes human vs. assistant rows.
-   */
-  TRANSCRIPT_ROW: '[data-testid="transcript-row"]',
-
-  /**
-   * User transcript rows — data-perf-row="human"
-   */
-  TRANSCRIPT_USER_ROW: '[data-testid="transcript-row"][data-perf-row="human"]',
-
-  /**
-   * Assistant transcript rows — data-perf-row="assistant"
-   */
-  TRANSCRIPT_ASSISTANT_ROW: '[data-testid="transcript-row"][data-perf-row="assistant"]',
-
-  /**
    * Code block containers.
    * Claude renders code inside standard `<pre><code>` pairs; copy buttons
    * sit outside the `<code>` element.
    */
   CODE_BLOCK: 'pre',
-  CODE_ELEMENT: 'pre code, code',
 
   /**
    * Interactive UI elements that must be stripped from extracted text.
@@ -110,11 +93,4 @@ export const CLAUDE_SELECTORS = {
     '[data-testid="model-selector-trigger"]',
     'button[data-testid="model-selector"]',
   ].join(', '),
-
-  /**
-   * Timestamp selector.
-   * Claude does not consistently expose `<time datetime="...">` in its DOM.
-   * Included for forward compatibility if Claude adds timestamps.
-   */
-  TIMESTAMP: 'time[datetime], [data-timestamp]',
 } as const

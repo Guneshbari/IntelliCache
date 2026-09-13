@@ -105,9 +105,10 @@ export class ChatGPTAdapter extends BaseAdapter {
         logger.debug(
           'Navigation',
           'CHATGPT',
-          'URL change classified as true SPA navigation; resetting scan state to on_load.'
+          'URL change classified as true SPA navigation; resetting scan state to on_load and clearing session key cache.'
         )
         this.isInitialScan = true
+        this.processedKeys.clear()
       } else {
         logger.debug(
           'Navigation',

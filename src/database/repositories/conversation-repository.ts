@@ -38,6 +38,25 @@ export class ConversationRepository {
    * instead of a duplicate insert.
    */
   async createOrUpdate(input: CreateConversationInput | Conversation): Promise<Conversation> {
+    if (!input || typeof input !== 'object') {
+      throw new DatabaseOperationError(
+        'createOrUpdate conversation',
+        new Error('Invalid conversation input: payload must be an object')
+      )
+    }
+    if (!input.platform || typeof input.platform !== 'string') {
+      throw new DatabaseOperationError(
+        'createOrUpdate conversation',
+        new Error('Invalid conversation input: platform is required and must be a string')
+      )
+    }
+    if (!input.id || typeof input.id !== 'string') {
+      throw new DatabaseOperationError(
+        'createOrUpdate conversation',
+        new Error('Invalid conversation input: id is required and must be a string')
+      )
+    }
+
     const platformTag = toDiagnosticPlatform(input.platform)
     try {
       const platform = input.platform.trim().toLowerCase()
@@ -195,20 +214,19 @@ export class ConversationRepository {
    */
   async getIntegrityReport(): Promise<ConversationIntegrityResult> {
     try {
-      const all = await this.db.conversations.toArray()
+      let total = 0
       const idSet = new Set<string>()
       const byPlatform: Record<string, { total: number; ids: Set<string> }> = {}
 
-      for (const conv of all) {
+      await this.db.conversations.each((conv) => {
+        total++
         idSet.add(conv.id)
         if (!byPlatform[conv.platform]) {
           byPlatform[conv.platform] = { total: 0, ids: new Set() }
         }
         byPlatform[conv.platform].total++
         byPlatform[conv.platform].ids.add(conv.id)
-      }
-
-      const total = all.length
+      })
       const unique = idSet.size
       const duplicates = total - unique
 

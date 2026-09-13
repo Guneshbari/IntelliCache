@@ -32,11 +32,9 @@ export const CHATGPT_SELECTORS = {
   ASSISTANT_TEXT: '.markdown, .prose, div[class*="markdown"]',
 
   /**
-   * Code block containers and code elements.
+   * Code block containers.
    */
   CODE_BLOCK: 'pre',
-  CODE_ELEMENT: 'pre code, code',
-  CODE_HEADER: '.flex.items-center.text-xs, div[class*="bg-token-main-surface-tertiary"]',
 
   /**
    * Interactive UI elements that must be stripped from response text.
@@ -59,20 +57,9 @@ export const CHATGPT_SELECTORS = {
   ].join(', '),
 
   /**
-   * Streaming / generation in-progress indicators.
-   * If any of these are present, the response is considered incomplete.
+   * Streaming / generation in-progress class indicators.
    */
-  STREAMING_INDICATORS: [
-    'button[data-testid="stop-button"]',
-    'button[aria-label="Stop generating"]',
-    'button[aria-label="Stop streaming"]',
-    'button[aria-label="Stop"]',
-    'button[data-testid="fruitjuice-stop-button"]',
-    '.result-streaming',
-    '.streaming',
-    'span.streaming-cursor',
-    '.result-thinking',
-  ].join(', '),
+  STREAMING_INDICATORS: '.result-streaming, .streaming, span.streaming-cursor, .result-thinking',
 
   /**
    * Stop button specific selectors.
@@ -86,20 +73,9 @@ export const CHATGPT_SELECTORS = {
   ].join(', '),
 
   /**
-   * Send button indicators confirming readiness.
-   */
-  SEND_BUTTON:
-    'button[data-testid="send-button"], button[aria-label="Send prompt"], [data-testid="fruitjuice-send-button"]',
-
-  /**
    * Model selector button / header dropdown.
    * NOTE: Removed broad `button[id^="radix-"]` to prevent selecting arbitrary Radix buttons.
    */
   MODEL_SWITCHER:
     'button[data-testid="model-switcher-dropdown-button"], [data-testid="model-selector-dropdown"], button[data-testid="model-switcher"]',
-
-  /**
-   * Original timestamp metadata selector if rendered by ChatGPT.
-   */
-  TIMESTAMP: 'time[datetime], [data-timestamp]',
 } as const

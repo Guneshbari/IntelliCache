@@ -30,14 +30,24 @@ export interface FingerprintResult {
 
 const textEncoder = new TextEncoder()
 
+const byteToHex: string[] = []
+for (let i = 0; i < 256; i++) {
+  byteToHex.push(i.toString(16).padStart(2, '0'))
+}
+
 /**
  * Computes a SHA-256 hexadecimal hash using the Web Crypto API.
  */
 export async function sha256(input: string): Promise<string> {
   const data = textEncoder.encode(input)
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data)
-  const hashArray = Array.from(new Uint8Array(hashBuffer))
-  return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('')
+  const subtleCrypto = globalThis.crypto?.subtle ?? crypto.subtle
+  const hashBuffer = await subtleCrypto.digest('SHA-256', data)
+  const bytes = new Uint8Array(hashBuffer)
+  let hex = ''
+  for (let i = 0; i < bytes.length; i++) {
+    hex += byteToHex[bytes[i]]
+  }
+  return hex
 }
 
 /**
@@ -46,7 +56,7 @@ export async function sha256(input: string): Promise<string> {
  */
 export function getHourlyBucket(isoString: string): string {
   const date = new Date(isoString)
-  if (isNaN(date.getTime())) {
+  if (Number.isNaN(date.getTime())) {
     return new Date().toISOString().slice(0, 13)
   }
   return date.toISOString().slice(0, 13)
