@@ -100,12 +100,29 @@ export type ExtensionMessage =
   | DbGetIntegrityReportMessage
 
 /**
+ * Machine-readable error codes returned in ExtensionResponse envelopes.
+ * String matching on `error` text is deprecated; prefer `code`.
+ */
+export type ExtensionErrorCode =
+  | 'INVALID_FORMAT'
+  | 'VALIDATION_ERROR'
+  | 'DUPLICATE_INTERACTION'
+  | 'DB_ERROR'
+  | 'NOT_FOUND'
+  | 'RATE_LIMITED'
+  | 'UNTRUSTED_SENDER'
+  | 'NO_RESPONSE'
+  | 'RUNTIME_ERROR'
+
+/**
  * Standardized response envelope returned by message handlers.
  */
 export interface ExtensionResponse<T = unknown> {
   success: boolean
   data?: T
   error?: string
+  /** Machine-readable error classification. Present when success is false. */
+  code?: ExtensionErrorCode | string
   timestamp: number
 }
 

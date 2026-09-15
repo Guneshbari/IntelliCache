@@ -123,11 +123,16 @@ export function createSuccessResponse<T>(data: T): ExtensionResponse<T> {
 
 /**
  * Wraps an error string in the standard response envelope.
+ * Prefer passing a machine-readable `code` so callers don't string-match `error` text.
  */
-export function createErrorResponse(error: string): ExtensionResponse<never> {
+export function createErrorResponse(
+  error: string,
+  code?: ExtensionResponse['code']
+): ExtensionResponse<never> {
   return {
     success: false,
     error,
+    ...(code !== undefined ? { code } : {}),
     timestamp: Date.now(),
   }
 }
@@ -172,14 +177,19 @@ export function detectPlatformFromUrl(url: string): SupportedPlatform {
     if (
       hostname === 'chatgpt.com' ||
       hostname.endsWith('.chatgpt.com') ||
-      hostname === 'chat.openai.com'
+      hostname === 'chat.openai.com' ||
+      hostname.endsWith('.chat.openai.com')
     ) {
       return 'chatgpt'
     }
     if (hostname === 'claude.ai' || hostname.endsWith('.claude.ai')) {
       return 'claude'
     }
-    if (hostname === 'gemini.google.com') {
+    if (
+      hostname === 'gemini.google.com' ||
+      hostname.endsWith('.gemini.google.com') ||
+      hostname.startsWith('gemini.google.')
+    ) {
       return 'gemini'
     }
     return 'unknown'
@@ -194,3 +204,152 @@ export function detectPlatformFromUrl(url: string): SupportedPlatform {
  * classifying runtime errors and context invalidation.
  */
 export const sendExtensionMessage = sendBrowserRuntimeMessage
+
+// ─── Payload validation & sender trust ──────────────────────────────────────
+// These guards run in the service worker before any IndexedDB access so that
+// malformed or oversized payloads are rejected cheaply (quota-exhaustion DoS
+// mitigation). They are pure functions and safe to unit test in isolation.
+
+/** Maximum accepted characters for a single query/response text payload. */
+export const MAX_INTERACTION_TEXT_CHARS = 200_000
+/** Maximum accepted characters for conversation titles and init handshake fields. */
+export const MAX_TITLE_CHARS = 500
+/** Platforms accepted for persisted interactions. */
+export const PERSISTABLE_PLATFORMS: ReadonlySet<string> = new Set([
+  'chatgpt',
+  'claude',
+  'gemini',
+  'unknown',
+])
+
+export interface PayloadValidationResult {
+  ok: boolean
+  reason?: string
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+function isValidTextField(value: unknown, field: string): PayloadValidationResult {
+  if (typeof value !== 'string') {
+    return { ok: false, reason: `${field} must be a string` }
+  }
+  if (value.length > MAX_INTERACTION_TEXT_CHARS) {
+    return {
+      ok: false,
+      reason: `${field} exceeds ${MAX_INTERACTION_TEXT_CHARS} characters (${value.length})`,
+    }
+  }
+  return { ok: true }
+}
+
+/**
+ * Validates a DB_SAVE_INTERACTION payload without touching IndexedDB.
+ * Rejects missing shapes, wrong types, and oversized texts.
+ */
+export function validateDbSaveInteractionPayload(payload: unknown): PayloadValidationResult {
+  if (!isRecord(payload)) {
+    return { ok: false, reason: 'payload must be an object' }
+  }
+  if (typeof payload.platform !== 'string' || payload.platform.trim().length === 0) {
+    return { ok: false, reason: 'platform is required and must be a non-empty string' }
+  }
+  if (!PERSISTABLE_PLATFORMS.has(payload.platform.trim().toLowerCase())) {
+    return { ok: false, reason: `unsupported platform '${payload.platform}'` }
+  }
+  if (!isRecord(payload.query)) {
+    return { ok: false, reason: 'query must be an object' }
+  }
+  const queryCheck = isValidTextField(payload.query.text, 'query.text')
+  if (!queryCheck.ok) return queryCheck
+  if (!isRecord(payload.response)) {
+    return { ok: false, reason: 'response must be an object' }
+  }
+  const responseCheck = isValidTextField(payload.response.text, 'response.text')
+  if (!responseCheck.ok) return responseCheck
+
+  for (const field of ['conversation_id', 'message_id', 'user_message_id'] as const) {
+    const v = payload[field]
+    if (v !== undefined && v !== null && typeof v !== 'string') {
+      return { ok: false, reason: `${field} must be a string, null, or omitted` }
+    }
+  }
+  if (
+    payload.capture_context !== undefined &&
+    payload.capture_context !== 'on_load' &&
+    payload.capture_context !== 'on_generate'
+  ) {
+    return { ok: false, reason: "capture_context must be 'on_load' or 'on_generate'" }
+  }
+  if (payload.observed_at !== undefined && typeof payload.observed_at !== 'string') {
+    return { ok: false, reason: 'observed_at must be an ISO-8601 string' }
+  }
+  if (
+    payload.conversation_title !== undefined &&
+    payload.conversation_title !== null &&
+    (typeof payload.conversation_title !== 'string' ||
+      payload.conversation_title.length > MAX_TITLE_CHARS)
+  ) {
+    return { ok: false, reason: `conversation_title must be a string under ${MAX_TITLE_CHARS} chars` }
+  }
+  return { ok: true }
+}
+
+/**
+ * Validates a DB_GET_INTERACTION payload ({ id: string }).
+ */
+export function validateDbGetInteractionPayload(payload: unknown): PayloadValidationResult {
+  if (!isRecord(payload) || typeof payload.id !== 'string' || payload.id.trim().length === 0) {
+    return { ok: false, reason: 'id is required and must be a non-empty string' }
+  }
+  return { ok: true }
+}
+
+/**
+ * Validates a CONTENT_SCRIPT_INITIALIZED payload ({ url, title }).
+ * Applies length caps so PII-heavy URLs/titles can't bloat logs or storage.
+ */
+export function validateContentScriptInitPayload(payload: unknown): PayloadValidationResult {
+  if (!isRecord(payload)) {
+    return { ok: false, reason: 'payload must be an object' }
+  }
+  if (typeof payload.url !== 'string' || payload.url.length === 0) {
+    return { ok: false, reason: 'url must be a non-empty string' }
+  }
+  if (payload.url.length > 2000) {
+    return { ok: false, reason: 'url exceeds 2000 characters' }
+  }
+  if (
+    payload.title !== undefined &&
+    (typeof payload.title !== 'string' || payload.title.length > MAX_TITLE_CHARS)
+  ) {
+    return { ok: false, reason: `title must be a string under ${MAX_TITLE_CHARS} chars` }
+  }
+  return { ok: true }
+}
+
+export interface WriteSender {
+  tab?: { url?: string }
+  url?: string
+}
+
+/**
+ * Determines whether a message sender is allowed to perform a database write.
+ * Permissive by design (never breaks legit flows):
+ * - Senders without tab context (popup, tests, service worker) are allowed.
+ * - Content-script senders whose tab URL platform conflicts with the payload
+ *   platform are rejected (cross-site spoof mitigation).
+ */
+export function isSenderAllowedForWrite(
+  sender: WriteSender | undefined,
+  payloadPlatform: string | undefined
+): boolean {
+  if (!sender) return true
+  const tabUrl = sender.tab?.url ?? sender.url
+  if (!tabUrl || !payloadPlatform) return true
+  const senderPlatform = detectPlatformFromUrl(tabUrl)
+  const claimed = payloadPlatform.trim().toLowerCase()
+  if (senderPlatform === 'unknown' || claimed === 'unknown') return true
+  return senderPlatform === claimed
+}

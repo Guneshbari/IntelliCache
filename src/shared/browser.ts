@@ -169,10 +169,41 @@ export function addRuntimeMessageListener(listener: WebExtensionMessageListener)
  * Cross-browser message dispatcher.
  * Supports standard Firefox `browser.runtime.sendMessage` (Promise) and Chromium
  * `chrome.runtime.sendMessage` (callback/Promise) with uniform error classification.
+ *
+ * A timeout guard (default 8000ms) prevents indefinite hangs when the service
+ * worker is suspended or no listener is registered.
  */
+export interface SendMessageOptions {
+  timeoutMs?: number
+}
+
+const DEFAULT_SEND_TIMEOUT_MS = 8000
+
+function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  messageType: string
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null
+  const timeout = new Promise<T>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(
+        new Error(
+          `Timed out after ${timeoutMs}ms waiting for response to '${messageType}' (service worker may be suspended)`
+        )
+      )
+    }, timeoutMs)
+  })
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer !== null) clearTimeout(timer)
+  }) as Promise<T>
+}
+
 export async function sendBrowserRuntimeMessage<M extends ExtensionMessage, R = unknown>(
-  message: M
+  message: M,
+  options?: SendMessageOptions
 ): Promise<ExtensionResponse<R>> {
+  const timeoutMs = options?.timeoutMs ?? DEFAULT_SEND_TIMEOUT_MS
   const runtime = getBrowserRuntime()
   if (!runtime || !runtime.sendMessage) {
     const errorMsg = 'Extension runtime API is not available in the current environment.'
@@ -187,14 +218,18 @@ export async function sendBrowserRuntimeMessage<M extends ExtensionMessage, R = 
 
   if (browserApi?.runtime?.sendMessage) {
     try {
-      const response = await browserApi.runtime.sendMessage(message)
+      const response = await withTimeout(
+        browserApi.runtime.sendMessage(message),
+        timeoutMs,
+        message.type
+      )
       if (!response) {
         logger.warn(
           'Messaging',
           'CORE',
           `No response received from extension runtime for '${message.type}'`
         )
-        return createErrorResponse('No response received from extension component')
+        return createErrorResponse('No response received from extension component', 'NO_RESPONSE')
       }
       return response
     } catch (err) {
@@ -218,54 +253,62 @@ export async function sendBrowserRuntimeMessage<M extends ExtensionMessage, R = 
           `Runtime message error on '${message.type}': ${rawErrorMsg}`
         )
       }
-      return createErrorResponse(rawErrorMsg)
+      return createErrorResponse(rawErrorMsg, 'RUNTIME_ERROR')
     }
   }
 
   // Fallback to chrome.runtime.sendMessage with callback/lastError
-  return new Promise<ExtensionResponse<R>>((resolve) => {
-    try {
-      runtime.sendMessage(message, (response: ExtensionResponse<R> | null | undefined) => {
-        const lastError = runtime.lastError
-        if (lastError) {
-          const errorMsg = lastError.message ?? 'Unknown runtime error'
-          if (/extension context invalidated/i.test(errorMsg)) {
-            logger.error(
-              'Messaging',
-              'CORE',
-              'Extension context invalidated! The extension was reloaded or updated; please refresh the active page.'
-            )
-          } else if (
-            /receiving end does not exist|could not establish connection/i.test(errorMsg)
-          ) {
+  return withTimeout(
+    new Promise<ExtensionResponse<R>>((resolve) => {
+      try {
+        runtime.sendMessage(message, (response: ExtensionResponse<R> | null | undefined) => {
+          const lastError = runtime.lastError
+          if (lastError) {
+            const errorMsg = lastError.message ?? 'Unknown runtime error'
+            if (/extension context invalidated/i.test(errorMsg)) {
+              logger.error(
+                'Messaging',
+                'CORE',
+                'Extension context invalidated! The extension was reloaded or updated; please refresh the active page.'
+              )
+            } else if (
+              /receiving end does not exist|could not establish connection/i.test(errorMsg)
+            ) {
+              logger.warn(
+                'Messaging',
+                'CORE',
+                `Background recipient not ready for '${message.type}': ${errorMsg}`
+              )
+            } else {
+              logger.warn(
+                'Messaging',
+                'CORE',
+                `Runtime message error on '${message.type}': ${errorMsg}`
+              )
+            }
+            resolve(createErrorResponse(errorMsg, 'RUNTIME_ERROR'))
+          } else if (!response) {
             logger.warn(
               'Messaging',
               'CORE',
-              `Background recipient not ready for '${message.type}': ${errorMsg}`
+              `No response received from extension runtime for '${message.type}'`
             )
+            resolve(createErrorResponse('No response received from extension component', 'NO_RESPONSE'))
           } else {
-            logger.warn(
-              'Messaging',
-              'CORE',
-              `Runtime message error on '${message.type}': ${errorMsg}`
-            )
+            resolve(response)
           }
-          resolve(createErrorResponse(errorMsg))
-        } else if (!response) {
-          logger.warn(
-            'Messaging',
-            'CORE',
-            `No response received from extension runtime for '${message.type}'`
-          )
-          resolve(createErrorResponse('No response received from extension component'))
-        } else {
-          resolve(response)
-        }
-      })
-    } catch (sendEx) {
-      const exMsg = sendEx instanceof Error ? sendEx.message : String(sendEx)
-      logger.error('Messaging', 'CORE', `Exception invoking runtime.sendMessage: ${exMsg}`)
-      resolve(createErrorResponse(exMsg))
-    }
+        })
+      } catch (sendEx) {
+        const exMsg = sendEx instanceof Error ? sendEx.message : String(sendEx)
+        logger.error('Messaging', 'CORE', `Exception invoking runtime.sendMessage: ${exMsg}`)
+        resolve(createErrorResponse(exMsg, 'RUNTIME_ERROR'))
+      }
+    }),
+    timeoutMs,
+    message.type
+  ).catch((err) => {
+    const msg = err instanceof Error ? err.message : String(err)
+    logger.warn('Messaging', 'CORE', msg)
+    return createErrorResponse(msg, 'RUNTIME_ERROR')
   })
 }
