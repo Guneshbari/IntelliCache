@@ -55,16 +55,29 @@ describe('Forensic IndexedDB Integrity Audit', () => {
         }
       })
 
-      // Must have exactly: fingerprint (unique), platform, conversation_id, observed_at
+      // Must have: fingerprint (unique), platform, conversation_id, observed_at,
+      // plus v2 compound indexes for filtered+sorted queries.
       expect(interactionIndexes).toEqual(
         expect.arrayContaining([
           { name: 'fingerprint', keyPath: 'fingerprint', unique: true, multiEntry: false },
           { name: 'platform', keyPath: 'platform', unique: false, multiEntry: false },
           { name: 'conversation_id', keyPath: 'conversation_id', unique: false, multiEntry: false },
           { name: 'observed_at', keyPath: 'observed_at', unique: false, multiEntry: false },
+          {
+            name: '[platform+observed_at]',
+            keyPath: ['platform', 'observed_at'],
+            unique: false,
+            multiEntry: false,
+          },
+          {
+            name: '[conversation_id+observed_at]',
+            keyPath: ['conversation_id', 'observed_at'],
+            unique: false,
+            multiEntry: false,
+          },
         ])
       )
-      expect(interactionIndexes).toHaveLength(4)
+      expect(interactionIndexes).toHaveLength(6)
 
       // Inspect conversations object store
       const conversationStore = tx.objectStore('conversations')
