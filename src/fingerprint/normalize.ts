@@ -9,10 +9,13 @@
  * Normalizes text for deterministic fingerprinting:
  * 1. Unicode NFC normalization.
  * 2. Unification of carriage returns and newlines (\r\n -> \n).
- * 3. Collapsing multiple horizontal spaces and tabs into a single space.
- * 4. Trimming horizontal whitespace around line breaks.
- * 5. Collapsing 3+ consecutive newlines to double newlines.
- * 6. Trimming outer leading and trailing whitespace.
+ * 3. Normalizes non-breaking spaces to regular spaces; strips zero-width
+ *    characters (ZWSP/ZWNJ/ZWJ/BOM) that otherwise cause near-duplicate
+ *    prompts to hash differently across platforms.
+ * 4. Collapsing multiple horizontal spaces and tabs into a single space.
+ * 5. Trimming horizontal whitespace around line breaks.
+ * 6. Collapsing 3+ consecutive newlines to double newlines.
+ * 7. Trimming outer leading and trailing whitespace.
  */
 export function normalizeTextForFingerprint(text: string): string {
   if (typeof text !== 'string' || !text) {
@@ -21,6 +24,8 @@ export function normalizeTextForFingerprint(text: string): string {
 
   return text
     .normalize('NFC')
+    .replace(/\u00A0/g, ' ')
+    .replace(/[\u200B\u200C\u200D\uFEFF]/g, '')
     .replace(/\r\n|\r/g, '\n')
     .replace(/[ \t]+/g, ' ')
     .replace(/[ \t]*\n[ \t]*/g, '\n')

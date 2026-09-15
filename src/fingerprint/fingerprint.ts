@@ -37,11 +37,18 @@ for (let i = 0; i < 256; i++) {
 
 /**
  * Computes a SHA-256 hexadecimal hash using the Web Crypto API.
+ * Requires a secure context (https:// or extension pages); throws a descriptive
+ * error otherwise instead of surfacing a bare ReferenceError.
  */
 export async function sha256(input: string): Promise<string> {
+  const subtle = globalThis.crypto?.subtle
+  if (!subtle) {
+    throw new Error(
+      'Web Crypto API (crypto.subtle) is unavailable in this context; SHA-256 fingerprinting requires a secure context.'
+    )
+  }
   const data = textEncoder.encode(input)
-  const subtleCrypto = globalThis.crypto?.subtle ?? crypto.subtle
-  const hashBuffer = await subtleCrypto.digest('SHA-256', data)
+  const hashBuffer = await subtle.digest('SHA-256', data)
   const bytes = new Uint8Array(hashBuffer)
   let hex = ''
   for (let i = 0; i < bytes.length; i++) {
@@ -51,23 +58,45 @@ export async function sha256(input: string): Promise<string> {
 }
 
 /**
+ * Sentinel bucket for unparseable timestamps. Using a fixed sentinel (instead of
+ * the current hour) keeps invalid-timestamp records deterministic and prevents
+ * them from colliding with valid same-hour records.
+ */
+export const INVALID_TIMESTAMP_BUCKET = 'invalid-timestamp'
+
+/**
  * Formats a timestamp into an ISO-8601 hourly bucket string (UTC).
  * E.g., "2026-08-17T03:26:18.123Z" -> "2026-08-17T03"
+ * Returns INVALID_TIMESTAMP_BUCKET for unparseable input.
  */
 export function getHourlyBucket(isoString: string): string {
   const date = new Date(isoString)
   if (Number.isNaN(date.getTime())) {
-    return new Date().toISOString().slice(0, 13)
+    return INVALID_TIMESTAMP_BUCKET
   }
   return date.toISOString().slice(0, 13)
 }
 
 /**
  * Generates a deterministic SHA-256 fingerprint for an AI query/response interaction.
+ *
+ * Canonical payload formats are version-1 stable (`L1|…`, `L2|…`, `L3|…`) so existing
+ * IndexedDB records keep deduplicating after upgrades. Do not change field order,
+ * delimiters, or level semantics without a schema/fingerprint version bump.
+ *
+ * Security note: fingerprints are unsalted deterministic hashes (brute-forceable for
+ * short predictable prompts). Safe while storage stays local-only; add a per-install
+ * salt before any sync/export feature.
  */
 export async function generateInteractionFingerprint(
   input: FingerprintInput
 ): Promise<FingerprintResult> {
+  if (!input || typeof input !== 'object') {
+    throw new Error('generateInteractionFingerprint: input must be an object')
+  }
+  if (typeof input.platform !== 'string' || input.platform.trim().length === 0) {
+    throw new Error('generateInteractionFingerprint: platform must be a non-empty string')
+  }
   const platform = input.platform.trim().toLowerCase()
   const conversationId = input.conversation_id?.trim() || null
   const messageId = input.message_id?.trim() || null
