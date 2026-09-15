@@ -10,7 +10,7 @@
  * detect the URL change from within the mutation callback.
  */
 
-import { diagnosticStats, logger } from '../../diagnostics'
+import { diagnosticStats, logger, redactUrlForLog } from '../../diagnostics'
 import {
   BaseAdapter,
   type BaseAdapterOptions,
@@ -51,7 +51,7 @@ export class ChatGPTAdapter extends BaseAdapter {
     logger.info(
       'Adapter',
       'CHATGPT',
-      `Starting adapter lifecycle (initial URL: ${this.lastObservedUrl})`
+      `Starting adapter lifecycle (initial URL: ${redactUrlForLog(this.lastObservedUrl)})`
     )
     logger.debug('Adapter', 'CHATGPT', 'Scheduling initial DOM scan in 100ms...')
 
@@ -88,7 +88,7 @@ export class ChatGPTAdapter extends BaseAdapter {
       logger.info(
         'Navigation',
         'CHATGPT',
-        `Navigation detected: '${previousUrl}' -> '${currentUrl}' (previousConvId: ${previousConvId ?? 'none'}, newConvId: ${newConvId ?? 'none'})`
+        `Navigation detected: '${redactUrlForLog(previousUrl)}' -> '${redactUrlForLog(currentUrl)}' (previousConvId: ${previousConvId ?? 'none'}, newConvId: ${newConvId ?? 'none'})`
       )
 
       if (newConvId && this.pendingUnboundInteractions.size > 0) {
@@ -109,6 +109,7 @@ export class ChatGPTAdapter extends BaseAdapter {
         )
         this.isInitialScan = true
         this.processedKeys.clear()
+        this.resetStreamingDeferrals()
       } else {
         logger.debug(
           'Navigation',
@@ -142,27 +143,22 @@ export class ChatGPTAdapter extends BaseAdapter {
     logger.debug(
       'Adapter',
       'CHATGPT',
-      `Starting conversation DOM processing pass (URL: ${currentUrl})`
+      `Starting conversation DOM processing pass (URL: ${redactUrlForLog(currentUrl)})`
     )
     logger.debug(
       'Adapter',
       'CHATGPT',
-      `Conversation ID: ${conversationId ? `present (${conversationId})` : 'null'}`
+      `Conversation ID: ${conversationId ? 'present' : 'null'}`
     )
 
     const generating = isPageGenerating(document.body || document)
     logger.debug('Adapter', 'CHATGPT', `Evaluating page generation state: generating=${generating}`)
 
     if (generating) {
-      diagnosticStats.increment('streamingDeferrals')
-      logger.debug(
-        'Adapter',
-        'CHATGPT',
-        `Processing deferred: Active generation/streaming detected. Rescheduling in ${this.mutationDebounceMs}ms.`
-      )
-      this.scheduleProcessing(this.mutationDebounceMs)
+      this.handleStreamingDeferred()
       return
     }
+    this.resetStreamingDeferrals()
 
     const title = extractConversationTitle(document)
     const model = extractModelInfo(document)

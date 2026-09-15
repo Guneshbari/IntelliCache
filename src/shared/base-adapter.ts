@@ -23,6 +23,23 @@ export const MUTATION_DEBOUNCE_MS = 500
 export const NEW_CHAT_URL_TIMEOUT_MS = 4000
 export const NAV_POLL_INTERVAL_MS = 250
 
+/** Upper bound for the in-memory dedup key set (LRU eviction past this size). */
+export const MAX_PROCESSED_KEYS = 1000
+/** Ceiling for exponential streaming-deferral backoff. */
+export const MAX_STREAMING_DEFERRAL_DELAY_MS = 5000
+
+/**
+ * Fast non-crypto string hash (djb2, hex) for in-memory dedup keys.
+ * Crypto hashes are unnecessary here — keys never leave the page session.
+ */
+function hashSnippet(text: string): string {
+  let hash = 5381
+  for (let i = 0; i < text.length; i++) {
+    hash = ((hash << 5) + hash + text.charCodeAt(i)) >>> 0
+  }
+  return hash.toString(16).padStart(8, '0')
+}
+
 export type ConversationNavState = 'new_chat_without_id' | 'conversation_with_id' | 'unknown'
 export type PersistResult = 'saved' | 'duplicate' | 'failed'
 
@@ -58,6 +75,9 @@ export abstract class BaseAdapter implements PlatformAdapter {
   /** Processed interaction keys for the current tab session to prevent duplicate work. */
   protected processedKeys = new Set<string>()
 
+  /** Consecutive streaming deferrals (drives exponential reschedule backoff). */
+  protected streamingDeferralCount = 0
+
   /** Pending interactions observed before a conversation ID appears in the URL. */
   protected pendingUnboundInteractions = new Map<string, PendingUnboundInteraction>()
 
@@ -81,14 +101,33 @@ export abstract class BaseAdapter implements PlatformAdapter {
    * Generates a stable in-memory deduplication key for an extracted interaction.
    * Key is independent of conversationId so that null→real-ID transition does not
    * create duplicate in-memory entries or duplicate database records.
+   * Full texts are hashed (djb2) instead of 60-char prefix comparison so long
+   * turns sharing a prefix no longer collide and suppress each other.
    */
   protected generateInteractionKey(interaction: ExtractedInteraction): string {
     if (interaction.messageId) {
       return `msg:${interaction.messageId}`
     }
-    const qSnippet = interaction.queryText.slice(0, 60)
-    const rSnippet = interaction.responseText.slice(0, 60)
-    return `pair:${qSnippet}|${rSnippet}`
+    const qHash = hashSnippet(interaction.queryText)
+    const rHash = hashSnippet(interaction.responseText)
+    return `pair:${qHash}:${rHash}:${interaction.queryText.length}:${interaction.responseText.length}`
+  }
+
+  /**
+   * Records a key with LRU eviction so multi-day sessions cannot leak memory
+   * through an ever-growing set.
+   */
+  protected rememberProcessedKey(key: string): void {
+    if (this.processedKeys.has(key)) {
+      return
+    }
+    if (this.processedKeys.size >= MAX_PROCESSED_KEYS) {
+      const oldest = this.processedKeys.values().next().value
+      if (oldest !== undefined) {
+        this.processedKeys.delete(oldest)
+      }
+    }
+    this.processedKeys.add(key)
   }
 
   /**
@@ -140,12 +179,38 @@ export abstract class BaseAdapter implements PlatformAdapter {
   }
 
   /**
+   * Handles a detected streaming/generating state with exponential backoff so
+   * long generations don't spin a tight full-DOM re-scan loop. Counter resets
+   * on the next real scan and on navigation.
+   */
+  protected handleStreamingDeferred(): void {
+    this.streamingDeferralCount += 1
+    diagnosticStats.increment('streamingDeferrals')
+    const exponent = Math.min(this.streamingDeferralCount - 1, 4)
+    const delay = Math.min(this.mutationDebounceMs * 2 ** exponent, MAX_STREAMING_DEFERRAL_DELAY_MS)
+    logger.debug(
+      'Adapter',
+      this.platformTag,
+      `Processing deferred: active generation detected (deferral #${this.streamingDeferralCount}). Rescheduling in ${delay}ms.`
+    )
+    this.scheduleProcessing(delay)
+  }
+
+  /**
+   * Resets the streaming-deferral backoff after a completed scan pass.
+   */
+  protected resetStreamingDeferrals(): void {
+    this.streamingDeferralCount = 0
+  }
+
+  /**
    * Handles URL transitions for SPA navigation.
    * Shared by Claude and Gemini adapters. ChatGPT uses its own inline handler.
    *
    * Navigation classification:
    *   new_chat_assignment: /new -> /chat/{id}  — preserve on_generate, flush pending
    *   existing_conversation_navigation: A -> B — reset to on_load, clear session cache
+   *   conversation_to_new_chat: A -> /new      — reset to on_load, clear session cache
    *   new_to_new: /new -> /new               — no action needed
    */
   handleNavigation(
@@ -163,15 +228,18 @@ export abstract class BaseAdapter implements PlatformAdapter {
 
     const isNewChatAssignment = !prevConvId && !!newConvId
     const isConversationToConversation = !!prevConvId && !!newConvId && prevConvId !== newConvId
+    const isConversationToNew = !!prevConvId && !newConvId
     const isNewToNew = !prevConvId && !newConvId
 
     const classification = isNewChatAssignment
       ? 'new_chat_assignment'
       : isConversationToConversation
         ? 'existing_conversation_navigation'
-        : isNewToNew
-          ? 'new_to_new'
-          : 'unknown'
+        : isConversationToNew
+          ? 'conversation_to_new_chat'
+          : isNewToNew
+            ? 'new_to_new'
+            : 'unknown'
 
     logger.info(
       'Navigation',
@@ -195,10 +263,11 @@ export abstract class BaseAdapter implements PlatformAdapter {
           'New-chat assignment: no pending interactions to flush; scheduling DOM scan.'
         )
       }
-    } else if (isConversationToConversation || isNewToNew) {
+    } else if (isConversationToConversation || isNewToNew || isConversationToNew) {
       this.navState = newConvId ? 'conversation_with_id' : 'new_chat_without_id'
       this.isInitialScan = true
       this.processedKeys.clear()
+      this.resetStreamingDeferrals()
       logger.info(
         'Navigation',
         this.platformTag,
@@ -242,15 +311,10 @@ export abstract class BaseAdapter implements PlatformAdapter {
         interaction.traceId || `trace_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
       interaction.traceId = traceId
 
-      logger.info(
+      logger.debug(
         'Lifecycle',
         this.platformTag,
         `candidate-detected trace=${traceId} (convId=${interaction.conversationId ?? 'null'}, queryChars=${interaction.queryText.length}, responseChars=${interaction.responseText.length})`
-      )
-      logger.info(
-        'Lifecycle',
-        this.platformTag,
-        `extracted trace=${traceId} (convId=${interaction.conversationId ?? 'null'}, userMsgId=${interaction.userMessageId ?? 'null'}, asstMsgId=${interaction.messageId ?? 'null'})`
       )
 
       logger.logExtraction(this.platformTag, {
@@ -348,7 +412,7 @@ export abstract class BaseAdapter implements PlatformAdapter {
       trace_id: traceId,
     }
 
-    logger.info(
+    logger.debug(
       'Lifecycle',
       this.platformTag,
       `persistence-request trace=${traceId} (conversationId=${interaction.conversationId ?? 'null'}, context=${interaction.captureContext})`
@@ -364,9 +428,9 @@ export abstract class BaseAdapter implements PlatformAdapter {
       const response = await sendExtensionMessage(msg)
 
       if (response.success) {
-        this.processedKeys.add(key)
+        this.rememberProcessedKey(key)
         diagnosticStats.increment('interactionsSaved')
-        logger.info(
+        logger.debug(
           'Messaging',
           this.platformTag,
           `DB_SAVE_INTERACTION acknowledged successfully (conversationId: ${interaction.conversationId || 'unbound'}, context: ${interaction.captureContext})`
@@ -374,13 +438,15 @@ export abstract class BaseAdapter implements PlatformAdapter {
         return 'saved'
       }
 
-      if (response.error?.includes('already exists')) {
-        this.processedKeys.add(key)
+      // Duplicate detection prefers the machine-readable code; the legacy
+      // substring check stays as a fallback for older service workers.
+      if (response.code === 'DUPLICATE_INTERACTION' || response.error?.includes('already exists')) {
+        this.rememberProcessedKey(key)
         diagnosticStats.increment('duplicates')
-        logger.info(
+        logger.debug(
           'Database',
           this.platformTag,
-          `Duplicate interaction detected: ${response.error}`
+          `Duplicate interaction detected: ${response.error ?? response.code ?? 'duplicate'}`
         )
         return 'duplicate'
       }
@@ -437,17 +503,26 @@ export abstract class BaseAdapter implements PlatformAdapter {
       this.debounceTimer = null
     }
 
-    const pendingCount = this.pendingUnboundInteractions.size
-    for (const [, pending] of this.pendingUnboundInteractions) {
-      clearTimeout(pending.timer)
-    }
+    // Best-effort flush: pending unbound interactions are persisted with a null
+    // conversation ID (Level-3 fingerprint) instead of being silently dropped,
+    // mirroring the pending-timeout path. Fire-and-forget — page may be unloading.
+    const pending = [...this.pendingUnboundInteractions.values()]
     this.pendingUnboundInteractions.clear()
+    for (const item of pending) {
+      clearTimeout(item.timer)
+    }
+    for (const item of pending) {
+      void this.persistInteraction(item.interaction, item.key).catch(() => {
+        // Best-effort only; persistence failures are already counted inside.
+      })
+    }
 
     this.observing = false
+    this.resetStreamingDeferrals()
     logger.info(
       'Adapter',
       this.platformTag,
-      `Adapter stopped. Pending buffer cleared: ${pendingCount} items.`
+      `Adapter stopped. Pending buffer flushed: ${pending.length} item(s).`
     )
   }
 

@@ -60,6 +60,11 @@ export const GEMINI_SELECTORS = {
   /**
    * Streaming / generation in-progress indicators.
    * When any of these are present, the response is considered incomplete.
+   *
+   * NOTE: spinner entries (`mat-spinner`, `sparkle-spinner`) are intentionally
+   * retained alongside the stop-button selectors as a conservative fallback —
+   * a false positive only delays capture (with exponential backoff in
+   * BaseAdapter), while a false negative would persist a truncated response.
    */
   STREAMING_INDICATORS: [
     'button[aria-label="Stop response"]',

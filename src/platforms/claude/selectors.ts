@@ -67,6 +67,11 @@ export const CLAUDE_SELECTORS = {
    *
    * Claude shows a stop/cancel button during generation and may render
    * streaming-state class names or a progress indicator.
+   *
+   * NOTE: generic entries (`.streaming`, `.animate-pulse`) are intentionally
+   * retained as a conservative fallback — a false positive only delays capture
+   * (with exponential backoff in BaseAdapter), while a false negative would
+   * persist a truncated response permanently.
    */
   STREAMING_INDICATORS: [
     'button[aria-label="Stop Response"]',

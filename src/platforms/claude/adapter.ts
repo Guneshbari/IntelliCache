@@ -16,7 +16,7 @@
  *   conversation_with_id -> new_chat_without_id   (navigate to new chat, reset to on_load)
  */
 
-import { diagnosticStats, logger } from '../../diagnostics'
+import { diagnosticStats, logger, redactUrlForLog } from '../../diagnostics'
 import {
   BaseAdapter,
   type BaseAdapterOptions,
@@ -30,6 +30,7 @@ import {
   isPageGenerating,
   pairTurnsIntoInteractions,
 } from './parser'
+import { CLAUDE_SELECTORS } from './selectors'
 
 export type ClaudeAdapterOptions = BaseAdapterOptions
 
@@ -58,7 +59,7 @@ export class ClaudeAdapter extends BaseAdapter {
     logger.info(
       'Adapter',
       'CLAUDE',
-      `Starting adapter lifecycle (initialUrl: ${initialUrl}, navState: ${this.navState}, conversationId: ${initialConvId ?? 'none'})`
+      `Starting adapter lifecycle (initialUrl: ${redactUrlForLog(initialUrl)}, navState: ${this.navState}, conversationId: ${initialConvId ? 'present' : 'none'})`
     )
 
     this.startNavWatcher(initialUrl, (prev, next) => this.onNavigate(prev, next))
@@ -109,27 +110,22 @@ export class ClaudeAdapter extends BaseAdapter {
     logger.debug(
       'Adapter',
       'CLAUDE',
-      `DOM scan started (URL: ${currentUrl}, navState: ${this.navState})`
+      `DOM scan started (URL: ${redactUrlForLog(currentUrl)}, navState: ${this.navState})`
     )
     logger.debug(
       'Adapter',
       'CLAUDE',
-      `Conversation ID: ${conversationId ? `present (${conversationId})` : 'null'}`
+      `Conversation ID: ${conversationId ? 'present' : 'null'}`
     )
 
     const generating = isPageGenerating(document.body || document)
     logger.debug('Adapter', 'CLAUDE', `Generation state: generating=${generating}`)
 
     if (generating) {
-      diagnosticStats.increment('streamingDeferrals')
-      logger.debug(
-        'Adapter',
-        'CLAUDE',
-        `Processing deferred: active generation detected. Rescheduling in ${this.mutationDebounceMs}ms.`
-      )
-      this.scheduleProcessing(this.mutationDebounceMs)
+      this.handleStreamingDeferred()
       return
     }
+    this.resetStreamingDeferrals()
 
     const title = extractConversationTitle(document)
     const model = extractModelInfo(document)
@@ -142,7 +138,7 @@ export class ClaudeAdapter extends BaseAdapter {
 
     const turnContainers = Array.from(
       document.querySelectorAll(
-        '[data-testid="transcript-list"] [data-testid="transcript-row"], [data-testid="user-message"], [data-testid="assistant-message"]'
+        `${CLAUDE_SELECTORS.TRANSCRIPT_LIST} [data-testid="transcript-row"], ${CLAUDE_SELECTORS.USER_MESSAGE}, ${CLAUDE_SELECTORS.ASSISTANT_MESSAGE}`
       )
     ).length
 

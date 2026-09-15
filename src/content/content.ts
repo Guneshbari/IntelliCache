@@ -5,7 +5,7 @@
  * with the Service Worker. No platform scraping or DOM mutations are performed here yet.
  */
 
-import { logger, toDiagnosticPlatform } from '../diagnostics'
+import { logger, redactUrlForLog, toDiagnosticPlatform } from '../diagnostics'
 import { getAdapterForUrl } from '../platforms/registry'
 import type { PlatformAdapter } from '../platforms/types'
 import { addRuntimeMessageListener, type WebExtensionSender } from '../shared/browser'
@@ -30,9 +30,9 @@ function initializeContentScript() {
   logger.info(
     'Content',
     platformTag,
-    `Injected successfully into ${platform.toUpperCase()} page (${currentUrl})`
+    `Injected successfully into ${platform.toUpperCase()} page (${redactUrlForLog(currentUrl)})`
   )
-  logger.info('Content', platformTag, `Platform detected: ${platform} (URL: ${currentUrl})`)
+  logger.debug('Content', platformTag, `Platform detected: ${platform}`)
 
   // Send handshake message to Service Worker to verify content-to-background communication
   const initMessage = createContentScriptInitMessage(currentUrl, pageTitle)
@@ -100,13 +100,22 @@ function initializeContentScript() {
   // Cleanup on unload or page hide
   const cleanupAdapter = () => {
     if (activeAdapter) {
-      logger.info(
-        'Content',
-        platformTag,
-        `Page unloading/hidden. Stopping adapter for ${activeAdapter.platform}...`
-      )
-      activeAdapter.stop()
-      logger.info('Content', platformTag, 'Adapter stopped.')
+      const stoppedPlatform = activeAdapter.platform
+      try {
+        logger.info(
+          'Content',
+          platformTag,
+          `Page unloading/hidden. Stopping adapter for ${stoppedPlatform}...`
+        )
+        activeAdapter.stop()
+        logger.info('Content', platformTag, 'Adapter stopped.')
+      } catch (err) {
+        logger.error(
+          'Content',
+          platformTag,
+          `Adapter stop failed during unload: ${err instanceof Error ? err.message : String(err)}`
+        )
+      }
       activeAdapter = null
     }
   }
@@ -130,13 +139,13 @@ function initializeContentScript() {
         sendResponse(
           createSuccessResponse({
             reply: 'PONG_FROM_CONTENT_SCRIPT',
-            url: window.location.href,
+            url: redactUrlForLog(window.location.href),
             platform,
             echoTimestamp: message.timestamp,
           })
         )
       } else {
-        sendResponse(createErrorResponse('Unhandled content script message type'))
+        sendResponse(createErrorResponse('Unhandled content script message type', 'INVALID_FORMAT'))
       }
 
       return false

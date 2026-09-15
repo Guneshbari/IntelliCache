@@ -19,6 +19,22 @@ import { GEMINI_SELECTORS } from './selectors'
 export { extractMessageId, extractSourceTimestamp }
 
 /**
+ * Path segments under /app or /chat that are views, not conversation IDs.
+ * Without this blocklist, URLs like /app/shared pick up "shared" as the
+ * conversation ID and unrelated pages falsely deduplicate against each other.
+ */
+const NON_CONVERSATION_SLUGS: ReadonlySet<string> = new Set([
+  'shared',
+  'gems',
+  'iam',
+  'u',
+  'settings',
+  'help',
+  'about',
+  'history',
+])
+
+/**
  * Extracts the conversation ID from Gemini URLs.
  * Examples:
  * - https://gemini.google.com/app/6a8617f8ce4483ee -> "6a8617f8ce4483ee"
@@ -32,7 +48,12 @@ export function extractConversationIdFromUrl(url: string): string | null {
     const match = pathname.match(/\/(?:app|chat)\/([a-zA-Z0-9_-]+)/)
     if (match?.[1]) {
       const id = match[1].trim()
-      if (id.length > 0 && id !== 'app' && id !== 'chat') {
+      if (
+        id.length >= 4 &&
+        id !== 'app' &&
+        id !== 'chat' &&
+        !NON_CONVERSATION_SLUGS.has(id.toLowerCase())
+      ) {
         return id
       }
     }
@@ -286,7 +307,7 @@ export function pairTurnsIntoInteractions(
 
   const interactions = sharedPairTurns('gemini', turns, context)
 
-  logger.info(
+  logger.debug(
     'Parser',
     'GEMINI',
     `DOM diagnostics | userQueries=${userQueriesCount} | modelResponses=${modelResponsesCount} | completePairs=${interactions.length}`

@@ -334,7 +334,7 @@ export class InteractionRepository {
         : conversationId
       const limit = options?.limit
       try {
-        let query = this.db.interactions
+        const query = this.db.interactions
           .where('[conversation_id+observed_at]')
           .between([targetId, Dexie.minKey], [targetId, Dexie.maxKey])
         const rows = await (limit !== undefined ? query.limit(limit).toArray() : query.toArray())
@@ -360,7 +360,7 @@ export class InteractionRepository {
       const normalized = platform.trim().toLowerCase()
       const limit = options?.limit
       try {
-        let query = this.db.interactions
+        const query = this.db.interactions
           .where('[platform+observed_at]')
           .between([normalized, Dexie.minKey], [normalized, Dexie.maxKey])
         return await (limit !== undefined ? query.limit(limit).toArray() : query.toArray())

@@ -16,7 +16,7 @@
  *   conversation_with_id -> new_chat_without_id   (navigate to new chat, reset to on_load)
  */
 
-import { diagnosticStats, logger } from '../../diagnostics'
+import { diagnosticStats, logger, redactUrlForLog } from '../../diagnostics'
 import {
   BaseAdapter,
   type BaseAdapterOptions,
@@ -58,7 +58,7 @@ export class GeminiAdapter extends BaseAdapter {
     logger.info(
       'Adapter',
       'GEMINI',
-      `Starting adapter lifecycle (initialUrl: ${initialUrl}, navState: ${this.navState}, conversationId: ${initialConvId ?? 'none'})`
+      `Starting adapter lifecycle (initialUrl: ${redactUrlForLog(initialUrl)}, navState: ${this.navState}, conversationId: ${initialConvId ? 'present' : 'none'})`
     )
 
     this.startNavWatcher(initialUrl, (prev, next) => this.onNavigate(prev, next))
@@ -109,33 +109,27 @@ export class GeminiAdapter extends BaseAdapter {
     logger.debug(
       'Adapter',
       'GEMINI',
-      `DOM scan started (URL: ${currentUrl}, navState: ${this.navState})`
+      `DOM scan started (URL: ${redactUrlForLog(currentUrl)}, navState: ${this.navState})`
     )
     logger.debug(
       'Adapter',
       'GEMINI',
-      `Conversation ID: ${conversationId ? `present (${conversationId})` : 'null'}`
+      `Conversation ID: ${conversationId ? 'present' : 'null'}`
     )
 
     const root = document.body || document
 
-    // Diagnostic element counts to aid debugging Gemini DOM changes
+    // Lightweight diagnostic counts (user-query / model-response only — the
+    // parser performs the full extraction pass below, so role/text breakdowns
+    // are intentionally not re-queried here to avoid double DOM walks).
     const userQueryCount = root.querySelectorAll('user-query').length
     const modelResponseCount = root.querySelectorAll('model-response').length
-    const userRoleCount = root.querySelectorAll('[data-message-author-role="user"]').length
-    const asstRoleCount = root.querySelectorAll('[data-message-author-role="assistant"]').length
-    const userTextCount = root.querySelectorAll(
-      'user-query .query-content, [id^="user-query-content"]'
-    ).length
-    const asstTextCount = root.querySelectorAll(
-      'model-response .markdown, model-response message-content'
-    ).length
     const docReadyState = typeof document !== 'undefined' ? document.readyState : 'unknown'
 
     logger.debug(
       'Adapter',
       'GEMINI',
-      `Runtime DOM check | readyState=${docReadyState} | bodyExists=${!!document.body} | userQueryElements=${userQueryCount} | modelResponseElements=${modelResponseCount} | userRoleElements=${userRoleCount} | asstRoleElements=${asstRoleCount} | userTextElements=${userTextCount} | asstTextElements=${asstTextCount}`
+      `Runtime DOM check | readyState=${docReadyState} | bodyExists=${!!document.body} | userQueryElements=${userQueryCount} | modelResponseElements=${modelResponseCount}`
     )
 
     if (userQueryCount === 0 && modelResponseCount === 0) {
@@ -150,15 +144,10 @@ export class GeminiAdapter extends BaseAdapter {
     logger.debug('Adapter', 'GEMINI', `Generation state: generating=${generating}`)
 
     if (generating) {
-      diagnosticStats.increment('streamingDeferrals')
-      logger.debug(
-        'Adapter',
-        'GEMINI',
-        `Processing deferred: active generation detected. Rescheduling in ${this.mutationDebounceMs}ms.`
-      )
-      this.scheduleProcessing(this.mutationDebounceMs)
+      this.handleStreamingDeferred()
       return
     }
+    this.resetStreamingDeferrals()
 
     const title = extractConversationTitle(document)
     const model = extractModelInfo(document)

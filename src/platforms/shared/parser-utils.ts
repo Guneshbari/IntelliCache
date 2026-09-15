@@ -70,7 +70,11 @@ export function extractSourceTimestamp(element: Element): string | null {
  * Formats a `<pre><code>` code block into a markdown fenced-code-block string.
  * Detects language from `language-*` class, replaces the `<pre>` node in place.
  *
- * @param pre - The `<pre>` element to transform.
+ * WARNING: mutates the passed node via `replaceWith`. Callers MUST pass a
+ * detached clone (e.g. from `cloneNode(true)`), never a live-DOM node —
+ * calling this on live page DOM would destroy the visible code block.
+ *
+ * @param pre - The `<pre>` element (detached clone) to transform.
  * @param ownerDocument - Optional document used to create text nodes (defaults to pre.ownerDocument).
  */
 export function formatCodeBlock(pre: Element, ownerDocument?: Document): void {
@@ -101,8 +105,14 @@ export function formatCodeBlock(pre: Element, ownerDocument?: Document): void {
  * - Unifies CRLF/CR → LF
  * - Collapses 3+ consecutive newlines to 2
  * - Trims surrounding whitespace
+ *
+ * Non-string input yields '' (defensive: extraction clones can be nullish
+ * mid-mutation when the page re-renders under the observer).
  */
 export function normalizeExtractedText(rawText: string): string {
+  if (typeof rawText !== 'string' || !rawText) {
+    return ''
+  }
   return rawText
     .replace(/\r\n|\r/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
@@ -111,8 +121,12 @@ export function normalizeExtractedText(rawText: string): string {
 
 /**
  * Pairs sequential user/assistant RawMessageTurns into ExtractedInteractions.
- * Streaming or empty assistant turns are skipped.
- * Only the `platform` literal differs between callers.
+ * Streaming or empty assistant turns are skipped WITHOUT consuming the pending
+ * user turn, so a later completed assistant response still pairs (previously the
+ * pending user was dropped on any skipped assistant, losing valid pairs like
+ * U2+A2 in `U1,U2,A1(streaming),A2(complete)`).
+ * A newer non-empty user turn overwrites an unpaired pending user (regeneration
+ * branch semantics). Only the `platform` literal differs between callers.
  */
 export function pairTurnsIntoInteractions(
   platform: ExtractedInteraction['platform'],
@@ -133,6 +147,7 @@ export function pairTurnsIntoInteractions(
 
   for (const turn of turns) {
     if (turn.role === 'user') {
+      // Empty user turns are ignored and never overwrite a pending user.
       if (turn.text.length > 0) {
         pendingUserTurn = turn
       }
@@ -151,8 +166,9 @@ export function pairTurnsIntoInteractions(
           sourceTimestamp: turn.sourceTimestamp ?? pendingUserTurn.sourceTimestamp ?? null,
           captureContext,
         })
+        pendingUserTurn = null
       }
-      pendingUserTurn = null
+      // Skipped (streaming/empty) assistants intentionally keep pendingUserTurn.
     }
   }
 

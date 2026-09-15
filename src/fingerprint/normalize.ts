@@ -25,7 +25,7 @@ export function normalizeTextForFingerprint(text: string): string {
   return text
     .normalize('NFC')
     .replace(/\u00A0/g, ' ')
-    .replace(/[\u200B\u200C\u200D\uFEFF]/g, '')
+    .replace(/\u200B|\u200C|\u200D|\uFEFF/g, '')
     .replace(/\r\n|\r/g, '\n')
     .replace(/[ \t]+/g, ' ')
     .replace(/[ \t]*\n[ \t]*/g, '\n')
