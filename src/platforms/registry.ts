@@ -13,8 +13,17 @@ const adapters: PlatformAdapter[] = [new ChatGPTAdapter(), new ClaudeAdapter(), 
 
 /**
  * Registers an adapter instance into the global registry.
+ * Validates adapter shape so a buggy caller cannot poison URL discovery.
  */
 export function registerAdapter(adapter: PlatformAdapter): void {
+  if (
+    !adapter ||
+    typeof adapter !== 'object' ||
+    typeof adapter.platform !== 'string' ||
+    typeof adapter.canHandle !== 'function'
+  ) {
+    throw new TypeError('registerAdapter: adapter must expose platform and canHandle(url)')
+  }
   const existingIndex = adapters.findIndex((a) => a.platform === adapter.platform)
   if (existingIndex >= 0) {
     adapters[existingIndex] = adapter
@@ -25,11 +34,16 @@ export function registerAdapter(adapter: PlatformAdapter): void {
 
 /**
  * Finds the first registered platform adapter that can handle the given URL.
+ * A throwing canHandle never breaks discovery — it is treated as "cannot handle".
  */
 export function getAdapterForUrl(url: string): PlatformAdapter | null {
   for (const adapter of adapters) {
-    if (adapter.canHandle(url)) {
-      return adapter
+    try {
+      if (adapter.canHandle(url)) {
+        return adapter
+      }
+    } catch {
+      continue
     }
   }
   return null

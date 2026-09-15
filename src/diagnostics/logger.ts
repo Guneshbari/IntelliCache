@@ -29,22 +29,47 @@ const LOG_LEVEL_SEVERITY: Record<DiagnosticLogLevel, number> = {
 
 /**
  * Normalizes any platform string into a standardized DiagnosticPlatform tag.
+ * Exact platform tokens win over substring matches so ambiguous composites
+ * (e.g. "openai-gemini-test") resolve deterministically.
  */
 export function toDiagnosticPlatform(platform?: string | null): DiagnosticPlatform {
   if (!platform) {
     return 'CORE'
   }
   const norm = platform.trim().toLowerCase()
-  if (norm.includes('chatgpt') || norm.includes('openai')) {
-    return 'CHATGPT'
-  }
-  if (norm.includes('claude')) {
+  if (norm === 'claude' || norm.includes('claude')) {
     return 'CLAUDE'
   }
-  if (norm.includes('gemini')) {
+  if (norm === 'gemini' || norm.includes('gemini')) {
     return 'GEMINI'
   }
+  if (
+    norm === 'chatgpt' ||
+    norm === 'openai' ||
+    norm.includes('chatgpt') ||
+    norm.includes('openai')
+  ) {
+    return 'CHATGPT'
+  }
   return 'CORE'
+}
+
+/**
+ * Redacts a URL for safe logging: keeps origin + pathname, drops query and
+ * hash (which may carry tokens, prompts, or session identifiers).
+ * Falls back to a truncated string for unparseable input.
+ */
+export function redactUrlForLog(url: string): string {
+  if (typeof url !== 'string' || url.length === 0) {
+    return '(empty url)'
+  }
+  try {
+    const parsed = new URL(url)
+    const suffix = parsed.search || parsed.hash ? ' [query/hash redacted]' : ''
+    return `${parsed.origin}${parsed.pathname}${suffix}`
+  } catch {
+    return url.length > 200 ? `${url.slice(0, 200)}…` : url
+  }
 }
 
 export type DiagnosticLogSink = (
@@ -225,8 +250,7 @@ export class DiagnosticLogger {
       convIdStr = data.conversationId ? 'yes' : 'no'
     } else if (typeof data.conversationId === 'string') {
       const lower = data.conversationId.trim().toLowerCase()
-      convIdStr =
-        lower === 'yes' || (lower !== 'no' && lower !== 'null' && lower !== '') ? 'yes' : 'no'
+      convIdStr = lower === 'yes' || lower === 'true' || lower === '1' ? 'yes' : 'no'
     }
 
     const msg =

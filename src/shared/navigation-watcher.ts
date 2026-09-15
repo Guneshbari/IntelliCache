@@ -34,6 +34,7 @@ export class NavigationWatcher {
   private pollIntervalId: ReturnType<typeof setInterval> | null = null
   private debounceTimer: ReturnType<typeof setTimeout> | null = null
   private popstateHandler: (() => void) | null = null
+  private visibilityHandler: (() => void) | null = null
   private pollIntervalMs: number
   private debounceMs: number
   private pendingChange: { previousUrl: string; newUrl: string } | null = null
@@ -48,6 +49,8 @@ export class NavigationWatcher {
   /**
    * Starts the navigation watcher. No-op if already watching.
    * Records the current URL as the baseline for change detection.
+   * Polling pauses while the document is hidden to avoid wasted wakeups
+   * during long unattended runs.
    */
   start(initialUrl?: string): void {
     if (this.isWatching) {
@@ -61,12 +64,14 @@ export class NavigationWatcher {
     if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
       this.popstateHandler = () => this.checkForUrlChange()
       window.addEventListener('popstate', this.popstateHandler)
+      this.visibilityHandler = () => this.handleVisibilityChange()
+      // document may be undefined in non-DOM test environments.
+      if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+        document.addEventListener('visibilitychange', this.visibilityHandler)
+      }
     }
 
-    // Polling: handles pushState/replaceState (no event fired natively in content-script isolated world).
-    this.pollIntervalId = setInterval(() => {
-      this.checkForUrlChange()
-    }, this.pollIntervalMs)
+    this.startPolling()
   }
 
   /**
@@ -87,10 +92,16 @@ export class NavigationWatcher {
       this.popstateHandler = null
     }
 
-    if (this.pollIntervalId !== null) {
-      clearInterval(this.pollIntervalId)
-      this.pollIntervalId = null
+    if (
+      this.visibilityHandler &&
+      typeof document !== 'undefined' &&
+      typeof document.removeEventListener === 'function'
+    ) {
+      document.removeEventListener('visibilitychange', this.visibilityHandler)
+      this.visibilityHandler = null
     }
+
+    this.stopPolling()
 
     if (this.debounceTimer !== null) {
       clearTimeout(this.debounceTimer)
@@ -98,6 +109,45 @@ export class NavigationWatcher {
     }
 
     this.pendingChange = null
+  }
+
+  /**
+   * Starts the polling interval unless already running.
+   */
+  private startPolling(): void {
+    if (this.pollIntervalId !== null || !this.isWatching) {
+      return
+    }
+    // Polling: handles pushState/replaceState (no event fired natively in content-script isolated world).
+    this.pollIntervalId = setInterval(() => {
+      this.checkForUrlChange()
+    }, this.pollIntervalMs)
+  }
+
+  /**
+   * Stops the polling interval if running.
+   */
+  private stopPolling(): void {
+    if (this.pollIntervalId !== null) {
+      clearInterval(this.pollIntervalId)
+      this.pollIntervalId = null
+    }
+  }
+
+  /**
+   * Pauses polling while the tab is hidden; resumes with an immediate check
+   * when visible again so no transition is missed.
+   */
+  private handleVisibilityChange(): void {
+    if (typeof document === 'undefined') {
+      return
+    }
+    if (document.hidden) {
+      this.stopPolling()
+    } else {
+      this.startPolling()
+      this.checkForUrlChange()
+    }
   }
 
   /**
@@ -143,7 +193,15 @@ export class NavigationWatcher {
       this.pendingChange = null
       this.debounceTimer = null
       if (change) {
-        this.onUrlChange(change.previousUrl, change.newUrl)
+        try {
+          this.onUrlChange(change.previousUrl, change.newUrl)
+        } catch (err) {
+          // Navigation callbacks run on a timer; never let them become
+          // uncaught exceptions that kill the watcher loop.
+          console.error(
+            `[IntelliCache][Navigation][CORE] URL change handler failed: ${err instanceof Error ? err.message : String(err)}`
+          )
+        }
       }
     }, this.debounceMs)
   }

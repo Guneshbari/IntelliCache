@@ -32,8 +32,13 @@ export class DiagnosticStats {
 
   /**
    * Increments a diagnostic counter by a given amount (default: 1).
+   * Non-finite amounts (NaN/Infinity) are ignored so one bad call site
+   * cannot permanently poison a counter.
    */
   increment(counter: keyof DiagnosticCounters, amount = 1): void {
+    if (typeof amount !== 'number' || !Number.isFinite(amount)) {
+      return
+    }
     this.counters[counter] += amount
   }
 
