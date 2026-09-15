@@ -7,9 +7,11 @@ import type { InteractionTextMetrics } from './types'
 
 /**
  * Calculates UTF-8 byte length for a given string without allocating memory buffers.
+ * Non-string input is treated as empty (returns 0) to stay total on the hot path;
+ * callers that need strictness should validate before measuring.
  */
 export function calculateUtf8Bytes(text: string): number {
-  if (!text) return 0
+  if (typeof text !== 'string' || !text) return 0
   let bytes = 0
   const len = text.length
   for (let i = 0; i < len; i++) {
@@ -41,11 +43,18 @@ export function calculateUtf8Bytes(text: string): number {
 /**
  * Constructs a complete InteractionTextMetrics object with exact character
  * count and UTF-8 byte count.
+ *
+ * `characters` counts UTF-16 code units (`text.length`), matching the stored
+ * contract asserted across the test suite — not grapheme clusters. Display code
+ * that must not split emoji should slice via `Array.from(text)` instead.
  */
 export function calculateTextMetrics(
   text: string,
   estimatedTokens?: number | null
 ): InteractionTextMetrics {
+  if (typeof text !== 'string') {
+    throw new TypeError('calculateTextMetrics: text must be a string')
+  }
   return {
     text,
     characters: text.length,

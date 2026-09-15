@@ -6,6 +6,7 @@
 import Dexie from 'dexie'
 import { logger, toDiagnosticPlatform } from '../../diagnostics'
 import { generateInteractionFingerprint } from '../../fingerprint/fingerprint'
+import { MAX_INTERACTION_TEXT_CHARS } from '../../shared/messages'
 import { getDatabase, type IntelliCacheDB } from '../db'
 import { calculateTextMetrics } from '../metrics'
 import { CURRENT_COLLECTOR_VERSION } from '../schema'
@@ -17,6 +18,13 @@ import {
   type FingerprintStrategy,
   type Interaction,
 } from '../types'
+
+const FINGERPRINT_HEX_RE = /^[0-9a-f]{64}$/i
+const VALID_STRATEGIES: ReadonlySet<string> = new Set(['level_1', 'level_2', 'level_3'])
+
+function isValidPrecomputedFingerprint(value: unknown): value is string {
+  return typeof value === 'string' && FINGERPRINT_HEX_RE.test(value)
+}
 
 export class InteractionRepository {
   private db: IntelliCacheDB
@@ -55,6 +63,22 @@ export class InteractionRepository {
         new Error('Invalid interaction input: response.text is required and must be a string')
       )
     }
+    if (input.query.text.length > MAX_INTERACTION_TEXT_CHARS) {
+      throw new DatabaseOperationError(
+        'create interaction',
+        new Error(
+          `Invalid interaction input: query.text exceeds ${MAX_INTERACTION_TEXT_CHARS} characters`
+        )
+      )
+    }
+    if (input.response.text.length > MAX_INTERACTION_TEXT_CHARS) {
+      throw new DatabaseOperationError(
+        'create interaction',
+        new Error(
+          `Invalid interaction input: response.text exceeds ${MAX_INTERACTION_TEXT_CHARS} characters`
+        )
+      )
+    }
 
     const platformTag = toDiagnosticPlatform(input.platform)
     const traceId =
@@ -73,12 +97,20 @@ export class InteractionRepository {
       const platform = input.platform.trim().toLowerCase()
       const namespacedConvId = namespaceConversationId(platform, input.conversation_id)
 
-      // Calculate fingerprint and strategy
+      // Calculate fingerprint and strategy.
+      // Pre-computed fingerprints are accepted only when well-formed (64 hex chars
+      // with a known strategy); anything else is recomputed so a compromised or
+      // buggy caller cannot force false-dedup or bypass dedup.
       let fingerprint: string
       let fingerprintStrategy: FingerprintStrategy
-      if ('fingerprint' in input && input.fingerprint) {
-        fingerprint = input.fingerprint
-        fingerprintStrategy = input.fingerprint_strategy ?? 'level_1'
+      if (
+        'fingerprint' in input &&
+        isValidPrecomputedFingerprint(input.fingerprint) &&
+        (input.fingerprint_strategy === undefined ||
+          VALID_STRATEGIES.has(input.fingerprint_strategy))
+      ) {
+        fingerprint = input.fingerprint.toLowerCase()
+        fingerprintStrategy = (input.fingerprint_strategy ?? 'level_1') as FingerprintStrategy
         logger.debug(
           'Database',
           platformTag,
@@ -194,7 +226,9 @@ export class InteractionRepository {
         }
       }
 
-      // Construct full canonical interaction entity
+      // Construct full canonical interaction entity.
+      // Metrics are always recomputed from raw text so callers cannot inject
+      // inconsistent characters/bytes; only estimated_tokens is inherited.
       const interaction: Interaction = {
         schema_version: 1,
         id,
@@ -211,14 +245,8 @@ export class InteractionRepository {
           provider: input.model?.provider ?? null,
           name: input.model?.name ?? null,
         },
-        query:
-          'characters' in input.query && 'bytes' in input.query
-            ? (input.query as Interaction['query'])
-            : calculateTextMetrics(input.query.text, input.query.estimated_tokens),
-        response:
-          'characters' in input.response && 'bytes' in input.response
-            ? (input.response as Interaction['response'])
-            : calculateTextMetrics(input.response.text, input.response.estimated_tokens),
+        query: calculateTextMetrics(input.query.text, input.query.estimated_tokens),
+        response: calculateTextMetrics(input.response.text, input.response.estimated_tokens),
         conversation_title: input.conversation_title ?? null,
         collector_version: input.collector_version ?? CURRENT_COLLECTOR_VERSION,
       }
@@ -292,16 +320,32 @@ export class InteractionRepository {
   /**
    * Retrieves all interactions belonging to a specific conversation ID.
    * If platform is provided, ensures namespaced conversation ID lookup.
+   * Uses the [conversation_id+observed_at] compound index when available
+   * (schema v2) with a single-field fallback for v1 databases.
    */
-  async getByConversationId(conversationId: string, platform?: string): Promise<Interaction[]> {
+  async getByConversationId(
+    conversationId: string,
+    platform?: string,
+    options?: { limit?: number }
+  ): Promise<Interaction[]> {
     try {
       const targetId = platform
         ? (namespaceConversationId(platform, conversationId) ?? conversationId)
         : conversationId
-      return await this.db.interactions
-        .where('conversation_id')
-        .equals(targetId)
-        .sortBy('observed_at')
+      const limit = options?.limit
+      try {
+        let query = this.db.interactions
+          .where('[conversation_id+observed_at]')
+          .between([targetId, Dexie.minKey], [targetId, Dexie.maxKey])
+        const rows = await (limit !== undefined ? query.limit(limit).toArray() : query.toArray())
+        return rows
+      } catch {
+        const rows = await this.db.interactions
+          .where('conversation_id')
+          .equals(targetId)
+          .sortBy('observed_at')
+        return limit !== undefined ? rows.slice(0, limit) : rows
+      }
     } catch (error) {
       throw new DatabaseOperationError(`getByConversationId (${conversationId})`, error)
     }
@@ -309,11 +353,24 @@ export class InteractionRepository {
 
   /**
    * Retrieves all interactions belonging to a specific platform.
+   * Uses the [platform+observed_at] compound index when available (schema v2).
    */
-  async getByPlatform(platform: string): Promise<Interaction[]> {
+  async getByPlatform(platform: string, options?: { limit?: number }): Promise<Interaction[]> {
     try {
       const normalized = platform.trim().toLowerCase()
-      return await this.db.interactions.where('platform').equals(normalized).sortBy('observed_at')
+      const limit = options?.limit
+      try {
+        let query = this.db.interactions
+          .where('[platform+observed_at]')
+          .between([normalized, Dexie.minKey], [normalized, Dexie.maxKey])
+        return await (limit !== undefined ? query.limit(limit).toArray() : query.toArray())
+      } catch {
+        const rows = await this.db.interactions
+          .where('platform')
+          .equals(normalized)
+          .sortBy('observed_at')
+        return limit !== undefined ? rows.slice(0, limit) : rows
+      }
     } catch (error) {
       throw new DatabaseOperationError(`getByPlatform (${platform})`, error)
     }
@@ -333,10 +390,13 @@ export class InteractionRepository {
 
   /**
    * Retrieves the most recent interactions ordered by observed_at descending.
+   * Limit is clamped to [1, 100] to bound structured-clone cost over the
+   * runtime message channel.
    */
   async getRecent(limit: number = 20): Promise<Interaction[]> {
     try {
-      return await this.db.interactions.orderBy('observed_at').reverse().limit(limit).toArray()
+      const safeLimit = Math.min(Math.max(Math.floor(limit) || 20, 1), 100)
+      return await this.db.interactions.orderBy('observed_at').reverse().limit(safeLimit).toArray()
     } catch (error) {
       throw new DatabaseOperationError(`getRecent (${limit})`, error)
     }

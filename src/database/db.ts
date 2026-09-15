@@ -4,7 +4,7 @@
  */
 
 import Dexie, { type Table } from 'dexie'
-import { CURRENT_DB_VERSION, DB_NAME, SCHEMA_V1 } from './schema'
+import { CURRENT_DB_VERSION, DB_NAME, SCHEMA_V1, SCHEMA_V2 } from './schema'
 import type { Conversation, Interaction } from './types'
 
 export class IntelliCacheDB extends Dexie {
@@ -13,7 +13,12 @@ export class IntelliCacheDB extends Dexie {
 
   constructor(dbName: string = DB_NAME) {
     super(dbName)
-    this.version(CURRENT_DB_VERSION).stores(SCHEMA_V1)
+    // v1 baseline retained so existing installs upgrade through Dexie's
+    // versioned migration path instead of a destructive recreate.
+    this.version(1).stores(SCHEMA_V1)
+    if (CURRENT_DB_VERSION >= 2) {
+      this.version(2).stores(SCHEMA_V2).upgrade(() => {})
+    }
   }
 }
 

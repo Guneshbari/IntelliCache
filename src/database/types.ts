@@ -129,9 +129,13 @@ export interface CreateConversationInput {
 /**
  * Custom domain error thrown when attempting to insert an interaction
  * with an existing fingerprint.
+ * NOTE: message wording ("already exists") is part of the wire contract —
+ * content scripts detect duplicates via `code`, with the phrase kept for
+ * backward compatibility.
  */
 export class DuplicateInteractionError extends Error {
   public readonly fingerprint: string
+  public readonly code = 'DUPLICATE_INTERACTION' as const
 
   constructor(fingerprint: string, message?: string) {
     super(message ?? `Interaction with fingerprint '${fingerprint}' already exists in database.`)
@@ -142,12 +146,16 @@ export class DuplicateInteractionError extends Error {
 
 /**
  * Custom domain error for unexpected database execution failures.
+ * Error detail is truncated to 300 chars so prompt/response content that
+ * surfaces inside Dexie error messages cannot bloat logs or message channels.
  */
 export class DatabaseOperationError extends Error {
   public readonly originalError?: unknown
+  public readonly code = 'DB_ERROR' as const
 
   constructor(operation: string, originalError?: unknown) {
-    const detail = originalError instanceof Error ? originalError.message : String(originalError)
+    const raw = originalError instanceof Error ? originalError.message : String(originalError)
+    const detail = raw.length > 300 ? `${raw.slice(0, 300)}…` : raw
     super(`Database operation '${operation}' failed: ${detail}`)
     this.name = 'DatabaseOperationError'
     this.originalError = originalError

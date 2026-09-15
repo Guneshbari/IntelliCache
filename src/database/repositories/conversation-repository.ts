@@ -67,6 +67,12 @@ export class ConversationRepository {
 
       const observedAt =
         'observed_at' in input && input.observed_at ? input.observed_at : new Date().toISOString()
+      // Reject malformed timestamps instead of silently keeping stale data:
+      // NaN comparisons would otherwise freeze last_observed_at forever.
+      const observedMs = new Date(observedAt).getTime()
+      if (Number.isNaN(observedMs)) {
+        throw new Error(`Conversation observed_at is not a valid ISO-8601 timestamp: '${observedAt}'`)
+      }
 
       // Atomic read-modify-write via Dexie transaction.
       // This prevents a TOCTOU race where two concurrent saves for the same conversation
@@ -80,9 +86,10 @@ export class ConversationRepository {
               ? observedAt
               : existing.last_observed_at
 
+          // Explicit null clears the title; undefined preserves the existing one.
           const updated: Conversation = {
             ...existing,
-            title: input.title !== undefined ? (input.title ?? existing.title) : existing.title,
+            title: input.title !== undefined ? input.title : existing.title,
             last_observed_at: newLastObservedAt,
           }
           await this.db.conversations.put(updated)
@@ -173,12 +180,14 @@ export class ConversationRepository {
   /**
    * Retrieves all conversations belonging to a specific AI platform.
    */
-  async getByPlatform(platform: string): Promise<Conversation[]> {
+  async getByPlatform(platform: string, options?: { limit?: number }): Promise<Conversation[]> {
     try {
-      return await this.db.conversations
+      const normalized = platform.trim().toLowerCase()
+      const rows = await this.db.conversations
         .where('platform')
-        .equals(platform.toLowerCase())
+        .equals(normalized)
         .sortBy('last_observed_at')
+      return options?.limit !== undefined ? rows.slice(0, Math.max(options.limit, 0)) : rows
     } catch (error) {
       throw new DatabaseOperationError(`getByPlatform (${platform})`, error)
     }
@@ -196,10 +205,14 @@ export class ConversationRepository {
   }
 
   /**
-   * Retrieves all conversations from IndexedDB.
+   * Retrieves conversations from IndexedDB with an optional row cap so callers
+   * cannot accidentally load the entire store into memory.
    */
-  async getAll(): Promise<Conversation[]> {
+  async getAll(options?: { limit?: number }): Promise<Conversation[]> {
     try {
+      if (options?.limit !== undefined) {
+        return await this.db.conversations.limit(Math.max(options.limit, 0)).toArray()
+      }
       return await this.db.conversations.toArray()
     } catch (error) {
       throw new DatabaseOperationError('getAll conversations', error)
