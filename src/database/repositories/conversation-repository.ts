@@ -71,7 +71,9 @@ export class ConversationRepository {
       // NaN comparisons would otherwise freeze last_observed_at forever.
       const observedMs = new Date(observedAt).getTime()
       if (Number.isNaN(observedMs)) {
-        throw new Error(`Conversation observed_at is not a valid ISO-8601 timestamp: '${observedAt}'`)
+        throw new Error(
+          `Conversation observed_at is not a valid ISO-8601 timestamp: '${observedAt}'`
+        )
       }
 
       // Atomic read-modify-write via Dexie transaction.

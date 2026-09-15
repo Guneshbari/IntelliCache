@@ -180,12 +180,13 @@ addRuntimeMessageListener(
             )
             sendResponse(createSuccessResponse(statsData))
           } catch (err) {
-            logger.error(
-              'Background',
-              'CORE',
-              'Failed to retrieve database stats.'
+            logger.error('Background', 'CORE', 'Failed to retrieve database stats.')
+            sendResponse(
+              createErrorResponse(
+                toResponseError(err, 'Failed to retrieve database stats'),
+                'DB_ERROR'
+              )
             )
-            sendResponse(createErrorResponse(toResponseError(err, 'Failed to retrieve database stats'), 'DB_ERROR'))
           }
         })()
         return true
@@ -208,19 +209,17 @@ addRuntimeMessageListener(
           return false
         }
 
-        if (
-          !isSenderAllowedForWrite(
-            sender,
-            (message.payload as { platform?: string }).platform
-          )
-        ) {
+        if (!isSenderAllowedForWrite(sender, (message.payload as { platform?: string }).platform)) {
           logger.warn(
             'Background',
             'CORE',
             'DB_SAVE_INTERACTION rejected: sender tab platform conflicts with payload platform'
           )
           sendResponse(
-            createErrorResponse('Sender is not allowed to save for this platform', 'UNTRUSTED_SENDER')
+            createErrorResponse(
+              'Sender is not allowed to save for this platform',
+              'UNTRUSTED_SENDER'
+            )
           )
           return false
         }
@@ -268,13 +267,22 @@ addRuntimeMessageListener(
                 platformTag,
                 `Duplicate interaction detected: ${err.fingerprint.slice(0, 16)}...`
               )
-              sendResponse(createErrorResponse(toResponseError(err, 'Duplicate interaction'), 'DUPLICATE_INTERACTION'))
+              sendResponse(
+                createErrorResponse(
+                  toResponseError(err, 'Duplicate interaction'),
+                  'DUPLICATE_INTERACTION'
+                )
+              )
             } else if (err instanceof DatabaseOperationError) {
               logger.error('Background', platformTag, 'Structured database operation error.')
-              sendResponse(createErrorResponse(toResponseError(err, 'Database operation failed'), 'DB_ERROR'))
+              sendResponse(
+                createErrorResponse(toResponseError(err, 'Database operation failed'), 'DB_ERROR')
+              )
             } else {
               logger.error('Background', platformTag, 'Unexpected error saving interaction.')
-              sendResponse(createErrorResponse(toResponseError(err, 'Failed to save interaction'), 'DB_ERROR'))
+              sendResponse(
+                createErrorResponse(toResponseError(err, 'Failed to save interaction'), 'DB_ERROR')
+              )
             }
           }
         })()
@@ -296,7 +304,12 @@ addRuntimeMessageListener(
             sendResponse(createSuccessResponse(interaction))
           } catch (err) {
             logger.error('Background', 'CORE', 'Failed to retrieve interaction.')
-            sendResponse(createErrorResponse(toResponseError(err, 'Failed to retrieve interaction'), 'DB_ERROR'))
+            sendResponse(
+              createErrorResponse(
+                toResponseError(err, 'Failed to retrieve interaction'),
+                'DB_ERROR'
+              )
+            )
           }
         })()
         return true
@@ -334,7 +347,12 @@ addRuntimeMessageListener(
             sendResponse(createSuccessResponse(reportData))
           } catch (err) {
             logger.error('Background', 'CORE', 'Failed to generate integrity report.')
-            sendResponse(createErrorResponse(toResponseError(err, 'Failed to generate integrity report'), 'DB_ERROR'))
+            sendResponse(
+              createErrorResponse(
+                toResponseError(err, 'Failed to generate integrity report'),
+                'DB_ERROR'
+              )
+            )
           }
         })()
         return true

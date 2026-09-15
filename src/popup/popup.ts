@@ -49,6 +49,32 @@ const state: PopupState = {
   isDiagnosticsExpanded: true,
 }
 
+const VALID_EXPLORER_FILTERS: ReadonlySet<string> = new Set(['all', 'chatgpt', 'claude', 'gemini'])
+/** Max explorer cards rendered per pass (bounds DOM cost on large windows). */
+const EXPLORER_RENDER_LIMIT = 100
+/** Delay before revoking an export blob URL (slow disks/downloads safe margin). */
+const EXPORT_BLOB_REVOKE_MS = 60_000
+
+/**
+ * Truncates text by Unicode code points (not UTF-16 units) so emoji and
+ * surrogate pairs are never split mid-character.
+ */
+function safeSnippet(text: string, maxChars: number): string {
+  if (!text) return ''
+  const points = Array.from(text)
+  return points.length > maxChars ? `${points.slice(0, maxChars).join('')}…` : text
+}
+
+/**
+ * Coerces an unknown platform value into a valid explorer filter,
+ * falling back to 'all' for unexpected platforms (e.g. future providers).
+ */
+function toExplorerFilter(value: unknown): PopupState['explorerFilter'] {
+  return typeof value === 'string' && VALID_EXPLORER_FILTERS.has(value)
+    ? (value as PopupState['explorerFilter'])
+    : 'all'
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   // DOM Elements
   const themeToggleBtn = document.getElementById('theme-toggle-btn') as HTMLButtonElement | null
@@ -330,7 +356,7 @@ document.addEventListener('DOMContentLoaded', () => {
               : 'AI'
 
       const title = item.conversation_title || 'Untitled Thread'
-      const querySnippet = item.query?.text ? item.query.text.slice(0, 85) : '(Empty prompt)'
+      const querySnippet = item.query?.text ? safeSnippet(item.query.text, 85) : '(Empty prompt)'
       const timeStr = formatRelativeTime(item.observed_at)
       const logoHtml = getProviderLogoHtml(item.platform)
 
@@ -348,7 +374,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
       const openItemInExplorer = () => {
         expandExplorer()
-        state.explorerFilter = item.platform as typeof state.explorerFilter
+        state.explorerFilter = toExplorerFilter(item.platform)
         updateFilterChipUI()
         renderExplorerItems()
       }
@@ -387,7 +413,10 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     if (explorerMatchCountEl) {
-      explorerMatchCountEl.textContent = `${filtered.length} item${filtered.length === 1 ? '' : 's'}`
+      explorerMatchCountEl.textContent =
+        filtered.length > EXPLORER_RENDER_LIMIT
+          ? `showing ${EXPLORER_RENDER_LIMIT} of ${filtered.length} items`
+          : `${filtered.length} item${filtered.length === 1 ? '' : 's'}`
     }
 
     if (filtered.length === 0) {
@@ -400,7 +429,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     explorerItemsListEl.innerHTML = ''
-    filtered.forEach((item) => {
+    filtered.slice(0, EXPLORER_RENDER_LIMIT).forEach((item) => {
       const safePlatform = escapeHtml(item.platform.replace(/[^a-zA-Z0-9_-]/g, ''))
       const card = document.createElement('div')
       card.className = `explorer-card explorer-card-${safePlatform}`
@@ -572,6 +601,13 @@ document.addEventListener('DOMContentLoaded', () => {
     expandExplorer()
   })
 
+  openExplorerBanner?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault()
+      expandExplorer()
+    }
+  })
+
   // Header click / close icon in explorer
   explorerHeaderToggleEl?.addEventListener('click', () => {
     if (state.isExplorerExpanded) {
@@ -610,12 +646,10 @@ document.addEventListener('DOMContentLoaded', () => {
   filterChipsEl?.addEventListener('click', (e) => {
     const target = (e.target as HTMLElement).closest('.chip')
     if (!target) return
-    const filter = target.getAttribute('data-filter') as PopupState['explorerFilter']
-    if (filter) {
-      state.explorerFilter = filter
-      updateFilterChipUI()
-      renderExplorerItems()
-    }
+    const filter = toExplorerFilter(target.getAttribute('data-filter'))
+    state.explorerFilter = filter
+    updateFilterChipUI()
+    renderExplorerItems()
   })
 
   // Diagnostics Accordion Toggle
@@ -695,8 +729,11 @@ document.addEventListener('DOMContentLoaded', () => {
           exported_at: new Date().toISOString(),
           collector: 'IntelliCache',
           version: '0.1.0',
+          scope: 'recent-window',
+          scope_note: 'Popup exports the loaded recent-interactions window, not the full database.',
           total_interactions: state.totalInteractions,
           total_conversations: state.totalConversations,
+          exported_records: state.recentInteractions.length,
           breakdown: {
             chatgpt: state.chatgptCount,
             claude: state.claudeCount,
@@ -718,10 +755,10 @@ document.addEventListener('DOMContentLoaded', () => {
       document.body.removeChild(downloadAnchor)
       setTimeout(() => {
         URL.revokeObjectURL(blobUrl)
-      }, 1000)
+      }, EXPORT_BLOB_REVOKE_MS)
 
       appendLog(
-        `Exported ${state.recentInteractions.length} interaction records to JSON`,
+        `Exported ${state.recentInteractions.length} recent interaction records to JSON (of ${state.totalInteractions} total)`,
         'success'
       )
     } catch (err) {

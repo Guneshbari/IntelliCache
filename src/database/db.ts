@@ -17,7 +17,9 @@ export class IntelliCacheDB extends Dexie {
     // versioned migration path instead of a destructive recreate.
     this.version(1).stores(SCHEMA_V1)
     if (CURRENT_DB_VERSION >= 2) {
-      this.version(2).stores(SCHEMA_V2).upgrade(() => {})
+      this.version(2)
+        .stores(SCHEMA_V2)
+        .upgrade(() => {})
     }
   }
 }

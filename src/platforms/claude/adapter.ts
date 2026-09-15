@@ -112,11 +112,7 @@ export class ClaudeAdapter extends BaseAdapter {
       'CLAUDE',
       `DOM scan started (URL: ${redactUrlForLog(currentUrl)}, navState: ${this.navState})`
     )
-    logger.debug(
-      'Adapter',
-      'CLAUDE',
-      `Conversation ID: ${conversationId ? 'present' : 'null'}`
-    )
+    logger.debug('Adapter', 'CLAUDE', `Conversation ID: ${conversationId ? 'present' : 'null'}`)
 
     const generating = isPageGenerating(document.body || document)
     logger.debug('Adapter', 'CLAUDE', `Generation state: generating=${generating}`)

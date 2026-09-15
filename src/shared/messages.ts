@@ -291,7 +291,10 @@ export function validateDbSaveInteractionPayload(payload: unknown): PayloadValid
     (typeof payload.conversation_title !== 'string' ||
       payload.conversation_title.length > MAX_TITLE_CHARS)
   ) {
-    return { ok: false, reason: `conversation_title must be a string under ${MAX_TITLE_CHARS} chars` }
+    return {
+      ok: false,
+      reason: `conversation_title must be a string under ${MAX_TITLE_CHARS} chars`,
+    }
   }
   return { ok: true }
 }

@@ -111,11 +111,7 @@ export class GeminiAdapter extends BaseAdapter {
       'GEMINI',
       `DOM scan started (URL: ${redactUrlForLog(currentUrl)}, navState: ${this.navState})`
     )
-    logger.debug(
-      'Adapter',
-      'GEMINI',
-      `Conversation ID: ${conversationId ? 'present' : 'null'}`
-    )
+    logger.debug('Adapter', 'GEMINI', `Conversation ID: ${conversationId ? 'present' : 'null'}`)
 
     const root = document.body || document
 

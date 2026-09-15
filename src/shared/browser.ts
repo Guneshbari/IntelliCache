@@ -179,11 +179,7 @@ export interface SendMessageOptions {
 
 const DEFAULT_SEND_TIMEOUT_MS = 8000
 
-function withTimeout<T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-  messageType: string
-): Promise<T> {
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, messageType: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | null = null
   const timeout = new Promise<T>((_, reject) => {
     timer = setTimeout(() => {
@@ -293,7 +289,9 @@ export async function sendBrowserRuntimeMessage<M extends ExtensionMessage, R = 
               'CORE',
               `No response received from extension runtime for '${message.type}'`
             )
-            resolve(createErrorResponse('No response received from extension component', 'NO_RESPONSE'))
+            resolve(
+              createErrorResponse('No response received from extension component', 'NO_RESPONSE')
+            )
           } else {
             resolve(response)
           }

@@ -145,11 +145,7 @@ export class ChatGPTAdapter extends BaseAdapter {
       'CHATGPT',
       `Starting conversation DOM processing pass (URL: ${redactUrlForLog(currentUrl)})`
     )
-    logger.debug(
-      'Adapter',
-      'CHATGPT',
-      `Conversation ID: ${conversationId ? 'present' : 'null'}`
-    )
+    logger.debug('Adapter', 'CHATGPT', `Conversation ID: ${conversationId ? 'present' : 'null'}`)
 
     const generating = isPageGenerating(document.body || document)
     logger.debug('Adapter', 'CHATGPT', `Evaluating page generation state: generating=${generating}`)

@@ -14,6 +14,15 @@ export default tseslint.config(
     },
   },
   {
-    ignores: ['dist/**', 'dist-firefox/**', 'node_modules/**', 'scripts/**'],
+    files: ['scripts/**/*.mjs'],
+    languageOptions: {
+      globals: {
+        console: 'readonly',
+        process: 'readonly',
+      },
+    },
+  },
+  {
+    ignores: ['dist/**', 'dist-firefox/**', 'node_modules/**'],
   }
 )
