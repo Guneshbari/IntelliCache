@@ -1064,7 +1064,62 @@ body {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
-   7. Diagnostics Section & Tools Suite
+   Storage Footprint Grid (measurement only — estimates, not exact disk usage)
+───────────────────────────────────────────────────────────────────────────── */
+.storage-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.storage-item-card {
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  box-shadow: var(--shadow-sm);
+  min-width: 0;
+}
+
+.storage-item-primary {
+  grid-column: 1 / -1;
+}
+
+.storage-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.storage-val {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.storage-breakdown {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.storage-breakdown strong {
+  color: var(--text-primary);
+  font-weight: 700;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+    7. Diagnostics Section & Tools Suite
 ───────────────────────────────────────────────────────────────────────────── */
 .diagnostics-section {
   background-color: var(--bg-card);

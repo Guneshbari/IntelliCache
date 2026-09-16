@@ -318,7 +318,76 @@
           </div>
         </section>
 
-        <!-- 4. Recent Activity & Explorer Entry -->
+        <!-- 4. Storage Footprint (measurement only, no caching) -->
+        <section class="section storage-section">
+          <div class="section-header">
+            <h2 class="section-title">Storage</h2>
+            <button
+              class="btn-text"
+              id="storage-refresh-btn"
+              type="button"
+              title="Refresh storage metrics"
+            >
+              <span>Refresh</span>
+              <svg
+                viewBox="0 0 24 24"
+                width="12"
+                height="12"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <polyline points="23 4 23 10 17 10"></polyline>
+                <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+              </svg>
+            </button>
+          </div>
+
+          <div class="storage-grid">
+            <div class="storage-item-card storage-item-primary">
+              <span class="storage-label">Estimated dataset size</span>
+              <span class="storage-val" id="storage-dataset-val">&mdash;</span>
+            </div>
+            <div class="storage-item-card">
+              <span class="storage-label">Browser-reported usage</span>
+              <span class="storage-val" id="storage-usage-val">&mdash;</span>
+            </div>
+            <div class="storage-item-card">
+              <span class="storage-label">Browser-reported quota</span>
+              <span class="storage-val" id="storage-quota-val">&mdash;</span>
+            </div>
+            <div class="storage-item-card">
+              <span class="storage-label">Interactions</span>
+              <span class="storage-val" id="storage-interactions-val">&mdash;</span>
+            </div>
+            <div class="storage-item-card">
+              <span class="storage-label">Conversations</span>
+              <span class="storage-val" id="storage-conversations-val">&mdash;</span>
+            </div>
+            <div class="storage-item-card">
+              <span class="storage-label">Average interaction size</span>
+              <span class="storage-val" id="storage-avg-val">&mdash;</span>
+            </div>
+            <div class="storage-item-card">
+              <span class="storage-label">Dataset breakdown</span>
+              <span class="storage-val storage-breakdown" id="storage-breakdown-val">
+                <span title="Stored query text"
+                  >Queries <strong id="storage-query-val">&mdash;</strong></span
+                >
+                <span title="Stored response text"
+                  >Responses <strong id="storage-response-val">&mdash;</strong></span
+                >
+                <span title="Identifiers, timestamps, fingerprints and titles"
+                  >Metadata <strong id="storage-metadata-val">&mdash;</strong></span
+                >
+              </span>
+            </div>
+          </div>
+        </section>
+
+        <!-- 5. Recent Activity & Explorer Entry -->
         <section class="section recent-section">
           <div class="section-header">
             <div class="section-header-left">
@@ -409,7 +478,7 @@
           </div>
         </section>
 
-        <!-- 5. Interaction Explorer Section (Expandable/Collapsible) -->
+        <!-- 6. Interaction Explorer Section (Expandable/Collapsible) -->
         <section class="section explorer-section collapsed" id="explorer-section">
           <div class="section-header explorer-header" id="explorer-header-toggle">
             <div class="section-header-left">
@@ -492,7 +561,7 @@
           </div>
         </section>
 
-        <!-- 6. System Health Card with Distinct Status Icons -->
+        <!-- 7. System Health Card with Distinct Status Icons -->
         <section class="section health-section">
           <div class="section-header">
             <h2 class="section-title">System Health</h2>
@@ -631,7 +700,7 @@
           </div>
         </section>
 
-        <!-- 7. Diagnostics & Tools (Open & Rich Interactive Actions) -->
+        <!-- 8. Diagnostics & Tools (Open & Rich Interactive Actions) -->
         <section class="section diagnostics-section">
           <button
             class="accordion-trigger"
@@ -775,7 +844,7 @@
         </section>
       </main>
 
-      <!-- 8. Footer -->
+      <!-- 9. Footer -->
       <footer class="footer">
         <span>IntelliCache &bull; Phase 1 Local AI Data Layer</span>
       </footer>

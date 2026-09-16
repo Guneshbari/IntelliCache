@@ -8,16 +8,19 @@ import { logger } from '../diagnostics'
 import {
   createDbGetIntegrityReportMessage,
   createDbGetStatsMessage,
+  createDbGetStorageMetricsMessage,
   createGetStatusMessage,
   createPingMessage,
   sendExtensionMessage,
 } from '../shared/messages'
+import { formatBytes } from '../shared/storage-format'
 import type {
   DbIntegrityReportData,
   DbStatsResponseData,
   Interaction,
   PingResponseData,
   StatusResponseData,
+  StorageMetricsResponseData,
 } from '../shared/types'
 
 // Global in-memory UI state (reset atomically on each fresh query)
@@ -29,6 +32,7 @@ interface PopupState {
   claudeCount: number
   geminiCount: number
   recentInteractions: Interaction[]
+  storageMetrics: StorageMetricsResponseData | null
   explorerFilter: 'all' | 'chatgpt' | 'claude' | 'gemini'
   explorerSearchQuery: string
   isExplorerExpanded: boolean
@@ -43,6 +47,7 @@ const state: PopupState = {
   claudeCount: 0,
   geminiCount: 0,
   recentInteractions: [],
+  storageMetrics: null,
   explorerFilter: 'all',
   explorerSearchQuery: '',
   isExplorerExpanded: false,
@@ -116,6 +121,19 @@ document.addEventListener('DOMContentLoaded', () => {
   const dbConnectionValEl = document.getElementById('db-connection-val')
   const extVersionValEl = document.getElementById('ext-version-val')
   const healthSummaryBadgeEl = document.getElementById('health-summary-badge')
+
+  const storageDatasetValEl = document.getElementById('storage-dataset-val')
+  const storageUsageValEl = document.getElementById('storage-usage-val')
+  const storageQuotaValEl = document.getElementById('storage-quota-val')
+  const storageInteractionsValEl = document.getElementById('storage-interactions-val')
+  const storageConversationsValEl = document.getElementById('storage-conversations-val')
+  const storageAvgValEl = document.getElementById('storage-avg-val')
+  const storageQueryValEl = document.getElementById('storage-query-val')
+  const storageResponseValEl = document.getElementById('storage-response-val')
+  const storageMetadataValEl = document.getElementById('storage-metadata-val')
+  const storageRefreshBtn = document.getElementById(
+    'storage-refresh-btn'
+  ) as HTMLButtonElement | null
 
   const diagnosticsToggleEl = document.getElementById('diagnostics-toggle')
   const diagnosticsContentEl = document.getElementById('diagnostics-content')
@@ -310,6 +328,39 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (explorerBannerSubEl) {
       explorerBannerSubEl.textContent = `Browse, search and filter all ${state.totalInteractions} interactions`
+    }
+  }
+
+  function renderStorageMetrics(): void {
+    const m = state.storageMetrics
+    if (storageDatasetValEl) {
+      storageDatasetValEl.textContent = m ? formatBytes(m.logicalDatasetBytes) : '—'
+    }
+    if (storageUsageValEl) {
+      storageUsageValEl.textContent =
+        m && m.browserUsageBytes !== null ? formatBytes(m.browserUsageBytes) : 'Unavailable'
+    }
+    if (storageQuotaValEl) {
+      storageQuotaValEl.textContent =
+        m && m.browserQuotaBytes !== null ? formatBytes(m.browserQuotaBytes) : 'Unavailable'
+    }
+    if (storageInteractionsValEl) {
+      storageInteractionsValEl.textContent = m ? m.interactionCount.toLocaleString() : '—'
+    }
+    if (storageConversationsValEl) {
+      storageConversationsValEl.textContent = m ? m.conversationCount.toLocaleString() : '—'
+    }
+    if (storageAvgValEl) {
+      storageAvgValEl.textContent = m ? formatBytes(m.averageInteractionBytes) : '—'
+    }
+    if (storageQueryValEl) {
+      storageQueryValEl.textContent = m ? formatBytes(m.queryBytes) : '—'
+    }
+    if (storageResponseValEl) {
+      storageResponseValEl.textContent = m ? formatBytes(m.responseBytes) : '—'
+    }
+    if (storageMetadataValEl) {
+      storageMetadataValEl.textContent = m ? formatBytes(m.metadataBytes) : '—'
     }
   }
 
@@ -566,6 +617,9 @@ document.addEventListener('DOMContentLoaded', () => {
         renderMetricsAndBreakdown()
         renderRecentActivity()
         renderExplorerItems()
+        // Storage footprint measured once on dashboard open (explicit refresh
+        // available via the Storage card button).
+        void loadStorageMetrics('open')
 
         appendLog(
           `Database 'intelliCache' connected: ${state.totalInteractions} interactions, ${state.totalConversations} conversations`,
@@ -586,7 +640,48 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  /**
+   * Loads storage metrics from the background service worker and renders the
+   * Storage card. Runs on dashboard open and on explicit refresh only — never
+   * on DOM mutations or inside scraping hot paths.
+   */
+  async function loadStorageMetrics(reason: 'open' | 'refresh'): Promise<void> {
+    if (storageRefreshBtn) storageRefreshBtn.disabled = true
+    try {
+      const msg = createDbGetStorageMetricsMessage('popup')
+      const res = await sendExtensionMessage<typeof msg, StorageMetricsResponseData>(msg)
+      if (res && res.success && res.data) {
+        state.storageMetrics = res.data
+        renderStorageMetrics()
+        if (reason === 'refresh') {
+          appendLog(
+            `Storage metrics refreshed: ~${formatBytes(res.data.logicalDatasetBytes)} dataset across ${res.data.interactionCount} interactions`,
+            'success'
+          )
+        }
+      } else {
+        state.storageMetrics = null
+        renderStorageMetrics()
+        appendLog(`Storage metrics unavailable: ${res?.error ?? 'Unknown error'}`, 'warn')
+      }
+    } catch (err) {
+      state.storageMetrics = null
+      renderStorageMetrics()
+      appendLog(
+        `Storage metrics error: ${err instanceof Error ? err.message : String(err)}`,
+        'warn'
+      )
+    } finally {
+      if (storageRefreshBtn) storageRefreshBtn.disabled = false
+    }
+  }
+
   // ─── EVENT LISTENERS ─────────────────────────────────────────────────────
+
+  // Refresh Storage Metrics (explicit refresh + dashboard open; never on DOM mutations)
+  storageRefreshBtn?.addEventListener('click', () => {
+    void loadStorageMetrics('refresh')
+  })
 
   // Toggle Explorer button
   toggleExplorerBtn?.addEventListener('click', () => {
