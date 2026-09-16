@@ -5,6 +5,7 @@ import type {
   DbGetIntegrityReportMessage,
   DbGetInteractionMessage,
   DbGetStatsMessage,
+  DbGetStorageMetricsMessage,
   DbSaveInteractionMessage,
   ExtensionMessage,
   ExtensionResponse,
@@ -97,6 +98,20 @@ export function createDbGetInteractionMessage(
 }
 
 /**
+ * Creates a structured DB_GET_STORAGE_METRICS message to measure the storage
+ * footprint of the collected dataset.
+ */
+export function createDbGetStorageMetricsMessage(
+  sender: MessageSenderType
+): DbGetStorageMetricsMessage {
+  return {
+    type: 'DB_GET_STORAGE_METRICS',
+    sender,
+    timestamp: Date.now(),
+  }
+}
+
+/**
  * Creates a development-only DB_GET_INTEGRITY_REPORT message.
  * Triggers a full database integrity scan in the service worker.
  */
@@ -145,6 +160,7 @@ const VALID_MESSAGE_TYPES = new Set([
   'DB_SAVE_INTERACTION',
   'DB_GET_INTERACTION',
   'DB_GET_INTEGRITY_REPORT',
+  'DB_GET_STORAGE_METRICS',
 ])
 
 const VALID_SENDER_TYPES = new Set(['popup', 'content-script', 'service-worker'])

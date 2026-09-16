@@ -8,6 +8,7 @@
 import { ConversationRepository } from '../database/repositories/conversation-repository'
 import { InteractionRepository } from '../database/repositories/interaction-repository'
 import { CURRENT_COLLECTOR_VERSION, CURRENT_DB_VERSION, DB_NAME } from '../database/schema'
+import { StorageMetricsService } from '../database/storage-metrics'
 import { DatabaseOperationError, DuplicateInteractionError } from '../database/types'
 import { logger, redactUrlForLog, toDiagnosticPlatform } from '../diagnostics'
 import {
@@ -33,6 +34,7 @@ import type {
   ExtensionResponse,
   PingResponseData,
   StatusResponseData,
+  StorageMetricsResponseData,
 } from '../shared/types'
 
 const EXTENSION_NAME = 'IntelliCache Collector'
@@ -307,6 +309,32 @@ addRuntimeMessageListener(
             sendResponse(
               createErrorResponse(
                 toResponseError(err, 'Failed to retrieve interaction'),
+                'DB_ERROR'
+              )
+            )
+          }
+        })()
+        return true
+      }
+
+      case 'DB_GET_STORAGE_METRICS': {
+        // Read-only dataset measurement (dashboard open / explicit refresh).
+        // Asynchronous: return true to keep the message channel open.
+        void (async () => {
+          try {
+            const metrics = await new StorageMetricsService().collect()
+            const data: StorageMetricsResponseData = metrics
+            logger.debug(
+              'Background',
+              'CORE',
+              `Retrieved storage metrics: ${data.interactionCount} interactions, ${data.conversationCount} conversations, ~${data.logicalDatasetBytes} logical bytes`
+            )
+            sendResponse(createSuccessResponse(data))
+          } catch (err) {
+            logger.error('Background', 'CORE', 'Failed to retrieve storage metrics.')
+            sendResponse(
+              createErrorResponse(
+                toResponseError(err, 'Failed to retrieve storage metrics'),
                 'DB_ERROR'
               )
             )

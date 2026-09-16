@@ -4,6 +4,7 @@
  */
 
 import type { CreateInteractionInput, Interaction } from '../database/types'
+import type { StorageMetrics } from '../database/storage-metrics'
 
 export * from '../database/types'
 
@@ -88,6 +89,14 @@ export interface DbGetIntegrityReportMessage extends BaseMessage {
 }
 
 /**
+ * Message sent to measure the storage footprint of the collected dataset
+ * (logical UTF-8 size + browser-reported usage/quota + record counts).
+ */
+export interface DbGetStorageMetricsMessage extends BaseMessage {
+  type: 'DB_GET_STORAGE_METRICS'
+}
+
+/**
  * Discriminated union of all messages supported across the extension architecture.
  */
 export type ExtensionMessage =
@@ -98,6 +107,7 @@ export type ExtensionMessage =
   | DbSaveInteractionMessage
   | DbGetInteractionMessage
   | DbGetIntegrityReportMessage
+  | DbGetStorageMetricsMessage
 
 /**
  * Machine-readable error codes returned in ExtensionResponse envelopes.
@@ -161,6 +171,12 @@ export interface DbStatsResponseData {
   }
   recentInteractions?: Interaction[]
 }
+
+/**
+ * Payload data returned for storage metrics requests.
+ * Alias of the StorageMetrics measurement result (raw byte values, unrounded).
+ */
+export type StorageMetricsResponseData = StorageMetrics
 
 /**
  * Payload data returned for database integrity report requests.
