@@ -6,6 +6,14 @@
 
 import { logger } from '../diagnostics'
 import {
+  configureActionDisplayMode,
+  type DisplayMode,
+  getBrowserRuntime,
+  isSidePanelSupported,
+  openSidePanel,
+  openStandaloneWindow,
+} from '../shared/browser'
+import {
   createDbGetIntegrityReportMessage,
   createDbGetStatsMessage,
   createDbGetStorageMetricsMessage,
@@ -26,6 +34,7 @@ import type {
 // Global in-memory UI state (reset atomically on each fresh query)
 interface PopupState {
   theme: 'dark' | 'light'
+  displayMode: DisplayMode
   totalInteractions: number
   totalConversations: number
   chatgptCount: number
@@ -41,6 +50,7 @@ interface PopupState {
 
 const state: PopupState = {
   theme: 'dark',
+  displayMode: 'popup',
   totalInteractions: 0,
   totalConversations: 0,
   chatgptCount: 0,
@@ -83,6 +93,38 @@ function toExplorerFilter(value: unknown): PopupState['explorerFilter'] {
 document.addEventListener('DOMContentLoaded', () => {
   // DOM Elements
   const themeToggleBtn = document.getElementById('theme-toggle-btn') as HTMLButtonElement | null
+  const sidepanelBtn = document.getElementById('sidepanel-btn') as HTMLButtonElement | null
+  const popoutBtn = document.getElementById('popout-btn') as HTMLButtonElement | null
+  const modeSelector = document.getElementById('display-mode-selector')
+  const modeChips = document.querySelectorAll<HTMLButtonElement>('.mode-chip')
+
+  // Detect display mode from URL or viewport dimensions
+  const urlParams = new URLSearchParams(window.location.search)
+  const isWindowMode = urlParams.get('mode') === 'window'
+  const isSidepanelMode = urlParams.get('mode') === 'sidepanel'
+
+  if (isWindowMode) {
+    document.body.classList.add('mode-standalone')
+  } else if (isSidepanelMode) {
+    document.body.classList.add('mode-sidepanel')
+  } else if (window.innerHeight > 600 || window.innerWidth > 450) {
+    document.body.classList.add('mode-expanded')
+  }
+
+  function isStandaloneOrSidepanel(): boolean {
+    return (
+      document.body.classList.contains('mode-standalone') ||
+      document.body.classList.contains('mode-sidepanel') ||
+      document.body.classList.contains('mode-expanded') ||
+      window.innerHeight > 600 ||
+      window.innerWidth > 450
+    )
+  }
+
+  if (!isSidePanelSupported() && sidepanelBtn) {
+    sidepanelBtn.title = 'Dock into Side Panel (Not supported in this browser)'
+  }
+
   const statusBadge = document.getElementById('status-badge')
   const statusText = document.getElementById('status-text')
   const totalInteractionsEl = document.getElementById('total-interactions-count')
@@ -565,29 +607,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // ─── STATUS & STATS LOADER ───────────────────────────────────────────────
 
-  async function checkInitialStatus(): Promise<void> {
+  async function refreshStats(silent = false): Promise<void> {
     try {
-      updateStatusPill('CONNECTING')
-      appendLog('Connecting to IntelliCache background service worker...', 'info')
-
-      const statusMsg = createGetStatusMessage('popup')
-      const statusRes = await sendExtensionMessage<typeof statusMsg, StatusResponseData>(statusMsg)
-
-      if (statusRes && statusRes.success && statusRes.data) {
-        updateStatusPill('ACTIVE')
-        if (swStatusValEl) swStatusValEl.textContent = 'Active (MV3)'
-        if (extVersionValEl) extVersionValEl.textContent = statusRes.data.version
-        appendLog(`Service Worker connected (v${statusRes.data.version}, manifest v3)`, 'success')
-      } else {
-        updateStatusPill('OFFLINE')
-        if (swStatusValEl) swStatusValEl.textContent = 'Offline'
-        appendLog(
-          'Service worker not responding to GET_STATUS. Checking database directly...',
-          'warn'
-        )
-      }
-
-      // Fetch live database metrics
       const statsMsg = createDbGetStatsMessage('popup')
       const statsRes = await sendExtensionMessage<typeof statsMsg, DbStatsResponseData>(statsMsg)
 
@@ -617,17 +638,54 @@ document.addEventListener('DOMContentLoaded', () => {
         renderMetricsAndBreakdown()
         renderRecentActivity()
         renderExplorerItems()
-        // Storage footprint measured once on dashboard open (explicit refresh
-        // available via the Storage card button).
-        void loadStorageMetrics('open')
 
-        appendLog(
-          `Database 'intelliCache' connected: ${state.totalInteractions} interactions, ${state.totalConversations} conversations`,
-          'success'
-        )
-      } else {
+        if (!silent) {
+          appendLog(
+            `Database 'intelliCache' connected: ${state.totalInteractions} interactions, ${state.totalConversations} conversations`,
+            'success'
+          )
+        }
+      } else if (!silent) {
         appendLog(`Failed to fetch database stats: ${statsRes?.error ?? 'Unknown error'}`, 'error')
       }
+    } catch (err) {
+      if (!silent) {
+        appendLog(
+          `Failed to fetch database stats: ${err instanceof Error ? err.message : String(err)}`,
+          'error'
+        )
+      }
+    }
+  }
+
+  async function checkInitialStatus(): Promise<void> {
+    try {
+      updateStatusPill('CONNECTING')
+      appendLog('Connecting to IntelliCache background service worker...', 'info')
+
+      const statusMsg = createGetStatusMessage('popup')
+      const statusRes = await sendExtensionMessage<typeof statusMsg, StatusResponseData>(statusMsg)
+
+      if (statusRes && statusRes.success && statusRes.data) {
+        updateStatusPill('ACTIVE')
+        if (swStatusValEl) swStatusValEl.textContent = 'Active (MV3)'
+        if (extVersionValEl) extVersionValEl.textContent = statusRes.data.version
+        appendLog(`Service Worker connected (v${statusRes.data.version}, manifest v3)`, 'success')
+      } else {
+        updateStatusPill('OFFLINE')
+        if (swStatusValEl) swStatusValEl.textContent = 'Offline'
+        appendLog(
+          'Service worker not responding to GET_STATUS. Checking database directly...',
+          'warn'
+        )
+      }
+
+      // Fetch live database metrics
+      await refreshStats(false)
+
+      // Storage footprint measured once on dashboard open (explicit refresh
+      // available via the Storage card button).
+      void loadStorageMetrics('open')
     } catch (err) {
       logger.error('UI', 'CORE', 'Error during initial popup status check', { error: err })
       updateStatusPill('ERROR')
@@ -873,6 +931,110 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Theme Toggle
   themeToggleBtn?.addEventListener('click', toggleTheme)
+
+  // Standalone Window & Side Panel Controls
+  sidepanelBtn?.addEventListener('click', async () => {
+    appendLog('Opening persistent Side Panel...', 'info')
+    const success = await openSidePanel()
+    if (success) {
+      if (!isStandaloneOrSidepanel()) {
+        window.close()
+      }
+    } else {
+      appendLog(
+        'Side Panel not supported by browser. Opening persistent floating window...',
+        'warn'
+      )
+      await openStandaloneWindow()
+      if (!isStandaloneOrSidepanel()) {
+        window.close()
+      }
+    }
+  })
+
+  popoutBtn?.addEventListener('click', async () => {
+    appendLog('Opening persistent floating window...', 'info')
+    const success = await openStandaloneWindow()
+    if (success && !isStandaloneOrSidepanel()) {
+      window.close()
+    }
+  })
+
+  // Display Mode / Toolbar Click Selector
+  function updateDisplayModeChips(activeMode: DisplayMode): void {
+    modeChips.forEach((chip) => {
+      const mode = chip.getAttribute('data-mode')
+      const isActive = mode === activeMode
+      chip.classList.toggle('active', isActive)
+      chip.setAttribute('aria-checked', String(isActive))
+    })
+  }
+
+  // Read saved display mode preference
+  try {
+    const savedDisplayMode = localStorage.getItem('intellicache_display_mode') as DisplayMode | null
+    if (
+      savedDisplayMode === 'popup' ||
+      savedDisplayMode === 'sidepanel' ||
+      savedDisplayMode === 'window'
+    ) {
+      state.displayMode = savedDisplayMode
+    }
+  } catch {
+    // localStorage may fail in private mode
+  }
+  updateDisplayModeChips(state.displayMode)
+
+  modeSelector?.addEventListener('click', async (e) => {
+    const target = (e.target as HTMLElement).closest<HTMLButtonElement>('.mode-chip')
+    if (!target) return
+    const selectedMode = target.getAttribute('data-mode') as DisplayMode | null
+    if (!selectedMode || selectedMode === state.displayMode) return
+
+    state.displayMode = selectedMode
+    try {
+      localStorage.setItem('intellicache_display_mode', selectedMode)
+    } catch {
+      // ignore
+    }
+    updateDisplayModeChips(selectedMode)
+
+    appendLog(`Configuring toolbar click behavior to '${selectedMode}'...`, 'info')
+    const ok = await configureActionDisplayMode(selectedMode)
+    if (ok) {
+      appendLog(`Toolbar click behavior updated: ${selectedMode}`, 'success')
+    } else {
+      appendLog('Could not update toolbar click behavior: API unavailable', 'warn')
+    }
+  })
+
+  // Live messaging listener for instant dashboard sync while persistent panel is open
+  let liveUpdateTimeout: number | undefined
+  const runtime = getBrowserRuntime()
+  if (runtime?.onMessage) {
+    try {
+      runtime.onMessage.addListener((msg: unknown) => {
+        if (
+          typeof msg === 'object' &&
+          msg !== null &&
+          (msg as { type?: string }).type === 'INTERACTION_SAVED'
+        ) {
+          window.clearTimeout(liveUpdateTimeout)
+          liveUpdateTimeout = window.setTimeout(() => {
+            void refreshStats(true)
+            void loadStorageMetrics('open')
+          }, 300)
+        }
+      })
+    } catch {
+      // runtime.onMessage unavailable in non-extension environment
+    }
+  }
+
+  // Refresh stats when the window gains focus (user switching back to sidepanel/popout)
+  window.addEventListener('focus', () => {
+    void refreshStats(true)
+  })
 
   // Initialize theme
   initTheme()
