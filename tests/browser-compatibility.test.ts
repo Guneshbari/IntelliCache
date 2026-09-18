@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   addRuntimeMessageListener,
+  broadcastRuntimeMessage,
   configureActionDisplayMode,
   detectBrowserFamily,
   getBrowserRuntime,
@@ -205,6 +206,99 @@ describe('Cross-Browser Compatibility Layer (Chromium & Firefox)', () => {
 
       expect(response.success).toBe(false)
       expect(response.error).toContain('Receiving end does not exist')
+    })
+  })
+
+  // ─── ONE-WAY BROADCAST DISPATCHER (broadcastRuntimeMessage) ───────────────
+
+  describe('One-Way Broadcast Dispatcher (broadcastRuntimeMessage)', () => {
+    it('gracefully handles missing browser runtime without throwing', () => {
+      const g = globalThis as Record<string, unknown>
+      delete g.browser
+      delete g.chrome
+
+      expect(() => {
+        broadcastRuntimeMessage({ type: 'INTERACTION_SAVED' })
+      }).not.toThrow()
+    })
+
+    it('safely broadcasts when runtime.sendMessage returns a rejecting Promise (no receiver open)', async () => {
+      const g = globalThis as Record<string, unknown>
+      const sendMessageSpy = vi
+        .fn()
+        .mockRejectedValue(
+          new Error('Could not establish connection. Receiving end does not exist.')
+        )
+      g.chrome = {
+        runtime: {
+          sendMessage: sendMessageSpy,
+        },
+      }
+
+      expect(() => {
+        broadcastRuntimeMessage({
+          type: 'INTERACTION_SAVED',
+          payload: { id: 'test-123', platform: 'chatgpt' },
+        })
+      }).not.toThrow()
+
+      expect(sendMessageSpy).toHaveBeenCalledWith({
+        type: 'INTERACTION_SAVED',
+        payload: { id: 'test-123', platform: 'chatgpt' },
+      })
+
+      // Allow any microtasks / rejected promises to settle
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    })
+
+    it('clears chrome.runtime.lastError if set in hybrid environments', async () => {
+      const g = globalThis as Record<string, unknown>
+      const runtimeObj: { sendMessage: ReturnType<typeof vi.fn>; lastError?: unknown } = {
+        sendMessage: vi
+          .fn()
+          .mockRejectedValue(
+            new Error('Could not establish connection. Receiving end does not exist.')
+          ),
+        lastError: { message: 'Receiving end does not exist.' },
+      }
+      g.chrome = { runtime: runtimeObj }
+
+      broadcastRuntimeMessage({ type: 'INTERACTION_SAVED' })
+      await new Promise((resolve) => setTimeout(resolve, 10))
+
+      expect(runtimeObj.sendMessage).toHaveBeenCalled()
+    })
+
+    it('broadcasts successfully when receiver is active and promise resolves', async () => {
+      const g = globalThis as Record<string, unknown>
+      const sendMessageSpy = vi.fn().mockResolvedValue({ acknowledged: true })
+      g.browser = {
+        runtime: {
+          sendMessage: sendMessageSpy,
+        },
+      }
+
+      expect(() => {
+        broadcastRuntimeMessage({ type: 'INTERACTION_SAVED' })
+      }).not.toThrow()
+
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      expect(sendMessageSpy).toHaveBeenCalledWith({ type: 'INTERACTION_SAVED' })
+    })
+
+    it('swallows synchronous exceptions (e.g. extension context invalidated)', () => {
+      const g = globalThis as Record<string, unknown>
+      g.chrome = {
+        runtime: {
+          sendMessage: vi.fn().mockImplementation(() => {
+            throw new Error('Extension context invalidated.')
+          }),
+        },
+      }
+
+      expect(() => {
+        broadcastRuntimeMessage({ type: 'INTERACTION_SAVED' })
+      }).not.toThrow()
     })
   })
 

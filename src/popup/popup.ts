@@ -1027,19 +1027,22 @@ document.addEventListener('DOMContentLoaded', () => {
   const runtime = getBrowserRuntime()
   if (runtime?.onMessage) {
     try {
-      runtime.onMessage.addListener((msg: unknown) => {
-        if (
-          typeof msg === 'object' &&
-          msg !== null &&
-          (msg as { type?: string }).type === 'INTERACTION_SAVED'
-        ) {
-          window.clearTimeout(liveUpdateTimeout)
-          liveUpdateTimeout = window.setTimeout(() => {
-            void refreshStats(true)
-            void loadStorageMetrics('open')
-          }, 300)
+      runtime.onMessage.addListener(
+        (msg: unknown, _sender: unknown, sendResponse?: (res: unknown) => void) => {
+          if (
+            typeof msg === 'object' &&
+            msg !== null &&
+            (msg as { type?: string }).type === 'INTERACTION_SAVED'
+          ) {
+            sendResponse?.({ acknowledged: true })
+            window.clearTimeout(liveUpdateTimeout)
+            liveUpdateTimeout = window.setTimeout(() => {
+              void refreshStats(true)
+              void loadStorageMetrics('open')
+            }, 300)
+          }
         }
-      })
+      )
     } catch {
       // runtime.onMessage unavailable in non-extension environment
     }

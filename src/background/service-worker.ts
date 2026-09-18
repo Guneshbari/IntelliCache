@@ -13,7 +13,7 @@ import { DatabaseOperationError, DuplicateInteractionError } from '../database/t
 import { logger, redactUrlForLog, toDiagnosticPlatform } from '../diagnostics'
 import {
   addRuntimeMessageListener,
-  getBrowserRuntime,
+  broadcastRuntimeMessage,
   onRuntimeInstalled,
   openStandaloneWindow,
   type WebExtensionSender,
@@ -266,21 +266,14 @@ addRuntimeMessageListener(
             sendResponse(createSuccessResponse(created))
 
             // Notify any active persistent frontend (Side Panel, Popout Window, or Popup)
-            const runtime = getBrowserRuntime()
-            if (runtime?.sendMessage) {
-              try {
-                runtime.sendMessage({
-                  type: 'INTERACTION_SAVED',
-                  payload: {
-                    id: created.id,
-                    platform: created.platform,
-                    conversation_id: created.conversation_id,
-                  },
-                })
-              } catch {
-                // Expected when no frontend listener is currently active
-              }
-            }
+            broadcastRuntimeMessage({
+              type: 'INTERACTION_SAVED',
+              payload: {
+                id: created.id,
+                platform: created.platform,
+                conversation_id: created.conversation_id,
+              },
+            })
           } catch (err) {
             if (err instanceof DuplicateInteractionError) {
               logger.info(

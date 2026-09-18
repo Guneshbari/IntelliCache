@@ -311,6 +311,38 @@ export async function sendBrowserRuntimeMessage<M extends ExtensionMessage, R = 
   })
 }
 
+/**
+ * Broadcasts a one-way notification message to any active extension views
+ * (such as the persistent side panel, standalone popout window, or popup).
+ *
+ * If no UI view is currently open (the typical state when the user is interacting
+ * with an AI platform while the extension UI is closed), this function safely
+ * suppresses the expected "Receiving end does not exist" promise rejection or lastError,
+ * preventing console noise and uncaught promise rejections.
+ */
+export function broadcastRuntimeMessage(message: unknown): void {
+  const runtime = getBrowserRuntime()
+  if (!runtime || typeof runtime.sendMessage !== 'function') {
+    return
+  }
+
+  try {
+    const result = (runtime.sendMessage as (msg: unknown) => Promise<unknown> | void)(message)
+
+    if (result && typeof (result as Promise<unknown>).catch === 'function') {
+      ;(result as Promise<unknown>).catch(() => {
+        // Expected when no popup, side panel, or standalone window is open.
+        // Consume chrome.runtime.lastError if present in hybrid runtimes.
+        if (typeof chrome !== 'undefined' && chrome.runtime?.lastError) {
+          void chrome.runtime.lastError
+        }
+      })
+    }
+  } catch {
+    // Suppress synchronous exceptions (e.g. extension context invalidated during shutdown)
+  }
+}
+
 // ─── PERSISTENT FRONTEND & DISPLAY MODES ─────────────────────────────────────
 
 export type DisplayMode = 'popup' | 'sidepanel' | 'window'
