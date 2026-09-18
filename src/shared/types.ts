@@ -11,7 +11,7 @@ export * from '../database/types'
 /**
  * Known AI platforms targeted for collection adapters.
  */
-export type SupportedPlatform = 'chatgpt' | 'claude' | 'gemini' | 'unknown'
+export type SupportedPlatform = 'chatgpt' | 'claude' | 'gemini'
 
 /**
  * Origin components within the browser extension architecture.
@@ -168,8 +168,6 @@ export interface DbStatsResponseData {
     chatgpt: number
     claude: number
     gemini: number
-    /** Interactions captured before a platform could be resolved, or from unsupported URLs. */
-    unknown: number
   }
   recentInteractions?: Interaction[]
 }

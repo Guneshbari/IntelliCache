@@ -156,7 +156,6 @@ addRuntimeMessageListener(
               chatgptCount,
               claudeCount,
               geminiCount,
-              unknownCount,
               recentInteractions,
             ] = await Promise.all([
               interactionRepo.count(),
@@ -164,7 +163,6 @@ addRuntimeMessageListener(
               interactionRepo.countByPlatform('chatgpt'),
               interactionRepo.countByPlatform('claude'),
               interactionRepo.countByPlatform('gemini'),
-              interactionRepo.countByPlatform('unknown'),
               interactionRepo.getRecent(STATS_RECENT_LIMIT),
             ])
             const statsData: DbStatsResponseData = {
@@ -176,14 +174,13 @@ addRuntimeMessageListener(
                 chatgpt: chatgptCount,
                 claude: claudeCount,
                 gemini: geminiCount,
-                unknown: unknownCount,
               },
               recentInteractions,
             }
             logger.debug(
               'Background',
               'CORE',
-              `Retrieved DB stats: ${interactionCount} interactions (${chatgptCount} ChatGPT, ${claudeCount} Claude, ${geminiCount} Gemini, ${unknownCount} Unknown), ${conversationCount} conversations`
+              `Retrieved DB stats: ${interactionCount} interactions (${chatgptCount} ChatGPT, ${claudeCount} Claude, ${geminiCount} Gemini), ${conversationCount} conversations`
             )
             sendResponse(createSuccessResponse(statsData))
           } catch (err) {

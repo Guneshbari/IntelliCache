@@ -124,11 +124,11 @@ describe('Platform URL Detection', () => {
     expect(detectPlatformFromUrl('https://gemini.google.com/app/12345')).toBe('gemini')
   })
 
-  it('returns "unknown" for non-supported domains or malformed URLs', () => {
-    expect(detectPlatformFromUrl('https://example.com/')).toBe('unknown')
-    expect(detectPlatformFromUrl('https://google.com/search?q=ai')).toBe('unknown')
-    expect(detectPlatformFromUrl('invalid-url-string')).toBe('unknown')
-    expect(detectPlatformFromUrl('')).toBe('unknown')
+  it('returns null for non-supported domains or malformed URLs', () => {
+    expect(detectPlatformFromUrl('https://example.com/')).toBeNull()
+    expect(detectPlatformFromUrl('https://google.com/search?q=ai')).toBeNull()
+    expect(detectPlatformFromUrl('invalid-url-string')).toBeNull()
+    expect(detectPlatformFromUrl('')).toBeNull()
   })
 })
 

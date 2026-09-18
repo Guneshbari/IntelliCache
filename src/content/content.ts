@@ -26,13 +26,14 @@ function initializeContentScript() {
   const pageTitle = document.title || 'Untitled Page'
   const platform = detectPlatformFromUrl(currentUrl)
   const platformTag = toDiagnosticPlatform(platform)
+  const platformLabel = platform ? platform.toUpperCase() : 'UNSUPPORTED'
 
   logger.info(
     'Content',
     platformTag,
-    `Injected successfully into ${platform.toUpperCase()} page (${redactUrlForLog(currentUrl)})`
+    `Injected successfully into ${platformLabel} page (${redactUrlForLog(currentUrl)})`
   )
-  logger.debug('Content', platformTag, `Platform detected: ${platform}`)
+  logger.debug('Content', platformTag, `Platform detected: ${platform ?? 'none'}`)
 
   // Send handshake message to Service Worker to verify content-to-background communication
   const initMessage = createContentScriptInitMessage(currentUrl, pageTitle)

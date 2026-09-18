@@ -112,9 +112,9 @@ describe('Cross-Platform Normalization & Contract Tests', () => {
     expect(detectPlatformFromUrl('https://chat.openai.com/c/2')).toBe('chatgpt')
     expect(detectPlatformFromUrl('https://claude.ai/chat/3')).toBe('claude')
     expect(detectPlatformFromUrl('https://gemini.google.com/app/4')).toBe('gemini')
-    expect(detectPlatformFromUrl('https://google.com')).toBe('unknown')
-    expect(detectPlatformFromUrl('https://github.com')).toBe('unknown')
-    expect(detectPlatformFromUrl('invalid-url-string')).toBe('unknown')
+    expect(detectPlatformFromUrl('https://google.com')).toBeNull()
+    expect(detectPlatformFromUrl('https://github.com')).toBeNull()
+    expect(detectPlatformFromUrl('invalid-url-string')).toBeNull()
   })
 
   it('confirms all 3 adapters are registered in registry', () => {

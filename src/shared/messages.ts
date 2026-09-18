@@ -184,8 +184,10 @@ export function isExtensionMessage(value: unknown): value is ExtensionMessage {
 
 /**
  * Pure helper function to determine AI platform based on current URL.
+ * Returns null when the URL does not match any supported AI platform,
+ * or when the URL is malformed.
  */
-export function detectPlatformFromUrl(url: string): SupportedPlatform {
+export function detectPlatformFromUrl(url: string): SupportedPlatform | null {
   try {
     const parsed = new URL(url)
     const hostname = parsed.hostname.toLowerCase()
@@ -208,9 +210,9 @@ export function detectPlatformFromUrl(url: string): SupportedPlatform {
     ) {
       return 'gemini'
     }
-    return 'unknown'
+    return null
   } catch {
-    return 'unknown'
+    return null
   }
 }
 
@@ -231,12 +233,7 @@ export const MAX_INTERACTION_TEXT_CHARS = 200_000
 /** Maximum accepted characters for conversation titles and init handshake fields. */
 export const MAX_TITLE_CHARS = 500
 /** Platforms accepted for persisted interactions. */
-export const PERSISTABLE_PLATFORMS: ReadonlySet<string> = new Set([
-  'chatgpt',
-  'claude',
-  'gemini',
-  'unknown',
-])
+export const PERSISTABLE_PLATFORMS: ReadonlySet<string> = new Set(['chatgpt', 'claude', 'gemini'])
 
 export interface PayloadValidationResult {
   ok: boolean
@@ -368,7 +365,8 @@ export function isSenderAllowedForWrite(
   const tabUrl = sender.tab?.url ?? sender.url
   if (!tabUrl || !payloadPlatform) return true
   const senderPlatform = detectPlatformFromUrl(tabUrl)
-  const claimed = payloadPlatform.trim().toLowerCase()
-  if (senderPlatform === 'unknown' || claimed === 'unknown') return true
-  return senderPlatform === claimed
+  // If the sender URL is not a recognized AI platform, allow the write — the validation
+  // layer (PERSISTABLE_PLATFORMS) will reject the payload if the claimed platform is invalid.
+  if (senderPlatform === null) return true
+  return senderPlatform === payloadPlatform.trim().toLowerCase()
 }

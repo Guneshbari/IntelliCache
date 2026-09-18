@@ -40,7 +40,6 @@ interface PopupState {
   chatgptCount: number
   claudeCount: number
   geminiCount: number
-  unknownCount: number
   recentInteractions: Interaction[]
   storageMetrics: StorageMetricsResponseData | null
   explorerFilter: 'all' | 'chatgpt' | 'claude' | 'gemini'
@@ -57,7 +56,6 @@ const state: PopupState = {
   chatgptCount: 0,
   claudeCount: 0,
   geminiCount: 0,
-  unknownCount: 0,
   recentInteractions: [],
   storageMetrics: null,
   explorerFilter: 'all',
@@ -371,10 +369,6 @@ document.addEventListener('DOMContentLoaded', () => {
     if (countClaudeEl) countClaudeEl.textContent = state.claudeCount.toLocaleString()
     if (countGeminiEl) countGeminiEl.textContent = state.geminiCount.toLocaleString()
 
-    // Use totalInteractions as the denominator.
-    // Platform bars represent the fraction of each named platform against the true total.
-    // When interactions have platform='unknown' they are counted in the total but not in any
-    // named bar, so the bars may sum to less than 100% — which is intentionally correct.
     const denominator = Math.max(state.totalInteractions, 1)
     const active = state.totalInteractions > 0
     const gptPercent = Math.round((state.chatgptCount / denominator) * 100)
@@ -642,7 +636,6 @@ document.addEventListener('DOMContentLoaded', () => {
         state.chatgptCount = d.platformCounts?.chatgpt ?? 0
         state.claudeCount = d.platformCounts?.claude ?? 0
         state.geminiCount = d.platformCounts?.gemini ?? 0
-        state.unknownCount = d.platformCounts?.unknown ?? 0
         state.recentInteractions = d.recentInteractions ?? []
 
         if (dbStorageValEl) {
@@ -915,7 +908,6 @@ document.addEventListener('DOMContentLoaded', () => {
             chatgpt: state.chatgptCount,
             claude: state.claudeCount,
             gemini: state.geminiCount,
-            unknown: state.unknownCount,
           },
         },
         interactions: state.recentInteractions,
