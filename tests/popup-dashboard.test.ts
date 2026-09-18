@@ -173,6 +173,7 @@ describe('Popup Dashboard & Interaction Explorer Unit Tests', () => {
       chatgptCount,
       claudeCount,
       geminiCount,
+      unknownCount,
       recentInteractions,
     ] = await Promise.all([
       interactionRepo.count(),
@@ -180,18 +181,20 @@ describe('Popup Dashboard & Interaction Explorer Unit Tests', () => {
       interactionRepo.countByPlatform('chatgpt'),
       interactionRepo.countByPlatform('claude'),
       interactionRepo.countByPlatform('gemini'),
+      interactionRepo.countByPlatform('unknown'),
       interactionRepo.getRecent(50),
     ])
 
     const statsData: DbStatsResponseData = {
       dbName: 'intelliCache',
-      dbVersion: 1,
+      dbVersion: 2,
       interactionCount,
       conversationCount,
       platformCounts: {
         chatgpt: chatgptCount,
         claude: claudeCount,
         gemini: geminiCount,
+        unknown: unknownCount,
       },
       recentInteractions,
     }
@@ -200,6 +203,7 @@ describe('Popup Dashboard & Interaction Explorer Unit Tests', () => {
     expect(statsData.platformCounts?.chatgpt).toBe(0)
     expect(statsData.platformCounts?.claude).toBe(1)
     expect(statsData.platformCounts?.gemini).toBe(0)
+    expect(statsData.platformCounts?.unknown).toBe(0)
     expect(statsData.recentInteractions).toHaveLength(1)
     expect(statsData.recentInteractions![0].platform).toBe('claude')
   })

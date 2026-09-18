@@ -168,6 +168,8 @@ export interface DbStatsResponseData {
     chatgpt: number
     claude: number
     gemini: number
+    /** Interactions captured before a platform could be resolved, or from unsupported URLs. */
+    unknown: number
   }
   recentInteractions?: Interaction[]
 }

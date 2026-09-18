@@ -40,6 +40,7 @@ interface PopupState {
   chatgptCount: number
   claudeCount: number
   geminiCount: number
+  unknownCount: number
   recentInteractions: Interaction[]
   storageMetrics: StorageMetricsResponseData | null
   explorerFilter: 'all' | 'chatgpt' | 'claude' | 'gemini'
@@ -56,6 +57,7 @@ const state: PopupState = {
   chatgptCount: 0,
   claudeCount: 0,
   geminiCount: 0,
+  unknownCount: 0,
   recentInteractions: [],
   storageMetrics: null,
   explorerFilter: 'all',
@@ -369,14 +371,19 @@ document.addEventListener('DOMContentLoaded', () => {
     if (countClaudeEl) countClaudeEl.textContent = state.claudeCount.toLocaleString()
     if (countGeminiEl) countGeminiEl.textContent = state.geminiCount.toLocaleString()
 
-    const max = Math.max(state.totalInteractions, 1)
-    const gptPercent = Math.round((state.chatgptCount / max) * 100)
-    const claudePercent = Math.round((state.claudeCount / max) * 100)
-    const geminiPercent = Math.round((state.geminiCount / max) * 100)
+    // Use totalInteractions as the denominator.
+    // Platform bars represent the fraction of each named platform against the true total.
+    // When interactions have platform='unknown' they are counted in the total but not in any
+    // named bar, so the bars may sum to less than 100% — which is intentionally correct.
+    const denominator = Math.max(state.totalInteractions, 1)
+    const active = state.totalInteractions > 0
+    const gptPercent = Math.round((state.chatgptCount / denominator) * 100)
+    const claudePercent = Math.round((state.claudeCount / denominator) * 100)
+    const geminiPercent = Math.round((state.geminiCount / denominator) * 100)
 
-    if (barChatgptEl) barChatgptEl.style.width = `${state.totalInteractions > 0 ? gptPercent : 0}%`
-    if (barClaudeEl) barClaudeEl.style.width = `${state.totalInteractions > 0 ? claudePercent : 0}%`
-    if (barGeminiEl) barGeminiEl.style.width = `${state.totalInteractions > 0 ? geminiPercent : 0}%`
+    if (barChatgptEl) barChatgptEl.style.width = `${active ? gptPercent : 0}%`
+    if (barClaudeEl) barClaudeEl.style.width = `${active ? claudePercent : 0}%`
+    if (barGeminiEl) barGeminiEl.style.width = `${active ? geminiPercent : 0}%`
 
     if (percentChatgptEl) percentChatgptEl.textContent = `${gptPercent}% of interactions`
     if (percentClaudeEl) percentClaudeEl.textContent = `${claudePercent}% of interactions`
@@ -425,7 +432,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const items = state.recentInteractions.slice(0, 4)
 
     if (recentCountBadgeEl) {
-      recentCountBadgeEl.textContent = `${items.length}`
+      // Badge shows the total stored interaction count, not the number of
+      // preview cards rendered (which is capped at 4).
+      recentCountBadgeEl.textContent = state.totalInteractions.toLocaleString()
     }
 
     if (items.length === 0) {
@@ -633,13 +642,14 @@ document.addEventListener('DOMContentLoaded', () => {
         state.chatgptCount = d.platformCounts?.chatgpt ?? 0
         state.claudeCount = d.platformCounts?.claude ?? 0
         state.geminiCount = d.platformCounts?.gemini ?? 0
+        state.unknownCount = d.platformCounts?.unknown ?? 0
         state.recentInteractions = d.recentInteractions ?? []
 
         if (dbStorageValEl) {
           dbStorageValEl.textContent = `IndexedDB (${state.totalInteractions} items)`
         }
         if (dbConnectionValEl) {
-          dbConnectionValEl.textContent = 'Connected (v1)'
+          dbConnectionValEl.textContent = `Connected (v${d.dbVersion})`
         }
         if (healthSummaryBadgeEl) {
           healthSummaryBadgeEl.innerHTML = `
@@ -905,6 +915,7 @@ document.addEventListener('DOMContentLoaded', () => {
             chatgpt: state.chatgptCount,
             claude: state.claudeCount,
             gemini: state.geminiCount,
+            unknown: state.unknownCount,
           },
         },
         interactions: state.recentInteractions,
@@ -1035,10 +1046,12 @@ document.addEventListener('DOMContentLoaded', () => {
             (msg as { type?: string }).type === 'INTERACTION_SAVED'
           ) {
             sendResponse?.({ acknowledged: true })
+            // Debounce: coalesce rapid bursts (e.g. on_load + on_generate for the same turn)
+            // into a single refreshStats call. Storage metrics (full table scan) are NOT
+            // triggered here — they are expensive and only needed on explicit refresh.
             window.clearTimeout(liveUpdateTimeout)
             liveUpdateTimeout = window.setTimeout(() => {
               void refreshStats(true)
-              void loadStorageMetrics('open')
             }, 300)
           }
         }
