@@ -2,11 +2,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   addRuntimeMessageListener,
+  configureActionDisplayMode,
   detectBrowserFamily,
   getBrowserRuntime,
   isChromium,
   isFirefox,
+  isSidePanelSupported,
   onRuntimeInstalled,
+  openSidePanel,
+  openStandaloneWindow,
   sendBrowserRuntimeMessage,
 } from '../src/shared/browser'
 import { createPingMessage, createSuccessResponse } from '../src/shared/messages'
@@ -272,6 +276,168 @@ describe('Cross-Browser Compatibility Layer (Chromium & Firefox)', () => {
       onRuntimeInstalled(callback)
 
       expect(addListenerSpy).toHaveBeenCalledWith(callback)
+    })
+  })
+
+  // ─── PERSISTENT FRONTEND & DISPLAY MODES ─────────────────────────────────
+
+  describe('Persistent Frontend & Display Modes', () => {
+    describe('isSidePanelSupported', () => {
+      it('returns true when chrome.sidePanel.open is available', () => {
+        const g = globalThis as Record<string, unknown>
+        g.chrome = {
+          sidePanel: { open: vi.fn() },
+        }
+        expect(isSidePanelSupported()).toBe(true)
+      })
+
+      it('returns true when Firefox browser.sidebarAction.open is available', () => {
+        const g = globalThis as Record<string, unknown>
+        g.browser = {
+          sidebarAction: { open: vi.fn() },
+        }
+        expect(isSidePanelSupported()).toBe(true)
+      })
+
+      it('returns false when neither side panel API is present', () => {
+        const g = globalThis as Record<string, unknown>
+        delete g.chrome
+        delete g.browser
+        expect(isSidePanelSupported()).toBe(false)
+      })
+    })
+
+    describe('openSidePanel', () => {
+      it('opens side panel via chrome.sidePanel in Chromium using active windowId', async () => {
+        const openSpy = vi.fn().mockResolvedValue(undefined)
+        const g = globalThis as Record<string, unknown>
+        g.chrome = {
+          windows: {
+            getCurrent: vi.fn().mockResolvedValue({ id: 101 }),
+          },
+          sidePanel: { open: openSpy },
+        }
+
+        const result = await openSidePanel()
+        expect(result).toBe(true)
+        expect(openSpy).toHaveBeenCalledWith({ windowId: 101 })
+      })
+
+      it('opens sidebar via browser.sidebarAction in Firefox', async () => {
+        const openSpy = vi.fn().mockResolvedValue(undefined)
+        const g = globalThis as Record<string, unknown>
+        g.browser = {
+          sidebarAction: { open: openSpy },
+        }
+
+        const result = await openSidePanel()
+        expect(result).toBe(true)
+        expect(openSpy).toHaveBeenCalled()
+      })
+
+      it('returns false and does not throw when side panel fails to open', async () => {
+        const g = globalThis as Record<string, unknown>
+        g.chrome = {
+          windows: {
+            getCurrent: vi.fn().mockRejectedValue(new Error('Window not found')),
+          },
+          sidePanel: { open: vi.fn() },
+        }
+
+        const result = await openSidePanel()
+        expect(result).toBe(false)
+      })
+    })
+
+    describe('openStandaloneWindow', () => {
+      it('creates persistent popup window via chrome.windows.create', async () => {
+        const createSpy = vi.fn().mockResolvedValue({ id: 42 })
+        const getURLSpy = vi
+          .fn()
+          .mockReturnValue('chrome-extension://xyz/src/popup/index.html?mode=window')
+        const g = globalThis as Record<string, unknown>
+        g.chrome = {
+          runtime: { getURL: getURLSpy },
+          windows: { create: createSpy },
+        }
+
+        const result = await openStandaloneWindow()
+        expect(result).toBe(true)
+        expect(createSpy).toHaveBeenCalledWith({
+          url: 'chrome-extension://xyz/src/popup/index.html?mode=window',
+          type: 'popup',
+          width: 440,
+          height: 680,
+        })
+      })
+
+      it('falls back to window.open when chrome.windows is unavailable', async () => {
+        const g = globalThis as Record<string, unknown>
+        delete g.chrome
+        const windowOpenSpy = vi.spyOn(window, 'open').mockReturnValue({} as Window)
+
+        const result = await openStandaloneWindow('src/popup/index.html?mode=window')
+        expect(result).toBe(true)
+        expect(windowOpenSpy).toHaveBeenCalledWith(
+          'src/popup/index.html?mode=window',
+          'IntelliCacheCollectorWindow',
+          expect.stringContaining('width=440,height=680')
+        )
+      })
+    })
+
+    describe('configureActionDisplayMode', () => {
+      it('configures sidepanel mode: enables openPanelOnActionClick and clears action popup', async () => {
+        const setPanelBehaviorSpy = vi.fn().mockResolvedValue(undefined)
+        const setPopupSpy = vi.fn().mockResolvedValue(undefined)
+        const g = globalThis as Record<string, unknown>
+        g.chrome = {
+          sidePanel: { setPanelBehavior: setPanelBehaviorSpy },
+          action: { setPopup: setPopupSpy },
+        }
+
+        const result = await configureActionDisplayMode('sidepanel')
+        expect(result).toBe(true)
+        expect(setPanelBehaviorSpy).toHaveBeenCalledWith({ openPanelOnActionClick: true })
+        expect(setPopupSpy).toHaveBeenCalledWith({ popup: '' })
+      })
+
+      it('configures window mode: disables openPanelOnActionClick and clears action popup', async () => {
+        const setPanelBehaviorSpy = vi.fn().mockResolvedValue(undefined)
+        const setPopupSpy = vi.fn().mockResolvedValue(undefined)
+        const g = globalThis as Record<string, unknown>
+        g.chrome = {
+          sidePanel: { setPanelBehavior: setPanelBehaviorSpy },
+          action: { setPopup: setPopupSpy },
+        }
+
+        const result = await configureActionDisplayMode('window')
+        expect(result).toBe(true)
+        expect(setPanelBehaviorSpy).toHaveBeenCalledWith({ openPanelOnActionClick: false })
+        expect(setPopupSpy).toHaveBeenCalledWith({ popup: '' })
+      })
+
+      it('configures popup mode: disables openPanelOnActionClick and restores default popup', async () => {
+        const setPanelBehaviorSpy = vi.fn().mockResolvedValue(undefined)
+        const setPopupSpy = vi.fn().mockResolvedValue(undefined)
+        const g = globalThis as Record<string, unknown>
+        g.chrome = {
+          sidePanel: { setPanelBehavior: setPanelBehaviorSpy },
+          action: { setPopup: setPopupSpy },
+        }
+
+        const result = await configureActionDisplayMode('popup')
+        expect(result).toBe(true)
+        expect(setPanelBehaviorSpy).toHaveBeenCalledWith({ openPanelOnActionClick: false })
+        expect(setPopupSpy).toHaveBeenCalledWith({ popup: 'src/popup/index.html' })
+      })
+
+      it('returns false when chrome.action is unavailable', async () => {
+        const g = globalThis as Record<string, unknown>
+        delete g.chrome
+        const result = await configureActionDisplayMode('popup')
+        expect(result).toBe(false)
+      })
     })
   })
 })

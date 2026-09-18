@@ -310,3 +310,163 @@ export async function sendBrowserRuntimeMessage<M extends ExtensionMessage, R = 
     return createErrorResponse(msg, 'RUNTIME_ERROR')
   })
 }
+
+// ─── PERSISTENT FRONTEND & DISPLAY MODES ─────────────────────────────────────
+
+export type DisplayMode = 'popup' | 'sidepanel' | 'window'
+
+export interface SidePanelApi {
+  open?: (options: { windowId?: number; tabId?: number }) => Promise<void>
+  setPanelBehavior?: (behavior: { openPanelOnActionClick?: boolean }) => Promise<void>
+  getPanelBehavior?: () => Promise<{ openPanelOnActionClick?: boolean }>
+}
+
+export interface SidebarActionApi {
+  open?: () => Promise<void>
+  close?: () => Promise<void>
+  isOpen?: (details?: { windowId?: number }) => Promise<boolean>
+}
+
+/**
+ * Checks whether the active browser environment supports a persistent side panel / sidebar.
+ */
+export function isSidePanelSupported(): boolean {
+  if (typeof chrome !== 'undefined') {
+    const c = chrome as unknown as { sidePanel?: SidePanelApi }
+    if (c.sidePanel && typeof c.sidePanel.open === 'function') {
+      return true
+    }
+  }
+  if (typeof globalThis !== 'undefined') {
+    const g = globalThis as Record<string, unknown>
+    const b = g.browser as { sidebarAction?: SidebarActionApi } | undefined
+    if (b?.sidebarAction && typeof b.sidebarAction.open === 'function') {
+      return true
+    }
+  }
+  return false
+}
+
+/**
+ * Attempts to open the browser's persistent side panel or sidebar.
+ * Resolves to true if opened successfully, false otherwise.
+ */
+export async function openSidePanel(): Promise<boolean> {
+  // Chromium chrome.sidePanel (Chrome 116+)
+  if (typeof chrome !== 'undefined') {
+    const c = chrome as unknown as {
+      sidePanel?: SidePanelApi
+      windows?: { getCurrent: () => Promise<{ id?: number }> }
+    }
+    if (c.sidePanel && typeof c.sidePanel.open === 'function') {
+      try {
+        const win = c.windows?.getCurrent ? await c.windows.getCurrent() : undefined
+        if (win?.id !== undefined) {
+          await c.sidePanel.open({ windowId: win.id })
+          return true
+        }
+      } catch (err) {
+        logger.warn('Messaging', 'CORE', `Failed to open sidePanel: ${String(err)}`)
+      }
+    }
+  }
+
+  // Firefox sidebarAction fallback
+  if (typeof globalThis !== 'undefined') {
+    const g = globalThis as Record<string, unknown>
+    const b = g.browser as { sidebarAction?: SidebarActionApi } | undefined
+    if (b?.sidebarAction && typeof b.sidebarAction.open === 'function') {
+      try {
+        await b.sidebarAction.open()
+        return true
+      } catch (err) {
+        logger.warn('Messaging', 'CORE', `Failed to open Firefox sidebarAction: ${String(err)}`)
+      }
+    }
+  }
+
+  return false
+}
+
+/**
+ * Opens the extension frontend in an independent, persistent floating desktop window.
+ * This window stays open across tab switches, window shifts, and application changes.
+ */
+export async function openStandaloneWindow(
+  subpath: string = 'src/popup/index.html?mode=window'
+): Promise<boolean> {
+  const runtime = getBrowserRuntime()
+  const url = runtime?.getURL ? runtime.getURL(subpath) : subpath
+
+  if (
+    typeof chrome !== 'undefined' &&
+    chrome.windows &&
+    typeof chrome.windows.create === 'function'
+  ) {
+    try {
+      await chrome.windows.create({
+        url,
+        type: 'popup',
+        width: 440,
+        height: 680,
+      })
+      return true
+    } catch (err) {
+      logger.warn('Messaging', 'CORE', `Failed to create window via chrome.windows: ${String(err)}`)
+    }
+  }
+
+  // Fallback to window.open
+  if (typeof window !== 'undefined' && typeof window.open === 'function') {
+    const win = window.open(
+      url,
+      'IntelliCacheCollectorWindow',
+      'width=440,height=680,menubar=no,toolbar=no,location=no,status=no,resizable=yes'
+    )
+    return win !== null
+  }
+
+  return false
+}
+
+/**
+ * Configures the toolbar action icon behavior across popup, side panel, and floating window modes.
+ */
+export async function configureActionDisplayMode(mode: DisplayMode): Promise<boolean> {
+  try {
+    const c =
+      typeof chrome !== 'undefined'
+        ? (chrome as unknown as {
+            sidePanel?: SidePanelApi
+            action?: {
+              setPopup: (details: { popup: string }) => Promise<void> | void
+            }
+          })
+        : undefined
+
+    if (!c?.action) {
+      return false
+    }
+
+    if (mode === 'sidepanel') {
+      if (c.sidePanel?.setPanelBehavior) {
+        await c.sidePanel.setPanelBehavior({ openPanelOnActionClick: true })
+      }
+      c.action.setPopup({ popup: '' })
+    } else if (mode === 'window') {
+      if (c.sidePanel?.setPanelBehavior) {
+        await c.sidePanel.setPanelBehavior({ openPanelOnActionClick: false })
+      }
+      c.action.setPopup({ popup: '' })
+    } else {
+      if (c.sidePanel?.setPanelBehavior) {
+        await c.sidePanel.setPanelBehavior({ openPanelOnActionClick: false })
+      }
+      c.action.setPopup({ popup: 'src/popup/index.html' })
+    }
+    return true
+  } catch (err) {
+    logger.warn('Messaging', 'CORE', `Failed to configure action display mode: ${String(err)}`)
+    return false
+  }
+}

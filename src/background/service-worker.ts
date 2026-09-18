@@ -13,7 +13,9 @@ import { DatabaseOperationError, DuplicateInteractionError } from '../database/t
 import { logger, redactUrlForLog, toDiagnosticPlatform } from '../diagnostics'
 import {
   addRuntimeMessageListener,
+  getBrowserRuntime,
   onRuntimeInstalled,
+  openStandaloneWindow,
   type WebExtensionSender,
 } from '../shared/browser'
 import {
@@ -262,6 +264,23 @@ addRuntimeMessageListener(
               `Interaction persisted successfully (ID: ${created.id}, fingerprint: ${typeof created.fingerprint === 'string' ? created.fingerprint.slice(0, 16) : 'n/a'}..., strategy: ${created.fingerprint_strategy})`
             )
             sendResponse(createSuccessResponse(created))
+
+            // Notify any active persistent frontend (Side Panel, Popout Window, or Popup)
+            const runtime = getBrowserRuntime()
+            if (runtime?.sendMessage) {
+              try {
+                runtime.sendMessage({
+                  type: 'INTERACTION_SAVED',
+                  payload: {
+                    id: created.id,
+                    platform: created.platform,
+                    conversation_id: created.conversation_id,
+                  },
+                })
+              } catch {
+                // Expected when no frontend listener is currently active
+              }
+            }
           } catch (err) {
             if (err instanceof DuplicateInteractionError) {
               logger.info(
@@ -398,3 +417,22 @@ addRuntimeMessageListener(
     }
   }
 )
+
+// Handle toolbar action clicks when default_popup is disabled (e.g. window mode or sidepanel fallback)
+if (typeof chrome !== 'undefined' && chrome.action?.onClicked) {
+  chrome.action.onClicked.addListener(async (tab) => {
+    logger.debug('Background', 'CORE', 'Action icon clicked without popup.')
+    const c = chrome as unknown as {
+      sidePanel?: { open?: (opts: { windowId?: number }) => Promise<void> }
+    }
+    if (tab.windowId !== undefined && c.sidePanel && typeof c.sidePanel.open === 'function') {
+      try {
+        await c.sidePanel.open({ windowId: tab.windowId })
+        return
+      } catch {
+        // Fallback to standalone window
+      }
+    }
+    await openStandaloneWindow('src/popup/index.html?mode=window')
+  })
+}
