@@ -9,6 +9,9 @@ export default defineManifest({
     default_popup: 'src/popup/index.html',
     default_title: 'IntelliCache Collector',
   },
+  side_panel: {
+    default_path: 'src/popup/index.html',
+  },
   background: {
     service_worker: 'src/background/service-worker.ts',
     type: 'module',
@@ -25,7 +28,7 @@ export default defineManifest({
       run_at: 'document_idle',
     },
   ],
-  permissions: [],
+  permissions: ['sidePanel'],
   host_permissions: [
     'https://chatgpt.com/*',
     'https://chat.openai.com/*',

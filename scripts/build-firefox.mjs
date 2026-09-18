@@ -80,6 +80,16 @@ function buildFirefoxPackage() {
     }
   }
 
+  // Firefox uses sidebar_action instead of Chromium's side_panel.
+  delete manifest.side_panel
+  if (Array.isArray(manifest.permissions)) {
+    manifest.permissions = manifest.permissions.filter((p) => p !== 'sidePanel')
+  }
+  manifest.sidebar_action = {
+    default_panel: 'src/popup/index.html',
+    default_title: 'IntelliCache Collector',
+  }
+
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf8')
 
   console.log('✓ Firefox extension bundle generated in dist-firefox/')
