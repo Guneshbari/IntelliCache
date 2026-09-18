@@ -99,25 +99,39 @@ document.addEventListener('DOMContentLoaded', () => {
   const modeChips = document.querySelectorAll<HTMLButtonElement>('.mode-chip')
 
   // Detect display mode from URL or viewport dimensions
-  const urlParams = new URLSearchParams(window.location.search)
-  const isWindowMode = urlParams.get('mode') === 'window'
-  const isSidepanelMode = urlParams.get('mode') === 'sidepanel'
+  function updateViewportMode(): void {
+    const urlParams = new URLSearchParams(window.location.search)
+    const isWindowMode = urlParams.get('mode') === 'window'
+    const isSidepanelMode =
+      urlParams.get('mode') === 'sidepanel' ||
+      window.location.pathname.includes('sidepanel') ||
+      document.documentElement.classList.contains('dock-view')
 
-  if (isWindowMode) {
-    document.body.classList.add('mode-standalone')
-  } else if (isSidepanelMode) {
-    document.body.classList.add('mode-sidepanel')
-  } else if (window.innerHeight > 600 || window.innerWidth > 450) {
-    document.body.classList.add('mode-expanded')
+    const isExpandedViewport = window.innerHeight > 580 || window.innerWidth > 410
+
+    if (isWindowMode) {
+      document.body.classList.add('mode-standalone')
+      document.body.classList.remove('mode-popup')
+    } else if (isSidepanelMode || isExpandedViewport) {
+      document.body.classList.add('mode-docked', 'mode-sidepanel', 'mode-expanded')
+      document.body.classList.remove('mode-popup')
+    } else {
+      document.body.classList.add('mode-popup')
+      document.body.classList.remove('mode-docked', 'mode-sidepanel', 'mode-expanded')
+    }
   }
+
+  updateViewportMode()
+  window.addEventListener('resize', updateViewportMode)
 
   function isStandaloneOrSidepanel(): boolean {
     return (
       document.body.classList.contains('mode-standalone') ||
       document.body.classList.contains('mode-sidepanel') ||
+      document.body.classList.contains('mode-docked') ||
       document.body.classList.contains('mode-expanded') ||
-      window.innerHeight > 600 ||
-      window.innerWidth > 450
+      window.innerHeight > 580 ||
+      window.innerWidth > 410
     )
   }
 
