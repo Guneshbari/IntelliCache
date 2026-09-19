@@ -352,7 +352,7 @@ document.addEventListener('DOMContentLoaded', () => {
           </div>
         `
       default:
-        return `<div class="recent-item-logo badge-chatgpt"><span style="font-size: 8px;">AI</span></div>`
+        return `<div class="recent-item-logo badge-chatgpt"><span style="font-size: 10px; font-weight: 700;">AI</span></div>`
     }
   }
 
