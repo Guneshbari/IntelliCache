@@ -150,6 +150,8 @@ export function isPageGenerating(root: Document | Element): boolean {
 export function isTurnStreaming(turnElement: Element, root?: Document | Element): boolean {
   if (
     turnElement.classList.contains('streaming') ||
+    turnElement.classList.contains('animate-pulse') ||
+    turnElement.getAttribute('data-is-streaming') === 'true' ||
     turnElement.querySelector(CLAUDE_SELECTORS.STREAMING_INDICATORS) !== null
   ) {
     return true

@@ -109,6 +109,9 @@ export abstract class BaseAdapter implements PlatformAdapter {
       return `msg:${interaction.messageId}`
     }
     const qHash = hashSnippet(interaction.queryText)
+    if (interaction.turnIndex !== undefined) {
+      return `turn:${interaction.turnIndex}:${qHash}`
+    }
     const rHash = hashSnippet(interaction.responseText)
     return `pair:${qHash}:${rHash}:${interaction.queryText.length}:${interaction.responseText.length}`
   }
@@ -316,6 +319,11 @@ export abstract class BaseAdapter implements PlatformAdapter {
         this.platformTag,
         `candidate-detected trace=${traceId} (convId=${interaction.conversationId ?? 'null'}, queryChars=${interaction.queryText.length}, responseChars=${interaction.responseText.length})`
       )
+      logger.info(
+        'Lifecycle',
+        this.platformTag,
+        `extracted trace=${traceId} (queryChars=${interaction.queryText.length}, responseChars=${interaction.responseText.length})`
+      )
 
       logger.logExtraction(this.platformTag, {
         platform: this.platform,
@@ -360,6 +368,11 @@ export abstract class BaseAdapter implements PlatformAdapter {
             }
           }, this.newChatTimeoutMs)
           this.pendingUnboundInteractions.set(key, { interaction, key, timer })
+        } else {
+          const pending = this.pendingUnboundInteractions.get(key)
+          if (pending) {
+            pending.interaction = interaction
+          }
         }
         continue
       }

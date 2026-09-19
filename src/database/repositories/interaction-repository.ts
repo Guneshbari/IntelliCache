@@ -188,10 +188,17 @@ export class InteractionRepository {
           response_text: input.response.text,
           observed_at: observedAt,
         })
-        const existingUnbound = await this.db.interactions
+        let existingUnbound = await this.db.interactions
           .where('fingerprint')
           .equals(l3FpResult.fingerprint)
           .first()
+        if (!existingUnbound) {
+          existingUnbound = await this.db.interactions
+            .where('platform')
+            .equals(platform)
+            .filter((r) => r.conversation_id === null && r.query.text === input.query.text)
+            .first()
+        }
         if (existingUnbound) {
           if (existingUnbound.conversation_id === null) {
             existingUnbound.conversation_id = namespacedConvId
@@ -200,6 +207,12 @@ export class InteractionRepository {
             if (input.message_id) existingUnbound.message_id = input.message_id.trim()
             if (input.user_message_id)
               existingUnbound.user_message_id = input.user_message_id.trim()
+            if (input.response.text.length > existingUnbound.response.characters) {
+              existingUnbound.response = calculateTextMetrics(
+                input.response.text,
+                input.response.estimated_tokens
+              )
+            }
             await this.db.interactions.put(existingUnbound)
             logger.info(
               'Database',

@@ -17,6 +17,7 @@ export interface RawMessageTurn {
   messageId: string | null
   sourceTimestamp: string | null
   isStreaming: boolean
+  turnIndex?: number
 }
 
 /**
@@ -38,6 +39,7 @@ export interface ExtractedInteraction {
   sourceTimestamp: string | null // Original timestamp if exposed by platform DOM, else null
   captureContext: CaptureContext // 'on_load' | 'on_generate'
   traceId?: string // Temporary diagnostic lifecycle trace ID (not persisted to DB)
+  turnIndex?: number // Turn/pair position index within the conversation
 }
 
 /**

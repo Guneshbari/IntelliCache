@@ -72,8 +72,10 @@ export const GEMINI_SELECTORS = {
    */
   STREAMING_INDICATORS: [
     'button[aria-label="Stop response"]',
+    'button[aria-label="Stop Response"]',
     'button[aria-label="Stop generating"]',
     'button[aria-label="Stop response generation"]',
+    'button[aria-label="Stop"]',
     'button[data-testid="stop-button"]',
     'model-response.streaming',
     'model-response.loading',
@@ -88,8 +90,10 @@ export const GEMINI_SELECTORS = {
    */
   STOP_BUTTON: [
     'button[aria-label="Stop response"]',
+    'button[aria-label="Stop Response"]',
     'button[aria-label="Stop generating"]',
     'button[aria-label="Stop response generation"]',
+    'button[aria-label="Stop"]',
     'button[data-testid="stop-button"]',
   ].join(', '),
 

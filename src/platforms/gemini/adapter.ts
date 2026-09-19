@@ -211,6 +211,9 @@ export class GeminiAdapter extends BaseAdapter {
     diagnosticStats.increment('completePairs', interactions.length)
     diagnosticStats.increment('interactionsExtracted', interactions.length)
     logger.debug('Adapter', 'GEMINI', `Interactions paired: completePairs=${interactions.length}`)
+    if (interactions.length > 0) {
+      logger.info('Lifecycle', 'GEMINI', `pairing (formed complete pairs: ${interactions.length})`)
+    }
 
     const { queuedCount, savedCount, duplicateCount, failureCount } =
       await this.processInteractions(interactions)

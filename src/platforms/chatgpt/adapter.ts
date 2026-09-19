@@ -196,6 +196,9 @@ export class ChatGPTAdapter extends BaseAdapter {
     diagnosticStats.increment('completePairs', interactions.length)
     diagnosticStats.increment('interactionsExtracted', interactions.length)
     logger.debug('Adapter', 'CHATGPT', `Interactions paired: completePairs=${interactions.length}`)
+    if (interactions.length > 0) {
+      logger.info('Lifecycle', 'CHATGPT', `pairing (formed complete pairs: ${interactions.length})`)
+    }
 
     const { queuedCount, savedCount, duplicateCount, failureCount } =
       await this.processInteractions(interactions)

@@ -147,6 +147,7 @@ export function pairTurnsIntoInteractions(
 
   const captureContext = context.captureContext ?? 'on_generate'
   const observedAt = context.observedAt ?? new Date().toISOString()
+  let pairIndex = 0
 
   for (const turn of turns) {
     if (turn.role === 'user') {
@@ -171,8 +172,10 @@ export function pairTurnsIntoInteractions(
             observedAt,
             sourceTimestamp: turn.sourceTimestamp ?? pendingUserTurn.sourceTimestamp ?? null,
             captureContext,
+            turnIndex: pairIndex,
           })
           pendingUserTurn = null
+          pairIndex++
         }
       }
       // Skipped (streaming/empty) assistants intentionally keep pendingUserTurn.

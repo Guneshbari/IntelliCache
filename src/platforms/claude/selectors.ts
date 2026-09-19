@@ -78,20 +78,34 @@ export const CLAUDE_SELECTORS = {
    * persist a truncated response permanently.
    */
   STREAMING_INDICATORS: [
+    'button[aria-label="Stop response"]',
     'button[aria-label="Stop Response"]',
+    'button[aria-label="Stop generating"]',
+    'button[aria-label="Stop generating response"]',
+    'button[aria-label="stop response"]',
+    'button[aria-label="Stop"]',
     'button[data-testid="stop-button"]',
+    'button[data-testid="stop-generating-button"]',
     '[data-testid="streaming-indicator"]',
     '.streaming',
     '.animate-pulse',
+    'span.blinking-cursor',
   ].join(', '),
 
   /**
    * Stop button selector (subset of STREAMING_INDICATORS focused on the
    * interactive button that disappears when generation completes).
    */
-  STOP_BUTTON: ['button[aria-label="Stop Response"]', 'button[data-testid="stop-button"]'].join(
-    ', '
-  ),
+  STOP_BUTTON: [
+    'button[aria-label="Stop response"]',
+    'button[aria-label="Stop Response"]',
+    'button[aria-label="Stop generating"]',
+    'button[aria-label="Stop generating response"]',
+    'button[aria-label="stop response"]',
+    'button[aria-label="Stop"]',
+    'button[data-testid="stop-button"]',
+    'button[data-testid="stop-generating-button"]',
+  ].join(', '),
 
   /**
    * Model selector trigger button.
