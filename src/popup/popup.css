@@ -161,14 +161,22 @@ body.mode-sidepanel #sidepanel-btn {
   width: 32px;
   height: 32px;
   border-radius: var(--radius-sm);
-  background-color: var(--ink);
-  color: var(--accent);
+  background-color: var(--surface);
   border: var(--border-small);
   box-shadow: var(--shadow-xs);
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+  overflow: hidden;
+  padding: 2px;
+}
+
+.brand-logo-img {
+  width: 26px;
+  height: 26px;
+  object-fit: contain;
+  display: block;
 }
 
 .header-titles {
@@ -543,19 +551,37 @@ body.mode-sidepanel .dock-indicator-badge {
   flex-shrink: 0;
 }
 
-.badge-chatgpt {
-  background-color: var(--chatgpt);
-  color: var(--chatgpt-ink);
+.badge-chatgpt,
+.recent-item-logo.badge-chatgpt {
+  background-color: var(--surface);
+  border: var(--border-small);
+  color: var(--ink);
 }
 
-.badge-claude {
+[data-theme='light'] .badge-chatgpt svg,
+[data-theme='light'] .recent-item-logo.badge-chatgpt svg {
+  color: #000000 !important;
+  fill: #000000 !important;
+}
+
+[data-theme='dark'] .badge-chatgpt svg,
+[data-theme='dark'] .recent-item-logo.badge-chatgpt svg {
+  color: #ffffff !important;
+  fill: #ffffff !important;
+}
+
+.badge-claude,
+.recent-item-logo.badge-claude {
   background-color: var(--claude);
-  color: var(--claude-ink);
+  border: var(--border-small);
+  color: #ffffff;
 }
 
-.badge-gemini {
-  background-color: var(--gemini);
-  color: var(--gemini-ink);
+.badge-gemini,
+.recent-item-logo.badge-gemini {
+  background-color: #0f172a;
+  border: var(--border-small);
+  color: #ffffff;
 }
 
 .platform-name {
@@ -597,7 +623,7 @@ body.mode-sidepanel .dock-indicator-badge {
   background-color: var(--claude);
 }
 .bar-gemini {
-  background-color: var(--gemini);
+  background: linear-gradient(90deg, #1ba1e3 0%, #5460e6 50%, #9162c0 100%);
 }
 
 .platform-subtext {
@@ -776,6 +802,12 @@ body.mode-sidepanel .dock-indicator-badge {
   justify-content: center;
 }
 
+.explorer-banner-icon svg {
+  stroke: var(--accent) !important;
+  color: var(--accent) !important;
+  stroke-width: 2.2px;
+}
+
 .explorer-banner-title {
   font-size: 12px;
   font-weight: 800;
@@ -835,8 +867,8 @@ body.mode-sidepanel .dock-indicator-badge {
   transition: var(--transition-tactile);
 }
 
-.explorer-section.collapsed .explorer-body {
-  display: none;
+.explorer-section.collapsed {
+  display: none !important;
 }
 
 .explorer-header {
@@ -963,8 +995,9 @@ body.mode-sidepanel .dock-indicator-badge {
 }
 
 .chip-gemini.active {
-  background-color: var(--gemini);
-  color: var(--gemini-ink);
+  background: linear-gradient(135deg, #1ba1e3 0%, #5460e6 50%, #9162c0 100%);
+  color: #ffffff;
+  border-color: var(--accent-ink);
 }
 
 .explorer-list {
@@ -994,6 +1027,16 @@ body.mode-sidepanel .dock-indicator-badge {
   flex-direction: column;
   gap: 6px;
   transition: var(--transition-tactile);
+}
+
+.explorer-card.explorer-card-chatgpt {
+  border-left: 4px solid var(--chatgpt);
+}
+.explorer-card.explorer-card-claude {
+  border-left: 4px solid var(--claude);
+}
+.explorer-card.explorer-card-gemini {
+  border-left: 4px solid #1ba1e3;
 }
 
 .explorer-card:hover {
@@ -1216,9 +1259,17 @@ body.mode-sidepanel .dock-indicator-badge {
   box-shadow: var(--shadow-hover-card);
 }
 
-.storage-item-primary {
+.storage-card-est {
   grid-column: 1 / -1;
   border: var(--border-important);
+}
+
+.storage-card-breakdown {
+  grid-column: 1 / -1;
+}
+
+.storage-card-avg {
+  grid-column: 1 / -1;
 }
 
 .storage-label {
@@ -1549,10 +1600,10 @@ body.mode-sidepanel .dock-indicator-badge {
   font-weight: 800;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  color: var(--ink);
+  color: var(--ink-muted);
   padding: 8px 14px;
-  background-color: var(--surface);
-  border-top: var(--border);
+  background-color: var(--bg);
+  border-top: none;
   flex-shrink: 0;
 }
 
@@ -1561,7 +1612,36 @@ body.mode-sidepanel .dock-indicator-badge {
 ───────────────────────────────────────────────────────────────────────────── */
 @media (min-width: 480px) {
   .storage-grid {
-    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    grid-template-columns: repeat(6, 1fr);
+  }
+
+  .storage-card-est {
+    grid-column: span 3;
+    border: var(--border);
+  }
+
+  .storage-card-breakdown {
+    grid-column: span 3;
+  }
+
+  .storage-card-interactions {
+    grid-column: span 2;
+  }
+
+  .storage-card-conversations {
+    grid-column: span 2;
+  }
+
+  .storage-card-avg {
+    grid-column: span 2;
+  }
+
+  .storage-card-usage {
+    grid-column: span 3;
+  }
+
+  .storage-card-quota {
+    grid-column: span 3;
   }
 
   .platform-grid {
