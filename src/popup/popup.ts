@@ -50,7 +50,7 @@ interface PopupState {
 }
 
 const state: PopupState = {
-  theme: 'dark',
+  theme: 'light',
   displayMode: 'popup',
   totalInteractions: 0,
   totalConversations: 0,
@@ -229,8 +229,8 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch {
       // ignore
     }
-    // Default to dark mode with pure black background
-    applyTheme('dark')
+    // Default to light mode (signature warm off-white Neo-Brutalist look)
+    applyTheme('light')
   }
 
   function toggleTheme(): void {

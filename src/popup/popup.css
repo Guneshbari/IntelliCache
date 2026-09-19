@@ -1,124 +1,21 @@
-/* IntelliCache Collector - Modern Dual Theme Stylesheet (Dark & Light) */
+/* ─────────────────────────────────────────────────────────────────────────────
+   IntelliCache — Functional Neo-Brutalist Stylesheet
+   Architecture: Tokens -> Primitives -> Structural Layout & Components
+───────────────────────────────────────────────────────────────────────────── */
 
-:root,
-[data-theme='dark'] {
-  --bg-app: #000000;
-  --bg-card: #0c0c0e;
-  --bg-card-hover: #141418;
-  --bg-surface: #18181e;
-  --bg-surface-hover: #22222a;
-  --bg-terminal: #050508;
-  --bg-input: #101014;
+@import './tokens.css';
+@import './brutalism.css';
 
-  --text-primary: #ffffff;
-  --text-secondary: #d4d4d8;
-  --text-muted: #a1a1aa;
-  --text-dim: #71717a;
-
-  --brand-primary: #0284c7;
-  --brand-hover: #0369a1;
-  --brand-active: #075985;
-  --brand-glow: rgba(2, 132, 199, 0.25);
-
-  --chatgpt: #10a37f;
-  --chatgpt-bg: rgba(16, 163, 127, 0.14);
-  --chatgpt-border: rgba(16, 163, 127, 0.32);
-
-  --claude: #f59e0b;
-  --claude-bg: rgba(245, 158, 11, 0.14);
-  --claude-border: rgba(245, 158, 11, 0.32);
-
-  --gemini: #3b82f6;
-  --gemini-bg: rgba(59, 130, 246, 0.14);
-  --gemini-border: rgba(59, 130, 246, 0.32);
-
-  --success: #10b981;
-  --success-bg: rgba(16, 185, 129, 0.15);
-  --warning: #f59e0b;
-  --warning-bg: rgba(245, 158, 11, 0.15);
-  --error: #ef4444;
-  --error-bg: rgba(239, 68, 68, 0.15);
-
-  --border-subtle: #1c1c22;
-  --border-medium: #2a2a34;
-  --border-highlight: #3e3e4c;
-
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
-  --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.5);
-
-  --radius-xs: 4px;
-  --radius-sm: 6px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
-  --radius-xl: 16px;
-
-  --font-sans:
-    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Inter, Helvetica, Arial, sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
-
-  --transition-fast: 0.15s ease;
-  --transition-normal: 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-[data-theme='light'] {
-  --bg-app: #f4f5f8;
-  --bg-card: #ffffff;
-  --bg-card-hover: #f9fafb;
-  --bg-surface: #f0f2f6;
-  --bg-surface-hover: #e4e7ee;
-  --bg-terminal: #0f172a;
-  --bg-input: #ffffff;
-
-  --text-primary: #09090b;
-  --text-secondary: #334155;
-  --text-muted: #64748b;
-  --text-dim: #94a3b8;
-
-  --brand-primary: #0284c7;
-  --brand-hover: #0369a1;
-  --brand-active: #075985;
-  --brand-glow: rgba(2, 132, 199, 0.15);
-
-  --chatgpt: #059669;
-  --chatgpt-bg: rgba(5, 150, 105, 0.1);
-  --chatgpt-border: rgba(5, 150, 105, 0.25);
-
-  --claude: #d97706;
-  --claude-bg: rgba(217, 119, 6, 0.1);
-  --claude-border: rgba(217, 119, 6, 0.25);
-
-  --gemini: #2563eb;
-  --gemini-bg: rgba(37, 99, 235, 0.1);
-  --gemini-border: rgba(37, 99, 235, 0.25);
-
-  --success: #16a34a;
-  --success-bg: rgba(22, 163, 74, 0.12);
-  --warning: #d97706;
-  --warning-bg: rgba(217, 119, 6, 0.12);
-  --error: #dc2626;
-  --error-bg: rgba(220, 38, 38, 0.12);
-
-  --border-subtle: #e2e8f0;
-  --border-medium: #cbd5e1;
-  --border-highlight: #94a3b8;
-
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
-  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
-}
-
-* {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
-}
-
+/* ─────────────────────────────────────────────────────────────────────────────
+   1. Application Shell & Viewport Management
+───────────────────────────────────────────────────────────────────────────── */
 html {
   width: 100%;
   height: 100%;
   min-height: 100%;
   margin: 0;
   padding: 0;
-  box-sizing: border-box;
+  background-color: var(--bg);
 }
 
 body {
@@ -130,16 +27,16 @@ body {
   display: flex;
   flex-direction: column;
   font-family: var(--font-sans);
-  background-color: var(--bg-app);
-  color: var(--text-primary);
+  background-color: var(--bg);
+  color: var(--ink);
   font-size: 13px;
   line-height: 1.5;
   user-select: none;
-  -webkit-font-smoothing: antialiased;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: hidden;
   transition:
-    background-color var(--transition-normal),
-    color var(--transition-normal);
+    background-color 0.15s ease,
+    color 0.15s ease;
 }
 
 .popup-container {
@@ -149,8 +46,9 @@ body {
   height: 100%;
   min-height: 100%;
   flex: 1 1 auto;
-  background-color: var(--bg-app);
-  overflow: hidden;
+  background-color: var(--bg);
+  overflow-x: hidden;
+  overflow-y: hidden;
 }
 
 /* Default transient dropdown popup dimensions */
@@ -194,27 +92,15 @@ body.mode-expanded .popup-container,
   max-height: 100% !important;
 }
 
-body.mode-standalone #popout-btn {
-  display: none;
-}
-
+body.mode-standalone #popout-btn,
 body.mode-docked #sidepanel-btn,
 body.mode-sidepanel #sidepanel-btn {
   display: none;
 }
 
-/* Automatic viewport adaptation: sidepanels & windows are taller than 580px */
 @media (min-height: 581px) {
   html,
-  body {
-    width: 100% !important;
-    max-width: 100% !important;
-    min-width: 0 !important;
-    height: 100% !important;
-    min-height: 100vh !important;
-    max-height: 100% !important;
-  }
-
+  body,
   .popup-container {
     width: 100% !important;
     max-width: 100% !important;
@@ -235,62 +121,61 @@ body.mode-sidepanel #sidepanel-btn {
 
 @media (min-width: 411px) {
   html,
-  body {
+  body,
+  .popup-container {
     width: 100% !important;
     max-width: 100% !important;
     min-width: 0 !important;
   }
-
-  .popup-container {
-    width: 100% !important;
-    max-width: 100% !important;
-  }
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
-   1. Header
+   2. Header & Navigation Controls
 ───────────────────────────────────────────────────────────────────────────── */
 .header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 14px;
-  background-color: var(--bg-card);
-  border-bottom: 1px solid var(--border-subtle);
+  padding: 10px 14px;
+  background-color: var(--surface);
+  border-bottom: var(--border);
   flex-shrink: 0;
-  transition:
-    background-color var(--transition-normal),
-    border-color var(--transition-normal);
+  box-shadow: 0 2px 0 rgba(0, 0, 0, 0.1);
+  z-index: 10;
 }
 
 .header-left {
   display: flex;
   align-items: center;
   gap: 10px;
+  min-width: 0;
 }
 
 .header-right {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-shrink: 0;
 }
 
 .logo-icon {
   width: 32px;
   height: 32px;
-  border-radius: var(--radius-md);
-  background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%);
+  border-radius: var(--radius-sm);
+  background-color: var(--ink);
+  color: var(--accent);
+  border: var(--border-small);
+  box-shadow: var(--shadow-xs);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #ffffff;
-  box-shadow: 0 2px 8px rgba(2, 132, 199, 0.35);
   flex-shrink: 0;
 }
 
 .header-titles {
   display: flex;
   flex-direction: column;
+  min-width: 0;
 }
 
 .header-title-row {
@@ -301,30 +186,26 @@ body.mode-sidepanel #sidepanel-btn {
 
 .app-title {
   font-size: clamp(14px, 2.4vw, 16px);
-  font-weight: 700;
-  letter-spacing: -0.2px;
-  color: var(--text-primary);
-  line-height: 1.2;
+  font-weight: 800;
+  letter-spacing: -0.3px;
+  text-transform: uppercase;
+  color: var(--ink);
+  line-height: 1.15;
 }
 
 .dock-indicator-badge {
   display: none;
   font-size: 10px;
-  font-weight: 700;
+  font-weight: 800;
   text-transform: uppercase;
   letter-spacing: 0.4px;
-  padding: 2px 6px;
-  border-radius: var(--radius-xs);
-  background-color: rgba(2, 132, 199, 0.12);
-  color: #0284c7;
-  border: 1px solid rgba(2, 132, 199, 0.25);
+  padding: 1.5px 6px;
+  border-radius: var(--radius-sm);
+  background-color: var(--accent);
+  color: var(--ink);
+  border: var(--border-small);
+  box-shadow: 1px 1px 0 var(--ink);
   line-height: 1.2;
-}
-
-[data-theme='dark'] .dock-indicator-badge {
-  background-color: rgba(56, 189, 248, 0.15);
-  color: #38bdf8;
-  border-color: rgba(56, 189, 248, 0.3);
 }
 
 body.mode-docked .dock-indicator-badge,
@@ -333,32 +214,44 @@ body.mode-sidepanel .dock-indicator-badge {
 }
 
 .app-subtitle {
-  font-size: clamp(11px, 1.8vw, 12px);
-  color: var(--text-muted);
-  font-weight: 500;
+  font-size: 10.5px;
+  color: var(--ink-muted);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-/* Header Buttons & Theme Toggle */
+/* Header Buttons */
 .header-btn {
-  width: 26px;
-  height: 26px;
+  width: 28px;
+  height: 28px;
   border-radius: var(--radius-sm);
-  background-color: var(--bg-surface);
-  border: 1px solid var(--border-subtle);
-  color: var(--text-secondary);
+  background-color: var(--surface);
+  border: var(--border-small);
+  box-shadow: var(--shadow-xs);
+  color: var(--ink);
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
   outline: none;
-  transition: var(--transition-fast);
+  transition: var(--transition-tactile);
   padding: 0;
 }
 
 .header-btn:hover {
-  background-color: var(--bg-surface-hover);
-  color: var(--text-primary);
-  border-color: var(--border-medium);
+  background-color: var(--accent);
+  color: var(--ink);
+  transform: translate(-1px, -1px);
+  box-shadow: var(--shadow-sm);
+}
+
+.header-btn:active {
+  transform: translate(1px, 1px);
+  box-shadow: var(--shadow-pressed-xs);
 }
 
 .theme-icon {
@@ -366,129 +259,136 @@ body.mode-sidepanel .dock-indicator-badge {
 }
 
 :root .sun-icon,
-[data-theme='dark'] .sun-icon {
-  display: block;
-}
-
-:root .moon-icon,
-[data-theme='dark'] .moon-icon {
-  display: none;
-}
-
 [data-theme='light'] .sun-icon {
   display: none;
 }
 
+:root .moon-icon,
 [data-theme='light'] .moon-icon {
   display: block;
 }
 
+[data-theme='dark'] .sun-icon {
+  display: block;
+}
+
+[data-theme='dark'] .moon-icon {
+  display: none;
+}
+
+/* Status Pill */
 .status-pill {
   display: inline-flex;
   align-items: center;
   gap: 5px;
   padding: 3px 8px;
-  border-radius: 9999px;
+  border-radius: var(--radius-sm);
   font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.3px;
-  background-color: var(--bg-surface);
-  border: 1px solid var(--border-subtle);
-  color: var(--text-secondary);
-  transition: var(--transition-normal);
+  font-weight: 800;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  background-color: var(--surface);
+  border: var(--border-small);
+  box-shadow: var(--shadow-xs);
+  color: var(--ink);
+  transition: var(--transition-tactile);
 }
 
 .status-dot {
   width: 6.5px;
   height: 6.5px;
   border-radius: 50%;
-  background-color: var(--text-muted);
-  transition: var(--transition-normal);
+  background-color: var(--ink-muted);
+  transition: var(--transition-tactile);
 }
 
 .status-pill.active {
-  background-color: var(--success-bg);
-  border-color: rgba(16, 185, 129, 0.3);
-  color: var(--success);
+  background-color: var(--accent);
+  color: var(--ink);
+  border-color: var(--ink);
 }
 
 .status-pill.active .status-dot {
-  background-color: var(--success);
-  box-shadow: 0 0 6px rgba(16, 185, 129, 0.8);
+  background-color: var(--ink);
+  box-shadow: none;
 }
 
 .status-pill.error {
-  background-color: var(--error-bg);
-  border-color: rgba(239, 68, 68, 0.3);
-  color: var(--error);
+  background-color: var(--warning);
+  color: var(--warning-ink);
+  border-color: var(--ink);
 }
 
 .status-pill.error .status-dot {
-  background-color: var(--error);
+  background-color: var(--warning-ink);
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
-   Main Content Area (Scrollable)
+   3. Main Content Area & Scrollbar
 ───────────────────────────────────────────────────────────────────────────── */
 .main-content {
   flex: 1 1 0%;
   min-height: 0;
+  overflow-x: hidden;
   overflow-y: auto;
-  padding: clamp(10px, 2vw, 14px);
+  padding: 12px;
   display: flex;
   flex-direction: column;
-  gap: clamp(10px, 2vw, 14px);
+  gap: 12px;
 }
 
 .main-content::-webkit-scrollbar {
-  width: 5px;
+  width: 6px;
 }
 
 .main-content::-webkit-scrollbar-track {
-  background: transparent;
+  background: var(--surface-alt);
+  border-left: 2px solid var(--ink);
 }
 
 .main-content::-webkit-scrollbar-thumb {
-  background: var(--border-medium);
-  border-radius: 4px;
+  background: var(--ink);
+  border-radius: var(--radius-none);
 }
 
 .main-content::-webkit-scrollbar-thumb:hover {
-  background: var(--border-highlight);
+  background: var(--accent);
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
-   2. Metric Cards Grid
+   4. Metric Cards Grid
 ───────────────────────────────────────────────────────────────────────────── */
 .metrics-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: clamp(8px, 1.8vw, 12px);
+  gap: 10px;
   width: 100%;
 }
 
 .metric-card {
-  background-color: var(--bg-card);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
-  padding: clamp(8px, 1.8vw, 12px);
+  background-color: var(--surface);
+  border: var(--border);
+  box-shadow: var(--shadow-card);
+  border-radius: var(--radius);
+  padding: 10px 12px;
   display: flex;
   align-items: center;
-  gap: clamp(8px, 1.8vw, 12px);
-  box-shadow: var(--shadow-sm);
+  gap: 10px;
   min-width: 0;
-  transition: var(--transition-normal);
+  transition: var(--transition-tactile);
 }
 
 .metric-card:hover {
-  border-color: var(--border-medium);
-  background-color: var(--bg-card-hover);
+  transform: translate(-1px, -1px);
+  box-shadow: var(--shadow-hover-card);
 }
 
 .metric-icon-wrap {
-  width: 32px;
-  height: 32px;
-  border-radius: var(--radius-md);
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-sm);
+  border: var(--border-small);
+  box-shadow: var(--shadow-xs);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -496,21 +396,13 @@ body.mode-sidepanel .dock-indicator-badge {
 }
 
 .metric-card-interactions .metric-icon-wrap {
-  background-color: rgba(2, 132, 199, 0.15);
-  color: #0284c7;
+  background-color: var(--accent);
+  color: var(--ink);
 }
 
 .metric-card-conversations .metric-icon-wrap {
-  background-color: rgba(168, 85, 247, 0.15);
-  color: #9333ea;
-}
-
-[data-theme='dark'] .metric-card-interactions .metric-icon-wrap {
-  color: #38bdf8;
-}
-
-[data-theme='dark'] .metric-card-conversations .metric-icon-wrap {
-  color: #c084fc;
+  background-color: var(--gemini);
+  color: var(--ink);
 }
 
 .metric-info {
@@ -522,8 +414,8 @@ body.mode-sidepanel .dock-indicator-badge {
 
 .metric-value {
   font-size: clamp(18px, 3.5vw, 22px);
-  font-weight: 700;
-  color: var(--text-primary);
+  font-weight: 800;
+  color: var(--ink);
   line-height: 1.15;
   font-family: var(--font-mono);
   letter-spacing: -0.5px;
@@ -531,10 +423,10 @@ body.mode-sidepanel .dock-indicator-badge {
 
 .metric-label {
   font-size: clamp(11px, 1.8vw, 12px);
-  color: var(--text-muted);
-  font-weight: 600;
+  color: var(--ink);
+  font-weight: 800;
   text-transform: uppercase;
-  letter-spacing: 0.4px;
+  letter-spacing: 0.5px;
   margin-top: 2px;
   white-space: nowrap;
   overflow: hidden;
@@ -543,15 +435,16 @@ body.mode-sidepanel .dock-indicator-badge {
 
 .metric-sublabel {
   font-size: clamp(10px, 1.5vw, 11px);
-  color: var(--text-dim);
-  margin-top: 2px;
+  color: var(--ink-muted);
+  font-weight: 600;
+  margin-top: 1px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
-   Sections Shared
+   5. Section Headers & Tags
 ───────────────────────────────────────────────────────────────────────────── */
 .section {
   display: flex;
@@ -572,52 +465,55 @@ body.mode-sidepanel .dock-indicator-badge {
 }
 
 .section-title {
-  font-size: 12.5px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 800;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
-  color: var(--text-secondary);
+  letter-spacing: 0.6px;
+  color: var(--ink);
 }
 
 .section-tag,
 .activity-badge,
 .section-badge {
-  font-size: 11px;
-  font-weight: 600;
-  padding: 2px 7px;
-  border-radius: 9999px;
-  background-color: var(--bg-surface);
-  color: var(--text-muted);
-  border: 1px solid var(--border-subtle);
+  font-size: 10.5px;
+  font-weight: 800;
+  text-transform: uppercase;
+  padding: 1.5px 6px;
+  border-radius: var(--radius-sm);
+  background-color: var(--surface);
+  color: var(--ink);
+  border: var(--border-small);
+  box-shadow: var(--shadow-xs);
+  line-height: 1.2;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
-   3. Platform Breakdown Grid & Official Logos
+   6. Platform Breakdown Grid
 ───────────────────────────────────────────────────────────────────────────── */
 .platform-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(105px, 1fr));
-  gap: clamp(6px, 1.5vw, 10px);
+  gap: 8px;
   width: 100%;
 }
 
 .platform-card {
-  background-color: var(--bg-card);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  padding: clamp(6px, 1.5vw, 10px);
+  background-color: var(--surface);
+  border: var(--border);
+  box-shadow: var(--shadow-card);
+  border-radius: var(--radius);
+  padding: 8px 10px;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
   gap: 6px;
-  box-shadow: var(--shadow-sm);
   min-width: 0;
-  transition: var(--transition-normal);
+  transition: var(--transition-tactile);
 }
 
 .platform-card:hover {
-  border-color: var(--border-medium);
-  background-color: var(--bg-card-hover);
+  transform: translate(-1px, -1px);
+  box-shadow: var(--shadow-hover-card);
 }
 
 .platform-card-top {
@@ -640,54 +536,59 @@ body.mode-sidepanel .dock-indicator-badge {
   width: 22px;
   height: 22px;
   border-radius: var(--radius-sm);
+  border: var(--border-small);
+  box-shadow: 1px 1px 0 var(--ink);
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  color: #ffffff;
 }
 
 .badge-chatgpt {
-  background-color: #10a37f;
+  background-color: var(--chatgpt);
+  color: var(--chatgpt-ink);
 }
 
 .badge-claude {
-  background-color: #cc785c;
+  background-color: var(--claude);
+  color: var(--claude-ink);
 }
 
 .badge-gemini {
-  background: linear-gradient(135deg, #7c3aed 0%, #2563eb 100%);
+  background-color: var(--gemini);
+  color: var(--gemini-ink);
 }
 
 .platform-name {
-  font-size: clamp(11.5px, 1.8vw, 12.5px);
-  font-weight: 600;
-  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--ink);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .platform-count {
-  font-size: clamp(13px, 2.2vw, 15px);
-  font-weight: 700;
+  font-size: 14px;
+  font-weight: 800;
   font-family: var(--font-mono);
-  color: var(--text-primary);
+  color: var(--ink);
   flex-shrink: 0;
 }
 
 .platform-bar-track {
   width: 100%;
-  height: 4px;
-  background-color: var(--bg-surface);
-  border-radius: 9999px;
+  height: 7px;
+  background-color: var(--surface-alt);
+  border: var(--border-small);
+  border-radius: var(--radius-sm);
   overflow: hidden;
 }
 
 .platform-bar-fill {
   height: 100%;
-  border-radius: 9999px;
-  transition: width 0.3s ease;
+  border-radius: var(--radius-none);
+  transition: width 0.25s ease;
 }
 
 .bar-chatgpt {
@@ -701,35 +602,36 @@ body.mode-sidepanel .dock-indicator-badge {
 }
 
 .platform-subtext {
-  font-size: clamp(10px, 1.5vw, 11px);
-  color: var(--text-muted);
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--ink-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
-   4. Recent Activity List
+   7. Recent Activity List
 ───────────────────────────────────────────────────────────────────────────── */
 .recent-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
 
 .recent-item {
-  background-color: var(--bg-card);
-  border: 1px solid var(--border-subtle);
-  border-left-width: 3px;
-  border-radius: var(--radius-md);
-  padding: clamp(7px, 1.6vw, 9px) clamp(9px, 1.8vw, 12px);
+  background-color: var(--surface);
+  border: var(--border);
+  border-left-width: 5px;
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+  padding: 8px 11px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 5px;
   cursor: pointer;
-  box-shadow: var(--shadow-sm);
   min-width: 0;
-  transition: var(--transition-fast);
+  transition: var(--transition-tactile);
 }
 
 .recent-item.item-chatgpt {
@@ -743,8 +645,14 @@ body.mode-sidepanel .dock-indicator-badge {
 }
 
 .recent-item:hover {
-  background-color: var(--bg-card-hover);
-  border-color: var(--border-medium);
+  transform: translate(-1px, -1px);
+  box-shadow: var(--shadow-hover-card);
+  background-color: var(--surface-hover);
+}
+
+.recent-item:active {
+  transform: translate(1px, 1px);
+  box-shadow: var(--shadow-pressed);
 }
 
 .recent-item-header {
@@ -762,7 +670,8 @@ body.mode-sidepanel .dock-indicator-badge {
 .recent-item-logo {
   width: 18px;
   height: 18px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
+  border: var(--border-small);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -772,7 +681,8 @@ body.mode-sidepanel .dock-indicator-badge {
 
 .recent-platform-label {
   font-size: 11.5px;
-  font-weight: 600;
+  font-weight: 800;
+  text-transform: uppercase;
 }
 
 .recent-platform-chatgpt {
@@ -786,22 +696,29 @@ body.mode-sidepanel .dock-indicator-badge {
 }
 
 .recent-time {
-  font-size: 11px;
-  color: var(--text-muted);
+  font-size: 10.5px;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  color: var(--ink-muted);
 }
 
 .recent-title {
-  font-size: clamp(12px, 1.9vw, 13px);
-  font-weight: 600;
-  color: var(--text-primary);
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--ink);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .recent-query {
-  font-size: clamp(11px, 1.7vw, 12px);
-  color: var(--text-secondary);
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--ink);
+  background-color: var(--bg);
+  border: var(--border-small);
+  border-radius: var(--radius-sm);
+  padding: 5px 8px;
   line-height: 1.45;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -812,23 +729,28 @@ body.mode-sidepanel .dock-indicator-badge {
 
 /* Open Explorer Banner */
 .explorer-banner-btn {
-  background-color: var(--bg-card);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  padding: 8px 10px;
+  background-color: var(--accent);
+  border: var(--border);
+  box-shadow: var(--shadow-card);
+  border-radius: var(--radius);
+  padding: 8px 12px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   cursor: pointer;
-  color: var(--text-secondary);
-  box-shadow: var(--shadow-sm);
-  transition: var(--transition-fast);
+  color: var(--ink);
+  transition: var(--transition-tactile);
 }
 
 .explorer-banner-btn:hover {
-  background-color: var(--bg-surface);
-  border-color: var(--brand-primary);
-  color: var(--brand-primary);
+  background-color: var(--accent-hover);
+  transform: translate(-1px, -1px);
+  box-shadow: var(--shadow-hover-card);
+}
+
+.explorer-banner-btn:active {
+  transform: translate(1px, 1px);
+  box-shadow: var(--shadow-pressed);
 }
 
 .explorer-banner-left {
@@ -841,23 +763,27 @@ body.mode-sidepanel .dock-indicator-badge {
   width: 26px;
   height: 26px;
   border-radius: var(--radius-sm);
-  background-color: var(--bg-surface);
+  border: var(--border-small);
+  box-shadow: 1px 1px 0 var(--ink);
+  background-color: var(--ink);
+  color: var(--accent);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--brand-primary);
 }
 
 .explorer-banner-title {
   font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.3px;
-  color: var(--text-primary);
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--ink);
 }
 
 .explorer-banner-sub {
   font-size: 11px;
-  color: var(--text-muted);
+  font-weight: 700;
+  color: var(--ink);
 }
 
 /* Empty State */
@@ -868,40 +794,41 @@ body.mode-sidepanel .dock-indicator-badge {
   justify-content: center;
   text-align: center;
   padding: 16px 14px;
-  background-color: var(--bg-card);
-  border: 1px dashed var(--border-medium);
-  border-radius: var(--radius-lg);
+  background-color: var(--surface);
+  border: 2px dashed var(--ink);
+  border-radius: var(--radius);
   gap: 6px;
 }
 
 .empty-icon {
-  color: var(--text-muted);
+  color: var(--ink);
   margin-bottom: 2px;
 }
 
 .empty-title {
   font-size: 13px;
-  font-weight: 600;
-  color: var(--text-secondary);
+  font-weight: 800;
+  text-transform: uppercase;
+  color: var(--ink);
 }
 
 .empty-desc {
   font-size: 11.5px;
-  color: var(--text-muted);
+  color: var(--ink-muted);
   max-width: 280px;
   line-height: 1.4;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
-   5. Interaction Explorer
+   8. Interaction Explorer Section
 ───────────────────────────────────────────────────────────────────────────── */
 .explorer-section {
-  background-color: var(--bg-card);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
+  background-color: var(--surface);
+  border: var(--border);
+  box-shadow: var(--shadow-card);
+  border-radius: var(--radius);
   padding: 10px 12px;
-  box-shadow: var(--shadow-sm);
-  transition: var(--transition-normal);
+  transition: var(--transition-tactile);
 }
 
 .explorer-section.collapsed .explorer-body {
@@ -914,8 +841,8 @@ body.mode-sidepanel .dock-indicator-badge {
 }
 
 .chevron-icon {
-  color: var(--text-muted);
-  transition: transform var(--transition-normal);
+  color: var(--ink);
+  transition: transform 0.15s ease;
 }
 
 .explorer-section:not(.collapsed) .chevron-icon {
@@ -944,26 +871,28 @@ body.mode-sidepanel .dock-indicator-badge {
 .search-icon {
   position: absolute;
   left: 9px;
-  color: var(--text-muted);
+  color: var(--ink);
   pointer-events: none;
 }
 
 .search-input {
   width: 100%;
   padding: 7px 28px 7px 28px;
-  background-color: var(--bg-input);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  color: var(--text-primary);
+  background-color: var(--surface);
+  border: var(--border);
+  box-shadow: var(--shadow-xs);
+  border-radius: var(--radius-sm);
+  color: var(--ink);
   font-size: 12px;
+  font-weight: 600;
   font-family: inherit;
   outline: none;
-  transition: var(--transition-fast);
+  transition: var(--transition-tactile);
 }
 
 .search-input:focus {
-  border-color: var(--brand-primary);
-  box-shadow: 0 0 0 2px var(--brand-glow);
+  border-color: var(--ink);
+  box-shadow: 3px 3px 0 var(--accent);
 }
 
 .search-clear-btn {
@@ -971,65 +900,66 @@ body.mode-sidepanel .dock-indicator-badge {
   right: 6px;
   background: none;
   border: none;
-  color: var(--text-muted);
+  color: var(--ink);
   cursor: pointer;
   font-size: 15px;
+  font-weight: 800;
   line-height: 1;
   padding: 2px 4px;
 }
 
 .search-clear-btn:hover {
-  color: var(--text-primary);
+  color: var(--warning);
 }
 
 .filter-chips {
   display: flex;
-  gap: 4px;
+  gap: 5px;
   overflow-x: auto;
   padding-bottom: 2px;
 }
 
 .chip {
-  background-color: var(--bg-surface);
-  border: 1px solid var(--border-subtle);
-  border-radius: 9999px;
+  background-color: var(--surface);
+  border: var(--border-small);
+  box-shadow: var(--shadow-xs);
+  border-radius: var(--radius-sm);
   padding: 3.5px 8px;
   font-size: 11px;
-  font-weight: 500;
-  color: var(--text-secondary);
+  font-weight: 800;
+  text-transform: uppercase;
+  color: var(--ink);
   cursor: pointer;
-  transition: var(--transition-fast);
+  transition: var(--transition-tactile);
   white-space: nowrap;
 }
 
 .chip:hover {
-  background-color: var(--bg-surface-hover);
-  color: var(--text-primary);
+  background-color: var(--surface-alt);
+  transform: translate(-1px, -1px);
+  box-shadow: var(--shadow-sm);
 }
 
 .chip.active {
-  background-color: var(--brand-primary);
-  border-color: var(--brand-primary);
-  color: #ffffff;
-  font-weight: 600;
+  background-color: var(--accent);
+  color: var(--ink);
+  box-shadow: 1px 1px 0 var(--ink);
+  transform: translate(1px, 1px);
 }
 
 .chip-chatgpt.active {
   background-color: var(--chatgpt);
-  border-color: var(--chatgpt);
-  color: #ffffff;
+  color: var(--chatgpt-ink);
 }
 
 .chip-claude.active {
   background-color: var(--claude);
-  border-color: var(--claude);
-  color: #ffffff;
+  color: var(--claude-ink);
 }
 
 .chip-gemini.active {
   background-color: var(--gemini);
-  border-color: var(--gemini);
-  color: #ffffff;
+  color: var(--gemini-ink);
 }
 
 .explorer-list {
@@ -1041,27 +971,29 @@ body.mode-sidepanel .dock-indicator-badge {
 }
 
 .explorer-list::-webkit-scrollbar {
-  width: 4px;
+  width: 5px;
 }
 
 .explorer-list::-webkit-scrollbar-thumb {
-  background: var(--border-medium);
-  border-radius: 4px;
+  background: var(--ink);
+  border-radius: var(--radius-none);
 }
 
 .explorer-card {
-  background-color: var(--bg-surface);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
+  background-color: var(--surface);
+  border: var(--border-small);
+  box-shadow: var(--shadow-xs);
+  border-radius: var(--radius-sm);
   padding: 8px 10px;
   display: flex;
   flex-direction: column;
   gap: 6px;
-  transition: var(--transition-fast);
+  transition: var(--transition-tactile);
 }
 
 .explorer-card:hover {
-  border-color: var(--border-medium);
+  box-shadow: var(--shadow-sm);
+  transform: translate(-1px, -1px);
 }
 
 .explorer-card-header {
@@ -1078,11 +1010,13 @@ body.mode-sidepanel .dock-indicator-badge {
 
 .context-tag {
   font-size: 10px;
-  font-weight: 500;
+  font-weight: 700;
+  text-transform: uppercase;
   padding: 2px 5px;
-  border-radius: var(--radius-xs);
-  background-color: rgba(125, 125, 125, 0.12);
-  color: var(--text-muted);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--ink);
+  background-color: var(--surface-alt);
+  color: var(--ink);
 }
 
 .explorer-content-block {
@@ -1093,25 +1027,25 @@ body.mode-sidepanel .dock-indicator-badge {
 
 .explorer-label {
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 800;
   text-transform: uppercase;
-  color: var(--text-muted);
+  color: var(--ink-muted);
   letter-spacing: 0.3px;
 }
 
 .explorer-text {
   font-size: 12px;
-  color: var(--text-primary);
+  color: var(--ink);
   line-height: 1.45;
-  background-color: var(--bg-card);
+  background-color: var(--bg);
   padding: 7px 9px;
   border-radius: var(--radius-sm);
-  border: 1px solid var(--border-subtle);
+  border: var(--border-small);
   max-height: 96px;
   overflow-y: auto;
   white-space: pre-wrap;
   word-break: break-word;
-  font-family: inherit;
+  font-family: var(--font-mono);
 }
 
 .explorer-text.collapsed-text {
@@ -1121,9 +1055,10 @@ body.mode-sidepanel .dock-indicator-badge {
 
 .explorer-text code {
   font-family: var(--font-mono);
-  background: rgba(125, 125, 125, 0.15);
+  background: var(--surface-alt);
+  border: 1px solid var(--ink);
   padding: 1px 3px;
-  border-radius: 3px;
+  border-radius: 2px;
 }
 
 .explorer-footer-row {
@@ -1131,18 +1066,19 @@ body.mode-sidepanel .dock-indicator-badge {
   align-items: center;
   justify-content: space-between;
   font-size: 11px;
-  color: var(--text-muted);
+  font-family: var(--font-mono);
+  color: var(--ink-muted);
   padding-top: 2px;
 }
 
 .fingerprint-tag {
   font-family: var(--font-mono);
   font-size: 10.5px;
-  color: var(--text-dim);
+  color: var(--ink-dim);
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
-   6. System Health Grid
+   9. System Health Grid
 ───────────────────────────────────────────────────────────────────────────── */
 .health-grid {
   display: grid;
@@ -1151,14 +1087,20 @@ body.mode-sidepanel .dock-indicator-badge {
 }
 
 .health-item-card {
-  background-color: var(--bg-card);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
+  background-color: var(--surface);
+  border: var(--border);
+  box-shadow: var(--shadow-card);
+  border-radius: var(--radius);
   padding: 8px 10px;
   display: flex;
   align-items: center;
   gap: 8px;
-  box-shadow: var(--shadow-sm);
+  transition: var(--transition-tactile);
+}
+
+.health-item-card:hover {
+  transform: translate(-1px, -1px);
+  box-shadow: var(--shadow-hover-card);
 }
 
 .health-item-full {
@@ -1169,6 +1111,8 @@ body.mode-sidepanel .dock-indicator-badge {
   width: 26px;
   height: 26px;
   border-radius: var(--radius-sm);
+  border: var(--border-small);
+  box-shadow: 1px 1px 0 var(--ink);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1176,24 +1120,24 @@ body.mode-sidepanel .dock-indicator-badge {
 }
 
 .icon-sw {
-  background-color: rgba(16, 185, 129, 0.12);
-  color: var(--success);
+  background-color: var(--accent);
+  color: var(--ink);
 }
 .icon-db {
-  background-color: rgba(2, 132, 199, 0.12);
-  color: #0284c7;
+  background-color: var(--gemini);
+  color: var(--ink);
 }
 .icon-conn {
-  background-color: rgba(245, 158, 11, 0.12);
-  color: var(--warning);
+  background-color: var(--claude);
+  color: #ffffff;
 }
 .icon-code {
-  background-color: rgba(168, 85, 247, 0.12);
-  color: #9333ea;
+  background-color: var(--surface-alt);
+  color: var(--ink);
 }
 .icon-arch {
-  background-color: rgba(59, 130, 246, 0.12);
-  color: #3b82f6;
+  background-color: var(--bg);
+  color: var(--ink);
 }
 
 .health-item-text {
@@ -1204,14 +1148,15 @@ body.mode-sidepanel .dock-indicator-badge {
 
 .health-label {
   font-size: 11px;
-  color: var(--text-muted);
-  font-weight: 500;
+  color: var(--ink-muted);
+  font-weight: 800;
+  text-transform: uppercase;
 }
 
 .health-val {
   font-size: 12px;
-  font-weight: 600;
-  color: var(--text-primary);
+  font-weight: 800;
+  color: var(--ink);
   font-family: var(--font-mono);
   white-space: nowrap;
   overflow: hidden;
@@ -1219,53 +1164,64 @@ body.mode-sidepanel .dock-indicator-badge {
 }
 
 .status-val-active {
-  color: var(--success);
+  color: var(--ink);
 }
 
 .health-status-badge {
   font-size: 10.5px;
-  font-weight: 600;
+  font-weight: 800;
+  text-transform: uppercase;
   padding: 2px 7px;
-  border-radius: 9999px;
-  background-color: var(--success-bg);
-  color: var(--success);
-  border: 1px solid rgba(16, 185, 129, 0.3);
+  border-radius: var(--radius-sm);
+  background-color: var(--accent);
+  color: var(--ink);
+  border: var(--border-small);
+  box-shadow: var(--shadow-xs);
   display: flex;
   align-items: center;
   gap: 4px;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
-   Storage Footprint Grid (measurement only — estimates, not exact disk usage)
+   10. Storage Footprint Grid
 ───────────────────────────────────────────────────────────────────────────── */
 .storage-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: clamp(6px, 1.5vw, 8px);
+  gap: 8px;
   width: 100%;
 }
 
 .storage-item-card {
-  background-color: var(--bg-card);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  padding: clamp(6px, 1.5vw, 9px) clamp(8px, 1.8vw, 11px);
+  background-color: var(--surface);
+  border: var(--border);
+  box-shadow: var(--shadow-card);
+  border-radius: var(--radius);
+  padding: 8px 10px;
   display: flex;
   flex-direction: column;
   justify-content: center;
   gap: 2px;
-  box-shadow: var(--shadow-sm);
   min-width: 0;
+  transition: var(--transition-tactile);
+}
+
+.storage-item-card:hover {
+  transform: translate(-1px, -1px);
+  box-shadow: var(--shadow-hover-card);
 }
 
 .storage-item-primary {
   grid-column: 1 / -1;
+  border: var(--border-important);
 }
 
 .storage-label {
   font-size: clamp(10.5px, 1.6vw, 11.5px);
-  color: var(--text-muted);
-  font-weight: 500;
+  color: var(--ink-muted);
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1273,8 +1229,8 @@ body.mode-sidepanel .dock-indicator-badge {
 
 .storage-val {
   font-size: clamp(13px, 2.2vw, 14.5px);
-  font-weight: 700;
-  color: var(--text-primary);
+  font-weight: 800;
+  color: var(--ink);
   font-family: var(--font-mono);
   white-space: nowrap;
   overflow: hidden;
@@ -1286,25 +1242,25 @@ body.mode-sidepanel .dock-indicator-badge {
   flex-wrap: wrap;
   gap: 3px 8px;
   font-size: clamp(10px, 1.5vw, 11px);
-  font-weight: 500;
-  color: var(--text-muted);
+  font-weight: 600;
+  color: var(--ink-muted);
   white-space: normal;
 }
 
 .storage-breakdown strong {
-  color: var(--text-primary);
-  font-weight: 700;
+  color: var(--ink);
+  font-weight: 800;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
-    7. Diagnostics Section & Tools Suite
+   11. Diagnostics Section & Tools Suite
 ───────────────────────────────────────────────────────────────────────────── */
 .diagnostics-section {
-  background-color: var(--bg-card);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
+  background-color: var(--surface);
+  border: var(--border);
+  box-shadow: var(--shadow-card);
+  border-radius: var(--radius);
   overflow: hidden;
-  box-shadow: var(--shadow-sm);
 }
 
 .accordion-trigger {
@@ -1312,19 +1268,21 @@ body.mode-sidepanel .dock-indicator-badge {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 9px 12px;
-  background-color: var(--bg-card);
+  padding: 10px 12px;
+  background-color: var(--surface);
   border: none;
-  color: var(--text-secondary);
+  border-bottom: var(--border-small);
+  color: var(--ink);
   font-size: 12.5px;
-  font-weight: 600;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
   cursor: pointer;
-  transition: var(--transition-fast);
+  transition: var(--transition-tactile);
 }
 
 .accordion-trigger:hover {
-  background-color: var(--bg-card-hover);
-  color: var(--text-primary);
+  background-color: var(--surface-alt);
 }
 
 .accordion-title-wrap {
@@ -1334,8 +1292,8 @@ body.mode-sidepanel .dock-indicator-badge {
 }
 
 .accordion-chevron {
-  color: var(--text-muted);
-  transition: transform var(--transition-normal);
+  color: var(--ink);
+  transition: transform 0.15s ease;
 }
 
 .accordion-trigger[aria-expanded='true'] .accordion-chevron {
@@ -1343,7 +1301,7 @@ body.mode-sidepanel .dock-indicator-badge {
 }
 
 .accordion-content {
-  padding: 0 12px 10px 12px;
+  padding: 10px 12px;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -1355,9 +1313,9 @@ body.mode-sidepanel .dock-indicator-badge {
 
 /* Display Mode Setting Card */
 .display-mode-card {
-  background-color: var(--bg-surface);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
+  background-color: var(--bg);
+  border: var(--border-small);
+  border-radius: var(--radius-sm);
   padding: 8px 10px;
   display: flex;
   flex-direction: column;
@@ -1372,13 +1330,15 @@ body.mode-sidepanel .dock-indicator-badge {
 
 .display-mode-title {
   font-size: 12px;
-  font-weight: 600;
-  color: var(--text-primary);
+  font-weight: 800;
+  text-transform: uppercase;
+  color: var(--ink);
 }
 
 .display-mode-desc {
   font-size: 11px;
-  color: var(--text-muted);
+  color: var(--ink-muted);
+  font-weight: 600;
   line-height: 1.35;
 }
 
@@ -1392,12 +1352,14 @@ body.mode-sidepanel .dock-indicator-badge {
   padding: 6px 7px;
   border-radius: var(--radius-sm);
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 800;
+  text-transform: uppercase;
   cursor: pointer;
-  border: 1px solid var(--border-subtle);
-  background-color: var(--bg-card);
-  color: var(--text-secondary);
-  transition: var(--transition-fast);
+  border: var(--border-small);
+  box-shadow: var(--shadow-xs);
+  background-color: var(--surface);
+  color: var(--ink);
+  transition: var(--transition-tactile);
   text-align: center;
   outline: none;
   display: inline-flex;
@@ -1406,16 +1368,16 @@ body.mode-sidepanel .dock-indicator-badge {
 }
 
 .mode-chip:hover {
-  background-color: var(--bg-surface-hover);
-  color: var(--text-primary);
-  border-color: var(--border-medium);
+  background-color: var(--surface-alt);
+  transform: translate(-1px, -1px);
+  box-shadow: var(--shadow-sm);
 }
 
 .mode-chip.active {
-  background-color: var(--brand-primary);
-  border-color: var(--brand-primary);
-  color: #ffffff;
-  box-shadow: 0 1px 4px rgba(2, 132, 199, 0.25);
+  background-color: var(--accent);
+  color: var(--ink);
+  box-shadow: 1px 1px 0 var(--ink);
+  transform: translate(1px, 1px);
 }
 
 .diagnostics-toolbar {
@@ -1432,45 +1394,50 @@ body.mode-sidepanel .dock-indicator-badge {
   padding: 6px 7px;
   border-radius: var(--radius-sm);
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 800;
+  text-transform: uppercase;
   cursor: pointer;
-  border: 1px solid var(--border-subtle);
-  background-color: var(--bg-surface);
-  color: var(--text-primary);
-  transition: var(--transition-fast);
+  border: var(--border-small);
+  box-shadow: var(--shadow-xs);
+  background-color: var(--surface);
+  color: var(--ink);
+  transition: var(--transition-tactile);
   outline: none;
   white-space: nowrap;
 }
 
 .tool-btn:hover {
-  background-color: var(--bg-surface-hover);
-  border-color: var(--border-medium);
+  transform: translate(-1px, -1px);
+  box-shadow: var(--shadow-sm);
+}
+
+.tool-btn:active {
+  transform: translate(1px, 1px);
+  box-shadow: var(--shadow-pressed-xs);
 }
 
 .tool-ping:hover {
-  border-color: #38bdf8;
-  color: #38bdf8;
+  background-color: var(--accent);
 }
 
 .tool-audit:hover {
-  border-color: var(--error);
-  color: var(--error);
+  background-color: var(--warning);
+  color: var(--warning-ink);
 }
 
 .tool-export:hover {
-  border-color: var(--brand-primary);
-  color: var(--brand-primary);
+  background-color: var(--gemini);
 }
 
 .tool-clear:hover {
-  border-color: var(--text-muted);
-  color: var(--text-muted);
+  background-color: var(--surface-alt);
 }
 
 .log-box {
-  background-color: var(--bg-terminal);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
+  background-color: #000000;
+  border: var(--border);
+  box-shadow: var(--shadow-xs);
+  border-radius: var(--radius-sm);
   padding: 8px 10px;
   min-height: 90px;
   max-height: 140px;
@@ -1487,8 +1454,8 @@ body.mode-sidepanel .dock-indicator-badge {
 }
 
 .log-box::-webkit-scrollbar-thumb {
-  background: var(--border-medium);
-  border-radius: 4px;
+  background: var(--accent);
+  border-radius: var(--radius-none);
 }
 
 .log-entry {
@@ -1500,58 +1467,63 @@ body.mode-sidepanel .dock-indicator-badge {
 
 .log-time {
   font-size: 10px;
-  color: var(--text-muted);
+  color: #888888;
   flex-shrink: 0;
 }
 
 .log-msg {
-  color: #e2e8f0;
+  color: #ffffff;
   word-break: break-all;
 }
 
 .log-entry-info .log-msg {
-  color: #38bdf8;
+  color: var(--gemini);
 }
 .log-entry-success .log-msg {
-  color: #34d399;
+  color: var(--accent);
 }
 .log-entry-error .log-msg {
-  color: #f87171;
+  color: var(--warning);
 }
 .log-entry-warn .log-msg {
-  color: #fbbf24;
+  color: #ffde00;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
-   Shared Buttons & Controls
+   12. Shared Buttons & Controls
 ───────────────────────────────────────────────────────────────────────────── */
 .btn-text {
-  background: none;
-  border: none;
-  color: var(--brand-primary);
-  font-size: 12px;
-  font-weight: 600;
+  background-color: var(--surface);
+  border: var(--border-small);
+  box-shadow: var(--shadow-xs);
+  border-radius: var(--radius-sm);
+  color: var(--ink);
+  font-size: 11.5px;
+  font-weight: 800;
+  text-transform: uppercase;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
-  gap: 3px;
-  padding: 2px 4px;
-  border-radius: var(--radius-xs);
-  transition: var(--transition-fast);
+  gap: 4px;
+  padding: 3px 6px;
+  transition: var(--transition-tactile);
 }
 
 .btn-text:hover {
-  color: #0369a1;
+  background-color: var(--accent);
+  transform: translate(-1px, -1px);
+  box-shadow: var(--shadow-sm);
 }
 
-[data-theme='dark'] .btn-text:hover {
-  color: #38bdf8;
+.btn-text:active {
+  transform: translate(1px, 1px);
+  box-shadow: var(--shadow-pressed-xs);
 }
 
 .btn-icon-link {
   background: none;
   border: none;
-  color: var(--text-muted);
+  color: var(--ink);
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -1560,23 +1532,23 @@ body.mode-sidepanel .dock-indicator-badge {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
-   8. Footer
+   13. Footer
 ───────────────────────────────────────────────────────────────────────────── */
 .footer {
   text-align: center;
-  font-size: 11.5px;
-  color: var(--text-muted);
-  padding: 9px 14px;
-  background-color: var(--bg-card);
-  border-top: 1px solid var(--border-subtle);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--ink);
+  padding: 8px 14px;
+  background-color: var(--surface);
+  border-top: var(--border);
   flex-shrink: 0;
-  transition:
-    background-color var(--transition-normal),
-    border-color var(--transition-normal);
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
-   9. Advanced Dock View Responsive Enhancements
+   14. Advanced Dock View & Responsive Enhancements
 ───────────────────────────────────────────────────────────────────────────── */
 @media (min-width: 480px) {
   .storage-grid {
@@ -1590,7 +1562,7 @@ body.mode-sidepanel .dock-indicator-badge {
 
 @media (min-height: 650px) {
   .log-box {
-    max-height: clamp(130px, 22vh, 260px);
+    max-height: clamp(140px, 22vh, 260px);
   }
 
   .explorer-list {

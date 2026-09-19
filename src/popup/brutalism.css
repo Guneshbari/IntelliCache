@@ -1,0 +1,126 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+   IntelliCache — Shared Neo-Brutalist Component Primitives & Utilities
+   Provides core structural primitives (cards, tactile buttons, badges, inputs)
+   with hard offset shadows, mechanical click states, and high accessibility.
+───────────────────────────────────────────────────────────────────────────── */
+
+/* 1. Universal Neo-Brutalist Reset & Base Box Model */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 2. Brutalist Card Primitive */
+.brutalist-card {
+  background-color: var(--surface);
+  border: var(--border);
+  box-shadow: var(--shadow-card);
+  border-radius: var(--radius);
+  transition: var(--transition-tactile);
+}
+
+.brutalist-card:hover {
+  transform: translate(-1px, -1px);
+  box-shadow: var(--shadow-hover-card);
+}
+
+/* 3. Brutalist Tactile Button Primitive */
+.brutalist-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background-color: var(--surface);
+  color: var(--ink);
+  border: var(--border-small);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-xs);
+  font-family: inherit;
+  font-weight: 700;
+  text-transform: uppercase;
+  cursor: pointer;
+  outline: none;
+  user-select: none;
+  white-space: nowrap;
+  transition: var(--transition-tactile);
+}
+
+.brutalist-btn:hover {
+  background-color: var(--accent);
+  color: var(--accent-ink);
+  transform: translate(-1px, -1px);
+  box-shadow: var(--shadow-sm);
+}
+
+.brutalist-btn:active {
+  transform: translate(1px, 1px);
+  box-shadow: var(--shadow-pressed-xs);
+}
+
+/* 4. Brutalist Badge & Pill Primitive */
+.brutalist-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border: var(--border-small);
+  border-radius: var(--radius-sm);
+  background-color: var(--surface);
+  color: var(--ink);
+  font-size: 10.5px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  box-shadow: var(--shadow-xs);
+  line-height: 1.2;
+}
+
+/* 5. Brutalist Input Field Primitive */
+.brutalist-input {
+  width: 100%;
+  background-color: var(--surface);
+  border: var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-xs);
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 7px 10px;
+  outline: none;
+  transition: var(--transition-tactile);
+}
+
+.brutalist-input:focus {
+  border-color: var(--ink);
+  box-shadow: 3px 3px 0 var(--accent);
+}
+
+/* 6. High-Visibility Accessible Focus Indicators */
+:focus-visible {
+  outline: 3px solid var(--accent) !important;
+  outline-offset: 2px !important;
+}
+
+button:focus-visible,
+input:focus-visible,
+[role='button']:focus-visible {
+  outline: 3px solid var(--ink) !important;
+  outline-offset: 2px !important;
+}
+
+/* 7. Reduced Motion Accessibility */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    transform: none !important;
+  }
+}

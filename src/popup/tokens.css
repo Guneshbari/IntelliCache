@@ -1,0 +1,166 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+   IntelliCache — Functional Neo-Brutalist Design Tokens
+   Preserves all existing functionality and data flow while establishing
+   strong black borders, hard offset shadows, bold technical typography,
+   and accessible high-contrast palettes.
+───────────────────────────────────────────────────────────────────────────── */
+
+:root {
+  /* 1. Base Functional Colors */
+  --bg: #f5f1e8;
+  --surface: #ffffff;
+  --surface-hover: #faf7f2;
+  --surface-alt: #efece3;
+  --ink: #000000;
+  --ink-muted: #525252;
+  --ink-dim: #737373;
+  --ink-inverted: #ffffff;
+
+  /* 2. System & Platform Accents */
+  --accent: #b8ff00;
+  --accent-hover: #a6e600;
+  --accent-ink: #000000;
+
+  --chatgpt: #10a37f;
+  --chatgpt-ink: #ffffff;
+  --chatgpt-bg: rgba(16, 163, 127, 0.12);
+
+  --claude: #6c63ff;
+  --claude-ink: #ffffff;
+  --claude-bg: rgba(108, 99, 255, 0.12);
+
+  --gemini: #00d9ff;
+  --gemini-ink: #000000;
+  --gemini-bg: rgba(0, 217, 255, 0.14);
+
+  --warning: #ff5c35;
+  --warning-ink: #ffffff;
+  --warning-bg: rgba(255, 92, 53, 0.14);
+
+  --success: #10b981;
+  --success-ink: #000000;
+
+  /* 3. Neo-Brutalist Border System */
+  --border-width: 3px;
+  --border-width-important: 4px;
+  --border-width-small: 2px;
+  --border: 3px solid #000000;
+  --border-important: 4px solid #000000;
+  --border-small: 2px solid #000000;
+
+  /* 4. Hard Offset Shadow System (No blurs) */
+  --shadow-x: 6px;
+  --shadow-y: 6px;
+  --shadow-default: 6px 6px 0 #000000;
+  --shadow-card: 4px 4px 0 #000000;
+  --shadow-sm: 3px 3px 0 #000000;
+  --shadow-xs: 2px 2px 0 #000000;
+  --shadow-hover: 8px 8px 0 #000000;
+  --shadow-hover-card: 6px 6px 0 #000000;
+  --shadow-pressed: 2px 2px 0 #000000;
+  --shadow-pressed-xs: 1px 1px 0 #000000;
+
+  /* 5. Minimal Border Radius */
+  --radius: 4px;
+  --radius-sm: 2px;
+  --radius-none: 0px;
+
+  /* 6. Typography Stacks */
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Inter, Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+
+  /* 7. Mechanical Tactile Transitions */
+  --transition-tactile:
+    transform 0.1s cubic-bezier(0.2, 0, 0, 1), box-shadow 0.1s cubic-bezier(0.2, 0, 0, 1),
+    background-color 0.12s ease, color 0.12s ease;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Light Theme Explicit Variables (Matches :root Neo-Brutalist defaults)
+───────────────────────────────────────────────────────────────────────────── */
+[data-theme='light'] {
+  --bg: #f5f1e8;
+  --surface: #ffffff;
+  --surface-hover: #faf7f2;
+  --surface-alt: #efece3;
+  --ink: #000000;
+  --ink-muted: #525252;
+  --ink-dim: #737373;
+  --ink-inverted: #ffffff;
+
+  --accent: #b8ff00;
+  --accent-hover: #a6e600;
+  --accent-ink: #000000;
+
+  --chatgpt: #10a37f;
+  --chatgpt-ink: #ffffff;
+
+  --claude: #6c63ff;
+  --claude-ink: #ffffff;
+
+  --gemini: #00d9ff;
+  --gemini-ink: #000000;
+
+  --warning: #ff5c35;
+  --warning-ink: #ffffff;
+
+  --border: 3px solid #000000;
+  --border-important: 4px solid #000000;
+  --border-small: 2px solid #000000;
+
+  --shadow-default: 6px 6px 0 #000000;
+  --shadow-card: 4px 4px 0 #000000;
+  --shadow-sm: 3px 3px 0 #000000;
+  --shadow-xs: 2px 2px 0 #000000;
+  --shadow-hover: 8px 8px 0 #000000;
+  --shadow-hover-card: 6px 6px 0 #000000;
+  --shadow-pressed: 2px 2px 0 #000000;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Dark Theme (Cyber-Brutalist Mode)
+   High-contrast charcoal surfaces with solid black hard shadows & lime accents.
+───────────────────────────────────────────────────────────────────────────── */
+[data-theme='dark'] {
+  --bg: #141416;
+  --surface: #1e1e22;
+  --surface-hover: #27272d;
+  --surface-alt: #18181b;
+  --ink: #ffffff;
+  --ink-muted: #a1a1aa;
+  --ink-dim: #71717a;
+  --ink-inverted: #000000;
+
+  --accent: #b8ff00;
+  --accent-hover: #c6ff2e;
+  --accent-ink: #000000;
+
+  --chatgpt: #10b981;
+  --chatgpt-ink: #ffffff;
+  --chatgpt-bg: rgba(16, 185, 129, 0.16);
+
+  --claude: #8b85ff;
+  --claude-ink: #ffffff;
+  --claude-bg: rgba(139, 133, 255, 0.16);
+
+  --gemini: #38e1ff;
+  --gemini-ink: #000000;
+  --gemini-bg: rgba(56, 225, 255, 0.16);
+
+  --warning: #ff6b4a;
+  --warning-ink: #ffffff;
+  --warning-bg: rgba(255, 107, 74, 0.16);
+
+  --border: 3px solid #000000;
+  --border-important: 4px solid #000000;
+  --border-small: 2px solid #000000;
+
+  --shadow-default: 6px 6px 0 #000000;
+  --shadow-card: 4px 4px 0 #000000;
+  --shadow-sm: 3px 3px 0 #000000;
+  --shadow-xs: 2px 2px 0 #000000;
+  --shadow-hover: 8px 8px 0 #000000;
+  --shadow-hover-card: 6px 6px 0 #000000;
+  --shadow-pressed: 2px 2px 0 #000000;
+}
