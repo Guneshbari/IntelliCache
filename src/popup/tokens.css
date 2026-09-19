@@ -41,6 +41,7 @@
   --success-ink: #000000;
 
   /* 3. Neo-Brutalist Border System */
+  --border-color: #000000;
   --border-width: 3px;
   --border-width-important: 4px;
   --border-width-small: 2px;
@@ -59,6 +60,8 @@
   --shadow-hover-card: 6px 6px 0 #000000;
   --shadow-pressed: 2px 2px 0 #000000;
   --shadow-pressed-xs: 1px 1px 0 #000000;
+
+  --scrollbar-thumb: #000000;
 
   /* 5. Minimal Border Radius */
   --radius: 4px;
@@ -105,6 +108,7 @@
   --warning: #ff5c35;
   --warning-ink: #ffffff;
 
+  --border-color: #000000;
   --border: 3px solid #000000;
   --border-important: 4px solid #000000;
   --border-small: 2px solid #000000;
@@ -116,6 +120,8 @@
   --shadow-hover: 8px 8px 0 #000000;
   --shadow-hover-card: 6px 6px 0 #000000;
   --shadow-pressed: 2px 2px 0 #000000;
+
+  --scrollbar-thumb: #000000;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -123,13 +129,13 @@
    High-contrast charcoal surfaces with solid black hard shadows & lime accents.
 ───────────────────────────────────────────────────────────────────────────── */
 [data-theme='dark'] {
-  --bg: #141416;
-  --surface: #1e1e22;
-  --surface-hover: #27272d;
-  --surface-alt: #18181b;
+  --bg: #0e0e12;
+  --surface: #18181f;
+  --surface-hover: #22222b;
+  --surface-alt: #262633;
   --ink: #ffffff;
-  --ink-muted: #a1a1aa;
-  --ink-dim: #71717a;
+  --ink-muted: #d4d4d8;
+  --ink-dim: #a1a1aa;
   --ink-inverted: #000000;
 
   --accent: #b8ff00;
@@ -152,9 +158,10 @@
   --warning-ink: #ffffff;
   --warning-bg: rgba(255, 107, 74, 0.16);
 
-  --border: 3px solid #000000;
-  --border-important: 4px solid #000000;
-  --border-small: 2px solid #000000;
+  --border-color: #3b3b4a;
+  --border: 3px solid #3b3b4a;
+  --border-important: 4px solid #444455;
+  --border-small: 2px solid #3b3b4a;
 
   --shadow-default: 6px 6px 0 #000000;
   --shadow-card: 4px 4px 0 #000000;
@@ -163,4 +170,6 @@
   --shadow-hover: 8px 8px 0 #000000;
   --shadow-hover-card: 6px 6px 0 #000000;
   --shadow-pressed: 2px 2px 0 #000000;
+
+  --scrollbar-thumb: #444455;
 }

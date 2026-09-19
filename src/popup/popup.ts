@@ -424,11 +424,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function renderRecentActivity(): void {
     if (!recentListEl) return
-    const items = state.recentInteractions.slice(0, 4)
+    // Render up to 3 preview cards so the recent activity section fits cleanly
+    // without clipping a card in half at the bottom fold above the footer.
+    const items = state.recentInteractions.slice(0, 3)
 
     if (recentCountBadgeEl) {
       // Badge shows the total stored interaction count, not the number of
-      // preview cards rendered (which is capped at 4).
+      // preview cards rendered (which is capped at 3).
       recentCountBadgeEl.textContent = state.totalInteractions.toLocaleString()
     }
 
