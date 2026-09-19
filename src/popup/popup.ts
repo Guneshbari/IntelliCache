@@ -22,6 +22,7 @@ import {
   sendExtensionMessage,
 } from '../shared/messages'
 import { formatBytes } from '../shared/storage-format'
+import { cleanQueryText, cleanResponseText } from '../shared/text-cleaner'
 import type {
   DbIntegrityReportData,
   DbStatsResponseData,
@@ -466,7 +467,8 @@ document.addEventListener('DOMContentLoaded', () => {
               : 'AI'
 
       const title = item.conversation_title || 'Untitled Thread'
-      const querySnippet = item.query?.text ? safeSnippet(item.query.text, 85) : '(Empty prompt)'
+      const rawPrompt = item.query?.text ? cleanQueryText(item.query.text) : ''
+      const querySnippet = rawPrompt ? safeSnippet(rawPrompt, 85) : '(Empty prompt)'
       const timeStr = formatRelativeTime(item.observed_at)
       const logoHtml = getProviderLogoHtml(item.platform)
 
@@ -515,8 +517,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const q = state.explorerSearchQuery.trim().toLowerCase()
     if (q) {
       filtered = filtered.filter((i) => {
-        const queryText = i.query?.text?.toLowerCase() || ''
-        const responseText = i.response?.text?.toLowerCase() || ''
+        const queryText = cleanQueryText(i.query?.text || '').toLowerCase()
+        const responseText = cleanResponseText(i.response?.text || '').toLowerCase()
         const titleText = i.conversation_title?.toLowerCase() || ''
         return queryText.includes(q) || responseText.includes(q) || titleText.includes(q)
       })
@@ -554,8 +556,8 @@ document.addEventListener('DOMContentLoaded', () => {
               : 'AI'
 
       const title = item.conversation_title || 'Untitled Thread'
-      const promptText = item.query?.text || ''
-      const respText = item.response?.text || ''
+      const promptText = cleanQueryText(item.query?.text || '')
+      const respText = cleanResponseText(item.response?.text || '')
       const timeStr = formatRelativeTime(item.observed_at)
       const context = item.capture_context || 'on_load'
       const fpShort = item.fingerprint ? `${item.fingerprint.slice(0, 12)}...` : 'n/a'

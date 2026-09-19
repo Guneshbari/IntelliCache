@@ -8,6 +8,8 @@ import { logger } from '../../diagnostics'
 import type { CaptureContext } from '../../shared/types'
 import type { ExtractedInteraction, RawMessageTurn } from '../types'
 import {
+  cleanQueryText,
+  cleanResponseText,
   extractMessageId,
   extractSourceTimestamp,
   formatCodeBlock,
@@ -96,8 +98,15 @@ export function extractUserQueryText(element: Element): string {
 
   clone.querySelectorAll(CHATGPT_SELECTORS.UI_CONTROLS_TO_EXCLUDE).forEach((b) => b.remove())
 
+  // Strip accessibility / speaker headings (e.g. <h5>You said:</h5>)
+  clone.querySelectorAll('h5, h6').forEach((h) => {
+    if (/said/i.test(h.textContent || '') || h.classList.contains('sr-only')) {
+      h.remove()
+    }
+  })
+
   const textContainer = clone.querySelector(CHATGPT_SELECTORS.USER_TEXT) || clone
-  return normalizeExtractedText(textContainer.textContent || '')
+  return cleanQueryText(normalizeExtractedText(textContainer.textContent || ''))
 }
 
 /**
@@ -114,6 +123,13 @@ export function extractAssistantResponseText(element: Element): string {
 
   clone.querySelectorAll(CHATGPT_SELECTORS.UI_CONTROLS_TO_EXCLUDE).forEach((el) => el.remove())
 
+  // Strip accessibility / speaker headings (e.g. <h6>ChatGPT said:</h6>)
+  clone.querySelectorAll('h5, h6').forEach((h) => {
+    if (/said/i.test(h.textContent || '') || h.classList.contains('sr-only')) {
+      h.remove()
+    }
+  })
+
   const markdownContainer = clone.querySelector(CHATGPT_SELECTORS.ASSISTANT_TEXT) || clone
   const ownerDoc = element.ownerDocument || document
 
@@ -125,7 +141,7 @@ export function extractAssistantResponseText(element: Element): string {
     p.textContent = `${p.textContent || ''}\n`
   })
 
-  return normalizeExtractedText(markdownContainer.textContent || '')
+  return cleanResponseText(normalizeExtractedText(markdownContainer.textContent || ''))
 }
 
 /**

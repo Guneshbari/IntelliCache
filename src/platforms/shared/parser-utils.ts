@@ -5,8 +5,11 @@
  * verbatim across the chatgpt, claude, and gemini parsers.
  */
 
+import { cleanQueryText, cleanResponseText } from '../../shared/text-cleaner'
 import type { CaptureContext } from '../../shared/types'
 import type { ExtractedInteraction, RawMessageTurn } from '../types'
+
+export { cleanQueryText, cleanResponseText }
 
 /**
  * Extracts message ID attribute (`data-message-id`) from an element if present.
@@ -152,21 +155,25 @@ export function pairTurnsIntoInteractions(
         pendingUserTurn = turn
       }
     } else if (turn.role === 'assistant' && pendingUserTurn) {
-      if (!turn.isStreaming && turn.text.length > 0 && pendingUserTurn.text.length > 0) {
-        interactions.push({
-          platform,
-          conversationId: context.conversationId,
-          messageId: turn.messageId,
-          userMessageId: pendingUserTurn.messageId,
-          model: context.model,
-          queryText: pendingUserTurn.text,
-          responseText: turn.text,
-          conversationTitle: context.title,
-          observedAt,
-          sourceTimestamp: turn.sourceTimestamp ?? pendingUserTurn.sourceTimestamp ?? null,
-          captureContext,
-        })
-        pendingUserTurn = null
+      if (!turn.isStreaming) {
+        const queryText = cleanQueryText(pendingUserTurn.text)
+        const responseText = cleanResponseText(turn.text)
+        if (queryText.length > 0 && responseText.length > 0) {
+          interactions.push({
+            platform,
+            conversationId: context.conversationId,
+            messageId: turn.messageId,
+            userMessageId: pendingUserTurn.messageId,
+            model: context.model,
+            queryText,
+            responseText,
+            conversationTitle: context.title,
+            observedAt,
+            sourceTimestamp: turn.sourceTimestamp ?? pendingUserTurn.sourceTimestamp ?? null,
+            captureContext,
+          })
+          pendingUserTurn = null
+        }
       }
       // Skipped (streaming/empty) assistants intentionally keep pendingUserTurn.
     }

@@ -42,6 +42,10 @@ export const GEMINI_SELECTORS = {
    */
   UI_CONTROLS_TO_EXCLUDE: [
     'button',
+    '[role="button"]',
+    '.sr-only',
+    '[class*="sr-only"]',
+    '[aria-hidden="true"]',
     'svg',
     'form',
     'nav',

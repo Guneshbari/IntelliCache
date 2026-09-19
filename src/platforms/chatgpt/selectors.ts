@@ -22,9 +22,10 @@ export const CHATGPT_SELECTORS = {
 
   /**
    * User message text containers.
-   * Prioritize semantic attributes and structural classes over generic styling utilities.
+   * Prioritizes the message text element (.whitespace-pre-wrap) over outer wrappers.
    */
-  USER_TEXT: 'div[class*="text-message"], div[class*="content"], [data-message-author-role="user"]',
+  USER_TEXT:
+    '.whitespace-pre-wrap, [class*="whitespace-pre-wrap"], div[class*="text-message"], div[class*="content"], [data-message-author-role="user"]',
 
   /**
    * Assistant response text and markdown containers.
@@ -37,11 +38,16 @@ export const CHATGPT_SELECTORS = {
   CODE_BLOCK: 'pre',
 
   /**
-   * Interactive UI elements that must be stripped from response text.
+   * Interactive UI elements that must be stripped from response and query text.
+   * Includes screen-reader labels (.sr-only), buttons, edit triggers, and toolbars.
    */
   UI_CONTROLS_TO_EXCLUDE: [
     'button',
+    '[role="button"]',
     'time',
+    '.sr-only',
+    '[class*="sr-only"]',
+    '[aria-hidden="true"]',
     '[data-testid="copy-turn-action-button"]',
     '[data-testid="good-response-turn-action-button"]',
     '[data-testid="bad-response-turn-action-button"]',
@@ -49,6 +55,8 @@ export const CHATGPT_SELECTORS = {
     '[data-testid="web-search-sources"]',
     '[data-testid="edit-message-button"]',
     '[role="toolbar"]',
+    '[role="dialog"]',
+    '[role="tooltip"]',
     '.gizmo-shadow-stroke',
     'svg',
     'form',

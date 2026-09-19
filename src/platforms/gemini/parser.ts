@@ -8,6 +8,8 @@ import { logger } from '../../diagnostics'
 import type { CaptureContext } from '../../shared/types'
 import type { ExtractedInteraction, RawMessageTurn } from '../types'
 import {
+  cleanQueryText,
+  cleanResponseText,
   extractMessageId,
   extractSourceTimestamp,
   formatCodeBlock,
@@ -125,7 +127,7 @@ export function extractUserQueryText(element: Element): string {
   const textContainer = element.querySelector(GEMINI_SELECTORS.USER_TEXT) || element
   const clone = textContainer.cloneNode(true) as Element
   clone.querySelectorAll(GEMINI_SELECTORS.UI_CONTROLS_TO_EXCLUDE).forEach((b) => b.remove())
-  return normalizeExtractedText(clone.textContent || '')
+  return cleanQueryText(normalizeExtractedText(clone.textContent || ''))
 }
 
 /**
@@ -147,7 +149,7 @@ export function extractAssistantResponseText(element: Element): string {
     p.textContent = `${p.textContent || ''}\n`
   })
 
-  return normalizeExtractedText(clone.textContent || '')
+  return cleanResponseText(normalizeExtractedText(clone.textContent || ''))
 }
 
 /**

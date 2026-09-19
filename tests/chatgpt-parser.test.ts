@@ -128,6 +128,32 @@ describe('ChatGPT Message ID & Turn Text Extraction', () => {
     expect(text).not.toContain('Copy')
     expect(text).not.toContain('Good')
   })
+
+  it('strips <h5 class="sr-only">You said:</h5> and deduplicates repeated prompt text from ChatGPT DOM', () => {
+    const userTurn = document.createElement('div')
+    userTurn.setAttribute('data-message-author-role', 'user')
+    userTurn.innerHTML = `
+      <h5 class="sr-only">You said:</h5>
+      <div class="whitespace-pre-wrap">Make the video longer</div>
+      <div class="sr-only">make the video longer</div>
+    `
+    const text = extractUserQueryText(userTurn)
+    expect(text).toBe('Make the video longer')
+  })
+
+  it('strips <h6 class="sr-only">ChatGPT said:</h6> from assistant response DOM', () => {
+    const assistantTurn = document.createElement('div')
+    assistantTurn.setAttribute('data-message-author-role', 'assistant')
+    assistantTurn.innerHTML = `
+      <h6 class="sr-only">ChatGPT said:</h6>
+      <div class="markdown prose">
+        <p>I have extended the duration to 60 seconds.</p>
+      </div>
+    `
+    const text = extractAssistantResponseText(assistantTurn)
+    expect(text).toBe('I have extended the duration to 60 seconds.')
+    expect(text).not.toContain('ChatGPT said')
+  })
 })
 
 describe('ChatGPT Streaming Detection & Turn Pairing', () => {
