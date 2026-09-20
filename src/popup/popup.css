@@ -1149,7 +1149,7 @@ body.mode-sidepanel .dock-indicator-badge {
 ───────────────────────────────────────────────────────────────────────────── */
 .health-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -1158,10 +1158,13 @@ body.mode-sidepanel .dock-indicator-badge {
   border: var(--border);
   box-shadow: var(--shadow-card);
   border-radius: var(--radius);
-  padding: 8px 10px;
+  padding: 7px 8px;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
+  min-width: 0;
+  min-height: 50px;
+  box-sizing: border-box;
   transition: var(--transition-tactile);
 }
 
@@ -1172,11 +1175,19 @@ body.mode-sidepanel .dock-indicator-badge {
 
 .health-item-full {
   grid-column: 1 / -1;
+  padding: 7px 10px;
+}
+
+.health-item-full .health-item-text {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 .health-item-icon {
-  width: 26px;
-  height: 26px;
+  width: 24px;
+  height: 24px;
   border-radius: var(--radius-sm);
   border: var(--border-small);
   box-shadow: var(--shadow-xs);
@@ -1184,6 +1195,11 @@ body.mode-sidepanel .dock-indicator-badge {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+}
+
+.health-item-icon svg {
+  width: 13px;
+  height: 13px;
 }
 
 .icon-sw {
@@ -1210,24 +1226,33 @@ body.mode-sidepanel .dock-indicator-badge {
 .health-item-text {
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  justify-content: center;
+  min-width: 0;
+  flex: 1;
+  gap: 1px;
 }
 
 .health-label {
-  font-size: 11px;
+  font-size: 9.5px;
   color: var(--ink-muted);
   font-weight: 800;
   text-transform: uppercase;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.2;
 }
 
 .health-val {
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 800;
   color: var(--ink);
   font-family: var(--font-mono);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  line-height: 1.2;
 }
 
 .status-val-active {
