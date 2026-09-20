@@ -1618,10 +1618,21 @@ body.mode-sidepanel .dock-indicator-badge {
   text-transform: uppercase;
   letter-spacing: 0.5px;
   color: var(--ink-muted);
-  padding: 8px 14px;
-  background-color: var(--bg);
-  border-top: none;
+  padding: 4px 14px 12px 14px;
+  background-color: transparent;
+  border: none !important;
+  border-top: none !important;
+  border-bottom: none !important;
+  box-shadow: none !important;
+  outline: none !important;
   flex-shrink: 0;
+  width: 100%;
+}
+
+.footer::before,
+.footer::after {
+  display: none !important;
+  content: none !important;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
