@@ -25,9 +25,9 @@
   --chatgpt-ink: #000000;
   --chatgpt-bg: rgba(16, 163, 127, 0.12);
 
-  --claude: #6c63ff;
+  --claude: #c15f3c;
   --claude-ink: #ffffff;
-  --claude-bg: rgba(108, 99, 255, 0.12);
+  --claude-bg: rgba(193, 95, 60, 0.14);
 
   --gemini: #1ba1e3;
   --gemini-ink: #ffffff;
@@ -100,7 +100,7 @@
   --chatgpt: #10a37f;
   --chatgpt-ink: #000000;
 
-  --claude: #6c63ff;
+  --claude: #c15f3c;
   --claude-ink: #ffffff;
 
   --gemini: #1ba1e3;
@@ -148,9 +148,9 @@
   --chatgpt-ink: #ffffff;
   --chatgpt-bg: rgba(16, 185, 129, 0.16);
 
-  --claude: #8b85ff;
+  --claude: #c15f3c;
   --claude-ink: #ffffff;
-  --claude-bg: rgba(139, 133, 255, 0.16);
+  --claude-bg: rgba(193, 95, 60, 0.16);
 
   --gemini: #1ba1e3;
   --gemini-ink: #ffffff;

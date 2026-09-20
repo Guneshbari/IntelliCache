@@ -558,6 +558,16 @@ body.mode-sidepanel .dock-indicator-badge {
   color: var(--ink);
 }
 
+.badge-chatgpt .oai-blossom {
+  width: 17px;
+  height: 17px;
+}
+
+.recent-item-logo.badge-chatgpt .oai-blossom {
+  width: 13px;
+  height: 13px;
+}
+
 [data-theme='light'] .badge-chatgpt svg,
 [data-theme='light'] .recent-item-logo.badge-chatgpt svg {
   color: #000000 !important;
@@ -579,6 +589,13 @@ body.mode-sidepanel .dock-indicator-badge {
 
 .badge-gemini,
 .recent-item-logo.badge-gemini {
+  background-color: #ffffff;
+  border: var(--border-small);
+  color: #000000;
+}
+
+[data-theme='dark'] .badge-gemini,
+[data-theme='dark'] .recent-item-logo.badge-gemini {
   background-color: #0f172a;
   border: var(--border-small);
   color: #ffffff;
