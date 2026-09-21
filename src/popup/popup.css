@@ -47,8 +47,9 @@ body {
   min-height: 100%;
   flex: 1 1 auto;
   background-color: var(--bg);
-  overflow-x: hidden;
-  overflow-y: hidden;
+  overflow: hidden;
+  position: relative;
+  box-sizing: border-box;
 }
 
 /* Default transient dropdown popup dimensions */
@@ -56,12 +57,14 @@ body.mode-popup {
   width: 400px;
   height: 580px;
   max-height: 600px;
+  overflow: hidden;
 }
 
 body.mode-popup .popup-container {
   width: 400px;
   height: 580px;
   max-height: 600px;
+  overflow: hidden;
 }
 
 /* Standalone window, Side Panel, and expanded viewport support */
@@ -136,30 +139,34 @@ body.mode-sidepanel #sidepanel-btn {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 14px;
+  padding: 10px 12px;
   background-color: var(--surface);
   border-bottom: var(--border);
   flex-shrink: 0;
   z-index: 10;
+  min-width: 0;
+  box-sizing: border-box;
 }
 
 .header-left {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   min-width: 0;
+  flex: 1 1 auto;
 }
 
 .header-right {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   flex-shrink: 0;
+  margin-left: 6px;
 }
 
 .logo-icon {
-  width: 32px;
-  height: 32px;
+  width: 30px;
+  height: 30px;
   border-radius: var(--radius-sm);
   background-color: var(--surface);
   border: var(--border-small);
@@ -173,8 +180,8 @@ body.mode-sidepanel #sidepanel-btn {
 }
 
 .brand-logo-img {
-  width: 26px;
-  height: 26px;
+  width: 24px;
+  height: 24px;
   object-fit: contain;
   display: block;
 }
@@ -183,36 +190,47 @@ body.mode-sidepanel #sidepanel-btn {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  flex: 1 1 auto;
+  justify-content: center;
 }
 
 .header-title-row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
+  min-width: 0;
 }
 
 .app-title {
-  font-size: clamp(14px, 2.4vw, 16px);
+  font-size: clamp(13px, 2.2vw, 15px);
   font-weight: 800;
   letter-spacing: -0.3px;
   text-transform: uppercase;
   color: var(--ink);
   line-height: 1.15;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 1;
+  min-width: 0;
+  margin: 0;
 }
 
 .dock-indicator-badge {
   display: none;
-  font-size: 10px;
+  font-size: 9.5px;
   font-weight: 800;
   text-transform: uppercase;
   letter-spacing: 0.4px;
-  padding: 1.5px 6px;
+  padding: 1px 5px;
   border-radius: var(--radius-sm);
   background-color: var(--accent);
   color: var(--accent-ink);
   border: 1.5px solid var(--accent-ink);
   box-shadow: 1px 1px 0 var(--accent-ink);
   line-height: 1.2;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 body.mode-docked .dock-indicator-badge,
@@ -221,7 +239,7 @@ body.mode-sidepanel .dock-indicator-badge {
 }
 
 .app-subtitle {
-  font-size: 10.5px;
+  font-size: 10px;
   color: var(--ink-muted);
   font-weight: 700;
   text-transform: uppercase;
@@ -229,6 +247,8 @@ body.mode-sidepanel .dock-indicator-badge {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  min-width: 0;
+  margin: 0;
 }
 
 /* Header Buttons */
@@ -1483,8 +1503,14 @@ body.mode-sidepanel .dock-indicator-badge {
 
 .diagnostics-toolbar {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
+}
+
+@media (min-width: 440px) {
+  .diagnostics-toolbar {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
 }
 
 .tool-btn {
@@ -1538,8 +1564,8 @@ body.mode-sidepanel .dock-indicator-badge {
 
 .log-box {
   background-color: #000000;
-  border: var(--border);
-  box-shadow: var(--shadow-xs);
+  border: 1px solid var(--border-color);
+  box-shadow: none;
   border-radius: var(--radius-sm);
   padding: 8px 10px;
   min-height: 90px;
@@ -1647,7 +1673,7 @@ body.mode-sidepanel .dock-indicator-badge {
   color: var(--ink-muted);
   padding: 8px 14px;
   background-color: var(--surface);
-  border-top: var(--border);
+  border-top: 1px solid var(--border-color);
   flex-shrink: 0;
   z-index: 10;
   position: relative;
