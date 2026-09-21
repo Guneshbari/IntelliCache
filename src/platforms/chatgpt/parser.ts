@@ -186,33 +186,130 @@ export function isTurnStreaming(turnElement: Element, root?: Document | Element)
 }
 
 /**
+ * Detects whether the current page represents a guest / logged-out ChatGPT session.
+ */
+export function isChatGPTGuestSession(root: Document | Element): boolean {
+  try {
+    const doc =
+      root instanceof Document
+        ? root
+        : root.ownerDocument || (typeof document !== 'undefined' ? document : null)
+    if (!doc && !(root instanceof Element)) return false
+
+    const hasGuestIndicator =
+      (root instanceof Element && root.querySelector(CHATGPT_SELECTORS.GUEST_INDICATORS) !== null) ||
+      (doc ? doc.querySelector(CHATGPT_SELECTORS.GUEST_INDICATORS) !== null : false)
+    const hasLoggedInProfile =
+      (root instanceof Element && root.querySelector(CHATGPT_SELECTORS.LOGGED_IN_INDICATORS) !== null) ||
+      (doc ? doc.querySelector(CHATGPT_SELECTORS.LOGGED_IN_INDICATORS) !== null : false)
+
+    if (hasGuestIndicator && !hasLoggedInProfile) {
+      return true
+    }
+
+    // Also check for login / sign up text in buttons or links when not logged in
+    if (!hasLoggedInProfile) {
+      const scope = root instanceof Element ? root : doc
+      const authLinks = Array.from(scope?.querySelectorAll('button, a') || []).filter((el) => {
+        const txt = el.textContent?.trim().toLowerCase() || ''
+        return txt === 'log in' || txt === 'sign up'
+      })
+      if (authLinks.length > 0) {
+        return true
+      }
+      if (doc && doc !== scope) {
+        const docAuthLinks = Array.from(doc.querySelectorAll('button, a')).filter((el) => {
+          const txt = el.textContent?.trim().toLowerCase() || ''
+          return txt === 'log in' || txt === 'sign up'
+        })
+        if (docAuthLinks.length > 0) {
+          return true
+        }
+      }
+    }
+
+    return false
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Determines whether an element represents a user turn, assistant turn, or neither.
+ * Supports standard data attributes as well as semantic structure found in guest / logged-out mode.
+ */
+function detectTurnRole(turnEl: Element): 'user' | 'assistant' | null {
+  const roleAttr = turnEl.getAttribute('data-message-author-role')
+  if (roleAttr === 'user') return 'user'
+  if (roleAttr === 'assistant') return 'assistant'
+
+  if (turnEl.querySelector(CHATGPT_SELECTORS.USER_ROLE)) return 'user'
+  if (turnEl.querySelector(CHATGPT_SELECTORS.ASSISTANT_ROLE)) return 'assistant'
+
+  // Heading check (e.g. <h5>You said:</h5>, <h6>ChatGPT said:</h6>)
+  const headings = Array.from(turnEl.querySelectorAll('h5, h6, h2, h3, h4'))
+  for (const h of headings) {
+    const text = h.textContent?.toLowerCase() || ''
+    if (/you said/i.test(text)) return 'user'
+    if (/chatgpt said|assistant said/i.test(text)) return 'assistant'
+  }
+
+  // Content-based check: markdown or copy button indicates assistant response
+  if (
+    turnEl.querySelector(CHATGPT_SELECTORS.ASSISTANT_TEXT) !== null ||
+    turnEl.querySelector(
+      'button[data-testid="copy-turn-action-button"], button[aria-label="Copy"]'
+    ) !== null
+  ) {
+    return 'assistant'
+  }
+
+  // Pre-wrap text without assistant markdown indicates user prompt
+  if (turnEl.querySelector(CHATGPT_SELECTORS.USER_TEXT) !== null) {
+    return 'user'
+  }
+
+  return null
+}
+
+/**
  * Extracts raw conversation turns (User and Assistant) in document order from a root container.
  * Specifically prevents nested articles or embedded views from creating duplicate turns.
  */
 export function extractConversationTurns(root: Document | Element): RawMessageTurn[] {
   const turns: RawMessageTurn[] = []
 
-  const turnContainers = Array.from(root.querySelectorAll(CHATGPT_SELECTORS.TURN_ARTICLE))
+  let turnContainers = Array.from(root.querySelectorAll(CHATGPT_SELECTORS.TURN_ARTICLE))
   logger.debug(
     'Parser',
     'CHATGPT',
     `Turn article query found ${turnContainers.length} container(s) matching '${CHATGPT_SELECTORS.TURN_ARTICLE}'`
   )
 
+  // In guest mode or newer builds, turns may be bare <article> elements without data-testid="conversation-turn-*"
+  if (turnContainers.length === 0) {
+    const bareArticles = Array.from(root.querySelectorAll('main article, article')).filter(
+      (el) => !el.closest('.embedded-canvas-view')
+    )
+    if (bareArticles.length > 0) {
+      turnContainers = bareArticles
+      logger.debug(
+        'Parser',
+        'CHATGPT',
+        `Discovered ${turnContainers.length} bare article container(s) for turn extraction`
+      )
+    }
+  }
+
   if (turnContainers.length > 0) {
     for (const turnEl of turnContainers) {
-      const isUser =
-        turnEl.getAttribute('data-message-author-role') === 'user' ||
-        turnEl.querySelector(CHATGPT_SELECTORS.USER_ROLE) !== null
-      const isAssistant =
-        turnEl.getAttribute('data-message-author-role') === 'assistant' ||
-        turnEl.querySelector(CHATGPT_SELECTORS.ASSISTANT_ROLE) !== null
+      const role = detectTurnRole(turnEl)
 
-      if (isUser) {
+      if (role === 'user') {
         const userEl =
           turnEl.getAttribute('data-message-author-role') === 'user'
             ? turnEl
-            : turnEl.querySelector(CHATGPT_SELECTORS.USER_ROLE)!
+            : turnEl.querySelector(CHATGPT_SELECTORS.USER_ROLE) || turnEl
         turns.push({
           role: 'user',
           element: userEl,
@@ -221,11 +318,11 @@ export function extractConversationTurns(root: Document | Element): RawMessageTu
           sourceTimestamp: extractSourceTimestamp(userEl),
           isStreaming: false,
         })
-      } else if (isAssistant) {
+      } else if (role === 'assistant') {
         const asstEl =
           turnEl.getAttribute('data-message-author-role') === 'assistant'
             ? turnEl
-            : turnEl.querySelector(CHATGPT_SELECTORS.ASSISTANT_ROLE)!
+            : turnEl.querySelector(CHATGPT_SELECTORS.ASSISTANT_ROLE) || turnEl
         turns.push({
           role: 'assistant',
           element: asstEl,
@@ -237,7 +334,7 @@ export function extractConversationTurns(root: Document | Element): RawMessageTu
       }
     }
   } else {
-    // Fallback: Search directly by data-message-author-role
+    // Fallback: Search directly by data-message-author-role or message text containers
     const roleElements = Array.from(
       root.querySelectorAll(`${CHATGPT_SELECTORS.USER_ROLE}, ${CHATGPT_SELECTORS.ASSISTANT_ROLE}`)
     )

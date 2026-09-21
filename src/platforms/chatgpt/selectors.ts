@@ -17,8 +17,36 @@ export const CHATGPT_SELECTORS = {
   /**
    * Role-based message identifiers.
    */
-  USER_ROLE: '[data-message-author-role="user"]',
-  ASSISTANT_ROLE: '[data-message-author-role="assistant"]',
+  USER_ROLE:
+    '[data-message-author-role="user"], [data-testid*="user-message"], [data-testid*="user_message"]',
+  ASSISTANT_ROLE:
+    '[data-message-author-role="assistant"], [data-testid*="assistant-message"], [data-testid*="assistant_message"]',
+
+  /**
+   * Guest / unauthenticated session indicators.
+   * Buttons, banners, or links present when user is chatting as a guest without login.
+   */
+  GUEST_INDICATORS: [
+    'button[data-testid="login-button"]',
+    'button[data-testid="signup-button"]',
+    'a[href*="/auth/login"]',
+    'a[href*="login"]',
+    '[data-testid="logged-out-banner"]',
+    '[data-testid="stay-logged-out-button"]',
+    'button[data-testid="welcome-login-button"]',
+    '[data-testid="login-banner"]',
+  ].join(', '),
+
+  /**
+   * Authenticated profile indicators (to ensure we don't misclassify logged-in users).
+   */
+  LOGGED_IN_INDICATORS: [
+    '[data-testid="profile-button"]',
+    '[data-testid="accounts-profile-button"]',
+    'button[aria-label*="User profile"]',
+    'button[aria-label*="Open account menu"]',
+    '.avatar-user',
+  ].join(', '),
 
   /**
    * User message text containers.

@@ -10,26 +10,51 @@
 export const GEMINI_SELECTORS = {
   /**
    * User message turn element.
-   * Targets Gemini <user-query> custom element (with semantic fallback).
+   * Targets Gemini <user-query> custom element (with semantic and guest mode fallbacks).
    */
-  USER_MESSAGE: 'user-query, [data-message-author-role="user"]',
+  USER_MESSAGE:
+    'user-query, [data-message-author-role="user"], .user-query, .user-query-container, [data-query-id], [data-testid*="user-query"]',
 
   /**
    * User query text content wrapper inside <user-query>.
    */
   USER_TEXT:
-    '.query-content, [id^="user-query-content"], user-query-content, .user-query-container, .query-text',
+    '.query-content, [id^="user-query-content"], user-query-content, .user-query-container, .query-text, p',
 
   /**
    * Model (Gemini assistant) response turn element.
-   * Targets Gemini <model-response> custom element (with semantic fallback).
+   * Targets Gemini <model-response> custom element (with semantic and guest mode fallbacks).
    */
-  ASSISTANT_MESSAGE: 'model-response, [data-message-author-role="assistant"]',
+  ASSISTANT_MESSAGE:
+    'model-response, [data-message-author-role="assistant"], response-container, .model-response, .response-container, [data-response-id], [data-testid*="model-response"], message-content',
 
   /**
    * Assistant markdown text container within <model-response>.
    */
-  ASSISTANT_TEXT: '.markdown, message-content, .response-container-content, response-container',
+  ASSISTANT_TEXT:
+    '.markdown, message-content, .response-container-content, response-container, .model-response-text',
+
+  /**
+   * Guest / unauthenticated session indicators.
+   * Elements present when user is using Gemini without logging into a Google account.
+   */
+  GUEST_INDICATORS: [
+    'a[href*="accounts.google.com/ServiceLogin"]',
+    'a[href*="accounts.google.com/AccountChooser"]',
+    'a[aria-label*="Sign in"]',
+    'button[aria-label*="Sign in"]',
+    '[data-testid*="sign-in"]',
+    '[data-testid*="signin"]',
+  ].join(', '),
+
+  /**
+   * Logged-in Google account indicators.
+   */
+  LOGGED_IN_INDICATORS: [
+    'a[href*="myaccount.google.com"]',
+    '[aria-label*="Google Account:"]',
+    'a[aria-label*="Google Account"]',
+  ].join(', '),
 
   /**
    * Code block containers.

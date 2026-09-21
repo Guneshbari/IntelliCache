@@ -27,15 +27,19 @@ import {
   extractConversationTitle,
   extractConversationTurns,
   extractModelInfo,
+  isGeminiGuestSession,
   isPageGenerating,
   pairTurnsIntoInteractions,
 } from './parser'
+import { cleanQueryText } from '../shared/parser-utils'
 
 export type GeminiAdapterOptions = BaseAdapterOptions
 
 export class GeminiAdapter extends BaseAdapter {
   public readonly platform = 'gemini' as const
   protected readonly platformTag = 'GEMINI' as const
+
+  private guestConversationId: string | null = null
 
   constructor(options?: GeminiAdapterOptions) {
     super(options)
@@ -71,6 +75,7 @@ export class GeminiAdapter extends BaseAdapter {
   stop(): void {
     if (!this.observing) return
     logger.info('Adapter', 'GEMINI', 'Stopping adapter and disconnecting observer.')
+    this.guestConversationId = null
     this.stopShared()
   }
 
@@ -154,11 +159,19 @@ export class GeminiAdapter extends BaseAdapter {
 
     const captureContext = this.consumeCaptureContext()
 
-    const turnContainers = Array.from(
+    const standardContainers = Array.from(
       root.querySelectorAll(
         'user-query, model-response, [data-message-author-role="user"], [data-message-author-role="assistant"]'
       )
-    ).length
+    )
+    const turnContainers =
+      standardContainers.length > 0
+        ? standardContainers.length
+        : Array.from(
+            root.querySelectorAll(
+              '.user-query-container, .response-container, [data-query-id], [data-response-id]'
+            )
+          ).length
     const turns = extractConversationTurns(root)
     const userTurns = turns.filter((t) => t.role === 'user').length
     const assistantTurns = turns.filter((t) => t.role === 'assistant').length
@@ -189,13 +202,39 @@ export class GeminiAdapter extends BaseAdapter {
     )
 
     if (turns.length === 0) {
+      if (this.guestConversationId) {
+        this.guestConversationId = null
+      }
       logger.debug('Adapter', 'GEMINI', 'No conversation turns discovered in DOM.')
       return
     }
 
+    // Assign a deterministic session-scoped conversation ID for unauthenticated guest sessions
+    const isGuest = isGeminiGuestSession(root)
+    if (!conversationId && isGuest) {
+      if (!this.guestConversationId) {
+        this.guestConversationId = `guest_gemini_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+        logger.info(
+          'Adapter',
+          'GEMINI',
+          `Unauthenticated / guest Gemini session detected. Assigned local session conversation ID: ${this.guestConversationId}`
+        )
+      }
+    } else if (conversationId) {
+      this.guestConversationId = null
+    }
+
+    const effectiveConvId = conversationId ?? this.guestConversationId
+    const effectiveTitle =
+      title ||
+      (this.guestConversationId && turns.length > 0
+        ? cleanQueryText(turns.find((t) => t.role === 'user')?.text || '').slice(0, 60) ||
+          'Guest Chat'
+        : null)
+
     const interactions = pairTurnsIntoInteractions(turns, {
-      conversationId,
-      title,
+      conversationId: effectiveConvId,
+      title: effectiveTitle,
       model,
       captureContext,
     })
@@ -220,7 +259,7 @@ export class GeminiAdapter extends BaseAdapter {
 
     logger.logScanSummary({
       platform: 'GEMINI',
-      conversationId: hasConvId,
+      conversationId: effectiveConvId !== null,
       turnContainers,
       userTurns,
       assistantTurns,

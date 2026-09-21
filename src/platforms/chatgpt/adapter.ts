@@ -21,9 +21,11 @@ import {
   extractConversationTitle,
   extractConversationTurns,
   extractModelInfo,
+  isChatGPTGuestSession,
   isPageGenerating,
   pairTurnsIntoInteractions,
 } from './parser'
+import { cleanQueryText } from '../shared/parser-utils'
 
 export type ChatGPTAdapterOptions = BaseAdapterOptions
 
@@ -32,6 +34,7 @@ export class ChatGPTAdapter extends BaseAdapter {
   protected readonly platformTag = 'CHATGPT' as const
 
   private lastObservedUrl = ''
+  private guestConversationId: string | null = null
 
   constructor(options?: ChatGPTAdapterOptions) {
     super(options)
@@ -64,6 +67,7 @@ export class ChatGPTAdapter extends BaseAdapter {
   stop(): void {
     if (!this.observing) return
     logger.info('Adapter', 'CHATGPT', 'Stopping adapter and disconnecting observer.')
+    this.guestConversationId = null
     this.stopShared()
   }
 
@@ -147,7 +151,8 @@ export class ChatGPTAdapter extends BaseAdapter {
     )
     logger.debug('Adapter', 'CHATGPT', `Conversation ID: ${conversationId ? 'present' : 'null'}`)
 
-    const generating = isPageGenerating(document.body || document)
+    const root = document.body || document
+    const generating = isPageGenerating(root)
     logger.debug('Adapter', 'CHATGPT', `Evaluating page generation state: generating=${generating}`)
 
     if (generating) {
@@ -156,19 +161,21 @@ export class ChatGPTAdapter extends BaseAdapter {
     }
     this.resetStreamingDeferrals()
 
-    const title = extractConversationTitle(document)
+    const extractedTitle = extractConversationTitle(document)
     const model = extractModelInfo(document)
 
     if (conversationId && this.pendingUnboundInteractions.size > 0) {
-      this.flushPendingWithConversationId(conversationId, title)
+      this.flushPendingWithConversationId(conversationId, extractedTitle)
     }
 
     const captureContext = this.consumeCaptureContext()
 
     const turnContainers = Array.from(
-      document.querySelectorAll('article[data-testid^="conversation-turn-"]')
+      root.querySelectorAll(
+        'article[data-testid^="conversation-turn-"], div[data-testid^="conversation-turn-"], article'
+      )
     ).length
-    const turns = extractConversationTurns(document.body || document)
+    const turns = extractConversationTurns(root)
     const userTurns = turns.filter((t) => t.role === 'user').length
     const assistantTurns = turns.filter((t) => t.role === 'assistant').length
 
@@ -182,12 +189,38 @@ export class ChatGPTAdapter extends BaseAdapter {
     )
 
     if (turns.length === 0) {
+      if (this.guestConversationId) {
+        this.guestConversationId = null
+      }
       logger.debug('Adapter', 'CHATGPT', 'No conversation turns discovered in DOM.')
       return
     }
 
+    // Assign a deterministic session-scoped conversation ID for unauthenticated guest sessions
+    const isGuest = isChatGPTGuestSession(root)
+    if (!conversationId && isGuest) {
+      if (!this.guestConversationId) {
+        this.guestConversationId = `guest_chatgpt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+        logger.info(
+          'Adapter',
+          'CHATGPT',
+          `Unauthenticated / guest ChatGPT session detected. Assigned local session conversation ID: ${this.guestConversationId}`
+        )
+      }
+    } else if (conversationId) {
+      this.guestConversationId = null
+    }
+
+    const effectiveConvId = conversationId ?? this.guestConversationId
+    const title =
+      extractedTitle ||
+      (this.guestConversationId && turns.length > 0
+        ? cleanQueryText(turns.find((t) => t.role === 'user')?.text || '').slice(0, 60) ||
+          'Guest Chat'
+        : null)
+
     const interactions = pairTurnsIntoInteractions(turns, {
-      conversationId,
+      conversationId: effectiveConvId,
       title,
       model,
       captureContext,
@@ -205,7 +238,7 @@ export class ChatGPTAdapter extends BaseAdapter {
 
     logger.logScanSummary({
       platform: 'CHATGPT',
-      conversationId: hasConvId,
+      conversationId: effectiveConvId !== null,
       turnContainers,
       userTurns,
       assistantTurns,

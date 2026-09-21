@@ -66,6 +66,54 @@ export function extractConversationIdFromUrl(url: string): string | null {
 }
 
 /**
+ * Detects whether the current page represents a guest / logged-out Gemini session.
+ */
+export function isGeminiGuestSession(root: Document | Element): boolean {
+  try {
+    const doc =
+      root instanceof Document
+        ? root
+        : root.ownerDocument || (typeof document !== 'undefined' ? document : null)
+    if (!doc && !(root instanceof Element)) return false
+
+    const hasGuestIndicator =
+      (root instanceof Element && root.querySelector(GEMINI_SELECTORS.GUEST_INDICATORS) !== null) ||
+      (doc ? doc.querySelector(GEMINI_SELECTORS.GUEST_INDICATORS) !== null : false)
+    const hasLoggedInProfile =
+      (root instanceof Element && root.querySelector(GEMINI_SELECTORS.LOGGED_IN_INDICATORS) !== null) ||
+      (doc ? doc.querySelector(GEMINI_SELECTORS.LOGGED_IN_INDICATORS) !== null : false)
+
+    if (hasGuestIndicator && !hasLoggedInProfile) {
+      return true
+    }
+
+    if (!hasLoggedInProfile) {
+      const scope = root instanceof Element ? root : doc
+      const authLinks = Array.from(scope?.querySelectorAll('button, a') || []).filter((el) => {
+        const txt = el.textContent?.trim().toLowerCase() || ''
+        return txt === 'sign in' || txt === 'sign-in'
+      })
+      if (authLinks.length > 0) {
+        return true
+      }
+      if (doc && doc !== scope) {
+        const docAuthLinks = Array.from(doc.querySelectorAll('button, a')).filter((el) => {
+          const txt = el.textContent?.trim().toLowerCase() || ''
+          return txt === 'sign in' || txt === 'sign-in'
+        })
+        if (docAuthLinks.length > 0) {
+          return true
+        }
+      }
+    }
+
+    return false
+  } catch {
+    return false
+  }
+}
+
+/**
  * Extracts conversation title from page title or DOM header.
  * Strips standard brand suffixes like " - Gemini" or " - Google Gemini".
  */
