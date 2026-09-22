@@ -94,17 +94,18 @@ export const CHATGPT_SELECTORS = {
 
   /**
    * Streaming / generation in-progress class indicators.
+   * NOTE: Does NOT include persistent thought containers like .result-thinking.
    */
-  STREAMING_INDICATORS: '.result-streaming, .streaming, span.streaming-cursor, .result-thinking',
+  STREAMING_INDICATORS: '.result-streaming, .streaming, span.streaming-cursor',
 
   /**
    * Stop button specific selectors.
+   * Only targets generation stop buttons to avoid matching audio/TTS or voice stop buttons.
    */
   STOP_BUTTON: [
     'button[data-testid="stop-button"]',
     'button[aria-label="Stop generating"]',
     'button[aria-label="Stop streaming"]',
-    'button[aria-label="Stop"]',
     'button[data-testid="fruitjuice-stop-button"]',
   ].join(', '),
 

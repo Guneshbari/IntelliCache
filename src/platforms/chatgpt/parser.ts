@@ -207,21 +207,27 @@ export function isChatGPTGuestSession(root: Document | Element): boolean {
       return true
     }
 
-    // Also check for login / sign up text in buttons or links when not logged in
+    // Also check for login / sign up text, hrefs, or testids in buttons or links when not logged in
     if (!hasLoggedInProfile) {
       const scope = root instanceof Element ? root : doc
-      const authLinks = Array.from(scope?.querySelectorAll('button, a') || []).filter((el) => {
+      const checkAuth = (el: Element) => {
         const txt = el.textContent?.trim().toLowerCase() || ''
-        return txt === 'log in' || txt === 'sign up'
-      })
+        const href = el.getAttribute('href')?.toLowerCase() || ''
+        const testId = el.getAttribute('data-testid')?.toLowerCase() || ''
+        return (
+          /\b(log\s*in|sign\s*up|sign\s*in)\b/i.test(txt) ||
+          href.includes('/auth') ||
+          href.includes('login') ||
+          testId.includes('login') ||
+          testId.includes('signup')
+        )
+      }
+      const authLinks = Array.from(scope?.querySelectorAll('button, a') || []).filter(checkAuth)
       if (authLinks.length > 0) {
         return true
       }
       if (doc && doc !== scope) {
-        const docAuthLinks = Array.from(doc.querySelectorAll('button, a')).filter((el) => {
-          const txt = el.textContent?.trim().toLowerCase() || ''
-          return txt === 'log in' || txt === 'sign up'
-        })
+        const docAuthLinks = Array.from(doc.querySelectorAll('button, a')).filter(checkAuth)
         if (docAuthLinks.length > 0) {
           return true
         }
@@ -242,6 +248,11 @@ function detectTurnRole(turnEl: Element): 'user' | 'assistant' | null {
   const roleAttr = turnEl.getAttribute('data-message-author-role')
   if (roleAttr === 'user') return 'user'
   if (roleAttr === 'assistant') return 'assistant'
+
+  if (typeof turnEl.matches === 'function') {
+    if (turnEl.matches(CHATGPT_SELECTORS.USER_ROLE)) return 'user'
+    if (turnEl.matches(CHATGPT_SELECTORS.ASSISTANT_ROLE)) return 'assistant'
+  }
 
   if (turnEl.querySelector(CHATGPT_SELECTORS.USER_ROLE)) return 'user'
   if (turnEl.querySelector(CHATGPT_SELECTORS.ASSISTANT_ROLE)) return 'assistant'
@@ -333,8 +344,11 @@ export function extractConversationTurns(root: Document | Element): RawMessageTu
         })
       }
     }
-  } else {
-    // Fallback: Search directly by data-message-author-role or message text containers
+  }
+
+  // Fallback: If container extraction yielded 0 turns (or no containers were found),
+  // search directly by data-message-author-role or message text containers
+  if (turns.length === 0) {
     const roleElements = Array.from(
       root.querySelectorAll(`${CHATGPT_SELECTORS.USER_ROLE}, ${CHATGPT_SELECTORS.ASSISTANT_ROLE}`)
     )
@@ -349,7 +363,10 @@ export function extractConversationTurns(root: Document | Element): RawMessageTu
       while (parent && parent !== root) {
         if (
           parent.getAttribute('data-message-author-role') === 'user' ||
-          parent.getAttribute('data-message-author-role') === 'assistant'
+          parent.getAttribute('data-message-author-role') === 'assistant' ||
+          (typeof parent.matches === 'function' &&
+            (parent.matches(CHATGPT_SELECTORS.USER_ROLE) ||
+              parent.matches(CHATGPT_SELECTORS.ASSISTANT_ROLE)))
         ) {
           return false
         }
@@ -359,7 +376,8 @@ export function extractConversationTurns(root: Document | Element): RawMessageTu
     })
 
     for (const el of topRoleElements) {
-      const role = el.getAttribute('data-message-author-role')
+      const role =
+        detectTurnRole(el) || (el.getAttribute('data-message-author-role') as 'user' | 'assistant' | null)
       if (role === 'user') {
         turns.push({
           role: 'user',

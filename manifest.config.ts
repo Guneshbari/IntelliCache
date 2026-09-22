@@ -32,9 +32,13 @@ export default defineManifest({
     {
       matches: [
         'https://chatgpt.com/*',
+        'https://*.chatgpt.com/*',
         'https://chat.openai.com/*',
+        'https://*.chat.openai.com/*',
         'https://claude.ai/*',
+        'https://*.claude.ai/*',
         'https://gemini.google.com/*',
+        'https://*.gemini.google.com/*',
       ],
       js: ['src/content/content.ts'],
       run_at: 'document_idle',
@@ -43,9 +47,13 @@ export default defineManifest({
   permissions: ['sidePanel'],
   host_permissions: [
     'https://chatgpt.com/*',
+    'https://*.chatgpt.com/*',
     'https://chat.openai.com/*',
+    'https://*.chat.openai.com/*',
     'https://claude.ai/*',
+    'https://*.claude.ai/*',
     'https://gemini.google.com/*',
+    'https://*.gemini.google.com/*',
   ],
   browser_specific_settings: {
     gecko: {

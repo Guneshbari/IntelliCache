@@ -218,6 +218,57 @@ describe('InteractionRepository', () => {
     expect(page2).toHaveLength(2)
     expect(page2[0].query.text).toBe('Query 3')
   })
+
+  it('aligns platform with conversation_id prefix and prevents double-prefixing or platform mismatch', async () => {
+    // If a payload accidentally has platform: 'gemini' but conversation_id has prefix 'claude:'
+    const created = await interactionRepo.create({
+      platform: 'gemini',
+      conversation_id: 'claude:6a8617f8-ce44-83ee-b5b6-72eb43d13516',
+      query: { text: 'What is constitutional AI?' },
+      response: { text: 'Constitutional AI aligns models using a set of principles.' },
+    })
+
+    expect(created.platform).toBe('claude')
+    expect(created.conversation_id).toBe('claude:6a8617f8-ce44-83ee-b5b6-72eb43d13516')
+    expect(created.conversation_id).not.toContain('gemini')
+
+    // Verify record in IndexedDB has platform = 'claude'
+    const stored = await interactionRepo.getById(created.id)
+    expect(stored?.platform).toBe('claude')
+    expect(stored?.conversation_id).toBe('claude:6a8617f8-ce44-83ee-b5b6-72eb43d13516')
+
+    // Count by platform should show 1 under claude and 0 under gemini
+    expect(await interactionRepo.countByPlatform('claude')).toBe(1)
+    expect(await interactionRepo.countByPlatform('gemini')).toBe(0)
+  })
+
+  it('synchronizes platform when binding an existing unbound interaction', async () => {
+    // Create an unbound interaction
+    const unbound = await interactionRepo.create({
+      platform: 'claude',
+      conversation_id: null,
+      query: { text: 'What is tokenization?' },
+      response: { text: 'Tokenization splits text into discrete token units.' },
+    })
+    expect(unbound.conversation_id).toBeNull()
+    expect(unbound.platform).toBe('claude')
+
+    // Bind it to a conversation
+    const bound = await interactionRepo.create({
+      platform: 'claude',
+      conversation_id: 'claude:tok-conv-1',
+      query: { text: 'What is tokenization?' },
+      response: { text: 'Tokenization splits text into discrete token units.' },
+    })
+
+    expect(bound.id).toBe(unbound.id)
+    expect(bound.conversation_id).toBe('claude:tok-conv-1')
+    expect(bound.platform).toBe('claude')
+
+    const inDb = await interactionRepo.getById(unbound.id)
+    expect(inDb?.platform).toBe('claude')
+    expect(inDb?.conversation_id).toBe('claude:tok-conv-1')
+  })
 })
 
 describe('ConversationRepository', () => {

@@ -411,7 +411,7 @@ export abstract class BaseAdapter implements PlatformAdapter {
     interaction.traceId = traceId
 
     const input: CreateInteractionInput = {
-      platform: this.platform,
+      platform: interaction.platform || this.platform,
       conversation_id: interaction.conversationId,
       message_id: interaction.messageId,
       user_message_id: interaction.userMessageId,

@@ -51,13 +51,18 @@ export class ChatGPTAdapter extends BaseAdapter {
     this.isInitialScan = true
     this.lastObservedUrl = window.location.href
 
+    const initialUrl = this.lastObservedUrl
+    const initialConvId = extractConversationIdFromUrl(initialUrl)
+    this.navState = initialConvId ? 'conversation_with_id' : 'new_chat_without_id'
+
     logger.info(
       'Adapter',
       'CHATGPT',
-      `Starting adapter lifecycle (initial URL: ${redactUrlForLog(this.lastObservedUrl)})`
+      `Starting adapter lifecycle (initialUrl: ${redactUrlForLog(initialUrl)}, navState: ${this.navState}, conversationId: ${initialConvId ? 'present' : 'none'})`
     )
     logger.debug('Adapter', 'CHATGPT', 'Scheduling initial DOM scan in 100ms...')
 
+    this.startNavWatcher(initialUrl, (prev, next) => this.onNavigate(prev, next))
     this.scheduleProcessing(100)
     this.startMutationObserver(() => this.handleDomMutation())
 
@@ -71,10 +76,20 @@ export class ChatGPTAdapter extends BaseAdapter {
     this.stopShared()
   }
 
+  /** Delegates to the shared handleNavigation from BaseAdapter. */
+  handleNavigation(prevUrl: string, newUrl: string): void {
+    super.handleNavigation(prevUrl, newUrl, extractConversationIdFromUrl, () =>
+      extractConversationTitle(document)
+    )
+  }
+
+  private onNavigate(prevUrl: string, newUrl: string): void {
+    this.lastObservedUrl = newUrl
+    this.handleNavigation(prevUrl, newUrl)
+  }
+
   /**
    * Handles DOM mutation events with debouncing and inline URL change detection.
-   * ChatGPT's SPA navigation reliably triggers DOM mutations, so we detect URL changes here
-   * rather than using a separate NavigationWatcher.
    */
   private handleDomMutation(): void {
     if (!this.observing) return
@@ -85,44 +100,7 @@ export class ChatGPTAdapter extends BaseAdapter {
     if (currentUrl !== this.lastObservedUrl) {
       const previousUrl = this.lastObservedUrl
       this.lastObservedUrl = currentUrl
-
-      const previousConvId = extractConversationIdFromUrl(previousUrl)
-      const newConvId = extractConversationIdFromUrl(currentUrl)
-
-      logger.info(
-        'Navigation',
-        'CHATGPT',
-        `Navigation detected: '${redactUrlForLog(previousUrl)}' -> '${redactUrlForLog(currentUrl)}' (previousConvId: ${previousConvId ?? 'none'}, newConvId: ${newConvId ?? 'none'})`
-      )
-
-      if (newConvId && this.pendingUnboundInteractions.size > 0) {
-        logger.info(
-          'Navigation',
-          'CHATGPT',
-          `Releasing ${this.pendingUnboundInteractions.size} pending unbound interaction(s) with new conversation ID: ${newConvId}`
-        )
-        this.flushPendingWithConversationId(newConvId, extractConversationTitle(document))
-      }
-
-      const isNewChatAssignment = !previousConvId && !!newConvId
-      if (!isNewChatAssignment) {
-        logger.debug(
-          'Navigation',
-          'CHATGPT',
-          'URL change classified as true SPA navigation; resetting scan state to on_load and clearing session key cache.'
-        )
-        this.isInitialScan = true
-        this.processedKeys.clear()
-        this.resetStreamingDeferrals()
-      } else {
-        logger.debug(
-          'Navigation',
-          'CHATGPT',
-          'URL change classified as new-chat ID assignment; preserving on_generate capture context.'
-        )
-      }
-
-      this.scheduleProcessing(200)
+      this.handleNavigation(previousUrl, currentUrl)
       return
     }
 

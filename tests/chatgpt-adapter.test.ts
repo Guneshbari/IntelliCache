@@ -541,4 +541,107 @@ describe('ChatGPTAdapter Integration & Lifecycle', () => {
     expect(bRecord.capture_context).toBe('on_load')
     expect(bRecord.conversation_id).toBe('chatgpt:spa-conv-B')
   })
+
+  it('collects responses successfully even when thinking/reasoning blocks (.result-thinking) are present', async () => {
+    Object.defineProperty(window, 'location', {
+      value: new URL('https://chatgpt.com/c/reasoning-model-conv'),
+      writable: true,
+    })
+
+    document.body.innerHTML = `
+      <main>
+        <article data-testid="conversation-turn-0">
+          <div data-message-author-role="user" data-message-id="u-reason-1">
+            <div class="whitespace-pre-wrap">Solve this math puzzle: what is 23 * 47?</div>
+          </div>
+        </article>
+        <article data-testid="conversation-turn-1">
+          <div class="result-thinking">Thought for 12 seconds</div>
+          <div data-message-author-role="assistant" data-message-id="a-reason-1">
+            <div class="markdown prose">
+              <p>23 * 47 = 1081.</p>
+            </div>
+          </div>
+        </article>
+      </main>
+    `
+
+    adapter.start()
+    await adapter.processConversation()
+
+    expect(await interactionRepo.count()).toBe(1)
+    const stored = (await interactionRepo.getAll())[0]
+    expect(stored.platform).toBe('chatgpt')
+    expect(stored.query.text).toBe('Solve this math puzzle: what is 23 * 47?')
+    expect(stored.response.text).toContain('23 * 47 = 1081.')
+  })
+
+  it('extracts turns when ChatGPT renders messages without article wrappers', async () => {
+    Object.defineProperty(window, 'location', {
+      value: new URL('https://chatgpt.com/c/div-based-conv'),
+      writable: true,
+    })
+
+    document.body.innerHTML = `
+      <div class="flex flex-col text-sm">
+        <div data-message-author-role="user" data-message-id="u-div-1">
+          <div class="whitespace-pre-wrap">Explain event bubbling</div>
+        </div>
+        <div data-message-author-role="assistant" data-message-id="a-div-1">
+          <div class="markdown prose">
+            <p>Event bubbling is a mechanism where events propagate up through parent DOM nodes.</p>
+          </div>
+        </div>
+      </div>
+    `
+
+    adapter.start()
+    await adapter.processConversation()
+
+    expect(await interactionRepo.count()).toBe(1)
+    const stored = (await interactionRepo.getAll())[0]
+    expect(stored.query.text).toBe('Explain event bubbling')
+    expect(stored.response.text).toContain('Event bubbling is a mechanism')
+  })
+
+  it('flushes pending interaction when URL transitions via handleNavigation callback', async () => {
+    Object.defineProperty(window, 'location', {
+      value: new URL('https://chatgpt.com/'),
+      writable: true,
+    })
+    document.title = 'ChatGPT'
+
+    document.body.innerHTML = `
+      <article data-testid="conversation-turn-0">
+        <div data-message-author-role="user" data-message-id="u-nav-flush">
+          <div>Query before URL assignment</div>
+        </div>
+      </article>
+      <article data-testid="conversation-turn-1">
+        <div data-message-author-role="assistant" data-message-id="a-nav-flush">
+          <div class="markdown">Response before URL assignment</div>
+        </div>
+      </article>
+    `
+
+    adapter.start()
+    await adapter.processConversation()
+    expect(await interactionRepo.count()).toBe(0) // queued in pending
+
+    // SPA pushState/replaceState URL transition occurs
+    Object.defineProperty(window, 'location', {
+      value: new URL('https://chatgpt.com/c/nav-assigned-conv-id'),
+      writable: true,
+    })
+    document.title = 'Assigned Title - ChatGPT'
+
+    // handleNavigation executes (as triggered by NavigationWatcher or DOM observer)
+    adapter.handleNavigation('https://chatgpt.com/', 'https://chatgpt.com/c/nav-assigned-conv-id')
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    expect(await interactionRepo.count()).toBe(1)
+    const stored = (await interactionRepo.getAll())[0]
+    expect(stored.conversation_id).toBe('chatgpt:nav-assigned-conv-id')
+    expect(stored.conversation_title).toBe('Assigned Title')
+  })
 })

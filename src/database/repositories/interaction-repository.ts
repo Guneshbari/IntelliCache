@@ -94,7 +94,21 @@ export class InteractionRepository {
           : typeof globalThis.crypto?.randomUUID === 'function'
             ? globalThis.crypto.randomUUID()
             : `int_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`
-      const platform = input.platform.trim().toLowerCase()
+      let platform = input.platform.trim().toLowerCase()
+      const knownPrefix = ['chatgpt:', 'claude:', 'gemini:'].find((p) =>
+        input.conversation_id?.toLowerCase().startsWith(p)
+      )
+      if (knownPrefix) {
+        const prefixPlatform = knownPrefix.slice(0, -1)
+        if (prefixPlatform !== platform) {
+          logger.warn(
+            'Database',
+            platformTag,
+            `Platform alignment: input platform '${platform}' normalized to '${prefixPlatform}' based on conversation ID prefix`
+          )
+          platform = prefixPlatform
+        }
+      }
       const namespacedConvId = namespaceConversationId(platform, input.conversation_id)
 
       // Calculate fingerprint and strategy.
@@ -150,6 +164,7 @@ export class InteractionRepository {
         // If existing record was unbound and new input provides conversation_id, bind it
         if (existing.conversation_id === null && namespacedConvId !== null) {
           existing.conversation_id = namespacedConvId
+          existing.platform = platform
           if (input.conversation_title) existing.conversation_title = input.conversation_title
           if (input.message_id) existing.message_id = input.message_id.trim()
           if (input.user_message_id) existing.user_message_id = input.user_message_id.trim()
@@ -157,7 +172,7 @@ export class InteractionRepository {
           logger.info(
             'Database',
             platformTag,
-            `updated trace=${traceId} (bound existing ID: ${existing.id} -> ${namespacedConvId})`
+            `updated trace=${traceId} (bound existing ID: ${existing.id} -> ${namespacedConvId}, platform: ${platform})`
           )
           logger.info(
             'Lifecycle',
@@ -202,6 +217,7 @@ export class InteractionRepository {
         if (existingUnbound) {
           if (existingUnbound.conversation_id === null) {
             existingUnbound.conversation_id = namespacedConvId
+            existingUnbound.platform = platform
             if (input.conversation_title)
               existingUnbound.conversation_title = input.conversation_title
             if (input.message_id) existingUnbound.message_id = input.message_id.trim()
@@ -217,7 +233,7 @@ export class InteractionRepository {
             logger.info(
               'Database',
               platformTag,
-              `updated trace=${traceId} (bound existing unbound ID: ${existingUnbound.id} -> ${namespacedConvId})`
+              `updated trace=${traceId} (bound existing unbound ID: ${existingUnbound.id} -> ${namespacedConvId}, platform: ${platform})`
             )
             logger.info(
               'Lifecycle',

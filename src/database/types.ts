@@ -62,15 +62,22 @@ export function namespaceConversationId(
     return null
   }
   const normPlatform = platform.trim().toLowerCase()
-  const trimmedId = conversationId.trim()
+  let trimmedId = conversationId.trim()
   if (!trimmedId) {
     return null
   }
-  const prefix = `${normPlatform}:`
-  if (trimmedId.toLowerCase().startsWith(prefix)) {
-    return `${normPlatform}:${trimmedId.slice(prefix.length)}`
+  // Strip any existing or foreign platform prefix to avoid double-prefixing (e.g. "gemini:claude:...")
+  const knownPrefixes = ['chatgpt:', 'claude:', 'gemini:']
+  for (const p of knownPrefixes) {
+    if (trimmedId.toLowerCase().startsWith(p)) {
+      trimmedId = trimmedId.slice(p.length).trim()
+      break
+    }
   }
-  return `${prefix}${trimmedId}`
+  if (!trimmedId) {
+    return null
+  }
+  return `${normPlatform}:${trimmedId}`
 }
 
 /**
