@@ -162,6 +162,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const toggleExplorerBtn = document.getElementById('toggle-explorer-btn')
   const toggleExplorerText = document.getElementById('toggle-explorer-text')
   const openExplorerBanner = document.getElementById('open-explorer-banner')
+  const explorerBannerTitleEl = document.getElementById('explorer-banner-title')
   const explorerBannerSubEl = document.getElementById('explorer-banner-sub')
 
   const explorerSectionEl = document.getElementById('explorer-section')
@@ -376,8 +377,18 @@ document.addEventListener('DOMContentLoaded', () => {
     if (percentClaudeEl) percentClaudeEl.textContent = `${claudePercent}% of interactions`
     if (percentGeminiEl) percentGeminiEl.textContent = `${geminiPercent}% of interactions`
 
+    if (explorerBannerTitleEl) {
+      explorerBannerTitleEl.textContent = state.isExplorerExpanded
+        ? 'CLOSE INTERACTION EXPLORER'
+        : 'OPEN INTERACTION EXPLORER'
+    }
+
     if (explorerBannerSubEl) {
-      explorerBannerSubEl.textContent = `Browse, search and filter all ${state.totalInteractions} interactions`
+      if (state.isExplorerExpanded) {
+        explorerBannerSubEl.textContent = 'Click to collapse the interaction explorer'
+      } else {
+        explorerBannerSubEl.textContent = `Browse, search and filter all ${state.totalInteractions} interactions`
+      }
     }
   }
 
@@ -608,6 +619,17 @@ document.addEventListener('DOMContentLoaded', () => {
     state.isExplorerExpanded = true
     if (explorerSectionEl) explorerSectionEl.classList.remove('collapsed')
     if (toggleExplorerText) toggleExplorerText.textContent = 'Collapse'
+    if (openExplorerBanner) {
+      openExplorerBanner.classList.add('expanded')
+      openExplorerBanner.setAttribute('aria-expanded', 'true')
+      openExplorerBanner.setAttribute('aria-label', 'Close interaction explorer')
+    }
+    if (explorerBannerTitleEl) {
+      explorerBannerTitleEl.textContent = 'CLOSE INTERACTION EXPLORER'
+    }
+    if (explorerBannerSubEl) {
+      explorerBannerSubEl.textContent = 'Click to collapse the interaction explorer'
+    }
     renderExplorerItems()
     explorerSectionEl?.scrollIntoView({ behavior: 'smooth' })
   }
@@ -616,6 +638,17 @@ document.addEventListener('DOMContentLoaded', () => {
     state.isExplorerExpanded = false
     if (explorerSectionEl) explorerSectionEl.classList.add('collapsed')
     if (toggleExplorerText) toggleExplorerText.textContent = 'View All'
+    if (openExplorerBanner) {
+      openExplorerBanner.classList.remove('expanded')
+      openExplorerBanner.setAttribute('aria-expanded', 'false')
+      openExplorerBanner.setAttribute('aria-label', 'Open interaction explorer')
+    }
+    if (explorerBannerTitleEl) {
+      explorerBannerTitleEl.textContent = 'OPEN INTERACTION EXPLORER'
+    }
+    if (explorerBannerSubEl) {
+      explorerBannerSubEl.textContent = `Browse, search and filter all ${state.totalInteractions} interactions`
+    }
   }
 
   // ─── STATUS & STATS LOADER ───────────────────────────────────────────────
@@ -764,13 +797,21 @@ document.addEventListener('DOMContentLoaded', () => {
   })
 
   openExplorerBanner?.addEventListener('click', () => {
-    expandExplorer()
+    if (state.isExplorerExpanded) {
+      collapseExplorer()
+    } else {
+      expandExplorer()
+    }
   })
 
   openExplorerBanner?.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault()
-      expandExplorer()
+      if (state.isExplorerExpanded) {
+        collapseExplorer()
+      } else {
+        expandExplorer()
+      }
     }
   })
 

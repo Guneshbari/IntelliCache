@@ -811,6 +811,15 @@ body.mode-sidepanel .dock-indicator-badge {
   color: var(--accent-ink);
 }
 
+.explorer-banner-arrow {
+  transition: transform 0.2s ease;
+  flex-shrink: 0;
+}
+
+.explorer-banner-btn.expanded .explorer-banner-arrow {
+  transform: rotate(90deg);
+}
+
 .explorer-banner-btn:hover {
   background-color: var(--accent-hover);
   transform: translate(-1px, -1px);

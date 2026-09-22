@@ -226,12 +226,7 @@
               <div class="platform-card-top">
                 <div class="platform-brand">
                   <div class="provider-logo-badge badge-claude" aria-label="Claude">
-                    <svg
-                      viewBox="0 0 16 16"
-                      width="14"
-                      height="14"
-                      fill="currentColor"
-                    >
+                    <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
                       <path
                         fill-rule="evenodd"
                         d="M9.218 2h2.402L16 12.987h-2.402zM4.379 2h2.512l4.38 10.987H8.82l-.895-2.308h-4.58l-.896 2.307H0L4.38 2.001zm2.755 6.64L5.635 4.777 4.137 8.64z"
@@ -399,8 +394,15 @@
             </div>
           </div>
 
-          <!-- Open Explorer Banner Card -->
-          <div class="explorer-banner-btn" id="open-explorer-banner" role="button" tabindex="0">
+          <!-- Open / Close Explorer Banner Card -->
+          <div
+            class="explorer-banner-btn"
+            id="open-explorer-banner"
+            role="button"
+            tabindex="0"
+            aria-expanded="false"
+            aria-label="Toggle interaction explorer"
+          >
             <div class="explorer-banner-left">
               <div class="explorer-banner-icon">
                 <svg
@@ -418,13 +420,17 @@
                 </svg>
               </div>
               <div>
-                <div class="explorer-banner-title">OPEN INTERACTION EXPLORER</div>
+                <div class="explorer-banner-title" id="explorer-banner-title">
+                  OPEN INTERACTION EXPLORER
+                </div>
                 <div class="explorer-banner-sub" id="explorer-banner-sub">
                   Browse, search and filter all 0 interactions
                 </div>
               </div>
             </div>
             <svg
+              class="explorer-banner-arrow"
+              id="explorer-banner-arrow"
               viewBox="0 0 24 24"
               width="16"
               height="16"

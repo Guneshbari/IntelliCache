@@ -60,7 +60,10 @@ describe('Popup Dashboard & Interaction Explorer Unit Tests', () => {
           <div class="recent-list" id="recent-activity-list"></div>
           <span class="activity-badge" id="recent-count-badge">0</span>
           <button id="toggle-explorer-btn"><span id="toggle-explorer-text">View All</span></button>
-          <div id="open-explorer-banner"><span id="explorer-banner-sub"></span></div>
+          <div id="open-explorer-banner">
+            <span id="explorer-banner-title">OPEN INTERACTION EXPLORER</span>
+            <span id="explorer-banner-sub"></span>
+          </div>
 
           <section class="explorer-section collapsed" id="explorer-section">
             <div id="explorer-header-toggle"></div>
@@ -380,5 +383,65 @@ describe('Popup Dashboard & Interaction Explorer Unit Tests', () => {
     const storage: Record<string, string> = {}
     storage['intellicache_display_mode'] = 'sidepanel'
     expect(storage['intellicache_display_mode']).toBe('sidepanel')
+  })
+
+  it('toggles interaction explorer open and close from the same banner position', () => {
+    const banner = document.getElementById('open-explorer-banner')!
+    const bannerTitle = document.getElementById('explorer-banner-title')!
+    const bannerSub = document.getElementById('explorer-banner-sub')!
+    const explorerSection = document.getElementById('explorer-section')!
+    const toggleText = document.getElementById('toggle-explorer-text')!
+
+    let isExplorerExpanded = false
+
+    const expandExplorer = () => {
+      isExplorerExpanded = true
+      explorerSection.classList.remove('collapsed')
+      toggleText.textContent = 'Collapse'
+      banner.classList.add('expanded')
+      banner.setAttribute('aria-expanded', 'true')
+      bannerTitle.textContent = 'CLOSE INTERACTION EXPLORER'
+      bannerSub.textContent = 'Click to collapse the interaction explorer'
+    }
+
+    const collapseExplorer = () => {
+      isExplorerExpanded = false
+      explorerSection.classList.add('collapsed')
+      toggleText.textContent = 'View All'
+      banner.classList.remove('expanded')
+      banner.setAttribute('aria-expanded', 'false')
+      bannerTitle.textContent = 'OPEN INTERACTION EXPLORER'
+      bannerSub.textContent = 'Browse, search and filter all 0 interactions'
+    }
+
+    banner.addEventListener('click', () => {
+      if (isExplorerExpanded) {
+        collapseExplorer()
+      } else {
+        expandExplorer()
+      }
+    })
+
+    // Initially collapsed
+    expect(explorerSection.classList.contains('collapsed')).toBe(true)
+    expect(bannerTitle.textContent).toBe('OPEN INTERACTION EXPLORER')
+
+    // First click: opens section from banner
+    banner.click()
+    expect(isExplorerExpanded).toBe(true)
+    expect(explorerSection.classList.contains('collapsed')).toBe(false)
+    expect(banner.classList.contains('expanded')).toBe(true)
+    expect(bannerTitle.textContent).toBe('CLOSE INTERACTION EXPLORER')
+    expect(bannerSub.textContent).toBe('Click to collapse the interaction explorer')
+    expect(toggleText.textContent).toBe('Collapse')
+
+    // Second click: closes section from the same banner position!
+    banner.click()
+    expect(isExplorerExpanded).toBe(false)
+    expect(explorerSection.classList.contains('collapsed')).toBe(true)
+    expect(banner.classList.contains('expanded')).toBe(false)
+    expect(bannerTitle.textContent).toBe('OPEN INTERACTION EXPLORER')
+    expect(bannerSub.textContent).toContain('Browse, search and filter')
+    expect(toggleText.textContent).toBe('View All')
   })
 })
