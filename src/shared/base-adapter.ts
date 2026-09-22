@@ -17,7 +17,7 @@ import {
 } from './messages'
 import type { CaptureContext, CreateInteractionInput } from './types'
 import type { DiagnosticPlatform } from '../diagnostics/types'
-import type { ExtractedInteraction, PlatformAdapter } from '../platforms/types'
+import type { ExtractedInteraction, PlatformAdapter, RawMessageTurn } from '../platforms/types'
 
 export const MUTATION_DEBOUNCE_MS = 500
 export const NEW_CHAT_URL_TIMEOUT_MS = 4000
@@ -72,8 +72,26 @@ export abstract class BaseAdapter implements PlatformAdapter {
   protected newChatTimeoutMs: number
   protected navPollIntervalMs: number
 
-  /** Processed interaction keys for the current tab session to prevent duplicate work. */
+  /** Processed interaction keys for bound interactions to prevent duplicate work. */
   protected processedKeys = new Set<string>()
+
+  /** Processed interaction keys for unbound interactions to prevent spamming SW while waiting for ID. */
+  protected unboundProcessedKeys = new Set<string>()
+
+  /** Incremented on each navigation to invalidate concurrent in-flight processing. */
+  protected navigationGeneration = 0
+
+  /** Target conversation ID during an SPA navigation transition. */
+  protected pendingNavTargetConvId: string | null = null
+
+  /** Signature of the last extracted turns before navigation to detect stale DOM. */
+  protected staleSignature: string | null = null
+
+  /** Signature of the most recently extracted turns. */
+  protected lastExtractedSignature: string | null = null
+
+  /** Number of times scan was deferred due to stale DOM during navigation. */
+  protected staleNavDeferralCount = 0
 
   /** Consecutive streaming deferrals (drives exponential reschedule backoff). */
   protected streamingDeferralCount = 0
@@ -109,15 +127,24 @@ export abstract class BaseAdapter implements PlatformAdapter {
       return `msg:${interaction.messageId}`
     }
     const qHash = hashSnippet(interaction.queryText)
-    if (interaction.turnIndex !== undefined) {
-      return `turn:${interaction.turnIndex}:${qHash}`
-    }
     const rHash = hashSnippet(interaction.responseText)
+    if (interaction.turnIndex !== undefined) {
+      return `turn:${interaction.turnIndex}:${qHash}:${rHash}`
+    }
     return `pair:${qHash}:${rHash}:${interaction.queryText.length}:${interaction.responseText.length}`
   }
 
   /**
-   * Records a key with LRU eviction so multi-day sessions cannot leak memory
+   * Hook for subclasses to determine whether an interaction with null conversationId
+   * should be persisted immediately instead of queued in pendingUnboundInteractions
+   * (e.g. unauthenticated / guest sessions where no conversation ID is assigned by the platform).
+   */
+  protected shouldPersistUnboundImmediately(_interaction: ExtractedInteraction): boolean {
+    return false
+  }
+
+  /**
+   * Records a bound key with LRU eviction so multi-day sessions cannot leak memory
    * through an ever-growing set.
    */
   protected rememberProcessedKey(key: string): void {
@@ -131,6 +158,65 @@ export abstract class BaseAdapter implements PlatformAdapter {
       }
     }
     this.processedKeys.add(key)
+  }
+
+  /**
+   * Records an unbound key to prevent spamming persistence passes while waiting for ID.
+   */
+  protected rememberUnboundProcessedKey(key: string): void {
+    if (this.unboundProcessedKeys.has(key)) {
+      return
+    }
+    if (this.unboundProcessedKeys.size >= MAX_PROCESSED_KEYS) {
+      const oldest = this.unboundProcessedKeys.values().next().value
+      if (oldest !== undefined) {
+        this.unboundProcessedKeys.delete(oldest)
+      }
+    }
+    this.unboundProcessedKeys.add(key)
+  }
+
+  /**
+   * Fast signature for extracted message turns to detect stale DOM transitions.
+   */
+  public computeTurnsSignature(turns: RawMessageTurn[]): string {
+    if (turns.length === 0) return ''
+    return turns
+      .map((t) => `${t.role}:${t.messageId ?? ''}:${hashSnippet(t.text)}`)
+      .join('|')
+  }
+
+  /**
+   * FIX-003: Checks whether extracted turns belong to the previous conversation
+   * lingering in the DOM during an SPA route transition.
+   * Returns true if processing should be deferred.
+   */
+  public checkAndDeferStaleDom(turns: RawMessageTurn[]): boolean {
+    if (!this.pendingNavTargetConvId) {
+      this.lastExtractedSignature = this.computeTurnsSignature(turns)
+      return false
+    }
+
+    const currentSignature = this.computeTurnsSignature(turns)
+    if (this.staleSignature && currentSignature === this.staleSignature && turns.length > 0) {
+      this.staleNavDeferralCount++
+      if (this.staleNavDeferralCount < 10) {
+        logger.warn(
+          'Navigation',
+          this.platformTag,
+          `SPA navigation race detected: DOM still contains ${turns.length} turn(s) from previous conversation. Deferring scan for target '${this.pendingNavTargetConvId}' (deferral #${this.staleNavDeferralCount}).`
+        )
+        this.scheduleProcessing(100)
+        return true
+      }
+    }
+
+    // DOM has transitioned, cleared, or reached max deferrals
+    this.pendingNavTargetConvId = null
+    this.staleSignature = null
+    this.staleNavDeferralCount = 0
+    this.lastExtractedSignature = currentSignature
+    return false
   }
 
   /**
@@ -250,8 +336,13 @@ export abstract class BaseAdapter implements PlatformAdapter {
       `URL transition | from=${prevPathname} | to=${newPathname} | classification=${classification} | conversationId=${newConvId ?? 'none'}`
     )
 
+    this.navigationGeneration++
+
     if (isNewChatAssignment) {
       this.navState = 'conversation_with_id'
+      this.pendingNavTargetConvId = null
+      this.staleSignature = null
+      this.staleNavDeferralCount = 0
       if (this.pendingUnboundInteractions.size > 0) {
         logger.info(
           'Navigation',
@@ -270,7 +361,20 @@ export abstract class BaseAdapter implements PlatformAdapter {
       this.navState = newConvId ? 'conversation_with_id' : 'new_chat_without_id'
       this.isInitialScan = true
       this.processedKeys.clear()
+      this.unboundProcessedKeys.clear()
       this.resetStreamingDeferrals()
+
+      // FIX-003: Setup stale DOM guard so conversation A's DOM is not persisted under B's ID
+      if (isConversationToConversation || isConversationToNew) {
+        this.pendingNavTargetConvId = newConvId ?? '__new_chat__'
+        this.staleSignature = this.lastExtractedSignature
+        this.staleNavDeferralCount = 0
+      } else {
+        this.pendingNavTargetConvId = null
+        this.staleSignature = null
+        this.staleNavDeferralCount = 0
+      }
+
       logger.info(
         'Navigation',
         this.platformTag,
@@ -309,7 +413,18 @@ export abstract class BaseAdapter implements PlatformAdapter {
     let duplicateCount = 0
     let failureCount = 0
 
+    const runGeneration = this.navigationGeneration
+
     for (const interaction of interactions) {
+      if (this.navigationGeneration !== runGeneration) {
+        logger.warn(
+          'Navigation',
+          this.platformTag,
+          'Navigation occurred while processing interactions. Aborting stale persistence pass.'
+        )
+        break
+      }
+
       const traceId =
         interaction.traceId || `trace_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
       interaction.traceId = traceId
@@ -350,8 +465,32 @@ export abstract class BaseAdapter implements PlatformAdapter {
         continue
       }
 
-      // Queue unbound interactions until a conversation ID is available
+      // FIX-004: Unbound interactions are deduplicated using unboundProcessedKeys so that
+      // once a real conversationId is known, the bound interaction is NOT permanently locked out.
+      if (interaction.conversationId === null && this.unboundProcessedKeys.has(key)) {
+        logger.debug(
+          'Adapter',
+          this.platformTag,
+          `Skipping unbound interaction (${key}): already persisted as unbound in this session.`
+        )
+        duplicateCount++
+        continue
+      }
+
+      // Queue unbound interactions until a conversation ID is available (unless subclass persists immediately)
       if (interaction.conversationId === null) {
+        if (this.shouldPersistUnboundImmediately(interaction)) {
+          const result = await this.persistInteraction(interaction, key)
+          if (result === 'saved') {
+            savedCount++
+          } else if (result === 'duplicate') {
+            duplicateCount++
+          } else {
+            failureCount++
+          }
+          continue
+        }
+
         if (!this.pendingUnboundInteractions.has(key)) {
           queuedCount++
           diagnosticStats.increment('interactionsQueued')
@@ -441,7 +580,12 @@ export abstract class BaseAdapter implements PlatformAdapter {
       const response = await sendExtensionMessage(msg)
 
       if (response.success) {
-        this.rememberProcessedKey(key)
+        if (interaction.conversationId !== null) {
+          this.rememberProcessedKey(key)
+          this.unboundProcessedKeys.delete(key)
+        } else {
+          this.rememberUnboundProcessedKey(key)
+        }
         diagnosticStats.increment('interactionsSaved')
         logger.debug(
           'Messaging',
@@ -454,7 +598,12 @@ export abstract class BaseAdapter implements PlatformAdapter {
       // Duplicate detection prefers the machine-readable code; the legacy
       // substring check stays as a fallback for older service workers.
       if (response.code === 'DUPLICATE_INTERACTION' || response.error?.includes('already exists')) {
-        this.rememberProcessedKey(key)
+        if (interaction.conversationId !== null) {
+          this.rememberProcessedKey(key)
+          this.unboundProcessedKeys.delete(key)
+        } else {
+          this.rememberUnboundProcessedKey(key)
+        }
         diagnosticStats.increment('duplicates')
         logger.debug(
           'Database',
@@ -531,6 +680,13 @@ export abstract class BaseAdapter implements PlatformAdapter {
     }
 
     this.observing = false
+    this.processedKeys.clear()
+    this.unboundProcessedKeys.clear()
+    this.navigationGeneration++
+    this.pendingNavTargetConvId = null
+    this.staleSignature = null
+    this.lastExtractedSignature = null
+    this.staleNavDeferralCount = 0
     this.resetStreamingDeferrals()
     logger.info(
       'Adapter',

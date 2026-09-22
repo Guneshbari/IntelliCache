@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { closeDatabase, IntelliCacheDB } from '../src/database/db'
 import { ConversationRepository } from '../src/database/repositories/conversation-repository'
 import { InteractionRepository } from '../src/database/repositories/interaction-repository'
-import { DuplicateInteractionError } from '../src/database/types'
+import { DatabaseOperationError, DuplicateInteractionError } from '../src/database/types'
 
 describe('InteractionRepository', () => {
   let db: IntelliCacheDB
@@ -219,26 +219,19 @@ describe('InteractionRepository', () => {
     expect(page2[0].query.text).toBe('Query 3')
   })
 
-  it('aligns platform with conversation_id prefix and prevents double-prefixing or platform mismatch', async () => {
-    // If a payload accidentally has platform: 'gemini' but conversation_id has prefix 'claude:'
-    const created = await interactionRepo.create({
-      platform: 'gemini',
-      conversation_id: 'claude:6a8617f8-ce44-83ee-b5b6-72eb43d13516',
-      query: { text: 'What is constitutional AI?' },
-      response: { text: 'Constitutional AI aligns models using a set of principles.' },
-    })
+  it('rejects foreign platform conversation_id prefix and fails closed without platform mutation (FIX-006)', async () => {
+    // If a payload has platform: 'gemini' but conversation_id has prefix 'claude:', fail closed
+    await expect(
+      interactionRepo.create({
+        platform: 'gemini',
+        conversation_id: 'claude:6a8617f8-ce44-83ee-b5b6-72eb43d13516',
+        query: { text: 'What is constitutional AI?' },
+        response: { text: 'Constitutional AI aligns models using a set of principles.' },
+      })
+    ).rejects.toThrow(DatabaseOperationError)
 
-    expect(created.platform).toBe('claude')
-    expect(created.conversation_id).toBe('claude:6a8617f8-ce44-83ee-b5b6-72eb43d13516')
-    expect(created.conversation_id).not.toContain('gemini')
-
-    // Verify record in IndexedDB has platform = 'claude'
-    const stored = await interactionRepo.getById(created.id)
-    expect(stored?.platform).toBe('claude')
-    expect(stored?.conversation_id).toBe('claude:6a8617f8-ce44-83ee-b5b6-72eb43d13516')
-
-    // Count by platform should show 1 under claude and 0 under gemini
-    expect(await interactionRepo.countByPlatform('claude')).toBe(1)
+    // Count by platform should show 0 under claude and 0 under gemini
+    expect(await interactionRepo.countByPlatform('claude')).toBe(0)
     expect(await interactionRepo.countByPlatform('gemini')).toBe(0)
   })
 

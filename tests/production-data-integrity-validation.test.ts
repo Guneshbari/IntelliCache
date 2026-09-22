@@ -362,10 +362,11 @@ describe('Production-Like Data Integrity & Persistence Validation', () => {
       expect(await interactionRepo.count()).toBe(1)
       expect(await conversationRepo.count()).toBe(1)
 
-      // Verify in-place update: ID, fingerprint, and timestamp are preserved
+      // Verify in-place update: ID and timestamp are preserved, fingerprint is recomputed (FIX-002)
       const updatedRecord = (await interactionRepo.getAll())[0]
       expect(updatedRecord.id).toBe(originalId)
-      expect(updatedRecord.fingerprint).toBe(originalFingerprint)
+      expect(updatedRecord.fingerprint).not.toBe(originalFingerprint)
+      expect(updatedRecord.fingerprint_strategy).toBe('level_2')
       expect(updatedRecord.observed_at).toBe(originalObservedAt)
       expect(updatedRecord.conversation_id).toBe('claude:chat-queue-design-456')
       expect(updatedRecord.conversation_title).toBe('Queue Design Thread')

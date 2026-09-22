@@ -30,7 +30,7 @@ export { extractMessageId, extractSourceTimestamp }
 export function extractConversationIdFromUrl(url: string): string | null {
   try {
     const pathname = new URL(url).pathname
-    const match = pathname.match(/\/c\/([a-zA-Z0-9_-]+)/)
+    const match = pathname.match(/\/(?:c|uc)\/([a-zA-Z0-9_-]+)/)
     return match?.[1] ?? null
   } catch {
     return null
@@ -53,8 +53,16 @@ export function extractConversationTitle(docOrElement: Document | Element): stri
   if (!title) return null
 
   const cleaned = title.replace(/\s*-\s*ChatGPT$/i, '').trim()
+  const lower = cleaned.toLowerCase()
 
-  if (!cleaned || cleaned.toLowerCase() === 'chatgpt' || cleaned.toLowerCase() === 'new chat') {
+  if (
+    !cleaned ||
+    lower === 'chatgpt' ||
+    lower === 'new chat' ||
+    lower.startsWith('chatgpt: chat, work, create') ||
+    lower.includes('chat, work, create & code with ai') ||
+    lower.includes('get answers. find inspiration')
+  ) {
     return null
   }
 
@@ -96,13 +104,23 @@ export function extractUserQueryText(element: Element): string {
 
   const clone = userContainer.cloneNode(true) as Element
 
-  clone.querySelectorAll(CHATGPT_SELECTORS.UI_CONTROLS_TO_EXCLUDE).forEach((b) => b.remove())
-
-  // Strip accessibility / speaker headings (e.g. <h5>You said:</h5>)
-  clone.querySelectorAll('h5, h6').forEach((h) => {
+  // Strip accessibility / speaker headings (e.g. <h4>You said:</h4>, <h5>You said:</h5>)
+  clone.querySelectorAll('h4, h5, h6').forEach((h) => {
     if (/said/i.test(h.textContent || '') || h.classList.contains('sr-only')) {
       h.remove()
     }
+  })
+
+  // Strip UI controls except for elements that ARE the message text.
+  // In production guest DOM, the user message text is inside a <button> element.
+  // We remove buttons that have an aria-label (action buttons) but preserve unlabelled
+  // buttons that carry message content.
+  clone.querySelectorAll(CHATGPT_SELECTORS.UI_CONTROLS_TO_EXCLUDE).forEach((b) => {
+    // Preserve <button> elements that have NO aria-label — they are message text containers
+    if (b.tagName === 'BUTTON' && !b.hasAttribute('aria-label')) {
+      return
+    }
+    b.remove()
   })
 
   const textContainer = clone.querySelector(CHATGPT_SELECTORS.USER_TEXT) || clone
@@ -123,14 +141,17 @@ export function extractAssistantResponseText(element: Element): string {
 
   clone.querySelectorAll(CHATGPT_SELECTORS.UI_CONTROLS_TO_EXCLUDE).forEach((el) => el.remove())
 
-  // Strip accessibility / speaker headings (e.g. <h6>ChatGPT said:</h6>)
-  clone.querySelectorAll('h5, h6').forEach((h) => {
+  // Strip accessibility / speaker headings (e.g. <h4>ChatGPT said:</h4>, <h6>ChatGPT said:</h6>)
+  clone.querySelectorAll('h4, h5, h6').forEach((h) => {
     if (/said/i.test(h.textContent || '') || h.classList.contains('sr-only')) {
       h.remove()
     }
   })
 
-  const markdownContainer = clone.querySelector(CHATGPT_SELECTORS.ASSISTANT_TEXT) || clone
+  const markdownContainer =
+    typeof clone.matches === 'function' && clone.matches(CHATGPT_SELECTORS.ASSISTANT_TEXT)
+      ? clone
+      : clone.querySelector(CHATGPT_SELECTORS.ASSISTANT_TEXT) || clone
   const ownerDoc = element.ownerDocument || document
 
   markdownContainer.querySelectorAll(CHATGPT_SELECTORS.CODE_BLOCK).forEach((pre) => {
@@ -196,42 +217,73 @@ export function isChatGPTGuestSession(root: Document | Element): boolean {
         : root.ownerDocument || (typeof document !== 'undefined' ? document : null)
     if (!doc && !(root instanceof Element)) return false
 
-    const hasGuestIndicator =
-      (root instanceof Element && root.querySelector(CHATGPT_SELECTORS.GUEST_INDICATORS) !== null) ||
-      (doc ? doc.querySelector(CHATGPT_SELECTORS.GUEST_INDICATORS) !== null : false)
-    const hasLoggedInProfile =
-      (root instanceof Element && root.querySelector(CHATGPT_SELECTORS.LOGGED_IN_INDICATORS) !== null) ||
-      (doc ? doc.querySelector(CHATGPT_SELECTORS.LOGGED_IN_INDICATORS) !== null : false)
+    const scope = root instanceof Element ? root : doc
+    if (!scope) return false
 
-    if (hasGuestIndicator && !hasLoggedInProfile) {
-      return true
+    // Check for login / sign up text, hrefs, or testids in buttons, links, or aria-labels
+    const checkAuth = (el: Element): boolean => {
+      const txt = el.textContent?.trim().toLowerCase() || ''
+      const href = el.getAttribute('href')?.toLowerCase() || ''
+      const testId = el.getAttribute('data-testid')?.toLowerCase() || ''
+      const aria = el.getAttribute('aria-label')?.toLowerCase() || ''
+      return (
+        /\b(log\s*in|sign\s*up|sign\s*in)\b/i.test(txt) ||
+        /\b(log\s*in|sign\s*up|sign\s*in)\b/i.test(aria) ||
+        href.includes('/auth') ||
+        href.includes('login') ||
+        href.includes('signup') ||
+        testId.includes('login') ||
+        testId.includes('signup')
+      )
     }
 
-    // Also check for login / sign up text, hrefs, or testids in buttons or links when not logged in
-    if (!hasLoggedInProfile) {
-      const scope = root instanceof Element ? root : doc
-      const checkAuth = (el: Element) => {
-        const txt = el.textContent?.trim().toLowerCase() || ''
-        const href = el.getAttribute('href')?.toLowerCase() || ''
-        const testId = el.getAttribute('data-testid')?.toLowerCase() || ''
-        return (
-          /\b(log\s*in|sign\s*up|sign\s*in)\b/i.test(txt) ||
-          href.includes('/auth') ||
-          href.includes('login') ||
-          testId.includes('login') ||
-          testId.includes('signup')
-        )
+    // Helper to query elements across both scope and document
+    const queryElements = (selector: string): Element[] => {
+      const inScope = Array.from(scope.querySelectorAll(selector))
+      if (doc && doc !== scope) {
+        const inDoc = Array.from(doc.querySelectorAll(selector))
+        return Array.from(new Set([...inScope, ...inDoc]))
       }
-      const authLinks = Array.from(scope?.querySelectorAll('button, a') || []).filter(checkAuth)
-      if (authLinks.length > 0) {
+      return inScope
+    }
+
+    // 1. Explicit guest indicators in selectors
+    const hasGuestIndicator =
+      scope.querySelector(CHATGPT_SELECTORS.GUEST_INDICATORS) !== null ||
+      (doc && doc !== scope
+        ? doc.querySelector(CHATGPT_SELECTORS.GUEST_INDICATORS) !== null
+        : false)
+
+    // 2. Discover any login/signup buttons or links across scope and document
+    const authLinks = queryElements('button, a, [role="button"]').filter(checkAuth)
+    const hasAuthLinks = authLinks.length > 0
+
+    // 3. Discover authenticated profile controls
+    const profileCandidates = queryElements(CHATGPT_SELECTORS.LOGGED_IN_INDICATORS)
+    const hasStrongProfile = profileCandidates.some((el) => !checkAuth(el))
+
+    // 4. Distinguish guest account menu from authenticated account menu:
+    // In real guest ChatGPT, a button[aria-label*="Open account menu"] is rendered for logged-out
+    // users to trigger login/signup. It is ONLY treated as proof of authentication if the page
+    // has NO guest indicators or login/signup controls and the button itself does not contain auth text.
+    let hasAccountMenuAsProfile = false
+    const accountMenuBtn =
+      scope.querySelector('button[aria-label*="Open account menu"]') ||
+      (doc && doc !== scope ? doc.querySelector('button[aria-label*="Open account menu"]') : null)
+    if (accountMenuBtn && !hasAuthLinks && !hasGuestIndicator && !checkAuth(accountMenuBtn)) {
+      hasAccountMenuAsProfile = true
+    }
+
+    const hasLoggedInProfile = hasStrongProfile || hasAccountMenuAsProfile
+
+    if (hasGuestIndicator || hasAuthLinks) {
+      if (!hasLoggedInProfile) {
         return true
       }
-      if (doc && doc !== scope) {
-        const docAuthLinks = Array.from(doc.querySelectorAll('button, a')).filter(checkAuth)
-        if (docAuthLinks.length > 0) {
-          return true
-        }
-      }
+    }
+
+    if (!hasLoggedInProfile && (hasGuestIndicator || hasAuthLinks)) {
+      return true
     }
 
     return false
@@ -258,29 +310,221 @@ function detectTurnRole(turnEl: Element): 'user' | 'assistant' | null {
   if (turnEl.querySelector(CHATGPT_SELECTORS.ASSISTANT_ROLE)) return 'assistant'
 
   // Heading check (e.g. <h5>You said:</h5>, <h6>ChatGPT said:</h6>)
-  const headings = Array.from(turnEl.querySelectorAll('h5, h6, h2, h3, h4'))
+  const headings = [
+    ...(typeof turnEl.matches === 'function' &&
+    turnEl.matches('h5, h6, h2, h3, h4, [class*="sr-only"]')
+      ? [turnEl]
+      : []),
+    ...Array.from(turnEl.querySelectorAll('h5, h6, h2, h3, h4, [class*="sr-only"]')),
+  ]
   for (const h of headings) {
     const text = h.textContent?.toLowerCase() || ''
     if (/you said/i.test(text)) return 'user'
     if (/chatgpt said|assistant said/i.test(text)) return 'assistant'
   }
 
-  // Content-based check: markdown or copy button indicates assistant response
+  // Content-based check: markdown or prose indicates assistant response
   if (
-    turnEl.querySelector(CHATGPT_SELECTORS.ASSISTANT_TEXT) !== null ||
-    turnEl.querySelector(
-      'button[data-testid="copy-turn-action-button"], button[aria-label="Copy"]'
-    ) !== null
+    (typeof turnEl.matches === 'function' && turnEl.matches(CHATGPT_SELECTORS.ASSISTANT_TEXT)) ||
+    turnEl.querySelector(CHATGPT_SELECTORS.ASSISTANT_TEXT) !== null
   ) {
     return 'assistant'
   }
 
   // Pre-wrap text without assistant markdown indicates user prompt
-  if (turnEl.querySelector(CHATGPT_SELECTORS.USER_TEXT) !== null) {
+  if (
+    (typeof turnEl.matches === 'function' && turnEl.matches(CHATGPT_SELECTORS.USER_TEXT)) ||
+    turnEl.querySelector(CHATGPT_SELECTORS.USER_TEXT) !== null
+  ) {
+    return 'user'
+  }
+
+  // Fallback: assistant action buttons (e.g. copy response button)
+  if (turnEl.querySelector(CHATGPT_SELECTORS.ASSISTANT_COPY_ANCHOR) !== null) {
+    return 'assistant'
+  }
+
+  // Fallback: user action button (e.g. copy message button)
+  if (turnEl.querySelector('button[aria-label="Copy message"]') !== null) {
     return 'user'
   }
 
   return null
+}
+
+/**
+ * Guest-mode turn extraction fallback using the confirmed assistant Copy action anchor.
+ *
+ * In modern unauthenticated ChatGPT guest sessions (such as /uc/<uuid>), OpenAI strips
+ * data-testid conversation-turn attributes, data-message-author-role attributes, and
+ * article tags. However, every completed assistant response reliably renders an accessible
+ * Copy action button (`button[aria-label="Copy"]` or `[data-testid="copy-turn-action-button"]`)
+ * inside its action toolbar, with the user query occupying the immediately preceding
+ * conversational row.
+ */
+export function extractGuestTurnsFromCopyAnchors(root: Document | Element): RawMessageTurn[] {
+  const turns: RawMessageTurn[] = []
+
+  const mainEl =
+    (root instanceof Document
+      ? root.querySelector('main')
+      : typeof root.matches === 'function' && root.matches('main')
+        ? root
+        : root.querySelector('main')) || (root instanceof Document ? root.body : root)
+
+  if (!mainEl) return turns
+
+  // Discover candidate Copy buttons inside the primary chat container
+  const copyButtons = Array.from(
+    mainEl.querySelectorAll(CHATGPT_SELECTORS.ASSISTANT_COPY_ANCHOR)
+  ).filter((btn) => {
+    // Exclude buttons in navigation, sidebars, composer form, dialogs, modals, and canvas
+    if (
+      btn.closest('nav, aside, form, [role="navigation"], [role="dialog"], .embedded-canvas-view')
+    ) {
+      return false
+    }
+    // Exclude code-block copy buttons (<pre>, <code>, code headers)
+    if (btn.closest('pre, code, [class*="code-block"], [class*="code-header"], .code-block')) {
+      return false
+    }
+    const aria = btn.getAttribute('aria-label')?.toLowerCase() || ''
+    if (aria.includes('copy code')) {
+      return false
+    }
+    return true
+  })
+
+  if (copyButtons.length === 0) return turns
+
+  const processedAssistantRows = new Set<Element>()
+  const pairs: {
+    userEl: Element
+    assistantEl: Element
+    userText: string
+    assistantText: string
+  }[] = []
+
+  for (const copyBtn of copyButtons) {
+    let asstRow: Element | null = null
+    let userRow: Element | null = null
+
+    // Climb upward from copyBtn to find the assistant response container
+    let current: Element | null = copyBtn.parentElement
+    while (current && current !== mainEl) {
+      // Production guest DOM (OL/LI structure with atomic CSS) uses list items as turn boundaries.
+      // Each <LI> is a conversational turn: the assistant's <LI> has the preceding user <LI> as
+      // its previousElementSibling. Detect this before the parent-stop guard fires.
+      if (current.tagName === 'LI') {
+        let prevLi = current.previousElementSibling
+        while (prevLi && prevLi.tagName !== 'LI') {
+          prevLi = prevLi.previousElementSibling
+        }
+        if (prevLi && prevLi.tagName === 'LI' && !copyButtons.some((b) => prevLi!.contains(b))) {
+          userRow = prevLi
+          asstRow = current
+          break
+        }
+      }
+
+      // Check if current contains assistant response content (data-assistant-markdown, markdown, prose, p, pre, list, blockquote)
+      const hasContent =
+        current.querySelector(
+          '[data-assistant-markdown], .markdown, .prose, p, pre, ul, ol, blockquote'
+        ) !== null ||
+        (typeof current.matches === 'function' &&
+          current.matches(
+            '[data-assistant-markdown], .markdown, .prose, p, pre, ul, ol, blockquote'
+          ))
+
+      if (hasContent) {
+        // Look for the conversational element immediately preceding current
+        let prev = current.previousElementSibling
+        while (prev) {
+          const txt = prev.textContent?.trim() || ''
+          if (txt.length === 0) {
+            prev = prev.previousElementSibling
+            continue
+          }
+          if (
+            prev.matches?.('form, [role="toolbar"], nav, aside') ||
+            prev.querySelector('form, textarea')
+          ) {
+            prev = prev.previousElementSibling
+            continue
+          }
+          // Skip speaker heading labels (e.g. <h4>You said:</h4> / <h4>ChatGPT said:</h4>)
+          // These are accessibility labels attached to the response container, not user query rows.
+          if (prev.matches?.('h1, h2, h3, h4, h5, h6')) {
+            prev = prev.previousElementSibling
+            continue
+          }
+          if (copyButtons.some((b) => prev!.contains(b))) {
+            // Previous element contains a copy button — it is another assistant turn, not a user query
+            break
+          }
+          // Found preceding conversational candidate
+          userRow = prev
+          asstRow = current
+          break
+        }
+
+        if (asstRow && userRow) {
+          break
+        }
+      }
+
+      // If current.parentElement contains another copy button from copyButtons,
+      // stop climbing to avoid merging multiple turns
+      if (
+        current.parentElement &&
+        copyButtons.some((other) => other !== copyBtn && current!.parentElement!.contains(other))
+      ) {
+        break
+      }
+
+      current = current.parentElement
+    }
+
+    if (!asstRow || !userRow || processedAssistantRows.has(asstRow)) {
+      continue
+    }
+
+    const asstText = extractAssistantResponseText(asstRow)
+    const userText = extractUserQueryText(userRow)
+
+    if (asstText.length > 0 && userText.length > 0) {
+      processedAssistantRows.add(asstRow)
+      pairs.push({
+        userEl: userRow,
+        assistantEl: asstRow,
+        userText,
+        assistantText: asstText,
+      })
+    }
+  }
+
+  // Construct RawMessageTurn objects in exact document order
+  for (const pair of pairs) {
+    turns.push({
+      role: 'user',
+      element: pair.userEl,
+      text: pair.userText,
+      messageId: extractMessageId(pair.userEl),
+      sourceTimestamp: extractSourceTimestamp(pair.userEl),
+      isStreaming: false,
+    })
+    turns.push({
+      role: 'assistant',
+      element: pair.assistantEl,
+      text: pair.assistantText,
+      messageId: extractMessageId(pair.assistantEl),
+      sourceTimestamp: extractSourceTimestamp(pair.assistantEl),
+      isStreaming: false,
+    })
+  }
+
+  return turns
 }
 
 /**
@@ -290,7 +534,9 @@ function detectTurnRole(turnEl: Element): 'user' | 'assistant' | null {
 export function extractConversationTurns(root: Document | Element): RawMessageTurn[] {
   const turns: RawMessageTurn[] = []
 
-  let turnContainers = Array.from(root.querySelectorAll(CHATGPT_SELECTORS.TURN_ARTICLE))
+  let turnContainers = Array.from(root.querySelectorAll(CHATGPT_SELECTORS.TURN_ARTICLE)).filter(
+    (el) => !el.closest('.embedded-canvas-view, nav, aside')
+  )
   logger.debug(
     'Parser',
     'CHATGPT',
@@ -298,10 +544,18 @@ export function extractConversationTurns(root: Document | Element): RawMessageTu
   )
 
   // In guest mode or newer builds, turns may be bare <article> elements without data-testid="conversation-turn-*"
+  // An article qualifies as a turn container only if it contains verifiable message evidence
   if (turnContainers.length === 0) {
-    const bareArticles = Array.from(root.querySelectorAll('main article, article')).filter(
-      (el) => !el.closest('.embedded-canvas-view')
-    )
+    const bareArticles = Array.from(root.querySelectorAll('main article, article')).filter((el) => {
+      if (el.closest('.embedded-canvas-view, nav, aside')) return false
+      return (
+        el.hasAttribute('data-message-author-role') ||
+        el.querySelector('[data-message-author-role]') !== null ||
+        el.querySelector(CHATGPT_SELECTORS.USER_ROLE) !== null ||
+        el.querySelector(CHATGPT_SELECTORS.ASSISTANT_ROLE) !== null ||
+        detectTurnRole(el) !== null
+      )
+    })
     if (bareArticles.length > 0) {
       turnContainers = bareArticles
       logger.debug(
@@ -310,6 +564,164 @@ export function extractConversationTurns(root: Document | Element): RawMessageTu
         `Discovered ${turnContainers.length} bare article container(s) for turn extraction`
       )
     }
+  }
+
+  // Next structural fallback: look for conversation-turn class containers
+  if (turnContainers.length === 0) {
+    const classTurns = Array.from(
+      root.querySelectorAll('main [class*="conversation-turn"], [class*="conversation-turn"]')
+    ).filter((el) => !el.closest('.embedded-canvas-view, nav, aside'))
+    if (classTurns.length > 0) {
+      turnContainers = classTurns
+      logger.debug(
+        'Parser',
+        'CHATGPT',
+        `Discovered ${turnContainers.length} conversation-turn class container(s) for turn extraction`
+      )
+    }
+  }
+
+  // Next speaker-heading fallback: look for headings like "You said:", "ChatGPT said:"
+  if (turnContainers.length === 0) {
+    const speakerHeadings = Array.from(root.querySelectorAll('h5, h6, [class*="sr-only"]')).filter(
+      (el) => {
+        if (el.closest('.embedded-canvas-view, nav, aside')) return false
+        const txt = el.textContent?.toLowerCase() || ''
+        return /you said|chatgpt said|assistant said/i.test(txt)
+      }
+    )
+    if (speakerHeadings.length > 0) {
+      const headingContainers: Element[] = []
+      for (const h of speakerHeadings) {
+        const parentContainer = h.closest(
+          'article, [class*="group/conversation-turn"], [class*="conversation-turn"], div.w-full, div'
+        )
+        if (
+          parentContainer &&
+          parentContainer !== root &&
+          parentContainer !== (root instanceof Document ? root.body : root) &&
+          !headingContainers.includes(parentContainer)
+        ) {
+          headingContainers.push(parentContainer)
+        }
+      }
+      if (headingContainers.length > 0) {
+        turnContainers = headingContainers
+        logger.debug(
+          'Parser',
+          'CHATGPT',
+          `Discovered ${turnContainers.length} speaker-heading container(s) for turn extraction`
+        )
+      }
+    }
+  }
+
+  // Next modern guest DOM fallback: identify sibling message rows inside primary chat viewport
+  if (turnContainers.length === 0) {
+    const mainEl =
+      (root instanceof Document
+        ? root.querySelector('main')
+        : typeof root.matches === 'function' && root.matches('main')
+          ? root
+          : root.querySelector('main')) || (root instanceof Document ? root.body : root)
+
+    if (mainEl) {
+      // Discover candidate message content elements (data-assistant-markdown, .whitespace-pre-wrap, .markdown, .prose)
+      // Strictly exclude navigation, sidebars, composer form, toolbars, dialogs, and canvas views
+      const contentNodes = Array.from(
+        mainEl.querySelectorAll(
+          '[data-assistant-markdown], .whitespace-pre-wrap, [class*="whitespace-pre-wrap"], div[class*="text-message"], .markdown, .prose, div[class*="markdown"]'
+        )
+      ).filter(
+        (el) =>
+          !el.closest(
+            'nav, aside, form, [role="navigation"], [role="toolbar"], [role="dialog"], .embedded-canvas-view'
+          )
+      )
+
+      // Exclude nested content nodes (e.g. .prose inside .markdown, or .whitespace-pre-wrap inside assistant code blocks)
+      const isInsideAssistantMarkdown = (el: Element): boolean => {
+        let p = el.parentElement
+        while (p && p !== mainEl) {
+          if (
+            (typeof p.matches === 'function' && p.matches(CHATGPT_SELECTORS.ASSISTANT_TEXT)) ||
+            p.hasAttribute('data-assistant-markdown') ||
+            p.classList.contains('markdown') ||
+            p.classList.contains('prose')
+          ) {
+            return true
+          }
+          p = p.parentElement
+        }
+        return false
+      }
+
+      const topContentNodes = contentNodes.filter((el) => {
+        if (
+          (typeof el.matches === 'function' && el.matches(CHATGPT_SELECTORS.ASSISTANT_TEXT)) ||
+          el.classList.contains('markdown') ||
+          el.classList.contains('prose')
+        ) {
+          return !isInsideAssistantMarkdown(el)
+        }
+        return !isInsideAssistantMarkdown(el)
+      })
+
+      if (topContentNodes.length > 0) {
+        // Map each content node to its logical message row container inside mainEl.
+        // A message row is the highest ancestor below mainEl that contains ONLY this message
+        // and none of the other distinct topContentNodes.
+        const candidateRows: Element[] = []
+        for (const contentEl of topContentNodes) {
+          let row = contentEl
+          let current: Element | null = contentEl.parentElement
+          while (current && current !== mainEl) {
+            const containsOther = topContentNodes.some(
+              (other) => other !== contentEl && current!.contains(other)
+            )
+            if (containsOther) {
+              break
+            }
+            row = current
+            current = current.parentElement
+          }
+          if (!candidateRows.includes(row) && !candidateRows.some((r) => r.contains(row))) {
+            const existingChildIdx = candidateRows.findIndex((r) => row.contains(r))
+            if (existingChildIdx >= 0) {
+              candidateRows[existingChildIdx] = row
+            } else {
+              candidateRows.push(row)
+            }
+          }
+        }
+
+        if (candidateRows.length > 0) {
+          turnContainers = candidateRows
+          logger.debug(
+            'Parser',
+            'CHATGPT',
+            `Discovered ${turnContainers.length} guest message row container(s) for turn extraction`
+          )
+        }
+      }
+    }
+  }
+
+  // Deduplicate nested containers so parent-child duplicates don't produce double turns
+  if (turnContainers.length > 1) {
+    turnContainers = turnContainers.filter((el) => {
+      let parent = el.parentElement
+      while (parent && parent !== root) {
+        if (turnContainers.includes(parent)) {
+          const parentRole = detectTurnRole(parent)
+          if (parentRole !== null) {
+            return false
+          }
+        }
+        parent = parent.parentElement
+      }
+      return true
+    })
   }
 
   if (turnContainers.length > 0) {
@@ -346,12 +758,47 @@ export function extractConversationTurns(root: Document | Element): RawMessageTu
     }
   }
 
-  // Fallback: If container extraction yielded 0 turns (or no containers were found),
+  // If the heuristic found containers but the extraction produced an UNBALANCED result
+  // (0 user turns OR 0 assistant turns), it cannot form any complete pairs.
+  // This is the typical failure for production OL/LI guest DOM where:
+  //   - The sibling heuristic matches .prose inside assistant LI only → 0 user rows
+  //   - OR the OL container gets classified as user (contains Copy message) → 0 assistant rows
+  // Clearing allows the dedicated copy-anchor extraction to run with correct LI-boundary logic.
+  if (turns.length > 0) {
+    const userTurnCount = turns.filter((t) => t.role === 'user').length
+    const asstTurnCount = turns.filter((t) => t.role === 'assistant').length
+    if (userTurnCount === 0 || asstTurnCount === 0) {
+      logger.debug(
+        'Parser',
+        'CHATGPT',
+        `Container extraction yielded unbalanced turns (user=${userTurnCount}, asst=${asstTurnCount}) — clearing for copy-anchor fallback.`
+      )
+      turns.length = 0
+    }
+  }
+
+  // Fallback 1: Guest-mode anchor extraction using the confirmed assistant Copy action button
+  if (turns.length === 0) {
+    const guestTurns = extractGuestTurnsFromCopyAnchors(root)
+    if (guestTurns.length > 0) {
+      logger.debug(
+        'Parser',
+        'CHATGPT',
+        `Discovered ${guestTurns.length} turn(s) using guest assistant Copy action anchor.`
+      )
+      return guestTurns
+    }
+  }
+
+  // Fallback 2: If container extraction yielded 0 turns (or no containers were found),
   // search directly by data-message-author-role or message text containers
   if (turns.length === 0) {
     const roleElements = Array.from(
-      root.querySelectorAll(`${CHATGPT_SELECTORS.USER_ROLE}, ${CHATGPT_SELECTORS.ASSISTANT_ROLE}`)
-    )
+      root.querySelectorAll(
+        `${CHATGPT_SELECTORS.USER_ROLE}, ${CHATGPT_SELECTORS.ASSISTANT_ROLE}, ${CHATGPT_SELECTORS.USER_TEXT}, ${CHATGPT_SELECTORS.ASSISTANT_TEXT}`
+      )
+    ).filter((el) => !el.closest('.embedded-canvas-view, nav, aside'))
+
     logger.debug(
       'Parser',
       'CHATGPT',
@@ -366,7 +813,8 @@ export function extractConversationTurns(root: Document | Element): RawMessageTu
           parent.getAttribute('data-message-author-role') === 'assistant' ||
           (typeof parent.matches === 'function' &&
             (parent.matches(CHATGPT_SELECTORS.USER_ROLE) ||
-              parent.matches(CHATGPT_SELECTORS.ASSISTANT_ROLE)))
+              parent.matches(CHATGPT_SELECTORS.ASSISTANT_ROLE))) ||
+          roleElements.includes(parent)
         ) {
           return false
         }
@@ -377,7 +825,8 @@ export function extractConversationTurns(root: Document | Element): RawMessageTu
 
     for (const el of topRoleElements) {
       const role =
-        detectTurnRole(el) || (el.getAttribute('data-message-author-role') as 'user' | 'assistant' | null)
+        detectTurnRole(el) ||
+        (el.getAttribute('data-message-author-role') as 'user' | 'assistant' | null)
       if (role === 'user') {
         turns.push({
           role: 'user',

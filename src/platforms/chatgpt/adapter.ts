@@ -25,7 +25,8 @@ import {
   isPageGenerating,
   pairTurnsIntoInteractions,
 } from './parser'
-import { cleanQueryText } from '../shared/parser-utils'
+import { CHATGPT_SELECTORS } from './selectors'
+import type { ExtractedInteraction } from '../types'
 
 export type ChatGPTAdapterOptions = BaseAdapterOptions
 
@@ -34,7 +35,7 @@ export class ChatGPTAdapter extends BaseAdapter {
   protected readonly platformTag = 'CHATGPT' as const
 
   private lastObservedUrl = ''
-  private guestConversationId: string | null = null
+  private isGuestSession = false
 
   constructor(options?: ChatGPTAdapterOptions) {
     super(options)
@@ -72,8 +73,20 @@ export class ChatGPTAdapter extends BaseAdapter {
   stop(): void {
     if (!this.observing) return
     logger.info('Adapter', 'CHATGPT', 'Stopping adapter and disconnecting observer.')
-    this.guestConversationId = null
+    this.isGuestSession = false
     this.stopShared()
+  }
+
+  protected override shouldPersistUnboundImmediately(_interaction: ExtractedInteraction): boolean {
+    if (this.isGuestSession) {
+      return true
+    }
+    const root = typeof document !== 'undefined' ? document.body || document : null
+    if (root && isChatGPTGuestSession(root)) {
+      this.isGuestSession = true
+      return true
+    }
+    return false
   }
 
   /** Delegates to the shared handleNavigation from BaseAdapter. */
@@ -139,6 +152,15 @@ export class ChatGPTAdapter extends BaseAdapter {
     }
     this.resetStreamingDeferrals()
 
+    this.isGuestSession = isChatGPTGuestSession(root)
+    if (this.isGuestSession && !conversationId) {
+      logger.info(
+        'Adapter',
+        'CHATGPT',
+        'Unauthenticated / anonymous ChatGPT session detected without conversation ID. Using content-based fallback identity.'
+      )
+    }
+
     const extractedTitle = extractConversationTitle(document)
     const model = extractModelInfo(document)
 
@@ -148,12 +170,11 @@ export class ChatGPTAdapter extends BaseAdapter {
 
     const captureContext = this.consumeCaptureContext()
 
-    const turnContainers = Array.from(
-      root.querySelectorAll(
-        'article[data-testid^="conversation-turn-"], div[data-testid^="conversation-turn-"], article'
-      )
-    ).length
+    const turnContainers = Array.from(root.querySelectorAll(CHATGPT_SELECTORS.TURN_ARTICLE)).length
     const turns = extractConversationTurns(root)
+    if (this.checkAndDeferStaleDom(turns)) {
+      return
+    }
     const userTurns = turns.filter((t) => t.role === 'user').length
     const assistantTurns = turns.filter((t) => t.role === 'assistant').length
 
@@ -167,38 +188,14 @@ export class ChatGPTAdapter extends BaseAdapter {
     )
 
     if (turns.length === 0) {
-      if (this.guestConversationId) {
-        this.guestConversationId = null
-      }
       logger.debug('Adapter', 'CHATGPT', 'No conversation turns discovered in DOM.')
       return
     }
 
-    // Assign a deterministic session-scoped conversation ID for unauthenticated guest sessions
-    const isGuest = isChatGPTGuestSession(root)
-    if (!conversationId && isGuest) {
-      if (!this.guestConversationId) {
-        this.guestConversationId = `guest_chatgpt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
-        logger.info(
-          'Adapter',
-          'CHATGPT',
-          `Unauthenticated / guest ChatGPT session detected. Assigned local session conversation ID: ${this.guestConversationId}`
-        )
-      }
-    } else if (conversationId) {
-      this.guestConversationId = null
-    }
-
-    const effectiveConvId = conversationId ?? this.guestConversationId
-    const title =
-      extractedTitle ||
-      (this.guestConversationId && turns.length > 0
-        ? cleanQueryText(turns.find((t) => t.role === 'user')?.text || '').slice(0, 60) ||
-          'Guest Chat'
-        : null)
+    const title = extractedTitle || null
 
     const interactions = pairTurnsIntoInteractions(turns, {
-      conversationId: effectiveConvId,
+      conversationId,
       title,
       model,
       captureContext,
@@ -216,7 +213,7 @@ export class ChatGPTAdapter extends BaseAdapter {
 
     logger.logScanSummary({
       platform: 'CHATGPT',
-      conversationId: effectiveConvId !== null,
+      conversationId: conversationId !== null,
       turnContainers,
       userTurns,
       assistantTurns,

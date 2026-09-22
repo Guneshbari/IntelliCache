@@ -139,6 +139,9 @@ export class ClaudeAdapter extends BaseAdapter {
     ).length
 
     const turns = extractConversationTurns(document.body || document)
+    if (this.checkAndDeferStaleDom(turns)) {
+      return
+    }
     const userTurns = turns.filter((t) => t.role === 'user').length
     const assistantTurns = turns.filter((t) => t.role === 'assistant').length
 

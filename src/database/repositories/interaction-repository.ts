@@ -94,19 +94,16 @@ export class InteractionRepository {
           : typeof globalThis.crypto?.randomUUID === 'function'
             ? globalThis.crypto.randomUUID()
             : `int_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`
-      let platform = input.platform.trim().toLowerCase()
+      const platform = input.platform.trim().toLowerCase()
       const knownPrefix = ['chatgpt:', 'claude:', 'gemini:'].find((p) =>
         input.conversation_id?.toLowerCase().startsWith(p)
       )
       if (knownPrefix) {
         const prefixPlatform = knownPrefix.slice(0, -1)
         if (prefixPlatform !== platform) {
-          logger.warn(
-            'Database',
-            platformTag,
-            `Platform alignment: input platform '${platform}' normalized to '${prefixPlatform}' based on conversation ID prefix`
+          throw new DatabaseOperationError(
+            `Cross-platform mismatch: conversation_id prefix '${prefixPlatform}' does not match interaction platform '${platform}'`
           )
-          platform = prefixPlatform
         }
       }
       const namespacedConvId = namespaceConversationId(platform, input.conversation_id)
@@ -168,11 +165,41 @@ export class InteractionRepository {
           if (input.conversation_title) existing.conversation_title = input.conversation_title
           if (input.message_id) existing.message_id = input.message_id.trim()
           if (input.user_message_id) existing.user_message_id = input.user_message_id.trim()
+          if (input.response.text.length > existing.response.characters) {
+            existing.response = calculateTextMetrics(
+              input.response.text,
+              input.response.estimated_tokens
+            )
+          }
+
+          // FIX-002: Recompute fingerprint with new conversation_id and identity
+          const reboundFpResult = await generateInteractionFingerprint({
+            platform,
+            conversation_id: namespacedConvId,
+            message_id: existing.message_id,
+            query_text: existing.query.text,
+            response_text: existing.response.text,
+            observed_at: existing.observed_at,
+          })
+
+          const dupCheck = await this.db.interactions
+            .where('fingerprint')
+            .equals(reboundFpResult.fingerprint)
+            .first()
+          if (dupCheck && dupCheck.id !== existing.id) {
+            throw new DuplicateInteractionError(
+              reboundFpResult.fingerprint,
+              `Interaction with fingerprint '${reboundFpResult.fingerprint}' already exists (ID: ${dupCheck.id}).`
+            )
+          }
+
+          existing.fingerprint = reboundFpResult.fingerprint
+          existing.fingerprint_strategy = reboundFpResult.strategy
           await this.db.interactions.put(existing)
           logger.info(
             'Database',
             platformTag,
-            `updated trace=${traceId} (bound existing ID: ${existing.id} -> ${namespacedConvId}, platform: ${platform})`
+            `updated trace=${traceId} (bound existing ID: ${existing.id} -> ${namespacedConvId}, fp: ${existing.fingerprint.slice(0, 16)}..., platform: ${platform})`
           )
           logger.info(
             'Lifecycle',
@@ -193,47 +220,94 @@ export class InteractionRepository {
         )
       }
 
-      // Check if an unbound fallback (Level 3) interaction exists for the same content
+      // Check if an unbound fallback interaction exists using deterministic evidence
+      // (exact message_id, exact user_message_id, or exact L3 fingerprint).
+      // FIX-001: Loose query.text-only matching is strictly eliminated.
       if (namespacedConvId !== null) {
-        const l3FpResult = await generateInteractionFingerprint({
-          platform,
-          conversation_id: null,
-          message_id: null,
-          query_text: input.query.text,
-          response_text: input.response.text,
-          observed_at: observedAt,
-        })
-        let existingUnbound = await this.db.interactions
-          .where('fingerprint')
-          .equals(l3FpResult.fingerprint)
-          .first()
-        if (!existingUnbound) {
+        let existingUnbound: Interaction | undefined
+
+        // 1. Match by exact message_id if available
+        if (input.message_id?.trim()) {
+          const trimmedMsgId = input.message_id.trim()
           existingUnbound = await this.db.interactions
             .where('platform')
             .equals(platform)
-            .filter((r) => r.conversation_id === null && r.query.text === input.query.text)
+            .filter((r) => r.conversation_id === null && r.message_id === trimmedMsgId)
             .first()
         }
+
+        // 2. Match by exact user_message_id if available and not yet found
+        if (!existingUnbound && input.user_message_id?.trim()) {
+          const trimmedUserMsgId = input.user_message_id.trim()
+          existingUnbound = await this.db.interactions
+            .where('platform')
+            .equals(platform)
+            .filter((r) => r.conversation_id === null && r.user_message_id === trimmedUserMsgId)
+            .first()
+        }
+
+        // 3. Match by exact L3 content fingerprint
+        if (!existingUnbound) {
+          const l3FpResult = await generateInteractionFingerprint({
+            platform,
+            conversation_id: null,
+            message_id: null,
+            query_text: input.query.text,
+            response_text: input.response.text,
+            observed_at: observedAt,
+          })
+          existingUnbound = await this.db.interactions
+            .where('fingerprint')
+            .equals(l3FpResult.fingerprint)
+            .first()
+        }
+
         if (existingUnbound) {
           if (existingUnbound.conversation_id === null) {
             existingUnbound.conversation_id = namespacedConvId
             existingUnbound.platform = platform
-            if (input.conversation_title)
+            if (input.conversation_title) {
               existingUnbound.conversation_title = input.conversation_title
+            }
             if (input.message_id) existingUnbound.message_id = input.message_id.trim()
-            if (input.user_message_id)
+            if (input.user_message_id) {
               existingUnbound.user_message_id = input.user_message_id.trim()
+            }
             if (input.response.text.length > existingUnbound.response.characters) {
               existingUnbound.response = calculateTextMetrics(
                 input.response.text,
                 input.response.estimated_tokens
               )
             }
+
+            // FIX-002: Recompute fingerprint with new conversation_id and identity
+            const reboundFpResult = await generateInteractionFingerprint({
+              platform,
+              conversation_id: namespacedConvId,
+              message_id: existingUnbound.message_id,
+              query_text: existingUnbound.query.text,
+              response_text: existingUnbound.response.text,
+              observed_at: existingUnbound.observed_at,
+            })
+
+            const dupCheck = await this.db.interactions
+              .where('fingerprint')
+              .equals(reboundFpResult.fingerprint)
+              .first()
+            if (dupCheck && dupCheck.id !== existingUnbound.id) {
+              throw new DuplicateInteractionError(
+                reboundFpResult.fingerprint,
+                `Cannot rebind interaction: target fingerprint '${reboundFpResult.fingerprint}' already exists in database (ID: ${dupCheck.id}).`
+              )
+            }
+
+            existingUnbound.fingerprint = reboundFpResult.fingerprint
+            existingUnbound.fingerprint_strategy = reboundFpResult.strategy
             await this.db.interactions.put(existingUnbound)
             logger.info(
               'Database',
               platformTag,
-              `updated trace=${traceId} (bound existing unbound ID: ${existingUnbound.id} -> ${namespacedConvId}, platform: ${platform})`
+              `updated trace=${traceId} (bound existing unbound ID: ${existingUnbound.id} -> ${namespacedConvId}, fp: ${existingUnbound.fingerprint.slice(0, 16)}..., platform: ${platform})`
             )
             logger.info(
               'Lifecycle',

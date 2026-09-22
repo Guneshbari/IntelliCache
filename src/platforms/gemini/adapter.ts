@@ -173,6 +173,9 @@ export class GeminiAdapter extends BaseAdapter {
             )
           ).length
     const turns = extractConversationTurns(root)
+    if (this.checkAndDeferStaleDom(turns)) {
+      return
+    }
     const userTurns = turns.filter((t) => t.role === 'user').length
     const assistantTurns = turns.filter((t) => t.role === 'assistant').length
 

@@ -98,7 +98,10 @@ export async function generateInteractionFingerprint(
     throw new Error('generateInteractionFingerprint: platform must be a non-empty string')
   }
   const platform = input.platform.trim().toLowerCase()
-  const conversationId = input.conversation_id?.trim() || null
+  let conversationId = input.conversation_id?.trim() || null
+  if (conversationId && conversationId.toLowerCase().startsWith(`${platform}:`)) {
+    conversationId = conversationId.slice(platform.length + 1).trim() || null
+  }
   const messageId = input.message_id?.trim() || null
 
   // Level 1 Strategy: Platform + Conversation ID + Message ID

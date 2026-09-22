@@ -11,8 +11,13 @@ export const CHATGPT_SELECTORS = {
    * Matches specific conversation-turn articles or wrappers with data-testid.
    * Excludes bare `article` to prevent nested embedded/canvas articles from double-counting.
    */
-  TURN_ARTICLE:
-    'article[data-testid^="conversation-turn-"], div[data-testid^="conversation-turn-"]',
+  TURN_ARTICLE: [
+    'article[data-testid^="conversation-turn-"]',
+    'div[data-testid^="conversation-turn-"]',
+    'div[class*="group/conversation-turn"]',
+    '[class*="group/conversation-turn"]',
+    '[data-testid^="conversation-turn-"]',
+  ].join(', '),
 
   /**
    * Role-based message identifiers.
@@ -23,6 +28,18 @@ export const CHATGPT_SELECTORS = {
     '[data-message-author-role="assistant"], [data-testid*="assistant-message"], [data-testid*="assistant_message"]',
 
   /**
+   * Assistant turn Copy action button anchor.
+   * Scoped to the completed response action bar in guest and authenticated modes.
+   */
+  ASSISTANT_COPY_ANCHOR: [
+    'button[aria-label="Copy response"]',
+    'button[aria-label="Copy"]',
+    'button[aria-label="Copy to clipboard"]',
+    'button[data-testid="copy-turn-action-button"]',
+    '[data-testid="copy-turn-action-button"]',
+  ].join(', '),
+
+  /**
    * Guest / unauthenticated session indicators.
    * Buttons, banners, or links present when user is chatting as a guest without login.
    */
@@ -31,34 +48,40 @@ export const CHATGPT_SELECTORS = {
     'button[data-testid="signup-button"]',
     'a[href*="/auth/login"]',
     'a[href*="login"]',
+    'a[href*="signup"]',
     '[data-testid="logged-out-banner"]',
     '[data-testid="stay-logged-out-button"]',
     'button[data-testid="welcome-login-button"]',
     '[data-testid="login-banner"]',
+    '[data-testid="unauth-banner"]',
   ].join(', '),
 
   /**
    * Authenticated profile indicators (to ensure we don't misclassify logged-in users).
+   * Note: 'button[aria-label*="Open account menu"]' alone is not included here because real
+   * guest ChatGPT DOM also exposes an account menu button for logged-out users to log in or sign up.
+   * Dynamic account menu checks are handled in isChatGPTGuestSession().
    */
   LOGGED_IN_INDICATORS: [
     '[data-testid="profile-button"]',
     '[data-testid="accounts-profile-button"]',
     'button[aria-label*="User profile"]',
-    'button[aria-label*="Open account menu"]',
     '.avatar-user',
+    '[data-testid="user-avatar"]',
   ].join(', '),
 
   /**
    * User message text containers.
    * Prioritizes the message text element (.whitespace-pre-wrap) over outer wrappers.
+   * Note: div[class*="content"] removed to avoid matching generic parent layout wrappers.
    */
   USER_TEXT:
-    '.whitespace-pre-wrap, [class*="whitespace-pre-wrap"], div[class*="text-message"], div[class*="content"], [data-message-author-role="user"]',
+    '.whitespace-pre-wrap, [class*="whitespace-pre-wrap"], div[class*="text-message"], [data-message-author-role="user"]',
 
   /**
    * Assistant response text and markdown containers.
    */
-  ASSISTANT_TEXT: '.markdown, .prose, div[class*="markdown"]',
+  ASSISTANT_TEXT: '[data-assistant-markdown], .markdown, .prose, div[class*="markdown"]',
 
   /**
    * Code block containers.

@@ -364,9 +364,19 @@ export function isSenderAllowedForWrite(
   if (!sender) return true
   const tabUrl = sender.tab?.url ?? sender.url
   if (!tabUrl || !payloadPlatform) return true
+
+  // Extension internal contexts (popup, side panel, options) are allowed
+  if (
+    tabUrl.startsWith('chrome-extension://') ||
+    tabUrl.startsWith('moz-extension://') ||
+    tabUrl.startsWith('extension://')
+  ) {
+    return true
+  }
+
   const senderPlatform = detectPlatformFromUrl(tabUrl)
-  // If the sender URL is not a recognized AI platform, allow the write — the validation
-  // layer (PERSISTABLE_PLATFORMS) will reject the payload if the claimed platform is invalid.
-  if (senderPlatform === null) return true
+  // FIX-007: If sender is a web tab that is not a recognized AI platform, reject it
+  if (senderPlatform === null) return false
+
   return senderPlatform === payloadPlatform.trim().toLowerCase()
 }

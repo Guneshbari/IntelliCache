@@ -153,7 +153,16 @@ export function pairTurnsIntoInteractions(
     if (turn.role === 'user') {
       // Empty user turns are ignored and never overwrite a pending user.
       if (turn.text.length > 0) {
-        pendingUserTurn = turn
+        if (pendingUserTurn) {
+          pendingUserTurn = {
+            ...turn,
+            messageId: pendingUserTurn.messageId || turn.messageId,
+            text: `${pendingUserTurn.text}\n\n${turn.text}`,
+            sourceTimestamp: pendingUserTurn.sourceTimestamp || turn.sourceTimestamp,
+          }
+        } else {
+          pendingUserTurn = turn
+        }
       }
     } else if (turn.role === 'assistant' && pendingUserTurn) {
       if (!turn.isStreaming) {

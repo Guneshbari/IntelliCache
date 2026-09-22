@@ -226,11 +226,20 @@ describe('End-to-End Interaction Lifecycle & UI Retrieval Correctness', () => {
     expect(await interactionRepo.count()).toBe(1)
     expect(await conversationRepo.count()).toBe(1)
 
-    // Verify the existing interaction was updated in-place
+    // Verify the existing interaction was updated in-place with recomputed fingerprint (FIX-002)
     const updatedRecord = await interactionRepo.getById(originalInteractionId)
     expect(updatedRecord).not.toBeNull()
     expect(updatedRecord!.id).toBe(originalInteractionId)
-    expect(updatedRecord!.fingerprint).toBe(originalFingerprint)
+    expect(updatedRecord!.fingerprint).not.toBe(originalFingerprint)
+    const expectedBoundFp = await generateInteractionFingerprint({
+      platform: 'chatgpt',
+      conversation_id: 'chatgpt:chat-tokyo-123',
+      query_text: prompt,
+      response_text: reply,
+      observed_at: updatedRecord!.observed_at,
+    })
+    expect(updatedRecord!.fingerprint).toBe(expectedBoundFp.fingerprint)
+    expect(updatedRecord!.fingerprint_strategy).toBe('level_2')
     expect(updatedRecord!.conversation_id).toBe('chatgpt:chat-tokyo-123')
     expect(updatedRecord!.conversation_title).toBe('Tokyo Trip Plan')
 
@@ -240,9 +249,9 @@ describe('End-to-End Interaction Lifecycle & UI Retrieval Correctness', () => {
     expect(conv!.id).toBe('chatgpt:chat-tokyo-123')
   })
 
-  // ─── 5. FINGERPRINT STABILITY ACROSS CONVERSATION ID RESOLUTION ───────────
+  // ─── 5. FINGERPRINT RECOMPUTATION ACROSS CONVERSATION ID RESOLUTION ──────
 
-  it('fingerprint remains stable when conversation_id is resolved on existing unbound record', async () => {
+  it('fingerprint is recomputed when conversation_id is resolved on existing unbound record (FIX-002)', async () => {
     const input = {
       platform: 'claude',
       query_text: 'Explain quantum entanglement',
@@ -282,8 +291,18 @@ describe('End-to-End Interaction Lifecycle & UI Retrieval Correctness', () => {
       observed_at: input.observed_at,
     })
 
+    const expectedBoundFp = await generateInteractionFingerprint({
+      platform: input.platform,
+      conversation_id: 'claude:claude-conv-quantum',
+      query_text: input.query_text,
+      response_text: input.response_text,
+      observed_at: input.observed_at,
+    })
+
     expect(bound.id).toBe(created.id)
-    expect(bound.fingerprint).toBe(created.fingerprint)
+    expect(bound.fingerprint).not.toBe(created.fingerprint)
+    expect(bound.fingerprint).toBe(expectedBoundFp.fingerprint)
+    expect(bound.fingerprint_strategy).toBe('level_2')
     expect(bound.conversation_id).toBe('claude:claude-conv-quantum')
     expect(await interactionRepo.count()).toBe(1)
   })

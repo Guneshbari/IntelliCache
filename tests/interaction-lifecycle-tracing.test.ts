@@ -326,10 +326,11 @@ describe('End-to-End Interaction Lifecycle Tracing & Correctness Verification', 
       expect(await interactionRepo.count()).toBe(1)
       expect(await conversationRepo.count()).toBe(1)
 
-      // Verify in-place update preservation
+      // Verify in-place update preservation with recomputed fingerprint (FIX-002)
       const updatedRecord = (await interactionRepo.getAll())[0]
       expect(updatedRecord.id).toBe(originalId)
-      expect(updatedRecord.fingerprint).toBe(originalFp)
+      expect(updatedRecord.fingerprint).not.toBe(originalFp)
+      expect(updatedRecord.fingerprint_strategy).toBe('level_2')
       expect(updatedRecord.observed_at).toBe(originalObservedAt)
       expect(updatedRecord.conversation_id).toBe('gemini:gemini-arch-123')
       expect(updatedRecord.conversation_title).toBe('Micro Frontends Trade-offs')

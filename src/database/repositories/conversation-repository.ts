@@ -88,10 +88,12 @@ export class ConversationRepository {
               ? observedAt
               : existing.last_observed_at
 
-          // Explicit null clears the title; undefined preserves the existing one.
+          // FIX-008: Preserve non-empty existing title if input.title is empty, null, or undefined
+          const cleanNewTitle =
+            typeof input.title === 'string' ? input.title.trim() : ''
           const updated: Conversation = {
             ...existing,
-            title: input.title !== undefined ? input.title : existing.title,
+            title: cleanNewTitle.length > 0 ? cleanNewTitle : existing.title,
             last_observed_at: newLastObservedAt,
           }
           await this.db.conversations.put(updated)
@@ -110,7 +112,10 @@ export class ConversationRepository {
         const newConversation: Conversation = {
           id: namespacedId,
           platform,
-          title: input.title ?? null,
+          title:
+            typeof input.title === 'string' && input.title.trim().length > 0
+              ? input.title.trim()
+              : null,
           first_observed_at: firstObservedAt,
           last_observed_at: lastObservedAt,
         }

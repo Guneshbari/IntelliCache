@@ -80,7 +80,8 @@ export function isGeminiGuestSession(root: Document | Element): boolean {
       (root instanceof Element && root.querySelector(GEMINI_SELECTORS.GUEST_INDICATORS) !== null) ||
       (doc ? doc.querySelector(GEMINI_SELECTORS.GUEST_INDICATORS) !== null : false)
     const hasLoggedInProfile =
-      (root instanceof Element && root.querySelector(GEMINI_SELECTORS.LOGGED_IN_INDICATORS) !== null) ||
+      (root instanceof Element &&
+        root.querySelector(GEMINI_SELECTORS.LOGGED_IN_INDICATORS) !== null) ||
       (doc ? doc.querySelector(GEMINI_SELECTORS.LOGGED_IN_INDICATORS) !== null : false)
 
     if (hasGuestIndicator && !hasLoggedInProfile) {

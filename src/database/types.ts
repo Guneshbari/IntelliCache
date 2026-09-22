@@ -66,10 +66,14 @@ export function namespaceConversationId(
   if (!trimmedId) {
     return null
   }
-  // Strip any existing or foreign platform prefix to avoid double-prefixing (e.g. "gemini:claude:...")
+  // Strip any existing platform prefix if it matches normPlatform; reject foreign prefixes
   const knownPrefixes = ['chatgpt:', 'claude:', 'gemini:']
   for (const p of knownPrefixes) {
     if (trimmedId.toLowerCase().startsWith(p)) {
+      const prefixPlatform = p.slice(0, -1)
+      if (prefixPlatform !== normPlatform) {
+        return null
+      }
       trimmedId = trimmedId.slice(p.length).trim()
       break
     }
