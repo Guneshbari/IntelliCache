@@ -20,6 +20,9 @@ import { CHATGPT_SELECTORS } from './selectors'
 
 export { extractMessageId, extractSourceTimestamp }
 
+const RE_CHATGPT_CONV_ID = /\/(?:c|uc)\/([a-zA-Z0-9_-]+)/
+const RE_CHATGPT_TITLE_STRIP = /\s*-\s*ChatGPT$/i
+
 /**
  * Extracts the UUID or slug conversation ID from ChatGPT URLs.
  * Examples:
@@ -30,7 +33,7 @@ export { extractMessageId, extractSourceTimestamp }
 export function extractConversationIdFromUrl(url: string): string | null {
   try {
     const pathname = new URL(url).pathname
-    const match = pathname.match(/\/(?:c|uc)\/([a-zA-Z0-9_-]+)/)
+    const match = pathname.match(RE_CHATGPT_CONV_ID)
     return match?.[1] ?? null
   } catch {
     return null
@@ -52,7 +55,7 @@ export function extractConversationTitle(docOrElement: Document | Element): stri
 
   if (!title) return null
 
-  const cleaned = title.replace(/\s*-\s*ChatGPT$/i, '').trim()
+  const cleaned = title.replace(RE_CHATGPT_TITLE_STRIP, '').trim()
   const lower = cleaned.toLowerCase()
 
   if (
@@ -92,6 +95,9 @@ export function extractModelInfo(root: Document | Element): {
   return { provider: 'openai', name }
 }
 
+const RE_SAID_HEADING = /said/i
+const RE_AUTH_WORDS = /\b(log\s*in|sign\s*up|sign\s*in)\b/i
+
 /**
  * Extracts raw user query text from a user turn element.
  * Strips UI controls, navigation, and edit controls while preserving multiline formatting.
@@ -106,7 +112,7 @@ export function extractUserQueryText(element: Element): string {
 
   // Strip accessibility / speaker headings (e.g. <h4>You said:</h4>, <h5>You said:</h5>)
   clone.querySelectorAll('h4, h5, h6').forEach((h) => {
-    if (/said/i.test(h.textContent || '') || h.classList.contains('sr-only')) {
+    if (RE_SAID_HEADING.test(h.textContent || '') || h.classList.contains('sr-only')) {
       h.remove()
     }
   })
@@ -143,7 +149,7 @@ export function extractAssistantResponseText(element: Element): string {
 
   // Strip accessibility / speaker headings (e.g. <h4>ChatGPT said:</h4>, <h6>ChatGPT said:</h6>)
   clone.querySelectorAll('h4, h5, h6').forEach((h) => {
-    if (/said/i.test(h.textContent || '') || h.classList.contains('sr-only')) {
+    if (RE_SAID_HEADING.test(h.textContent || '') || h.classList.contains('sr-only')) {
       h.remove()
     }
   })
@@ -222,54 +228,70 @@ export function isChatGPTGuestSession(root: Document | Element): boolean {
 
     // Check for login / sign up text, hrefs, or testids in buttons, links, or aria-labels
     const checkAuth = (el: Element): boolean => {
-      const txt = el.textContent?.trim().toLowerCase() || ''
-      const href = el.getAttribute('href')?.toLowerCase() || ''
-      const testId = el.getAttribute('data-testid')?.toLowerCase() || ''
-      const aria = el.getAttribute('aria-label')?.toLowerCase() || ''
-      return (
-        /\b(log\s*in|sign\s*up|sign\s*in)\b/i.test(txt) ||
-        /\b(log\s*in|sign\s*up|sign\s*in)\b/i.test(aria) ||
-        href.includes('/auth') ||
-        href.includes('login') ||
-        href.includes('signup') ||
-        testId.includes('login') ||
-        testId.includes('signup')
-      )
-    }
-
-    // Helper to query elements across both scope and document
-    const queryElements = (selector: string): Element[] => {
-      const inScope = Array.from(scope.querySelectorAll(selector))
-      if (doc && doc !== scope) {
-        const inDoc = Array.from(doc.querySelectorAll(selector))
-        return Array.from(new Set([...inScope, ...inDoc]))
+      const txt = el.textContent?.trim() || ''
+      const aria = el.getAttribute('aria-label') || ''
+      if (RE_AUTH_WORDS.test(txt) || RE_AUTH_WORDS.test(aria)) {
+        return true
       }
-      return inScope
+      const href = el.getAttribute('href')?.toLowerCase() || ''
+      if (href.includes('/auth') || href.includes('login') || href.includes('signup')) {
+        return true
+      }
+      const testId = el.getAttribute('data-testid')?.toLowerCase() || ''
+      return testId.includes('login') || testId.includes('signup')
     }
 
     // 1. Explicit guest indicators in selectors
-    const hasGuestIndicator =
-      scope.querySelector(CHATGPT_SELECTORS.GUEST_INDICATORS) !== null ||
-      (doc && doc !== scope
-        ? doc.querySelector(CHATGPT_SELECTORS.GUEST_INDICATORS) !== null
-        : false)
+    let hasGuestIndicator = scope.querySelector(CHATGPT_SELECTORS.GUEST_INDICATORS) !== null
+    if (!hasGuestIndicator && doc && doc !== scope && doc.contains(scope)) {
+      hasGuestIndicator = doc.querySelector(CHATGPT_SELECTORS.GUEST_INDICATORS) !== null
+    }
 
-    // 2. Discover any login/signup buttons or links across scope and document
-    const authLinks = queryElements('button, a, [role="button"]').filter(checkAuth)
-    const hasAuthLinks = authLinks.length > 0
+    // 2. Discover any login/signup buttons or links across scope with early exit
+    let hasAuthLinks = false
+    const authElements = scope.querySelectorAll('button, a, [role="button"]')
+    for (let i = 0; i < authElements.length; i++) {
+      if (checkAuth(authElements[i])) {
+        hasAuthLinks = true
+        break
+      }
+    }
+    if (!hasAuthLinks && doc && doc !== scope && doc.contains(scope)) {
+      const docAuth = doc.querySelectorAll('button, a, [role="button"]')
+      for (let i = 0; i < docAuth.length; i++) {
+        if (checkAuth(docAuth[i])) {
+          hasAuthLinks = true
+          break
+        }
+      }
+    }
 
     // 3. Discover authenticated profile controls
-    const profileCandidates = queryElements(CHATGPT_SELECTORS.LOGGED_IN_INDICATORS)
-    const hasStrongProfile = profileCandidates.some((el) => !checkAuth(el))
+    let hasStrongProfile = false
+    const profileCandidates = scope.querySelectorAll(CHATGPT_SELECTORS.LOGGED_IN_INDICATORS)
+    for (let i = 0; i < profileCandidates.length; i++) {
+      if (!checkAuth(profileCandidates[i])) {
+        hasStrongProfile = true
+        break
+      }
+    }
+    if (!hasStrongProfile && doc && doc !== scope && doc.contains(scope)) {
+      const docProfiles = doc.querySelectorAll(CHATGPT_SELECTORS.LOGGED_IN_INDICATORS)
+      for (let i = 0; i < docProfiles.length; i++) {
+        if (!checkAuth(docProfiles[i])) {
+          hasStrongProfile = true
+          break
+        }
+      }
+    }
 
     // 4. Distinguish guest account menu from authenticated account menu:
-    // In real guest ChatGPT, a button[aria-label*="Open account menu"] is rendered for logged-out
-    // users to trigger login/signup. It is ONLY treated as proof of authentication if the page
-    // has NO guest indicators or login/signup controls and the button itself does not contain auth text.
     let hasAccountMenuAsProfile = false
     const accountMenuBtn =
       scope.querySelector('button[aria-label*="Open account menu"]') ||
-      (doc && doc !== scope ? doc.querySelector('button[aria-label*="Open account menu"]') : null)
+      (doc && doc !== scope && doc.contains(scope)
+        ? doc.querySelector('button[aria-label*="Open account menu"]')
+        : null)
     if (accountMenuBtn && !hasAuthLinks && !hasGuestIndicator && !checkAuth(accountMenuBtn)) {
       hasAccountMenuAsProfile = true
     }

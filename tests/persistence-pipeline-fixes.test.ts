@@ -295,10 +295,7 @@ describe('Persistence Pipeline, Identity, Deduplication & SPA Race Fixes (FIX-00
 
       // In-flight or deferred checks: verify that Conversation A messages were NEVER saved under Conversation B
       // (Any calls to persistInteraction with conv B would show up here)
-      const bInteractions = await interactionRepo.getByConversationId(
-        'conversation-b',
-        'chatgpt'
-      )
+      const bInteractions = await interactionRepo.getByConversationId('conversation-b', 'chatgpt')
       expect(bInteractions).toHaveLength(0)
 
       // Now SPA finishes rendering Conversation B DOM
@@ -317,10 +314,7 @@ describe('Persistence Pipeline, Identity, Deduplication & SPA Race Fixes (FIX-00
 
       await adapter.processConversation()
 
-      const bUpdated = await interactionRepo.getByConversationId(
-        'conversation-b',
-        'chatgpt'
-      )
+      const bUpdated = await interactionRepo.getByConversationId('conversation-b', 'chatgpt')
       expect(bUpdated).toHaveLength(1)
       expect(bUpdated[0].query.text).toBe('What is Bigtable?')
       expect(bUpdated[0].response.text).toContain('Bigtable is a distributed storage system')
@@ -352,12 +346,15 @@ describe('Persistence Pipeline, Identity, Deduplication & SPA Race Fixes (FIX-00
       }
 
       // 1. Persisted as unbound (e.g. after timeout)
-      const key = (adapter as unknown as { generateInteractionKey: (i: ExtractedInteraction) => string })
-        .generateInteractionKey(unboundInteraction)
+      const key = (
+        adapter as unknown as { generateInteractionKey: (i: ExtractedInteraction) => string }
+      ).generateInteractionKey(unboundInteraction)
 
-      const res1 = await (adapter as unknown as {
-        persistInteraction: (i: ExtractedInteraction, k: string) => Promise<string>
-      }).persistInteraction(unboundInteraction, key)
+      const res1 = await (
+        adapter as unknown as {
+          persistInteraction: (i: ExtractedInteraction, k: string) => Promise<string>
+        }
+      ).persistInteraction(unboundInteraction, key)
       expect(res1).toBe('saved')
       expect(await interactionRepo.count()).toBe(1)
 
@@ -372,9 +369,13 @@ describe('Persistence Pipeline, Identity, Deduplication & SPA Race Fixes (FIX-00
       }
 
       // BaseAdapter processInteractions should NOT skip it as duplicate because conversationId !== null
-      const processResult = await (adapter as unknown as {
-        processInteractions: (items: ExtractedInteraction[]) => Promise<{ savedCount: number; duplicateCount: number }>
-      }).processInteractions([boundInteraction])
+      const processResult = await (
+        adapter as unknown as {
+          processInteractions: (
+            items: ExtractedInteraction[]
+          ) => Promise<{ savedCount: number; duplicateCount: number }>
+        }
+      ).processInteractions([boundInteraction])
 
       expect(processResult.savedCount).toBe(1)
       expect(processResult.duplicateCount).toBe(0)
@@ -412,12 +413,13 @@ describe('Persistence Pipeline, Identity, Deduplication & SPA Race Fixes (FIX-00
 
       const turn1Response2: ExtractedInteraction = {
         ...turn1Response1,
-        responseText: 'Circuits pulse with light\nData flows like silver streams\nFuture comes alive',
+        responseText:
+          'Circuits pulse with light\nData flows like silver streams\nFuture comes alive',
       }
 
-      const keyGen = (adapter as unknown as {
+      const keyGen = adapter as unknown as {
         generateInteractionKey: (i: ExtractedInteraction) => string
-      })
+      }
 
       const key1 = keyGen.generateInteractionKey(turn1Response1)
       const key2 = keyGen.generateInteractionKey(turn1Response2)
@@ -597,7 +599,9 @@ describe('Persistence Pipeline, Identity, Deduplication & SPA Race Fixes (FIX-00
       expect(interactions[0].queryText).toBe(
         'Part 1: Here is the problem context.\n\nPart 2: What is the recommended fix?'
       )
-      expect(interactions[0].responseText).toBe('The recommended fix is to use exponential backoff.')
+      expect(interactions[0].responseText).toBe(
+        'The recommended fix is to use exponential backoff.'
+      )
     })
   })
 })

@@ -36,6 +36,9 @@ const NON_CONVERSATION_SLUGS: ReadonlySet<string> = new Set([
   'history',
 ])
 
+const RE_GEMINI_CONV_ID = /\/(?:app|chat)\/([a-zA-Z0-9_-]+)/
+const RE_GEMINI_TITLE_STRIP = /\s*[-|]\s*(?:Google\s+)?Gemini$/i
+
 /**
  * Extracts the conversation ID from Gemini URLs.
  * Examples:
@@ -47,7 +50,7 @@ const NON_CONVERSATION_SLUGS: ReadonlySet<string> = new Set([
 export function extractConversationIdFromUrl(url: string): string | null {
   try {
     const pathname = new URL(url).pathname
-    const match = pathname.match(/\/(?:app|chat)\/([a-zA-Z0-9_-]+)/)
+    const match = pathname.match(RE_GEMINI_CONV_ID)
     if (match?.[1]) {
       const id = match[1].trim()
       if (
@@ -76,34 +79,39 @@ export function isGeminiGuestSession(root: Document | Element): boolean {
         : root.ownerDocument || (typeof document !== 'undefined' ? document : null)
     if (!doc && !(root instanceof Element)) return false
 
+    const scope = root instanceof Element ? root : doc
+    if (!scope) return false
+
     const hasGuestIndicator =
-      (root instanceof Element && root.querySelector(GEMINI_SELECTORS.GUEST_INDICATORS) !== null) ||
-      (doc ? doc.querySelector(GEMINI_SELECTORS.GUEST_INDICATORS) !== null : false)
+      scope.querySelector(GEMINI_SELECTORS.GUEST_INDICATORS) !== null ||
+      (doc && doc !== scope && doc.contains(scope)
+        ? doc.querySelector(GEMINI_SELECTORS.GUEST_INDICATORS) !== null
+        : false)
     const hasLoggedInProfile =
-      (root instanceof Element &&
-        root.querySelector(GEMINI_SELECTORS.LOGGED_IN_INDICATORS) !== null) ||
-      (doc ? doc.querySelector(GEMINI_SELECTORS.LOGGED_IN_INDICATORS) !== null : false)
+      scope.querySelector(GEMINI_SELECTORS.LOGGED_IN_INDICATORS) !== null ||
+      (doc && doc !== scope && doc.contains(scope)
+        ? doc.querySelector(GEMINI_SELECTORS.LOGGED_IN_INDICATORS) !== null
+        : false)
 
     if (hasGuestIndicator && !hasLoggedInProfile) {
       return true
     }
 
     if (!hasLoggedInProfile) {
-      const scope = root instanceof Element ? root : doc
-      const authLinks = Array.from(scope?.querySelectorAll('button, a') || []).filter((el) => {
-        const txt = el.textContent?.trim().toLowerCase() || ''
-        return txt === 'sign in' || txt === 'sign-in'
-      })
-      if (authLinks.length > 0) {
-        return true
-      }
-      if (doc && doc !== scope) {
-        const docAuthLinks = Array.from(doc.querySelectorAll('button, a')).filter((el) => {
-          const txt = el.textContent?.trim().toLowerCase() || ''
-          return txt === 'sign in' || txt === 'sign-in'
-        })
-        if (docAuthLinks.length > 0) {
+      const candidates = scope.querySelectorAll('button, a')
+      for (let i = 0; i < candidates.length; i++) {
+        const txt = candidates[i].textContent?.trim().toLowerCase()
+        if (txt === 'sign in' || txt === 'sign-in') {
           return true
+        }
+      }
+      if (doc && doc !== scope && doc.contains(scope)) {
+        const docCandidates = doc.querySelectorAll('button, a')
+        for (let i = 0; i < docCandidates.length; i++) {
+          const txt = docCandidates[i].textContent?.trim().toLowerCase()
+          if (txt === 'sign in' || txt === 'sign-in') {
+            return true
+          }
         }
       }
     }
@@ -129,11 +137,7 @@ export function extractConversationTitle(docOrElement: Document | Element): stri
 
   if (!title) return null
 
-  const cleaned = title
-    .replace(/\s*-\s*Google\s+Gemini$/i, '')
-    .replace(/\s*-\s*Gemini$/i, '')
-    .replace(/\s*\|\s*Gemini$/i, '')
-    .trim()
+  const cleaned = title.replace(RE_GEMINI_TITLE_STRIP, '').trim()
 
   if (
     !cleaned ||

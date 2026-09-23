@@ -64,7 +64,7 @@ export class ClaudeAdapter extends BaseAdapter {
 
     this.startNavWatcher(initialUrl, (prev, next) => this.onNavigate(prev, next))
     this.scheduleProcessing(100)
-    this.startMutationObserver(() => this.handleDomMutation())
+    this.startMutationObserver(() => this.onDomMutation())
 
     logger.info('Adapter', 'CLAUDE', 'Adapter started and observing conversation DOM mutations.')
   }
@@ -86,10 +86,8 @@ export class ClaudeAdapter extends BaseAdapter {
     this.handleNavigation(prevUrl, newUrl)
   }
 
-  private handleDomMutation(): void {
-    if (!this.observing) return
-    logger.debug('Adapter', 'CLAUDE', 'DOM mutation detected.')
-    this.scheduleProcessing(this.mutationDebounceMs)
+  protected handleDomMutation(): void {
+    this.onDomMutation()
   }
 
   /**

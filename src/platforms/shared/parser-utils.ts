@@ -69,6 +69,10 @@ export function extractSourceTimestamp(element: Element): string | null {
   return null
 }
 
+const RE_LANG = /language-([a-zA-Z0-9_-]+)/
+const RE_CRLF = /\r\n|\r/g
+const RE_MULTI_NL = /\n{3,}/g
+
 /**
  * Formats a `<pre><code>` code block into a markdown fenced-code-block string.
  * Detects language from `language-*` class, replaces the `<pre>` node in place.
@@ -92,7 +96,7 @@ export function formatCodeBlock(pre: Element, ownerDocument?: Document): void {
   let lang = ''
   const classAttr = codeElement?.getAttribute('class') || ''
   if (classAttr) {
-    const match = classAttr.match(/language-([a-zA-Z0-9_-]+)/)
+    const match = classAttr.match(RE_LANG)
     if (match?.[1]) {
       lang = match[1]
     }
@@ -116,10 +120,7 @@ export function normalizeExtractedText(rawText: string): string {
   if (typeof rawText !== 'string' || !rawText) {
     return ''
   }
-  return rawText
-    .replace(/\r\n|\r/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
+  return rawText.replace(RE_CRLF, '\n').replace(RE_MULTI_NL, '\n\n').trim()
 }
 
 /**

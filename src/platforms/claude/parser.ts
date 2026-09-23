@@ -20,6 +20,9 @@ import { CLAUDE_SELECTORS } from './selectors'
 
 export { extractMessageId, extractSourceTimestamp }
 
+const RE_CLAUDE_CONV_ID = /\/chat\/([a-zA-Z0-9_-]+)/
+const RE_CLAUDE_TITLE_STRIP = /\s*[-|]\s*Claude$/i
+
 /**
  * Extracts the UUID or slug conversation ID from Claude URLs.
  * Examples:
@@ -29,7 +32,7 @@ export { extractMessageId, extractSourceTimestamp }
 export function extractConversationIdFromUrl(url: string): string | null {
   try {
     const pathname = new URL(url).pathname
-    const match = pathname.match(/\/chat\/([a-zA-Z0-9_-]+)/)
+    const match = pathname.match(RE_CLAUDE_CONV_ID)
     return match?.[1] ?? null
   } catch {
     return null
@@ -51,10 +54,7 @@ export function extractConversationTitle(docOrElement: Document | Element): stri
 
   if (!title) return null
 
-  const cleaned = title
-    .replace(/\s*-\s*Claude$/i, '')
-    .replace(/\s*\|\s*Claude$/i, '')
-    .trim()
+  const cleaned = title.replace(RE_CLAUDE_TITLE_STRIP, '').trim()
 
   if (
     !cleaned ||

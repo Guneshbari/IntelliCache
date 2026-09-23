@@ -107,8 +107,6 @@ export class ChatGPTAdapter extends BaseAdapter {
   private handleDomMutation(): void {
     if (!this.observing) return
 
-    logger.debug('Adapter', 'CHATGPT', 'DOM mutation detected.')
-
     const currentUrl = window.location.href
     if (currentUrl !== this.lastObservedUrl) {
       const previousUrl = this.lastObservedUrl
@@ -117,7 +115,7 @@ export class ChatGPTAdapter extends BaseAdapter {
       return
     }
 
-    this.scheduleProcessing(this.mutationDebounceMs)
+    this.onDomMutation()
   }
 
   /**
