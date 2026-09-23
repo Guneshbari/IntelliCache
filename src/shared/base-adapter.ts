@@ -99,6 +99,12 @@ export abstract class BaseAdapter implements PlatformAdapter {
   /** Pending interactions observed before a conversation ID appears in the URL. */
   protected pendingUnboundInteractions = new Map<string, PendingUnboundInteraction>()
 
+  /** Persisted unbound interactions waiting for conversation ID assignment in this session. */
+  protected unboundTurnRecords = new Map<
+    string,
+    { id: string; interaction: ExtractedInteraction }
+  >()
+
   constructor(options?: BaseAdapterOptions) {
     this.mutationDebounceMs = options?.mutationDebounceMs ?? MUTATION_DEBOUNCE_MS
     this.newChatTimeoutMs = options?.newChatTimeoutMs ?? NEW_CHAT_URL_TIMEOUT_MS
@@ -132,6 +138,24 @@ export abstract class BaseAdapter implements PlatformAdapter {
       return `turn:${interaction.turnIndex}:${qHash}:${rHash}`
     }
     return `pair:${qHash}:${rHash}:${interaction.queryText.length}:${interaction.responseText.length}`
+  }
+
+  /**
+   * Generates a stable logical turn identity within a conversation thread.
+   * Invariant under post-stream response DOM mutations (citations, markdown formatting, math rendering).
+   */
+  public getTurnKey(interaction: ExtractedInteraction): string {
+    if (interaction.messageId) {
+      return `msg:${interaction.messageId}`
+    }
+    if (interaction.userMessageId) {
+      return `umsg:${interaction.userMessageId}`
+    }
+    const qHash = hashSnippet(interaction.queryText)
+    if (interaction.turnIndex !== undefined) {
+      return `turn:${interaction.turnIndex}:${qHash}`
+    }
+    return `pair:${qHash}:${interaction.queryText.length}`
   }
 
   /**
@@ -181,9 +205,7 @@ export abstract class BaseAdapter implements PlatformAdapter {
    */
   public computeTurnsSignature(turns: RawMessageTurn[]): string {
     if (turns.length === 0) return ''
-    return turns
-      .map((t) => `${t.role}:${t.messageId ?? ''}:${hashSnippet(t.text)}`)
-      .join('|')
+    return turns.map((t) => `${t.role}:${t.messageId ?? ''}:${hashSnippet(t.text)}`).join('|')
   }
 
   /**
@@ -264,6 +286,29 @@ export abstract class BaseAdapter implements PlatformAdapter {
       }
       this.pendingUnboundInteractions.delete(key)
       void this.persistInteraction(pending.interaction, key)
+    }
+  }
+
+  /**
+   * Flushes any remaining persisted unbound interactions that were not matched during DOM scan
+   * (e.g. if turn was virtualized or scrolled out of view) for rebinding with the conversation ID.
+   */
+  public flushRemainingUnboundTurnRecords(conversationId: string, title: string | null): void {
+    if (this.unboundTurnRecords.size === 0) return
+    logger.info(
+      'Adapter',
+      this.platformTag,
+      `Flushing ${this.unboundTurnRecords.size} remaining unbound turn record(s) with conversation ID: ${conversationId}`
+    )
+    for (const [turnKey, record] of this.unboundTurnRecords) {
+      record.interaction.conversationId = conversationId
+      if (title) {
+        record.interaction.conversationTitle = title
+      }
+      record.interaction.unboundId = record.id
+      this.unboundTurnRecords.delete(turnKey)
+      const pKey = this.generateInteractionKey(record.interaction)
+      void this.persistInteraction(record.interaction, pKey)
     }
   }
 
@@ -362,6 +407,7 @@ export abstract class BaseAdapter implements PlatformAdapter {
       this.isInitialScan = true
       this.processedKeys.clear()
       this.unboundProcessedKeys.clear()
+      this.unboundTurnRecords.clear()
       this.resetStreamingDeferrals()
 
       // FIX-003: Setup stale DOM guard so conversation A's DOM is not persisted under B's ID
@@ -454,6 +500,7 @@ export abstract class BaseAdapter implements PlatformAdapter {
       })
 
       const key = this.generateInteractionKey(interaction)
+      const turnKey = this.getTurnKey(interaction)
 
       if (this.processedKeys.has(key)) {
         logger.debug(
@@ -477,6 +524,20 @@ export abstract class BaseAdapter implements PlatformAdapter {
         continue
       }
 
+      // If already persisted as unbound in this session, and conversationId is still null,
+      // update the in-memory copy with latest text but do NOT dispatch a duplicate unbound persist.
+      if (interaction.conversationId === null && this.unboundTurnRecords.has(turnKey)) {
+        const record = this.unboundTurnRecords.get(turnKey)!
+        record.interaction = interaction
+        logger.debug(
+          'Adapter',
+          this.platformTag,
+          `Turn ${turnKey} already persisted as unbound (ID: ${record.id}); updated in-memory record with latest text.`
+        )
+        duplicateCount++
+        continue
+      }
+
       // Queue unbound interactions until a conversation ID is available (unless subclass persists immediately)
       if (interaction.conversationId === null) {
         if (this.shouldPersistUnboundImmediately(interaction)) {
@@ -491,38 +552,50 @@ export abstract class BaseAdapter implements PlatformAdapter {
           continue
         }
 
-        if (!this.pendingUnboundInteractions.has(key)) {
+        const pending = this.pendingUnboundInteractions.get(turnKey)
+        if (!pending) {
           queuedCount++
           diagnosticStats.increment('interactionsQueued')
           logger.info(
             'Adapter',
             this.platformTag,
-            `Conversation ID is null; queuing interaction in pending buffer (key: ${key}, timeout: ${this.newChatTimeoutMs}ms)`
+            `Conversation ID is null; queuing interaction in pending buffer (key: ${turnKey}, timeout: ${this.newChatTimeoutMs}ms)`
           )
           const timer = setTimeout(() => {
-            const pending = this.pendingUnboundInteractions.get(key)
-            if (pending) {
-              this.pendingUnboundInteractions.delete(key)
-              void this.persistInteraction(pending.interaction, key)
+            const currentPending = this.pendingUnboundInteractions.get(turnKey)
+            if (currentPending) {
+              this.pendingUnboundInteractions.delete(turnKey)
+              const pKey = this.generateInteractionKey(currentPending.interaction)
+              void this.persistInteraction(currentPending.interaction, pKey)
             }
           }, this.newChatTimeoutMs)
-          this.pendingUnboundInteractions.set(key, { interaction, key, timer })
+          this.pendingUnboundInteractions.set(turnKey, { interaction, key, timer })
         } else {
-          const pending = this.pendingUnboundInteractions.get(key)
-          if (pending) {
-            pending.interaction = interaction
-          }
+          // If response text updated while still pending, update in-place without duplicating timer
+          pending.interaction = interaction
+          pending.key = key
         }
         continue
       }
 
       // Promote from pending if already held there
-      if (this.pendingUnboundInteractions.has(key)) {
-        const pending = this.pendingUnboundInteractions.get(key)
+      if (this.pendingUnboundInteractions.has(turnKey)) {
+        const pending = this.pendingUnboundInteractions.get(turnKey)
         if (pending) {
           clearTimeout(pending.timer)
-          this.pendingUnboundInteractions.delete(key)
+          this.pendingUnboundInteractions.delete(turnKey)
         }
+      }
+
+      // If an unbound record exists for this turn, attach its unboundId so the repository rebinds in-place
+      if (this.unboundTurnRecords.has(turnKey)) {
+        const unboundRecord = this.unboundTurnRecords.get(turnKey)!
+        interaction.unboundId = unboundRecord.id
+        logger.info(
+          'Adapter',
+          this.platformTag,
+          `Promoting unbound turn to bound conversation (turnKey: ${turnKey}, unboundId: ${unboundRecord.id}, convId: ${interaction.conversationId})`
+        )
       }
 
       const result = await this.persistInteraction(interaction, key)
@@ -554,6 +627,7 @@ export abstract class BaseAdapter implements PlatformAdapter {
       conversation_id: interaction.conversationId,
       message_id: interaction.messageId,
       user_message_id: interaction.userMessageId,
+      unbound_id: interaction.unboundId,
       observed_at: interaction.observedAt,
       source_timestamp: interaction.sourceTimestamp,
       capture_context: interaction.captureContext,
@@ -580,11 +654,25 @@ export abstract class BaseAdapter implements PlatformAdapter {
       const response = await sendExtensionMessage(msg)
 
       if (response.success) {
+        const turnKey = this.getTurnKey(interaction)
         if (interaction.conversationId !== null) {
           this.rememberProcessedKey(key)
           this.unboundProcessedKeys.delete(key)
+          this.unboundTurnRecords.delete(turnKey)
         } else {
           this.rememberUnboundProcessedKey(key)
+          const savedData = response.data as { id?: string } | undefined
+          if (savedData?.id) {
+            this.unboundTurnRecords.set(turnKey, {
+              id: savedData.id,
+              interaction: { ...interaction },
+            })
+            logger.info(
+              'Adapter',
+              this.platformTag,
+              `Recorded unbound turn for rebinding (turnKey: ${turnKey}, id: ${savedData.id})`
+            )
+          }
         }
         diagnosticStats.increment('interactionsSaved')
         logger.debug(
@@ -598,9 +686,11 @@ export abstract class BaseAdapter implements PlatformAdapter {
       // Duplicate detection prefers the machine-readable code; the legacy
       // substring check stays as a fallback for older service workers.
       if (response.code === 'DUPLICATE_INTERACTION' || response.error?.includes('already exists')) {
+        const turnKey = this.getTurnKey(interaction)
         if (interaction.conversationId !== null) {
           this.rememberProcessedKey(key)
           this.unboundProcessedKeys.delete(key)
+          this.unboundTurnRecords.delete(turnKey)
         } else {
           this.rememberUnboundProcessedKey(key)
         }
@@ -682,6 +772,7 @@ export abstract class BaseAdapter implements PlatformAdapter {
     this.observing = false
     this.processedKeys.clear()
     this.unboundProcessedKeys.clear()
+    this.unboundTurnRecords.clear()
     this.navigationGeneration++
     this.pendingNavTargetConvId = null
     this.staleSignature = null
@@ -695,10 +786,53 @@ export abstract class BaseAdapter implements PlatformAdapter {
     )
   }
 
+  /**
+   * Shared DOM mutation handler with streaming backoff protection and logging suppression.
+   */
+  protected onDomMutation(): void {
+    if (!this.observing) return
+
+    if (logger.isDebugEnabled()) {
+      logger.debug('Adapter', this.platformTag, 'DOM mutation detected.')
+    }
+
+    // When streaming deferrals are active, respect the exponential backoff window
+    // so high-frequency streaming tokens do not reset the timer to a tight 500ms loop.
+    const delay =
+      this.streamingDeferralCount > 0
+        ? Math.min(
+            this.mutationDebounceMs * 2 ** Math.min(this.streamingDeferralCount - 1, 4),
+            MAX_STREAMING_DEFERRAL_DELAY_MS
+          )
+        : this.mutationDebounceMs
+
+    this.scheduleProcessing(delay)
+  }
+
   /** Shared start helper: installs MutationObserver targeting document.body. */
   protected startMutationObserver(onMutation: () => void): void {
     if (typeof MutationObserver === 'undefined') return
-    this.observer = new MutationObserver(onMutation)
+    this.observer = new MutationObserver((mutations) => {
+      // Skip batches where all mutations are non-content technical elements (script/style/link/meta)
+      if (mutations && mutations.length > 0) {
+        let hasRelevant = false
+        for (let i = 0; i < mutations.length; i++) {
+          const target = mutations[i].target as Node
+          const tagName = (target as Element).tagName
+          if (
+            tagName !== 'SCRIPT' &&
+            tagName !== 'STYLE' &&
+            tagName !== 'LINK' &&
+            tagName !== 'META'
+          ) {
+            hasRelevant = true
+            break
+          }
+        }
+        if (!hasRelevant) return
+      }
+      onMutation()
+    })
     const targetNode =
       typeof document !== 'undefined' ? document.body || document.documentElement : null
     if (targetNode) {

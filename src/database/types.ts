@@ -90,6 +90,7 @@ export function namespaceConversationId(
  */
 export interface CreateInteractionInput {
   id?: string
+  unbound_id?: string
   fingerprint?: string
   fingerprint_strategy?: FingerprintStrategy
   platform: string

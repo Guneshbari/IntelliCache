@@ -282,10 +282,13 @@ export function validateDbSaveInteractionPayload(payload: unknown): PayloadValid
   const responseCheck = isValidTextField(payload.response.text, 'response.text')
   if (!responseCheck.ok) return responseCheck
 
-  for (const field of ['conversation_id', 'message_id', 'user_message_id'] as const) {
+  for (const field of ['conversation_id', 'message_id', 'user_message_id', 'unbound_id'] as const) {
     const v = payload[field]
     if (v !== undefined && v !== null && typeof v !== 'string') {
       return { ok: false, reason: `${field} must be a string, null, or omitted` }
+    }
+    if (typeof v === 'string' && v.length > 200) {
+      return { ok: false, reason: `${field} exceeds 200 characters` }
     }
   }
   if (

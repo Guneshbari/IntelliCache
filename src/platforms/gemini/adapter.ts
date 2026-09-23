@@ -67,7 +67,7 @@ export class GeminiAdapter extends BaseAdapter {
 
     this.startNavWatcher(initialUrl, (prev, next) => this.onNavigate(prev, next))
     this.scheduleProcessing(100)
-    this.startMutationObserver(() => this.handleDomMutation())
+    this.startMutationObserver(() => this.onDomMutation())
 
     logger.info('Adapter', 'GEMINI', 'Adapter started and observing conversation DOM mutations.')
   }
@@ -90,10 +90,8 @@ export class GeminiAdapter extends BaseAdapter {
     this.handleNavigation(prevUrl, newUrl)
   }
 
-  private handleDomMutation(): void {
-    if (!this.observing) return
-    logger.debug('Adapter', 'GEMINI', 'DOM mutation detected.')
-    this.scheduleProcessing(this.mutationDebounceMs)
+  protected handleDomMutation(): void {
+    this.onDomMutation()
   }
 
   /**
@@ -120,25 +118,25 @@ export class GeminiAdapter extends BaseAdapter {
 
     const root = document.body || document
 
-    // Lightweight diagnostic counts (user-query / model-response only — the
-    // parser performs the full extraction pass below, so role/text breakdowns
-    // are intentionally not re-queried here to avoid double DOM walks).
-    const userQueryCount = root.querySelectorAll('user-query').length
-    const modelResponseCount = root.querySelectorAll('model-response').length
-    const docReadyState = typeof document !== 'undefined' ? document.readyState : 'unknown'
+    // Lightweight diagnostic counts queried only when debug logging is active to avoid double DOM walks
+    if (logger.isDebugEnabled()) {
+      const userQueryCount = root.querySelectorAll('user-query').length
+      const modelResponseCount = root.querySelectorAll('model-response').length
+      const docReadyState = typeof document !== 'undefined' ? document.readyState : 'unknown'
 
-    logger.debug(
-      'Adapter',
-      'GEMINI',
-      `Runtime DOM check | readyState=${docReadyState} | bodyExists=${!!document.body} | userQueryElements=${userQueryCount} | modelResponseElements=${modelResponseCount}`
-    )
-
-    if (userQueryCount === 0 && modelResponseCount === 0) {
       logger.debug(
         'Adapter',
         'GEMINI',
-        'Gemini DOM contains 0 user-query and 0 model-response elements at scan time.'
+        `Runtime DOM check | readyState=${docReadyState} | bodyExists=${!!document.body} | userQueryElements=${userQueryCount} | modelResponseElements=${modelResponseCount}`
       )
+
+      if (userQueryCount === 0 && modelResponseCount === 0) {
+        logger.debug(
+          'Adapter',
+          'GEMINI',
+          'Gemini DOM contains 0 user-query and 0 model-response elements at scan time.'
+        )
+      }
     }
 
     const generating = isPageGenerating(root)
@@ -182,12 +180,15 @@ export class GeminiAdapter extends BaseAdapter {
     diagnosticStats.increment('userTurnsFound', userTurns)
     diagnosticStats.increment('assistantTurnsFound', assistantTurns)
 
-    if (userQueryCount > 0 && userTurns === 0) {
-      logger.warn(
-        'Adapter',
-        'GEMINI',
-        `Parser extraction anomaly: ${userQueryCount} user-query elements found in DOM, but 0 user turns extracted.`
-      )
+    if (userTurns === 0) {
+      const rawUserQueries = root.querySelectorAll('user-query').length
+      if (rawUserQueries > 0) {
+        logger.warn(
+          'Adapter',
+          'GEMINI',
+          `Parser extraction anomaly: ${rawUserQueries} user-query elements found in DOM, but 0 user turns extracted.`
+        )
+      }
     }
 
     if (userTurns > 0 && assistantTurns === 0) {
@@ -259,6 +260,10 @@ export class GeminiAdapter extends BaseAdapter {
 
     const { queuedCount, savedCount, duplicateCount, failureCount } =
       await this.processInteractions(interactions)
+
+    if (effectiveConvId && this.unboundTurnRecords.size > 0) {
+      this.flushRemainingUnboundTurnRecords(effectiveConvId, effectiveTitle)
+    }
 
     logger.logScanSummary({
       platform: 'GEMINI',

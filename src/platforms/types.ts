@@ -40,6 +40,7 @@ export interface ExtractedInteraction {
   captureContext: CaptureContext // 'on_load' | 'on_generate'
   traceId?: string // Temporary diagnostic lifecycle trace ID (not persisted to DB)
   turnIndex?: number // Turn/pair position index within the conversation
+  unboundId?: string // Explicit unbound interaction ID to rebind upon promotion
 }
 
 /**

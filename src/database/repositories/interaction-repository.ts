@@ -226,8 +226,24 @@ export class InteractionRepository {
       if (namespacedConvId !== null) {
         let existingUnbound: Interaction | undefined
 
+        // 0. Match by explicit unbound_id if provided by the adapter
+        const explicitUnboundId =
+          ('unbound_id' in input && input.unbound_id ? input.unbound_id.trim() : null) ||
+          input.id?.trim()
+        if (explicitUnboundId) {
+          const candidate = await this.db.interactions.get(explicitUnboundId)
+          if (candidate && candidate.conversation_id === null && candidate.platform === platform) {
+            existingUnbound = candidate
+            logger.info(
+              'Database',
+              platformTag,
+              `unbound-match trace=${traceId} (matched by explicit unbound_id: ${explicitUnboundId})`
+            )
+          }
+        }
+
         // 1. Match by exact message_id if available
-        if (input.message_id?.trim()) {
+        if (!existingUnbound && input.message_id?.trim()) {
           const trimmedMsgId = input.message_id.trim()
           existingUnbound = await this.db.interactions
             .where('platform')
@@ -273,7 +289,11 @@ export class InteractionRepository {
             if (input.user_message_id) {
               existingUnbound.user_message_id = input.user_message_id.trim()
             }
-            if (input.response.text.length > existingUnbound.response.characters) {
+            const hasExplicitUnboundId = 'unbound_id' in input && !!input.unbound_id
+            if (
+              input.response.text.length > existingUnbound.response.characters ||
+              (hasExplicitUnboundId && input.response.text !== existingUnbound.response.text)
+            ) {
               existingUnbound.response = calculateTextMetrics(
                 input.response.text,
                 input.response.estimated_tokens
