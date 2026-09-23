@@ -84,16 +84,22 @@ export class ConversationRepository {
 
         if (existing) {
           const newLastObservedAt =
-            new Date(observedAt).getTime() > new Date(existing.last_observed_at).getTime()
+            observedMs > new Date(existing.last_observed_at).getTime()
               ? observedAt
               : existing.last_observed_at
 
           // FIX-008: Preserve non-empty existing title if input.title is empty, null, or undefined
-          const cleanNewTitle =
-            typeof input.title === 'string' ? input.title.trim() : ''
+          const cleanNewTitle = typeof input.title === 'string' ? input.title.trim() : ''
+          const targetTitle = cleanNewTitle.length > 0 ? cleanNewTitle : existing.title
+
+          // Skip redundant write if neither title nor last_observed_at changed
+          if (existing.title === targetTitle && existing.last_observed_at === newLastObservedAt) {
+            return { record: existing, wasCreated: false }
+          }
+
           const updated: Conversation = {
             ...existing,
-            title: cleanNewTitle.length > 0 ? cleanNewTitle : existing.title,
+            title: targetTitle,
             last_observed_at: newLastObservedAt,
           }
           await this.db.conversations.put(updated)

@@ -97,6 +97,20 @@ export class DiagnosticLogger {
   }
 
   /**
+   * Checks whether debug logging is enabled under the current log level.
+   */
+  isDebugEnabled(): boolean {
+    return LOG_LEVEL_SEVERITY['debug'] >= LOG_LEVEL_SEVERITY[this.level]
+  }
+
+  /**
+   * Checks whether info logging is enabled under the current log level.
+   */
+  isInfoEnabled(): boolean {
+    return LOG_LEVEL_SEVERITY['info'] >= LOG_LEVEL_SEVERITY[this.level]
+  }
+
+  /**
    * Overrides console output with a custom sink (e.g. for unit testing).
    */
   setSink(sink: DiagnosticLogSink | null): void {

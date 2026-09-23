@@ -17,6 +17,13 @@
  * 6. Collapsing 3+ consecutive newlines to double newlines.
  * 7. Trimming outer leading and trailing whitespace.
  */
+const RE_NBSP = /\u00A0/g
+const RE_ZERO_WIDTH = /\u200B|\u200C|\u200D|\uFEFF/g
+const RE_CRLF = /\r\n|\r/g
+const RE_HORIZONTAL_SPACES = /[ \t]+/g
+const RE_WS_AROUND_NL = /[ \t]*\n[ \t]*/g
+const RE_MULTI_NL = /\n{3,}/g
+
 export function normalizeTextForFingerprint(text: string): string {
   if (typeof text !== 'string' || !text) {
     return ''
@@ -24,11 +31,11 @@ export function normalizeTextForFingerprint(text: string): string {
 
   return text
     .normalize('NFC')
-    .replace(/\u00A0/g, ' ')
-    .replace(/\u200B|\u200C|\u200D|\uFEFF/g, '')
-    .replace(/\r\n|\r/g, '\n')
-    .replace(/[ \t]+/g, ' ')
-    .replace(/[ \t]*\n[ \t]*/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
+    .replace(RE_NBSP, ' ')
+    .replace(RE_ZERO_WIDTH, '')
+    .replace(RE_CRLF, '\n')
+    .replace(RE_HORIZONTAL_SPACES, ' ')
+    .replace(RE_WS_AROUND_NL, '\n')
+    .replace(RE_MULTI_NL, '\n\n')
     .trim()
 }

@@ -8,23 +8,12 @@
 /** Binary byte units used across the dashboard. 1 KiB = 1024 bytes. */
 const BYTE_UNITS = ['B', 'KiB', 'MiB', 'GiB'] as const
 
-let cachedEncoder: TextEncoder | null = null
-
-function getEncoder(): TextEncoder | null {
-  if (typeof TextEncoder !== 'undefined') {
-    if (!cachedEncoder) {
-      cachedEncoder = new TextEncoder()
-    }
-    return cachedEncoder
-  }
-  return null
-}
-
 /**
- * Manual UTF-8 length fallback for runtimes without TextEncoder.
- * Mirrors the counting semantics of `calculateUtf8Bytes` in database/metrics.
+ * Calculates UTF-8 byte length for a given string without allocating memory buffers.
+ * Non-string or empty input returns 0.
  */
-function manualUtf8Length(text: string): number {
+export function calculateUtf8Bytes(text: string): number {
+  if (typeof text !== 'string' || !text) return 0
   let bytes = 0
   const len = text.length
   for (let i = 0; i < len; i++) {
@@ -43,6 +32,8 @@ function manualUtf8Length(text: string): number {
         }
       }
       bytes += 3
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      bytes += 3
     } else {
       bytes += 3
     }
@@ -54,16 +45,13 @@ function manualUtf8Length(text: string): number {
  * Returns the UTF-8 byte length of a value.
  * Non-string values (null, undefined, numbers, objects) contribute 0 bytes so
  * callers can measure nullable persisted fields without per-field guards.
+ * Uses zero-allocation character scanning to avoid creating heap buffers.
  */
 export function utf8ByteLength(value: unknown): number {
   if (typeof value !== 'string' || value.length === 0) {
     return 0
   }
-  const encoder = getEncoder()
-  if (encoder) {
-    return encoder.encode(value).byteLength
-  }
-  return manualUtf8Length(value)
+  return calculateUtf8Bytes(value)
 }
 
 /**
