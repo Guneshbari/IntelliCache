@@ -168,7 +168,7 @@ export class ChatGPTAdapter extends BaseAdapter {
 
     const captureContext = this.consumeCaptureContext()
 
-    const turnContainers = Array.from(root.querySelectorAll(CHATGPT_SELECTORS.TURN_ARTICLE)).length
+    const turnContainers = root.querySelectorAll(CHATGPT_SELECTORS.TURN_ARTICLE).length
     const turns = extractConversationTurns(root)
     if (this.checkAndDeferStaleDom(turns)) {
       return

@@ -130,10 +130,8 @@ export class ClaudeAdapter extends BaseAdapter {
 
     const captureContext = this.consumeCaptureContext()
 
-    const turnContainers = Array.from(
-      document.querySelectorAll(
-        `${CLAUDE_SELECTORS.TRANSCRIPT_LIST} [data-testid="transcript-row"], ${CLAUDE_SELECTORS.USER_MESSAGE}, ${CLAUDE_SELECTORS.ASSISTANT_MESSAGE}`
-      )
+    const turnContainers = document.querySelectorAll(
+      `${CLAUDE_SELECTORS.TRANSCRIPT_LIST} [data-testid="transcript-row"], ${CLAUDE_SELECTORS.USER_MESSAGE}, ${CLAUDE_SELECTORS.ASSISTANT_MESSAGE}`
     ).length
 
     const turns = extractConversationTurns(document.body || document)

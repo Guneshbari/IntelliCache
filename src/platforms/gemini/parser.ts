@@ -253,9 +253,13 @@ export function isTurnStreaming(turnElement: Element, root?: Document | Element)
 export function extractConversationTurns(root: Document | Element): RawMessageTurn[] {
   const turns: RawMessageTurn[] = []
 
-  // Count raw DOM elements for diagnostics
-  const userQueryElements = Array.from(root.querySelectorAll('user-query'))
-  const modelResponseElements = Array.from(root.querySelectorAll('model-response'))
+  // Count raw DOM elements for diagnostics only when debug logging is active
+  let userQueryCount = 0
+  let modelResponseCount = 0
+  if (logger.isDebugEnabled()) {
+    userQueryCount = root.querySelectorAll('user-query').length
+    modelResponseCount = root.querySelectorAll('model-response').length
+  }
 
   const elements = Array.from(
     root.querySelectorAll(`${GEMINI_SELECTORS.USER_MESSAGE}, ${GEMINI_SELECTORS.ASSISTANT_MESSAGE}`)
@@ -317,7 +321,7 @@ export function extractConversationTurns(root: Document | Element): RawMessageTu
   logger.debug(
     'Parser',
     'GEMINI',
-    `DOM element counts | userQueries=${userQueryElements.length} | modelResponses=${modelResponseElements.length} | topLevelElements=${topElements.length} | userTexts=${userTextsCount} | assistantTexts=${assistantTextsCount} | extractedUserTurns=${userCount} | extractedAssistantTurns=${asstCount}`
+    `DOM element counts | userQueries=${userQueryCount} | modelResponses=${modelResponseCount} | topLevelElements=${topElements.length} | userTexts=${userTextsCount} | assistantTexts=${assistantTextsCount} | extractedUserTurns=${userCount} | extractedAssistantTurns=${asstCount}`
   )
 
   if (turns.length === 0) {

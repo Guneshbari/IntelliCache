@@ -97,6 +97,8 @@ export function extractModelInfo(root: Document | Element): {
 
 const RE_SAID_HEADING = /said/i
 const RE_AUTH_WORDS = /\b(log\s*in|sign\s*up|sign\s*in)\b/i
+const RE_YOU_SAID = /you said/i
+const RE_ASSISTANT_SAID = /chatgpt said|assistant said/i
 
 /**
  * Extracts raw user query text from a user turn element.
@@ -332,17 +334,19 @@ function detectTurnRole(turnEl: Element): 'user' | 'assistant' | null {
   if (turnEl.querySelector(CHATGPT_SELECTORS.ASSISTANT_ROLE)) return 'assistant'
 
   // Heading check (e.g. <h5>You said:</h5>, <h6>ChatGPT said:</h6>)
-  const headings = [
-    ...(typeof turnEl.matches === 'function' &&
+  if (
+    typeof turnEl.matches === 'function' &&
     turnEl.matches('h5, h6, h2, h3, h4, [class*="sr-only"]')
-      ? [turnEl]
-      : []),
-    ...Array.from(turnEl.querySelectorAll('h5, h6, h2, h3, h4, [class*="sr-only"]')),
-  ]
-  for (const h of headings) {
-    const text = h.textContent?.toLowerCase() || ''
-    if (/you said/i.test(text)) return 'user'
-    if (/chatgpt said|assistant said/i.test(text)) return 'assistant'
+  ) {
+    const text = turnEl.textContent || ''
+    if (RE_YOU_SAID.test(text)) return 'user'
+    if (RE_ASSISTANT_SAID.test(text)) return 'assistant'
+  }
+  const headings = turnEl.querySelectorAll('h5, h6, h2, h3, h4, [class*="sr-only"]')
+  for (let i = 0; i < headings.length; i++) {
+    const text = headings[i].textContent || ''
+    if (RE_YOU_SAID.test(text)) return 'user'
+    if (RE_ASSISTANT_SAID.test(text)) return 'assistant'
   }
 
   // Content-based check: markdown or prose indicates assistant response
@@ -608,8 +612,8 @@ export function extractConversationTurns(root: Document | Element): RawMessageTu
     const speakerHeadings = Array.from(root.querySelectorAll('h5, h6, [class*="sr-only"]')).filter(
       (el) => {
         if (el.closest('.embedded-canvas-view, nav, aside')) return false
-        const txt = el.textContent?.toLowerCase() || ''
-        return /you said|chatgpt said|assistant said/i.test(txt)
+        const txt = el.textContent || ''
+        return RE_YOU_SAID.test(txt) || RE_ASSISTANT_SAID.test(txt)
       }
     )
     if (speakerHeadings.length > 0) {

@@ -157,18 +157,14 @@ export class GeminiAdapter extends BaseAdapter {
 
     const captureContext = this.consumeCaptureContext()
 
-    const standardContainers = Array.from(
-      root.querySelectorAll(
-        'user-query, model-response, [data-message-author-role="user"], [data-message-author-role="assistant"]'
-      )
-    )
+    const standardContainersCount = root.querySelectorAll(
+      'user-query, model-response, [data-message-author-role="user"], [data-message-author-role="assistant"]'
+    ).length
     const turnContainers =
-      standardContainers.length > 0
-        ? standardContainers.length
-        : Array.from(
-            root.querySelectorAll(
-              '.user-query-container, .response-container, [data-query-id], [data-response-id]'
-            )
+      standardContainersCount > 0
+        ? standardContainersCount
+        : root.querySelectorAll(
+            '.user-query-container, .response-container, [data-query-id], [data-response-id]'
           ).length
     const turns = extractConversationTurns(root)
     if (this.checkAndDeferStaleDom(turns)) {
