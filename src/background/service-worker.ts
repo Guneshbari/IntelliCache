@@ -59,9 +59,13 @@ function toResponseError(err: unknown, fallback: string): string {
   return text.length > 500 ? `${text.slice(0, 500)}…` : text
 }
 
-// Initialize repositories (singleton database)
+// Initialize repositories and services (singleton database)
 const interactionRepo = new InteractionRepository()
 const conversationRepo = new ConversationRepository()
+const storageMetricsService = new StorageMetricsService({
+  interactionRepository: interactionRepo,
+  conversationRepository: conversationRepo,
+})
 
 logger.info(
   'Background',
@@ -334,7 +338,7 @@ addRuntimeMessageListener(
         // Asynchronous: return true to keep the message channel open.
         void (async () => {
           try {
-            const metrics = await new StorageMetricsService().collect()
+            const metrics = await storageMetricsService.collect()
             const data: StorageMetricsResponseData = metrics
             logger.debug(
               'Background',

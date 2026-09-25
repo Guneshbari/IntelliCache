@@ -77,7 +77,8 @@ const EXPORT_BLOB_REVOKE_MS = 60_000
  */
 function safeSnippet(text: string, maxChars: number): string {
   if (!text) return ''
-  const points = Array.from(text)
+  if (text.length <= maxChars) return text
+  const points = Array.from(text.slice(0, maxChars * 2))
   return points.length > maxChars ? `${points.slice(0, maxChars).join('')}…` : text
 }
 
@@ -301,14 +302,18 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  const RE_HTML_CHARS = /[&<>"']/g
+  const HTML_ESCAPE_MAP: Record<string, string> = {
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#039;',
+  }
+
   function escapeHtml(str: unknown): string {
     if (str === null || str === undefined) return ''
-    return String(str)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#039;')
+    return String(str).replace(RE_HTML_CHARS, (c) => HTML_ESCAPE_MAP[c])
   }
 
   function getProviderLogoHtml(platform: string): string {
