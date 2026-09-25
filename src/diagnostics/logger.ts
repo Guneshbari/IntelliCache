@@ -227,7 +227,11 @@ export class DiagnosticLogger {
     platform: DiagnosticPlatform | string,
     metadata: ExtractedInteractionMetadata
   ): void {
-    const p = toDiagnosticPlatform(platform)
+    if (!this.isInfoEnabled()) return
+
+    const p = DiagnosticLogger.VALID_PLATFORMS.has(platform)
+      ? (platform as DiagnosticPlatform)
+      : toDiagnosticPlatform(platform)
     const convId = metadata.conversationId ? metadata.conversationId : 'null'
     const userMsgId = metadata.userMessageId ? metadata.userMessageId : 'null'
     const asstMsgId = metadata.messageId ? metadata.messageId : 'null'
@@ -258,7 +262,11 @@ export class DiagnosticLogger {
    * [IntelliCache][Adapter][GEMINI] SCAN SUMMARY | conversationId=yes | turnContainers=4 | userTurns=2 | assistantTurns=2 | completePairs=2 | generating=false | extracted=2 | queued=0 | saved=2 | duplicates=0 | failures=0
    */
   logScanSummary(data: ScanSummaryData): void {
-    const p = toDiagnosticPlatform(data.platform)
+    if (!this.isInfoEnabled()) return
+
+    const p = DiagnosticLogger.VALID_PLATFORMS.has(data.platform)
+      ? (data.platform as DiagnosticPlatform)
+      : toDiagnosticPlatform(data.platform)
     let convIdStr = 'no'
     if (typeof data.conversationId === 'boolean') {
       convIdStr = data.conversationId ? 'yes' : 'no'
