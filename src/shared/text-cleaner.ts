@@ -51,16 +51,18 @@ export function cleanQueryText(raw: string): string {
   const lines = text.split(RE_SPLIT_LINES)
   if (lines.length >= 2) {
     const deduped: string[] = []
+    let lastTrimmedLower = ''
     for (let i = 0; i < lines.length; i++) {
       const current = lines[i]
-      const prev = deduped[deduped.length - 1]
-      if (
-        current.trim() &&
-        prev !== undefined &&
-        prev.trim() &&
-        current.trim().toLowerCase() === prev.trim().toLowerCase()
-      ) {
-        continue
+      const trimmed = current.trim()
+      if (trimmed) {
+        const lower = trimmed.toLowerCase()
+        if (lower === lastTrimmedLower) {
+          continue
+        }
+        lastTrimmedLower = lower
+      } else {
+        lastTrimmedLower = ''
       }
       deduped.push(current)
     }

@@ -823,7 +823,10 @@ export abstract class BaseAdapter implements PlatformAdapter {
             tagName !== 'SCRIPT' &&
             tagName !== 'STYLE' &&
             tagName !== 'LINK' &&
-            tagName !== 'META'
+            tagName !== 'META' &&
+            tagName !== 'HEAD' &&
+            tagName !== 'NOSCRIPT' &&
+            tagName !== 'TEMPLATE'
           ) {
             hasRelevant = true
             break

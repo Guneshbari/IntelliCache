@@ -174,12 +174,13 @@ export function isExtensionMessage(value: unknown): value is ExtensionMessage {
   }
 
   const candidate = value as Record<string, unknown>
-  const hasValidType = typeof candidate.type === 'string' && VALID_MESSAGE_TYPES.has(candidate.type)
-  const hasValidSender =
-    typeof candidate.sender === 'string' && VALID_SENDER_TYPES.has(candidate.sender)
-  const hasValidTimestamp = typeof candidate.timestamp === 'number'
-
-  return hasValidType && hasValidSender && hasValidTimestamp
+  return (
+    typeof candidate.type === 'string' &&
+    VALID_MESSAGE_TYPES.has(candidate.type) &&
+    typeof candidate.sender === 'string' &&
+    VALID_SENDER_TYPES.has(candidate.sender) &&
+    typeof candidate.timestamp === 'number'
+  )
 }
 
 /**
