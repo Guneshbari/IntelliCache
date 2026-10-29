@@ -18,9 +18,12 @@ from ..api.routes import (
     get_query_cache,
     get_single_flight_coordinator,
     router,
+    set_query_cache,
     verify_admin_token,
+    verify_client_token,
 )
 from ..cache.exact_cache import ExactCache, QueryCache
+from ..cache.postgres_cache import PostgresCache
 from ..cache.interfaces import BaseCache, CacheEntry, CacheStats
 from ..core.contracts import (
     ChatMessage,
@@ -64,6 +67,7 @@ __all__ = [
     "IntelliCacheError",
     "LLMProvider",
     "MessageItem",
+    "PostgresCache",
     "ProviderAuthenticationError",
     "ProviderConfigurationError",
     "ProviderConnectionError",
@@ -89,5 +93,7 @@ __all__ = [
     "normalize_text",
     "router",
     "sanitize_error_message",
+    "set_query_cache",
     "verify_admin_token",
+    "verify_client_token",
 ]

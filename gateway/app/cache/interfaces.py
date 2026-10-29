@@ -1,5 +1,6 @@
 """
 Cache interfaces, entry models, and statistics contracts for IntelliCache.
+Provides an asynchronous storage contract suitable for in-memory and PostgreSQL backends.
 """
 
 from abc import ABC, abstractmethod
@@ -57,47 +58,52 @@ class CacheStats(BaseModel):
     total_latency_saved_ms: float = 0.0
     ttl_seconds: int = 3600
     enabled: bool = True
+    backend: str = "memory"
 
 
 class BaseCache(ABC):
-    """Abstract interface for IntelliCache response caching implementations."""
+    """Abstract asynchronous interface for IntelliCache response caching implementations."""
 
     @abstractmethod
-    def get(self, key: str) -> Optional[CacheEntry]:
+    async def get(self, key: str, namespace: Optional[str] = None) -> Optional[CacheEntry]:
         """Retrieve an unexpired entry from cache."""
         pass
 
     @abstractmethod
-    def set(self, key: str, entry: CacheEntry) -> None:
+    async def set(self, key: str, entry: CacheEntry, namespace: Optional[str] = None) -> None:
         """Add or update an entry in cache with eviction if necessary."""
         pass
 
     @abstractmethod
-    def record_miss(self) -> None:
+    async def record_miss(self) -> None:
         """Record an independent request that required upstream generation."""
         pass
 
     @abstractmethod
-    def record_coalesced_join(self) -> None:
+    async def record_coalesced_join(self) -> None:
         """Record that an incoming request joined an in-flight generation as a follower."""
         pass
 
     @abstractmethod
-    def record_coalesced_success(self, entry: CacheEntry) -> None:
+    async def record_coalesced_success(self, entry: CacheEntry) -> None:
         """Record that a follower successfully received and reused the leader's generation."""
         pass
 
     @abstractmethod
-    def record_coalesced(self, entry: Optional[CacheEntry] = None) -> None:
+    async def record_coalesced(self, entry: Optional[CacheEntry] = None) -> None:
         """Record a coalesced request (both join and, if entry provided, success)."""
         pass
 
     @abstractmethod
-    def clear(self) -> None:
-        """Clear all entries and reset metric counters."""
+    async def clear(self, namespace: Optional[str] = None) -> None:
+        """Clear entries and reset metric counters."""
         pass
 
     @abstractmethod
-    def stats(self, enabled: bool = True) -> CacheStats:
+    async def stats(self, enabled: bool = True, namespace: Optional[str] = None) -> CacheStats:
         """Return statistical metrics on cache usage."""
+        pass
+
+    async def close(self) -> None:
+        """Clean up underlying connections or background resources."""
         pass

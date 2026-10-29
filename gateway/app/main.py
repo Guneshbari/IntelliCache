@@ -1,24 +1,30 @@
 """
 Main entry point for the IntelliCache Gateway FastAPI application.
-Configures CORS, registers query and health routes, and initializes middleware.
+Configures CORS, registers query and health routes, and manages database lifecycles.
 """
 
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import logging
 import time
-from typing import Any, AsyncGenerator, Dict
+from typing import Any, AsyncGenerator, Dict, Optional
 
+import asyncpg
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
+from app.cache.migration import run_migrations
 from app.config import Settings, get_settings
 from app.routes.query import (
+    BaseCache,
     CacheStats,
+    ExactCache,
+    PostgresCache,
     QueryCache,
     get_query_cache,
     router as query_router,
+    set_query_cache,
     verify_admin_token,
 )
 
@@ -39,12 +45,47 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     settings = get_settings()
     logger.info("=" * 60)
     logger.info("Starting IntelliCache Gateway v1.0.0")
-    logger.info(f"Model: {settings.groq_model}")
-    logger.info(f"Host: {settings.host}:{settings.port}")
-    logger.info(f"Cache: {'Enabled' if settings.cache_enabled else 'Disabled'} (TTL: {settings.cache_ttl_seconds}s)")
+    logger.info("Model: %s", settings.groq_model)
+    logger.info("Host: %s:%s", settings.host, settings.port)
+    logger.info("Cache Backend: %s (Namespace: %s)", settings.cache_backend, settings.cache_namespace)
+    logger.info("Cache: %s (TTL: %ss)", "Enabled" if settings.cache_enabled else "Disabled", settings.cache_ttl_seconds)
     logger.info("=" * 60)
+
+    pg_cache: Optional[PostgresCache] = None
+    if settings.cache_backend == "postgres":
+        if not settings.database_url:
+            raise RuntimeError("DATABASE_URL must be configured when CACHE_BACKEND='postgres'.")
+        logger.info("Initializing PostgreSQL connection pool...")
+        pool = await asyncpg.create_pool(
+            dsn=settings.database_url,
+            min_size=settings.db_pool_min_size,
+            max_size=settings.db_pool_max_size,
+        )
+        logger.info("Applying database migrations...")
+        await run_migrations(pool)
+        pg_cache = PostgresCache(
+            pool=pool,
+            max_entries=settings.cache_max_entries,
+            ttl_seconds=settings.cache_ttl_seconds,
+            default_namespace=settings.cache_namespace,
+        )
+        set_query_cache(pg_cache)
+        app.state.db_pool = pool
+        app.state.cache = pg_cache
+    else:
+        mem_cache = ExactCache(
+            max_entries=settings.cache_max_entries,
+            ttl_seconds=settings.cache_ttl_seconds,
+        )
+        set_query_cache(mem_cache)
+        app.state.cache = mem_cache
+
     yield
+
     logger.info("Shutting down IntelliCache Gateway.")
+    active_cache = get_query_cache()
+    if active_cache is not None:
+        await active_cache.close()
 
 
 def create_app() -> FastAPI:
@@ -87,6 +128,8 @@ def create_app() -> FastAPI:
             "status": "online",
             "uptime_seconds": uptime_seconds,
             "configured_model": current_settings.groq_model,
+            "cache_backend": current_settings.cache_backend,
+            "cache_namespace": current_settings.cache_namespace,
             "cache_enabled": current_settings.cache_enabled,
             "endpoints": {
                 "query": "POST /query",
@@ -101,20 +144,49 @@ def create_app() -> FastAPI:
     @app.get("/health", summary="Health Check")
     async def health_check(
         current_settings: Settings = Depends(get_settings),
-        cache: QueryCache = Depends(get_query_cache),
+        cache: BaseCache = Depends(get_query_cache),
     ) -> Dict[str, Any]:
         """Health check endpoint for liveness and readiness monitoring."""
-        stats = cache.stats(enabled=current_settings.cache_enabled)
+        stats = await cache.stats(
+            enabled=current_settings.cache_enabled,
+            namespace=current_settings.cache_namespace,
+        )
         has_api_key = bool(
             current_settings.groq_api_key and current_settings.groq_api_key != "replace_with_your_key"
         )
+
+        db_connected = True
+        db_status = "n/a"
+        if current_settings.cache_backend == "postgres":
+            pool = getattr(cache, "pool", None)
+            if pool is not None:
+                try:
+                    async with pool.acquire() as conn:
+                        await conn.fetchval("SELECT 1")
+                    db_status = "connected"
+                except Exception as e:
+                    db_status = f"unreachable: {type(e).__name__}"
+                    db_connected = False
+            else:
+                db_status = "uninitialized"
+                db_connected = False
+
+        is_healthy = has_api_key and (current_settings.cache_backend != "postgres" or db_connected)
         return {
-            "status": "healthy" if has_api_key else "degraded",
+            "status": "healthy" if is_healthy else "degraded",
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "groq_configured": has_api_key,
             "groq_model": current_settings.groq_model,
+            "cache_backend": current_settings.cache_backend,
+            "cache_namespace": current_settings.cache_namespace,
+            "database": {
+                "backend": current_settings.cache_backend,
+                "status": db_status,
+                "connected": db_connected,
+            },
             "cache": {
                 "enabled": current_settings.cache_enabled,
+                "backend": stats.backend,
                 "entries": stats.total_entries,
                 "hit_rate": stats.hit_rate,
                 "hits": stats.hits,
@@ -125,10 +197,13 @@ def create_app() -> FastAPI:
     @app.get("/cache/stats", response_model=CacheStats, tags=["Cache"], summary="Global Cache Statistics")
     async def global_cache_stats(
         current_settings: Settings = Depends(get_settings),
-        cache: QueryCache = Depends(get_query_cache),
+        cache: BaseCache = Depends(get_query_cache),
     ) -> CacheStats:
         """Global cache performance statistics endpoint."""
-        return cache.stats(enabled=current_settings.cache_enabled)
+        return await cache.stats(
+            enabled=current_settings.cache_enabled,
+            namespace=current_settings.cache_namespace,
+        )
 
     @app.post(
         "/cache/clear",
@@ -137,10 +212,11 @@ def create_app() -> FastAPI:
         summary="Global Cache Purge",
     )
     async def global_cache_clear(
-        cache: QueryCache = Depends(get_query_cache),
+        current_settings: Settings = Depends(get_settings),
+        cache: BaseCache = Depends(get_query_cache),
     ) -> Dict[str, Any]:
         """Purge all entries from the query cache. Requires administrative token."""
-        cache.clear()
+        await cache.clear(namespace=None)
         return {"status": "ok", "message": "Global query cache purged successfully."}
 
     return app

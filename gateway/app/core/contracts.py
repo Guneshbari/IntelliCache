@@ -45,6 +45,7 @@ class GenerationRequest:
     temperature: float = 0.7
     max_tokens: Optional[int] = None
     provider: str = "groq"
+    namespace: str = "default"
     stream: bool = False
     bypass_cache: bool = False
     conversation_id: Optional[str] = None

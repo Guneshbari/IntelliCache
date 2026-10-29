@@ -2,6 +2,7 @@
 Integration tests for main FastAPI application endpoints in IntelliCache Gateway.
 """
 
+import asyncio
 import os
 import unittest
 from unittest.mock import patch
@@ -19,7 +20,7 @@ class TestMainEndpoints(unittest.TestCase):
         self.client = TestClient(app)
         reload_settings()
         cache = get_query_cache()
-        cache.clear()
+        asyncio.run(cache.clear())
 
     def test_root_endpoint(self):
         """Verify root endpoint returns metadata and online status."""

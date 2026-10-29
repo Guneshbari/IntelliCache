@@ -69,7 +69,7 @@ class IntelliCacheCore:
 
         # 1. Cache Read
         if self.cache_enabled and not request.bypass_cache:
-            cached_entry = self.cache.get(fingerprint)
+            cached_entry = await self.cache.get(fingerprint, namespace=request.namespace)
             if cached_entry is not None:
                 latency_ms = (time.perf_counter() - start_time) * 1000.0
                 return GenerationResult(
@@ -85,7 +85,7 @@ class IntelliCacheCore:
 
         # 2. Strict Bypass Semantics
         if request.bypass_cache or not self.cache_enabled:
-            self.cache.record_miss()
+            await self.cache.record_miss()
             result = await provider.generate(request)
             result.fingerprint = fingerprint
             result.metadata = request.metadata
@@ -96,13 +96,13 @@ class IntelliCacheCore:
 
         if not is_leader:
             # PRE-01: Follower joined in-flight work -> record join immediately
-            self.cache.record_coalesced_join()
+            await self.cache.record_coalesced_join()
             try:
                 # Follower awaits leader's shielded future so follower cancellation cannot cancel leader
                 cached_entry: CacheEntry = await asyncio.shield(shared_future)
                 latency_ms = (time.perf_counter() - start_time) * 1000.0
                 # PRE-01: Record successful reuse for tokens and latency saved
-                self.cache.record_coalesced_success(cached_entry)
+                await self.cache.record_coalesced_success(cached_entry)
                 return GenerationResult(
                     text=cached_entry.response,
                     model=cached_entry.model,
@@ -121,7 +121,7 @@ class IntelliCacheCore:
                 raise
 
         # Leader: record miss and execute provider generation
-        self.cache.record_miss()
+        await self.cache.record_miss()
         try:
             result = await provider.generate(request)
             result.fingerprint = fingerprint
@@ -132,7 +132,7 @@ class IntelliCacheCore:
                 usage=result.usage,
                 latency_ms=result.latency_ms,
             )
-            self.cache.set(fingerprint, entry)
+            await self.cache.set(fingerprint, entry, namespace=request.namespace)
             await self.single_flight.complete_success(fingerprint, entry)
             return result
         except BaseException as exc:
@@ -161,7 +161,7 @@ class IntelliCacheCore:
 
         # 1. Cache Read for Streaming
         if self.cache_enabled and not request.bypass_cache:
-            cached_entry = self.cache.get(fingerprint)
+            cached_entry = await self.cache.get(fingerprint, namespace=request.namespace)
             if cached_entry is not None:
                 latency_ms = (time.perf_counter() - start_time) * 1000.0
                 yield StreamChunk(
@@ -183,7 +183,7 @@ class IntelliCacheCore:
                 return
 
         # 2. Streaming Miss
-        self.cache.record_miss()
+        await self.cache.record_miss()
         accumulated_text: list[str] = []
         stream_success = False
 
@@ -212,7 +212,7 @@ class IntelliCacheCore:
                             usage=chunk.usage or UsageMetrics(),
                             latency_ms=round(elapsed_ms, 2),
                         )
-                        self.cache.set(fingerprint, entry)
+                        await self.cache.set(fingerprint, entry, namespace=request.namespace)
 
                     yield StreamChunk(
                         delta="",

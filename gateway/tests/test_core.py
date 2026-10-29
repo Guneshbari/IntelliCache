@@ -142,7 +142,7 @@ class TestIntelliCacheCoreOrchestration(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res2.cache_hit_count, 1)
         self.assertEqual(provider.call_count, 1)
 
-        stats = self.cache.stats()
+        stats = await self.cache.stats()
         self.assertEqual(stats.hits, 1)
         self.assertEqual(stats.misses, 1)
         self.assertEqual(stats.total_requests, 2)
@@ -161,7 +161,7 @@ class TestIntelliCacheCoreOrchestration(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(provider.call_count, 1)
 
         # Bypass query must NOT populate the cache
-        stats = self.cache.stats()
+        stats = await self.cache.stats()
         self.assertEqual(stats.total_entries, 0)
         self.assertEqual(stats.misses, 1)
 
@@ -199,7 +199,7 @@ class TestIntelliCacheCoreOrchestration(unittest.IsolatedAsyncioTestCase):
         # 1 provider call for all 4 requests
         self.assertEqual(provider.call_count, 1)
 
-        stats = self.cache.stats()
+        stats = await self.cache.stats()
         self.assertEqual(stats.misses, 1)
         self.assertEqual(stats.coalesced_requests, 3)
         self.assertEqual(stats.hits, 0)
@@ -235,7 +235,7 @@ class TestIntelliCacheCoreOrchestration(unittest.IsolatedAsyncioTestCase):
         for r in results:
             self.assertIsInstance(r, ProviderError)
 
-        stats = self.cache.stats()
+        stats = await self.cache.stats()
         self.assertEqual(stats.misses, 1)
         self.assertEqual(stats.coalesced_requests, 2)
         # 1 leader miss + 2 followers joined = 3 total requests accounted for!
@@ -273,7 +273,7 @@ class TestIntelliCacheCoreOrchestration(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(leader_res.text, "Leader Victory")
 
         # Entry was cached by leader
-        stats = self.cache.stats()
+        stats = await self.cache.stats()
         self.assertEqual(stats.total_entries, 1)
         self.assertEqual(stats.misses, 1)
         self.assertEqual(stats.coalesced_requests, 1)

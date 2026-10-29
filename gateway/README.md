@@ -13,7 +13,7 @@ gateway/
 ├── app/
 │   ├── api/                  # HTTP route handling, request/response conversion, dependency wiring
 │   │   ├── __init__.py
-│   │   └── routes.py         # /query, /api/v1/query endpoints, SSE streaming formatter, error mappers
+│   │   └── routes.py         # /query endpoints, client auth, SSE streaming formatter, error mappers
 │   ├── core/                 # Provider-independent caching & orchestration core (Zero FastAPI/Groq imports)
 │   │   ├── __init__.py
 │   │   ├── contracts.py      # Normalized generation requests, results, stream chunks, usage metrics
@@ -23,8 +23,10 @@ gateway/
 │   │   └── service.py        # IntelliCacheCore orchestrator
 │   ├── cache/                # Cache interface and storage implementations
 │   │   ├── __init__.py
-│   │   ├── interfaces.py     # BaseCache abstract interface, CacheEntry, CacheStats
-│   │   └── exact_cache.py    # LRU + TTL in-memory exact-match cache (ExactCache / QueryCache)
+│   │   ├── interfaces.py     # BaseCache abstract async interface, CacheEntry, CacheStats
+│   │   ├── exact_cache.py    # LRU + TTL in-memory exact-match cache (ExactCache / QueryCache)
+│   │   ├── postgres_cache.py # Persistent PostgreSQL-backed exact-match cache with LRU eviction
+│   │   └── migration.py      # Automated SQL migration runner for asyncpg
 │   ├── providers/            # Replaceable LLM provider adapters
 │   │   ├── __init__.py
 │   │   ├── interfaces.py     # LLMProvider abstract interface (generate, stream, close)
@@ -34,11 +36,14 @@ gateway/
 │   │   ├── __init__.py
 │   │   └── query.py
 │   ├── config.py             # Pydantic Settings, environment loader, and payload size bounds
-│   └── main.py               # FastAPI application factory, CORS, and root/health/admin routes
+│   └── main.py               # FastAPI application factory, lifespan, CORS, and health/admin routes
+├── migrations/               # SQL migration scripts
+│   └── 001_create_cache_entries.sql
 ├── tests/
 │   ├── test_core.py          # Core orchestration tests using pure FakeProvider & AST import boundary tests
 │   ├── test_providers.py     # Groq adapter, client closure, and ProviderFactory tests
 │   ├── test_query.py         # API route integration tests, streaming SSE, and exact caching
+│   ├── test_multi_client.py  # Multi-client auth, namespace isolation, and PostgreSQL persistence tests
 │   ├── test_config.py        # Settings validation, env overrides, and payload limits
 │   └── test_main.py          # Root, health, CORS, and admin clear endpoint tests
 ├── .env                      # Local environment configuration (git-ignored)
@@ -65,8 +70,11 @@ gateway/
    - Verified via automated Abstract Syntax Tree (AST) boundary tests in `test_core.py`.
 
 3. **Cache Storage Layer (`gateway/app/cache/`)**:
-   - Exposes the `BaseCache` interface (`get`, `set`, `record_miss`, `record_coalesced_join`, `record_coalesced_success`, `clear`, `stats`).
-   - Implements in-memory LRU capacity eviction and TTL-based entry expiration.
+   - Exposes the asynchronous `BaseCache` interface (`get`, `set`, `record_miss`, `record_coalesced_join`, `record_coalesced_success`, `clear`, `stats`).
+   - Supports two interchangeable implementations:
+     - `ExactCache`: In-memory LRU capacity eviction and TTL-based entry expiration for local test/dev.
+     - `PostgresCache`: Persistent, centralized exact cache backed by PostgreSQL and `asyncpg` with bounded capacity, LRU eviction, and atomic access tracking.
+   - Automated database schema migrations (`run_migrations`) executed during application startup.
    - Accurate request accounting: `total_requests = hits + misses + coalesced_requests`.
 
 4. **Provider Adapter Layer (`gateway/app/providers/`)**:
@@ -127,6 +135,35 @@ The provider client is lazily constructed only when an actual upstream inference
 
 ---
 
+## Centralized Architecture & Multi-Client Topology
+
+In a centralized deployment, multiple client machines communicate with a single central IntelliCache API service over HTTP or HTTPS:
+
+```
+[ Client PC 1 (Browser Ext / App) ] ---\
+                                        +---> [ Central IntelliCache API Server ] ===> [ PostgreSQL (Persistent Cache) ]
+[ Client PC 2 (Browser Ext / App) ] ---/          (FastAPI Gateway)                            ||
+                                                          ||                                   ||
+                                                          \/                                   \/
+                                                [ Groq LLM Provider ]                 (Authoritative Shared Store)
+```
+
+### Key Architectural Principles:
+1. **Direct Database Isolation**: Clients **never** connect directly to PostgreSQL. All read, write, eviction, and single-flight operations are managed exclusively by the central IntelliCache service.
+2. **PostgreSQL Persistence & asyncpg Pooling**: Persistent exact caching is handled by `PostgresCache` using asynchronous, non-blocking `asyncpg` connection pools (`DB_POOL_MIN_SIZE` to `DB_POOL_MAX_SIZE`), with automatic lifespan cleanup on shutdown.
+3. **Database Migrations**: SQL schema migrations are versioned under `gateway/migrations/` and automatically applied at startup via `gateway/app/cache/migration.py`.
+   - `001_create_cache_entries.sql`: Creates `cache_entries` with a unique constraint on `(cache_namespace, fingerprint)` for conflict-safe concurrent upserts, plus indexes for lookups, expiration sweeps, and LRU eviction.
+4. **Server-Enforced Cache Namespaces (`CACHE_NAMESPACE`)**: Cache isolation (e.g. between development, staging, or teams) is strictly enforced by the server configuration. The gateway does not allow client requests to override the namespace, preventing cache poisoning across tenants.
+5. **Client Authentication & Fail-Closed Security**:
+   - `CLIENT_API_TOKEN`: When configured, all inference queries (`/query`, `/api/v1/query`) require an authentication token via header `X-Client-Token: <token>` or `Authorization: Bearer <token>`.
+   - **Fail-Closed Beyond Loopback**: If the server binds to a non-loopback interface (such as `0.0.0.0` or a public IP) without `CLIENT_API_TOKEN` configured, the gateway refuses to serve queries (returning 401 Unauthorized) to avoid operating as an unintended open LLM relay.
+6. **Health Diagnostics (`GET /health`)**:
+   - Performs a lightweight `SELECT 1` check when the PostgreSQL backend is enabled to verify live database connectivity.
+   - If PostgreSQL is unreachable, the endpoint returns HTTP 503 Service Unavailable with `database: "unhealthy"`.
+   - Database credentials, passwords, and sensitive connection strings are never exposed in health output or error responses.
+
+---
+
 ## Configuration & Security
 
 ### Environment Settings (`.env`)
@@ -143,8 +180,15 @@ PORT=8000
 DEBUG=false
 CORS_ORIGINS=*
 ADMIN_API_TOKEN=replace_with_admin_secret_token
+CLIENT_API_TOKEN=replace_with_client_secret_token
 
-# Caching Configuration (Optional)
+# Caching Configuration
+# Backend: "memory" (default for local test/dev) or "postgres" (for centralized shared cache)
+CACHE_BACKEND=memory
+DATABASE_URL=postgresql://user:password@localhost:5432/intellicache
+CACHE_NAMESPACE=default
+DB_POOL_MIN_SIZE=1
+DB_POOL_MAX_SIZE=10
 CACHE_ENABLED=true
 CACHE_TTL_SECONDS=3600
 CACHE_MAX_ENTRIES=1000
@@ -160,6 +204,8 @@ MAX_MESSAGE_CHARS=131072
 ```
 
 ### Security Considerations
+- **Client Authentication (`/query`)**: Protected by `CLIENT_API_TOKEN` via `X-Client-Token` or `Authorization: Bearer`. Constant-time comparison (`hmac.compare_digest`) prevents timing attacks.
+- **Fail-Closed Protection**: Binding to interfaces other than `127.0.0.1` requires `CLIENT_API_TOKEN`. Unauthenticated requests on exposed interfaces are strictly rejected.
 - **Admin Endpoint Protection (`/cache/clear`)**: Administrative operations require `ADMIN_API_TOKEN` to be set on the server. Clients must supply the token via `X-Admin-Token: <token>` or `Authorization: Bearer <token>`. Requests are validated using constant-time comparison (`hmac.compare_digest`). If unset or invalid, the endpoint responds with HTTP 403 Forbidden.
 - **Network Exposure**: By default, the gateway binds to `127.0.0.1` (localhost) rather than `0.0.0.0` to avoid unintentionally exposing endpoints to the local network or container host interfaces.
 - **Secret & Path Redaction**: Upstream error messages and logs automatically redact Groq API keys (`gsk_***`), Bearer tokens, absolute filesystem paths (`<redacted_path>`), and IP addresses (`<redacted_ip>`).
@@ -191,11 +237,12 @@ cd gateway
 
 To run individual test modules:
 ```bash
-python -m unittest tests/test_core.py        # Core orchestration & AST boundary tests
-python -m unittest tests/test_providers.py   # Groq adapter & provider factory tests
-python -m unittest tests/test_query.py       # API route & streaming tests
-python -m unittest tests/test_config.py      # Configuration tests
-python -m unittest tests/test_main.py        # Application integration tests
+python -m unittest tests/test_core.py          # Core orchestration & AST boundary tests
+python -m unittest tests/test_providers.py     # Groq adapter & provider factory tests
+python -m unittest tests/test_query.py         # API route & streaming tests
+python -m unittest tests/test_multi_client.py  # Multi-client auth, namespaces & PostgreSQL tests
+python -m unittest tests/test_config.py        # Configuration tests
+python -m unittest tests/test_main.py          # Application integration tests
 ```
 
 ---

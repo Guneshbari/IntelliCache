@@ -68,7 +68,7 @@ class TestQueryRoute(unittest.TestCase):
         self.client = TestClient(app)
         reload_settings()
         self.cache = get_query_cache()
-        self.cache.clear()
+        asyncio.run(self.cache.clear())
         self.single_flight = get_single_flight_coordinator()
 
         # Set up mock Groq client with close tracker
@@ -85,7 +85,7 @@ class TestQueryRoute(unittest.TestCase):
 
     def tearDown(self):
         app.dependency_overrides.clear()
-        self.cache.clear()
+        asyncio.run(self.cache.clear())
 
     # -----------------------------------------------------------------------
     # 1. Exact-Cache Correctness & Parameter Isolation Tests (TASK-01 / FIX-01)
@@ -599,15 +599,18 @@ class TestQueryRoute(unittest.TestCase):
         e2 = CacheEntry("r2", "m", UsageMetrics(), 1.0)
         e3 = CacheEntry("r3", "m", UsageMetrics(), 1.0)
 
-        test_cache.set("k1", e1)
-        test_cache.set("k2", e2)
-        self.assertEqual(len(test_cache._entries), 2)
+        async def _run_eviction():
+            await test_cache.set("k1", e1)
+            await test_cache.set("k2", e2)
+            self.assertEqual(len(test_cache._entries), 2)
 
-        test_cache.set("k3", e3)
-        self.assertEqual(len(test_cache._entries), 2)
-        self.assertIsNone(test_cache.get("k1"))
-        self.assertIsNotNone(test_cache.get("k2"))
-        self.assertIsNotNone(test_cache.get("k3"))
+            await test_cache.set("k3", e3)
+            self.assertEqual(len(test_cache._entries), 2)
+            self.assertIsNone(await test_cache.get("k1"))
+            self.assertIsNotNone(await test_cache.get("k2"))
+            self.assertIsNotNone(await test_cache.get("k3"))
+
+        asyncio.run(_run_eviction())
 
 
 if __name__ == "__main__":

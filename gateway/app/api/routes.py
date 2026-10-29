@@ -141,7 +141,7 @@ class QueryResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Admin Token Dependency
+# Admin & Client Token Dependencies
 # ---------------------------------------------------------------------------
 
 def verify_admin_token(
@@ -165,6 +165,38 @@ def verify_admin_token(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Forbidden: Invalid or missing administrative token.",
+        )
+
+
+def verify_client_token(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+) -> None:
+    """
+    Dependency verifying client API token for query endpoints.
+    Enforces authentication when CLIENT_API_TOKEN is set or when bound beyond loopback.
+    """
+    # 1. If client_api_token is configured, enforce it strictly
+    if settings.client_api_token:
+        token_candidate: Optional[str] = request.headers.get("X-Client-Token")
+        if not token_candidate:
+            auth_header = request.headers.get("Authorization", "")
+            if auth_header.lower().startswith("bearer "):
+                token_candidate = auth_header[7:].strip()
+
+        if not token_candidate or not hmac.compare_digest(token_candidate, settings.client_api_token):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Unauthorized: Invalid or missing client API token.",
+            )
+        return
+
+    # 2. Central deployment security check:
+    # If bound beyond loopback without client_api_token configured, fail closed
+    if settings.host != "127.0.0.1":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized: Central deployment bound beyond loopback requires CLIENT_API_TOKEN to be configured on the gateway.",
         )
 
 
@@ -197,17 +229,31 @@ def get_groq_client(settings: Settings = Depends(get_settings)) -> Any:
     return factory()
 
 
-_cache_singleton: Optional[ExactCache] = None
+_cache_singleton: Optional[BaseCache] = None
 _single_flight_singleton: Optional[SingleFlightCoordinator] = None
 _core_singleton: Optional[IntelliCacheCore] = None
 
 
-def get_query_cache(settings: Settings = Depends(get_settings)) -> ExactCache:
-    """Dependency returning singleton ExactCache instance."""
+def set_query_cache(cache: BaseCache) -> None:
+    """Set the active cache instance (used by lifecycle manager on startup or tests)."""
+    global _cache_singleton, _core_singleton
+    _cache_singleton = cache
+    _core_singleton = None
+
+
+def get_query_cache(settings: Settings = Depends(get_settings)) -> BaseCache:
+    """Dependency returning singleton BaseCache instance (PostgresCache or ExactCache)."""
     global _cache_singleton
     if not isinstance(settings, Settings):
         settings = get_settings()
     if _cache_singleton is None:
+        if settings.cache_backend == "postgres":
+            from ..cache.postgres_cache import PostgresCache
+            # In postgres mode, if pool not started via lifespan, raise informative error
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="PostgreSQL cache backend selected but connection pool is uninitialized. Start via application lifespan.",
+            )
         _cache_singleton = ExactCache(
             max_entries=settings.cache_max_entries,
             ttl_seconds=settings.cache_ttl_seconds,
@@ -225,7 +271,7 @@ def get_single_flight_coordinator() -> SingleFlightCoordinator:
 
 def get_core_service(
     settings: Settings = Depends(get_settings),
-    cache: ExactCache = Depends(get_query_cache),
+    cache: BaseCache = Depends(get_query_cache),
     single_flight: SingleFlightCoordinator = Depends(get_single_flight_coordinator),
 ) -> IntelliCacheCore:
     """Dependency returning IntelliCacheCore orchestration service."""
@@ -269,8 +315,8 @@ def get_llm_provider(
 # API Route Handlers
 # ---------------------------------------------------------------------------
 
-@router.post("", response_model=QueryResponse, summary="Execute or reuse cached LLM query")
-@router.post("/", response_model=QueryResponse, include_in_schema=False)
+@router.post("", response_model=QueryResponse, summary="Execute or reuse cached LLM query", dependencies=[Depends(verify_client_token)])
+@router.post("/", response_model=QueryResponse, include_in_schema=False, dependencies=[Depends(verify_client_token)])
 async def execute_query(
     request: QueryRequest,
     settings: Settings = Depends(get_settings),
@@ -298,12 +344,14 @@ async def execute_query(
         system_prompt=request.system_prompt,
     )
 
+    # Server-derived trusted namespace (clients cannot override via request body)
     gen_request = GenerationRequest(
         model=effective_model,
         messages=canonical_messages,
         temperature=effective_temperature,
         max_tokens=effective_max_tokens,
         provider=settings.llm_provider,
+        namespace=settings.cache_namespace,
         stream=request.stream,
         bypass_cache=request.bypass_cache,
         conversation_id=request.conversation_id,

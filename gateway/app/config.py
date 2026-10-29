@@ -6,7 +6,7 @@ Loads settings from environment variables and .env file.
 from pathlib import Path
 import os
 from typing import List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from dotenv import load_dotenv
 
 # Resolve paths
@@ -57,6 +57,9 @@ class Settings(BaseModel):
     admin_api_token: Optional[str] = Field(
         default_factory=lambda: os.getenv("ADMIN_API_TOKEN") or None
     )
+    client_api_token: Optional[str] = Field(
+        default_factory=lambda: os.getenv("CLIENT_API_TOKEN") or None
+    )
 
     # CORS Configuration
     cors_origins: List[str] = Field(
@@ -64,6 +67,21 @@ class Settings(BaseModel):
     )
 
     # Caching Configuration
+    cache_backend: str = Field(
+        default_factory=lambda: os.getenv("CACHE_BACKEND", "memory").lower().strip()
+    )
+    database_url: Optional[str] = Field(
+        default_factory=lambda: os.getenv("DATABASE_URL") or None
+    )
+    cache_namespace: str = Field(
+        default_factory=lambda: os.getenv("CACHE_NAMESPACE", "default").strip()
+    )
+    db_pool_min_size: int = Field(
+        default_factory=lambda: int(os.getenv("DB_POOL_MIN_SIZE", "1"))
+    )
+    db_pool_max_size: int = Field(
+        default_factory=lambda: int(os.getenv("DB_POOL_MAX_SIZE", "10"))
+    )
     cache_enabled: bool = Field(
         default_factory=lambda: os.getenv("CACHE_ENABLED", "true").lower() in ("true", "1", "yes")
     )
@@ -95,6 +113,12 @@ class Settings(BaseModel):
     max_message_chars: int = Field(
         default_factory=lambda: int(os.getenv("MAX_MESSAGE_CHARS", "131072"))
     )
+
+    @model_validator(mode="after")
+    def validate_database_config(self) -> "Settings":
+        if self.cache_backend == "postgres" and not self.database_url:
+            raise ValueError("DATABASE_URL must be configured when CACHE_BACKEND='postgres'.")
+        return self
 
 
 _settings_instance: Optional[Settings] = None
