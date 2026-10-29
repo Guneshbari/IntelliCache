@@ -17,13 +17,20 @@ class EligibilityResult:
 
 @dataclass(frozen=True)
 class SemanticHit:
-    """Represents a validated, un-ambiguous semantic cache hit."""
+    """
+    Represents a validated, un-ambiguous semantic cache hit.
+    Includes original cached entry token counts and latency for savings accounting.
+    """
     cached_response: str
     fingerprint: str
     distance: float
     similarity: float
     model: str
     query_text: str
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    original_latency_ms: float = 0.0
     metadata: Dict[str, Any] = field(default_factory=dict)
     matched_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()

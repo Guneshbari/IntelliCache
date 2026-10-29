@@ -111,6 +111,7 @@ class VectorSearchResult:
     """
     Result of a nearest-neighbour vector search query.
     Contains distance, similarity score, and associated exact-cache response if available.
+    Also preserves original cached entry token usage and generation latency for savings accounting.
     """
     cache_namespace: str
     fingerprint: str
@@ -119,6 +120,10 @@ class VectorSearchResult:
     distance: float
     similarity: float
     cached_response: Optional[str] = None
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    original_latency_ms: float = 0.0
     metadata: Dict[str, Any] = field(default_factory=dict)
     created_at: Optional[datetime] = None
 

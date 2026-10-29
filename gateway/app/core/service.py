@@ -134,16 +134,30 @@ class IntelliCacheCore:
         if self.semantic_cache is not None:
             semantic_hit = await self.semantic_cache.lookup(request)
             if semantic_hit is not None:
-                latency_ms = (time.perf_counter() - start_time) * 1000.0
+                lookup_latency_ms = (time.perf_counter() - start_time) * 1000.0
+                latency_saved_ms = max(0.0, semantic_hit.original_latency_ms - lookup_latency_ms)
+                tokens_saved = semantic_hit.total_tokens
+
+                # Record savings on cache without double-counting provider generation
+                await self.cache.record_semantic_hit(tokens_saved, latency_saved_ms)
+
+                original_usage = UsageMetrics(
+                    prompt_tokens=semantic_hit.prompt_tokens,
+                    completion_tokens=semantic_hit.completion_tokens,
+                    total_tokens=semantic_hit.total_tokens,
+                )
+
                 hit_entry = CacheEntry(
                     response=semantic_hit.cached_response,
                     model=request.model,
-                    usage=UsageMetrics(),
-                    latency_ms=round(latency_ms, 2),
+                    usage=original_usage,
+                    latency_ms=round(lookup_latency_ms, 2),
                     provider=request.provider,
                     metadata={
                         "cache_type": "semantic",
                         "candidate_fingerprint": semantic_hit.fingerprint,
+                        "tokens_saved": tokens_saved,
+                        "latency_saved_ms": round(latency_saved_ms, 2),
                     },
                 )
                 # Complete single-flight for followers with the semantic hit entry
@@ -152,8 +166,8 @@ class IntelliCacheCore:
                 return GenerationResult(
                     text=semantic_hit.cached_response,
                     model=request.model,
-                    usage=UsageMetrics(),
-                    latency_ms=round(latency_ms, 2),
+                    usage=original_usage,
+                    latency_ms=round(lookup_latency_ms, 2),
                     cached=True,
                     cache_hit_count=1,
                     fingerprint=fingerprint,

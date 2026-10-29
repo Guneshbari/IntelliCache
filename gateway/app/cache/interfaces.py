@@ -99,6 +99,11 @@ class BaseCache(ABC):
         pass
 
     @abstractmethod
+    async def record_semantic_hit(self, tokens_saved: int, latency_saved_ms: float) -> None:
+        """Record tokens and latency saved by a semantic cache hit."""
+        pass
+
+    @abstractmethod
     async def clear(self, namespace: Optional[str] = None) -> None:
         """Clear entries and reset metric counters."""
         pass

@@ -184,7 +184,11 @@ class PostgresVectorStore(BaseVectorStore):
                 v.metadata,
                 v.created_at,
                 (v.vector <=> $1::vector) AS distance,
-                c.response AS cached_response
+                c.response AS cached_response,
+                c.prompt_tokens,
+                c.completion_tokens,
+                c.total_tokens,
+                c.latency_ms AS original_latency_ms
             FROM vector_records v
             JOIN cache_entries c
                 ON v.cache_namespace = c.cache_namespace
@@ -207,6 +211,11 @@ class PostgresVectorStore(BaseVectorStore):
                 raw_meta = row["metadata"]
                 meta = json.loads(raw_meta) if isinstance(raw_meta, str) else dict(raw_meta or {})
 
+                prompt_toks = int(row["prompt_tokens"]) if row["prompt_tokens"] is not None else 0
+                comp_toks = int(row["completion_tokens"]) if row["completion_tokens"] is not None else 0
+                tot_toks = int(row["total_tokens"]) if row["total_tokens"] is not None else 0
+                orig_latency = float(row["original_latency_ms"]) if row["original_latency_ms"] is not None else 0.0
+
                 results.append(
                     VectorSearchResult(
                         cache_namespace=row["cache_namespace"],
@@ -216,6 +225,10 @@ class PostgresVectorStore(BaseVectorStore):
                         distance=dist,
                         similarity=sim,
                         cached_response=row["cached_response"],
+                        prompt_tokens=prompt_toks,
+                        completion_tokens=comp_toks,
+                        total_tokens=tot_toks,
+                        original_latency_ms=orig_latency,
                         metadata=meta,
                         created_at=row["created_at"],
                     )

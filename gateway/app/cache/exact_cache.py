@@ -95,6 +95,12 @@ class ExactCache(BaseCache):
         if entry is not None:
             await self.record_coalesced_success(entry)
 
+    async def record_semantic_hit(self, tokens_saved: int, latency_saved_ms: float) -> None:
+        """Record tokens and latency saved by a semantic cache hit."""
+        self._hits += 1
+        self._tokens_saved += max(0, tokens_saved)
+        self._latency_saved_ms += max(0.0, latency_saved_ms)
+
     async def clear(self, namespace: Optional[str] = None) -> None:
         """Clears cached entries and resets statistics."""
         if namespace is not None:

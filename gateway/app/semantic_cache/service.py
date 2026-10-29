@@ -75,6 +75,16 @@ class SemanticCacheService(BaseSemanticCache):
             )
             return None
 
+        # Validate reported model identity against configured model (fail open)
+        if embed_res.model != self.policy.configured_model:
+            self.stats.embedding_failures += 1
+            logger.warning(
+                "Semantic lookup model mismatch: expected '%s', got '%s'",
+                self.policy.configured_model,
+                embed_res.model,
+            )
+            return None
+
         # 2. Search nearest neighbours in vector store
         try:
             candidates = await self.vector_store.search(
@@ -121,6 +131,10 @@ class SemanticCacheService(BaseSemanticCache):
             similarity=winning_candidate.similarity,
             model=winning_candidate.model,
             query_text=winning_candidate.query_text,
+            prompt_tokens=winning_candidate.prompt_tokens,
+            completion_tokens=winning_candidate.completion_tokens,
+            total_tokens=winning_candidate.total_tokens,
+            original_latency_ms=winning_candidate.original_latency_ms,
             metadata=winning_candidate.metadata,
         )
 
@@ -151,6 +165,16 @@ class SemanticCacheService(BaseSemanticCache):
                 "Vector indexing failed during embedding (%s): %s",
                 type(exc).__name__,
                 sanitize_error_message(str(exc)),
+            )
+            return False
+
+        # Validate reported model identity against configured model (fail open)
+        if embed_res.model != self.policy.configured_model:
+            self.stats.indexing_failures += 1
+            logger.warning(
+                "Vector indexing model mismatch: expected '%s', got '%s'",
+                self.policy.configured_model,
+                embed_res.model,
             )
             return False
 

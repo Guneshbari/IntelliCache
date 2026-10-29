@@ -1,0 +1,2402 @@
+[
+  {
+    "id": "pos-dev-001",
+    "query": "How do I reverse a string in Python using slicing?",
+    "category": "positive_paraphrase",
+    "split": "development",
+    "expected_answer_label": "py_str_slice_rev",
+    "rationale": "Direct paraphrase asking how to reverse Python string with slice notation.",
+    "candidates": [
+      {
+        "id": "cand-pos-001-a",
+        "query_text": "What is the slice syntax to reverse a string in Python?",
+        "cached_response": "To reverse a string `s` in Python using slicing, use `s[::-1]`.",
+        "answer_label": "py_str_slice_rev",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "pos-dev-002",
+    "query": "How can I merge two dictionaries in Python 3.9+?",
+    "category": "positive_paraphrase",
+    "split": "development",
+    "expected_answer_label": "py39_dict_merge",
+    "rationale": "Asking for Python 3.9 dictionary union operator.",
+    "candidates": [
+      {
+        "id": "cand-pos-002-a",
+        "query_text": "What is the syntax for merging two dicts using the union operator in Python 3.9?",
+        "cached_response": "In Python 3.9+, use the merge operator `merged = dict1 | dict2`.",
+        "answer_label": "py39_dict_merge",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "pos-dev-003",
+    "query": "How do I check if a file exists in Python without raising an exception?",
+    "category": "positive_paraphrase",
+    "split": "development",
+    "expected_answer_label": "py_file_exists",
+    "rationale": "Paraphrase of checking file existence using pathlib or os.path.",
+    "candidates": [
+      {
+        "id": "cand-pos-003-a",
+        "query_text": "Check if a file exists safely in Python using pathlib",
+        "cached_response": "Use `pathlib.Path('file.txt').is_file()` to safely check if a file exists.",
+        "answer_label": "py_file_exists",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "pos-dev-004",
+    "query": "How do I convert a string to an integer in JavaScript?",
+    "category": "positive_paraphrase",
+    "split": "development",
+    "expected_answer_label": "js_str_to_int",
+    "rationale": "Paraphrase for parsing integer string in JS.",
+    "candidates": [
+      {
+        "id": "cand-pos-004-a",
+        "query_text": "What is the best way to parse a string to an integer in JavaScript?",
+        "cached_response": "Use `parseInt(str, 10)` or `Number(str)` to convert a string to an integer.",
+        "answer_label": "js_str_to_int",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "pos-dev-005",
+    "query": "How do I read a JSON file into a dictionary in Python?",
+    "category": "positive_paraphrase",
+    "split": "development",
+    "expected_answer_label": "py_read_json_file",
+    "rationale": "Paraphrase asking for json.load on a file object.",
+    "candidates": [
+      {
+        "id": "cand-pos-005-a",
+        "query_text": "Loading a JSON file as a dict in Python using json module",
+        "cached_response": "Use `with open('data.json', 'r') as f: data = json.load(f)`.",
+        "answer_label": "py_read_json_file",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "pos-dev-006",
+    "query": "How to remove duplicates from a list in Python while keeping it simple?",
+    "category": "positive_paraphrase",
+    "split": "development",
+    "expected_answer_label": "py_list_dedup_set",
+    "rationale": "Simple set-based deduplication.",
+    "candidates": [
+      {
+        "id": "cand-pos-006-a",
+        "query_text": "Easiest way to deduplicate a list in Python",
+        "cached_response": "If order does not matter, convert the list to a set: `list(set(items))`.",
+        "answer_label": "py_list_dedup_set",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "pos-dev-007",
+    "query": "How do I get current UTC timestamp in Python datetime?",
+    "category": "positive_paraphrase",
+    "split": "development",
+    "expected_answer_label": "py_utc_now",
+    "rationale": "Datetime UTC now syntax.",
+    "candidates": [
+      {
+        "id": "cand-pos-007-a",
+        "query_text": "Get timezone-aware UTC datetime now in Python",
+        "cached_response": "Use `datetime.now(timezone.utc)` from the datetime module.",
+        "answer_label": "py_utc_now",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "pos-dev-008",
+    "query": "How to iterate over key-value pairs of a map in TypeScript?",
+    "category": "positive_paraphrase",
+    "split": "development",
+    "expected_answer_label": "ts_map_iterate",
+    "rationale": "Iterating over Map entries.",
+    "candidates": [
+      {
+        "id": "cand-pos-008-a",
+        "query_text": "Looping through entries of a Map in TypeScript / ES6",
+        "cached_response": "Use `for (const [key, value] of map.entries()) { ... }`.",
+        "answer_label": "ts_map_iterate",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "pos-dev-009",
+    "query": "How do I create a virtual environment with venv in Python?",
+    "category": "positive_paraphrase",
+    "split": "development",
+    "expected_answer_label": "py_create_venv",
+    "rationale": "Standard command for creating python venv.",
+    "candidates": [
+      {
+        "id": "cand-pos-009-a",
+        "query_text": "Command to initialize a new Python venv virtual environment",
+        "cached_response": "Run `python -m venv .venv` in your project terminal.",
+        "answer_label": "py_create_venv",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "pos-dev-010",
+    "query": "How to format a float to two decimal places in Python f-string?",
+    "category": "positive_paraphrase",
+    "split": "development",
+    "expected_answer_label": "py_fstring_float_2dec",
+    "rationale": "f-string float formatting.",
+    "candidates": [
+      {
+        "id": "cand-pos-010-a",
+        "query_text": "Python f-string syntax to round float to 2 decimal places",
+        "cached_response": "Use f-string format specifier: `f\"{value:.2f}\"`.",
+        "answer_label": "py_fstring_float_2dec",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "pos-dev-011",
+    "query": "How to clone a Git repository recursively with submodules?",
+    "category": "positive_paraphrase",
+    "split": "development",
+    "expected_answer_label": "git_clone_recursive",
+    "rationale": "Git clone submodules flag.",
+    "candidates": [
+      {
+        "id": "cand-pos-011-a",
+        "query_text": "What is the git command to clone a repo including all submodules?",
+        "cached_response": "Run `git clone --recurse-submodules <repository-url>`.",
+        "answer_label": "git_clone_recursive",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "pos-dev-012",
+    "query": "How do I check if a list is empty in Python?",
+    "category": "positive_paraphrase",
+    "split": "development",
+    "expected_answer_label": "py_list_is_empty",
+    "rationale": "Pythonic check for empty list.",
+    "candidates": [
+      {
+        "id": "cand-pos-012-a",
+        "query_text": "What is the Pythonic way to test if a list has no elements?",
+        "cached_response": "Use `if not my_list:` as empty sequences evaluate to False in Python.",
+        "answer_label": "py_list_is_empty",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "pos-dev-013",
+    "query": "How to flatten a nested list in Python using list comprehension?",
+    "category": "positive_paraphrase",
+    "split": "development",
+    "expected_answer_label": "py_flatten_list_comp",
+    "rationale": "List comprehension syntax for flattening 2D list.",
+    "candidates": [
+      {
+        "id": "cand-pos-013-a",
+        "query_text": "Flatten 2D list into 1D list with list comprehension in Python",
+        "cached_response": "Use `[item for sublist in matrix for item in sublist]`.",
+        "answer_label": "py_flatten_list_comp",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "pos-dev-014",
+    "query": "How to sort a list of dicts by a specific key in Python?",
+    "category": "positive_paraphrase",
+    "split": "development",
+    "expected_answer_label": "py_sort_dicts_by_key",
+    "rationale": "Using sorted() with lambda or itemgetter.",
+    "candidates": [
+      {
+        "id": "cand-pos-014-a",
+        "query_text": "Sort a list of dictionaries by dictionary key value in Python",
+        "cached_response": "Use `sorted(data, key=lambda x: x['target_key'])`.",
+        "answer_label": "py_sort_dicts_by_key",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "pos-dev-015",
+    "query": "How to execute an async function in Python script from sync main?",
+    "category": "positive_paraphrase",
+    "split": "development",
+    "expected_answer_label": "py_asyncio_run",
+    "rationale": "Running asyncio event loop entry point.",
+    "candidates": [
+      {
+        "id": "cand-pos-015-a",
+        "query_text": "Run an async coroutine from synchronous Python entrypoint",
+        "cached_response": "Use `asyncio.run(main())` from the standard asyncio library.",
+        "answer_label": "py_asyncio_run",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "pos-dev-016",
+    "query": "How do I install dependencies from a requirements.txt with pip?",
+    "category": "positive_paraphrase",
+    "split": "development",
+    "expected_answer_label": "pip_install_requirements",
+    "rationale": "Pip install -r command.",
+    "candidates": [
+      {
+        "id": "cand-pos-016-a",
+        "query_text": "Command to install all packages listed in requirements.txt using pip",
+        "cached_response": "Run `pip install -r requirements.txt`.",
+        "answer_label": "pip_install_requirements",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "pos-dev-017",
+    "query": "How do I deep copy an object in Python?",
+    "category": "positive_paraphrase",
+    "split": "development",
+    "expected_answer_label": "py_copy_deepcopy",
+    "rationale": "Using copy.deepcopy.",
+    "candidates": [
+      {
+        "id": "cand-pos-017-a",
+        "query_text": "Create a recursive deep clone of an arbitrary object in Python",
+        "cached_response": "Use `import copy; new_obj = copy.deepcopy(orig_obj)`.",
+        "answer_label": "py_copy_deepcopy",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "pos-test-001",
+    "query": "How do I read environment variables in Python?",
+    "category": "positive_paraphrase",
+    "split": "test",
+    "expected_answer_label": "py_os_environ_get",
+    "rationale": "Reading environment variables safely with os.getenv.",
+    "candidates": [
+      {
+        "id": "cand-pos-t01-a",
+        "query_text": "What is the standard way to access environment variables in Python?",
+        "cached_response": "Use `os.environ.get('VAR_NAME', default_value)` or `os.getenv('VAR_NAME')`.",
+        "answer_label": "py_os_environ_get",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "pos-test-002",
+    "query": "How do I concatenate two arrays in JavaScript?",
+    "category": "positive_paraphrase",
+    "split": "test",
+    "expected_answer_label": "js_array_concat",
+    "rationale": "Using spread operator or concat for JS arrays.",
+    "candidates": [
+      {
+        "id": "cand-pos-t02-a",
+        "query_text": "Combine two arrays into a single array in JavaScript",
+        "cached_response": "Use the spread operator `[...arr1, ...arr2]` or `arr1.concat(arr2)`.",
+        "answer_label": "js_array_concat",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "pos-test-003",
+    "query": "How to write text into a file in Python?",
+    "category": "positive_paraphrase",
+    "split": "test",
+    "expected_answer_label": "py_write_file_text",
+    "rationale": "Opening file in 'w' mode and writing string.",
+    "candidates": [
+      {
+        "id": "cand-pos-t03-a",
+        "query_text": "Save a string to a text file in Python using with open",
+        "cached_response": "Use `with open('file.txt', 'w', encoding='utf-8') as f: f.write(content)`.",
+        "answer_label": "py_write_file_text",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "pos-test-004",
+    "query": "How to get keys of an object in JavaScript?",
+    "category": "positive_paraphrase",
+    "split": "test",
+    "expected_answer_label": "js_object_keys",
+    "rationale": "Object.keys usage.",
+    "candidates": [
+      {
+        "id": "cand-pos-t04-a",
+        "query_text": "Return an array of all keys of a JavaScript object",
+        "cached_response": "Use `Object.keys(obj)`.",
+        "answer_label": "js_object_keys",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "pos-test-005",
+    "query": "How do I pretty print a dictionary as JSON in Python?",
+    "category": "positive_paraphrase",
+    "split": "test",
+    "expected_answer_label": "py_json_dumps_indent",
+    "rationale": "json.dumps with indent parameter.",
+    "candidates": [
+      {
+        "id": "cand-pos-t05-a",
+        "query_text": "Format a Python dict to a readable indented JSON string",
+        "cached_response": "Use `json.dumps(my_dict, indent=2)`.",
+        "answer_label": "py_json_dumps_indent",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "pos-test-006",
+    "query": "How to convert a string to lowercase in TypeScript?",
+    "category": "positive_paraphrase",
+    "split": "test",
+    "expected_answer_label": "ts_str_to_lower",
+    "rationale": "toLowerCase method on string.",
+    "candidates": [
+      {
+        "id": "cand-pos-t06-a",
+        "query_text": "Transform a string into all lowercase characters in TypeScript",
+        "cached_response": "Call `str.toLowerCase()`.",
+        "answer_label": "ts_str_to_lower",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "pos-test-007",
+    "query": "How do I check the length of a string in Python?",
+    "category": "positive_paraphrase",
+    "split": "test",
+    "expected_answer_label": "py_len_str",
+    "rationale": "len function on string.",
+    "candidates": [
+      {
+        "id": "cand-pos-t07-a",
+        "query_text": "Count the number of characters in a Python string",
+        "cached_response": "Use the built-in function `len(my_string)`.",
+        "answer_label": "py_len_str",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "pos-test-008",
+    "query": "How to parse a JSON string into an object in JavaScript?",
+    "category": "positive_paraphrase",
+    "split": "test",
+    "expected_answer_label": "js_json_parse",
+    "rationale": "JSON.parse usage.",
+    "candidates": [
+      {
+        "id": "cand-pos-t08-a",
+        "query_text": "Convert JSON text into a JavaScript object",
+        "cached_response": "Use `JSON.parse(jsonString)`.",
+        "answer_label": "js_json_parse",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "pos-test-009",
+    "query": "How to get the current working directory in Python?",
+    "category": "positive_paraphrase",
+    "split": "test",
+    "expected_answer_label": "py_os_getcwd",
+    "rationale": "os.getcwd or Path.cwd().",
+    "candidates": [
+      {
+        "id": "cand-pos-t09-a",
+        "query_text": "Find out the current working directory path in Python",
+        "cached_response": "Use `os.getcwd()` or `pathlib.Path.cwd()`.",
+        "answer_label": "py_os_getcwd",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "pos-test-010",
+    "query": "How to convert an integer to a string in Python?",
+    "category": "positive_paraphrase",
+    "split": "test",
+    "expected_answer_label": "py_str_from_int",
+    "rationale": "str() constructor.",
+    "candidates": [
+      {
+        "id": "cand-pos-t10-a",
+        "query_text": "Cast an int to string type in Python",
+        "cached_response": "Use `str(num)`.",
+        "answer_label": "py_str_from_int",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "pos-test-011",
+    "query": "How to check if an object has a property in JavaScript?",
+    "category": "positive_paraphrase",
+    "split": "test",
+    "expected_answer_label": "js_object_has_prop",
+    "rationale": "in operator or Object.hasOwn.",
+    "candidates": [
+      {
+        "id": "cand-pos-t11-a",
+        "query_text": "Verify if a key exists on a JavaScript object",
+        "cached_response": "Use `Object.hasOwn(obj, 'key')` or `'key' in obj`.",
+        "answer_label": "js_object_has_prop",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "pos-test-012",
+    "query": "How to create an infinite loop in Python?",
+    "category": "positive_paraphrase",
+    "split": "test",
+    "expected_answer_label": "py_while_true",
+    "rationale": "while True loop syntax.",
+    "candidates": [
+      {
+        "id": "cand-pos-t12-a",
+        "query_text": "What syntax creates a perpetual while loop in Python?",
+        "cached_response": "Use `while True: ...` with a `break` condition inside if needed.",
+        "answer_label": "py_while_true",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "pos-test-013",
+    "query": "How to split a string by delimiter in Python?",
+    "category": "positive_paraphrase",
+    "split": "test",
+    "expected_answer_label": "py_str_split",
+    "rationale": "str.split method.",
+    "candidates": [
+      {
+        "id": "cand-pos-t13-a",
+        "query_text": "Break a string into a list of substrings separated by a delimiter in Python",
+        "cached_response": "Use `s.split(',')` or `s.split()` for whitespace.",
+        "answer_label": "py_str_split",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "pos-test-014",
+    "query": "How to find maximum value in a Python list of numbers?",
+    "category": "positive_paraphrase",
+    "split": "test",
+    "expected_answer_label": "py_max_list",
+    "rationale": "max() function.",
+    "candidates": [
+      {
+        "id": "cand-pos-t14-a",
+        "query_text": "Get the highest numerical element from a Python list",
+        "cached_response": "Use `max(numbers)`.",
+        "answer_label": "py_max_list",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "pos-test-015",
+    "query": "How do I remove whitespace from both sides of a string in Python?",
+    "category": "positive_paraphrase",
+    "split": "test",
+    "expected_answer_label": "py_str_strip",
+    "rationale": "strip method.",
+    "candidates": [
+      {
+        "id": "cand-pos-t15-a",
+        "query_text": "Trim leading and trailing spaces from a Python string",
+        "cached_response": "Use `s.strip()`.",
+        "answer_label": "py_str_strip",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "pos-test-016",
+    "query": "How to convert an array of strings into a single string in JavaScript?",
+    "category": "positive_paraphrase",
+    "split": "test",
+    "expected_answer_label": "js_array_join",
+    "rationale": "Array.join method.",
+    "candidates": [
+      {
+        "id": "cand-pos-t16-a",
+        "query_text": "Join elements of an array with a separator string in JS",
+        "cached_response": "Use `arr.join(', ')`.",
+        "answer_label": "js_array_join",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "pos-test-017",
+    "query": "How do I find the index of an element in a Python list?",
+    "category": "positive_paraphrase",
+    "split": "test",
+    "expected_answer_label": "py_list_index",
+    "rationale": "list.index method.",
+    "candidates": [
+      {
+        "id": "cand-pos-t17-a",
+        "query_text": "Get the zero-based index of an item in a Python list",
+        "cached_response": "Use `my_list.index(item)`.",
+        "answer_label": "py_list_index",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-lang-dev-001",
+    "query": "How do I filter an array of numbers in Python?",
+    "category": "different_language",
+    "split": "development",
+    "expected_answer_label": null,
+    "rationale": "Target asks for Python, candidate provides JavaScript array.filter.",
+    "candidates": [
+      {
+        "id": "cand-neg-l01-a",
+        "query_text": "How do I filter an array of numbers in JavaScript?",
+        "cached_response": "Use `arr.filter(n => n > 0)`.",
+        "answer_label": "js_array_filter",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-lang-dev-002",
+    "query": "How to read a file line by line in Rust?",
+    "category": "different_language",
+    "split": "development",
+    "expected_answer_label": null,
+    "rationale": "Target asks for Rust BufRead, candidate provides Python with open.",
+    "candidates": [
+      {
+        "id": "cand-neg-l02-a",
+        "query_text": "How to read a file line by line in Python?",
+        "cached_response": "Use `with open('file.txt') as f: for line in f: ...`.",
+        "answer_label": "py_read_lines",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-lang-dev-003",
+    "query": "How do I define an interface in Go?",
+    "category": "different_language",
+    "split": "development",
+    "expected_answer_label": null,
+    "rationale": "Target asks for Go interface, candidate provides TypeScript interface.",
+    "candidates": [
+      {
+        "id": "cand-neg-l03-a",
+        "query_text": "How do I define an interface in TypeScript?",
+        "cached_response": "Use `interface User { id: string; name: string; }`.",
+        "answer_label": "ts_interface_def",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-lang-dev-004",
+    "query": "How to create a hashmap in C++?",
+    "category": "different_language",
+    "split": "development",
+    "expected_answer_label": null,
+    "rationale": "Target asks for C++ std::unordered_map, candidate provides Java HashMap.",
+    "candidates": [
+      {
+        "id": "cand-neg-l04-a",
+        "query_text": "How to create a hashmap in Java?",
+        "cached_response": "Use `Map<String, Integer> map = new HashMap<>();`.",
+        "answer_label": "java_hashmap_create",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-lang-dev-005",
+    "query": "How do I parse a JSON string into an object in Go?",
+    "category": "different_language",
+    "split": "development",
+    "expected_answer_label": null,
+    "rationale": "Target asks for Go json.Unmarshal, candidate provides Python json.loads.",
+    "candidates": [
+      {
+        "id": "cand-neg-l05-a",
+        "query_text": "How do I parse a JSON string into an object in Python?",
+        "cached_response": "Use `import json; data = json.loads(json_str)`.",
+        "answer_label": "py_json_loads",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-lang-test-001",
+    "query": "How do I spawn a concurrent background thread in Go?",
+    "category": "different_language",
+    "split": "test",
+    "expected_answer_label": null,
+    "rationale": "Target asks for Go goroutine `go fn()`, candidate provides Python threading.Thread.",
+    "candidates": [
+      {
+        "id": "cand-neg-lt01-a",
+        "query_text": "How do I spawn a concurrent background thread in Python?",
+        "cached_response": "Use `import threading; t = threading.Thread(target=fn); t.start()`.",
+        "answer_label": "py_thread_spawn",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-lang-test-002",
+    "query": "How do I sort a slice of integers in Go?",
+    "category": "different_language",
+    "split": "test",
+    "expected_answer_label": null,
+    "rationale": "Target asks for Go `slices.Sort(s)` or `sort.Ints(s)`, candidate provides Rust `.sort()`.",
+    "candidates": [
+      {
+        "id": "cand-neg-lt02-a",
+        "query_text": "How do I sort a slice of integers in Rust?",
+        "cached_response": "Use `vec.sort()` on a mutable Vec or slice.",
+        "answer_label": "rust_slice_sort",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-lang-test-003",
+    "query": "How to make an HTTP GET request in C#?",
+    "category": "different_language",
+    "split": "test",
+    "expected_answer_label": null,
+    "rationale": "Target asks for C# HttpClient, candidate provides Python requests.get.",
+    "candidates": [
+      {
+        "id": "cand-neg-lt03-a",
+        "query_text": "How to make an HTTP GET request in Python?",
+        "cached_response": "Use `import requests; res = requests.get('https://example.com')`.",
+        "answer_label": "py_requests_get",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-lang-test-004",
+    "query": "How do I append an item to an array in Ruby?",
+    "category": "different_language",
+    "split": "test",
+    "expected_answer_label": null,
+    "rationale": "Target asks for Ruby `<<` or `.push`, candidate provides Python `.append()`.",
+    "candidates": [
+      {
+        "id": "cand-neg-lt04-a",
+        "query_text": "How do I append an item to a list in Python?",
+        "cached_response": "Use `my_list.append(item)`.",
+        "answer_label": "py_list_append",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-lang-test-005",
+    "query": "How to declare an enum in Swift?",
+    "category": "different_language",
+    "split": "test",
+    "expected_answer_label": null,
+    "rationale": "Target asks for Swift enum, candidate provides TypeScript enum.",
+    "candidates": [
+      {
+        "id": "cand-neg-lt05-a",
+        "query_text": "How to declare an enum in TypeScript?",
+        "cached_response": "Use `enum Direction { Up, Down, Left, Right }`.",
+        "answer_label": "ts_enum_decl",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-ver-dev-001",
+    "query": "How do I define a metadata title in Next.js 14 App Router?",
+    "category": "version_difference",
+    "split": "development",
+    "expected_answer_label": null,
+    "rationale": "Target asks for Next.js App Router metadata export; candidate provides legacy Pages Router next/head.",
+    "candidates": [
+      {
+        "id": "cand-neg-v01-a",
+        "query_text": "How do I define page title in Next.js Pages Router?",
+        "cached_response": "Import Head from 'next/head' and wrap `<title>My Page</title>`.",
+        "answer_label": "nextjs_pages_head",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-ver-dev-002",
+    "query": "How do I validate a field using Pydantic v2?",
+    "category": "version_difference",
+    "split": "development",
+    "expected_answer_label": null,
+    "rationale": "Pydantic v2 uses @field_validator, while candidate provides deprecated @validator from v1.",
+    "candidates": [
+      {
+        "id": "cand-neg-v02-a",
+        "query_text": "How do I validate a field in Pydantic v1 using validator decorator?",
+        "cached_response": "Use `@validator('name')` decorator on the model class method.",
+        "answer_label": "pydantic_v1_validator",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-ver-dev-003",
+    "query": "How do I use action state hook in React 19?",
+    "category": "version_difference",
+    "split": "development",
+    "expected_answer_label": null,
+    "rationale": "React 19 uses useActionState, candidate provides legacy useReducer.",
+    "candidates": [
+      {
+        "id": "cand-neg-v03-a",
+        "query_text": "How do I manage form state with useReducer in React 18?",
+        "cached_response": "Use `const [state, dispatch] = useReducer(reducer, initialState)`.",
+        "answer_label": "react18_usereducer",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-ver-dev-004",
+    "query": "How to create a Vue 3 component with script setup syntax?",
+    "category": "version_difference",
+    "split": "development",
+    "expected_answer_label": null,
+    "rationale": "Vue 3 Composition API script setup vs Vue 2 Options API.",
+    "candidates": [
+      {
+        "id": "cand-neg-v04-a",
+        "query_text": "How to define a component in Vue 2 with Options API?",
+        "cached_response": "Use `export default { data() { return { count: 0 }; }, methods: { ... } }`.",
+        "answer_label": "vue2_options_api",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-ver-dev-005",
+    "query": "How to use native fetch in Node.js 18 without external packages?",
+    "category": "version_difference",
+    "split": "development",
+    "expected_answer_label": null,
+    "rationale": "Node 18 has global fetch; candidate requires installing node-fetch for Node 14.",
+    "candidates": [
+      {
+        "id": "cand-neg-v05-a",
+        "query_text": "How to fetch HTTP data in Node 14 using node-fetch package?",
+        "cached_response": "Run `npm install node-fetch` and `const fetch = require('node-fetch')`.",
+        "answer_label": "node14_node_fetch",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-ver-test-001",
+    "query": "How to configure root layout in Next.js 14?",
+    "category": "version_difference",
+    "split": "test",
+    "expected_answer_label": null,
+    "rationale": "App router `app/layout.tsx` vs Pages router `pages/_app.tsx`.",
+    "candidates": [
+      {
+        "id": "cand-neg-vt01-a",
+        "query_text": "How to set up custom App wrapper in Next.js Pages router?",
+        "cached_response": "Create `pages/_app.tsx` and export default MyApp component.",
+        "answer_label": "nextjs_pages_custom_app",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-ver-test-002",
+    "query": "How to write type annotations for union types in Python 3.10 using pipe?",
+    "category": "version_difference",
+    "split": "test",
+    "expected_answer_label": null,
+    "rationale": "Python 3.10 `int | str` vs Python 3.8 `Union[int, str]`.",
+    "candidates": [
+      {
+        "id": "cand-neg-vt02-a",
+        "query_text": "How to declare union types in Python 3.8 typing module?",
+        "cached_response": "Use `from typing import Union; x: Union[int, str]`.",
+        "answer_label": "py38_typing_union",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-ver-test-003",
+    "query": "How to perform model serialization in Pydantic v2?",
+    "category": "version_difference",
+    "split": "test",
+    "expected_answer_label": null,
+    "rationale": "Pydantic v2 `model_dump()` vs Pydantic v1 `dict()`.",
+    "candidates": [
+      {
+        "id": "cand-neg-vt03-a",
+        "query_text": "How to convert model to dictionary in Pydantic v1?",
+        "cached_response": "Call `model.dict()`.",
+        "answer_label": "pydantic_v1_dict",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-ver-test-004",
+    "query": "How to declare state in React class components?",
+    "category": "version_difference",
+    "split": "test",
+    "expected_answer_label": null,
+    "rationale": "Class component state vs useState hook.",
+    "candidates": [
+      {
+        "id": "cand-neg-vt04-a",
+        "query_text": "How to declare state in React functional components?",
+        "cached_response": "Use the `useState` hook: `const [val, setVal] = useState(initial)`.",
+        "answer_label": "react_use_state",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-ver-test-005",
+    "query": "How to define props with defineProps in Vue 3 script setup?",
+    "category": "version_difference",
+    "split": "test",
+    "expected_answer_label": null,
+    "rationale": "Vue 3 defineProps compiler macro vs Vue 2 props option.",
+    "candidates": [
+      {
+        "id": "cand-neg-vt05-a",
+        "query_text": "How to declare props in Vue 2 export object?",
+        "cached_response": "Declare `props: { title: { type: String, required: true } }`.",
+        "answer_label": "vue2_props_obj",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-err-dev-001",
+    "query": "How do I fix 'TypeError: NoneType object is not subscriptable' in Python?",
+    "category": "error_difference",
+    "split": "development",
+    "expected_answer_label": null,
+    "rationale": "Target error is indexing None; candidate addresses IndexError (out of bounds).",
+    "candidates": [
+      {
+        "id": "cand-neg-e01-a",
+        "query_text": "How do I fix 'IndexError: list index out of range' in Python?",
+        "cached_response": "Check the list length `len(my_list)` before indexing or handle IndexError.",
+        "answer_label": "fix_py_index_error",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-err-dev-002",
+    "query": "How do I fix 'KeyError: foo' when accessing a dictionary in Python?",
+    "category": "error_difference",
+    "split": "development",
+    "expected_answer_label": null,
+    "rationale": "Target is missing dictionary key; candidate fixes AttributeError (missing object attribute).",
+    "candidates": [
+      {
+        "id": "cand-neg-e02-a",
+        "query_text": "How do I fix 'AttributeError: object has no attribute foo' in Python?",
+        "cached_response": "Verify the object has the attribute with `hasattr(obj, 'foo')`.",
+        "answer_label": "fix_py_attribute_error",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-err-dev-003",
+    "query": "How do I resolve 'Uncaught ReferenceError: x is not defined' in JavaScript?",
+    "category": "error_difference",
+    "split": "development",
+    "expected_answer_label": null,
+    "rationale": "Target is undeclared variable ReferenceError; candidate addresses TypeError property access.",
+    "candidates": [
+      {
+        "id": "cand-neg-e03-a",
+        "query_text": "How do I resolve 'TypeError: Cannot read properties of undefined' in JavaScript?",
+        "cached_response": "Use optional chaining `obj?.property` to safely access nested properties.",
+        "answer_label": "fix_js_optional_chaining",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-err-dev-004",
+    "query": "How do I fix 'CORS policy: No Access-Control-Allow-Origin header' error?",
+    "category": "error_difference",
+    "split": "development",
+    "expected_answer_label": null,
+    "rationale": "Target is CORS header missing; candidate fixes 401 Unauthorized token header.",
+    "candidates": [
+      {
+        "id": "cand-neg-e04-a",
+        "query_text": "How do I fix '401 Unauthorized: missing Bearer token' in API requests?",
+        "cached_response": "Attach the Authorization header: `headers: { 'Authorization': 'Bearer ' + token }`.",
+        "answer_label": "fix_http_401_auth",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-err-dev-005",
+    "query": "How do I resolve 'RecursionError: maximum recursion depth exceeded' in Python?",
+    "category": "error_difference",
+    "split": "development",
+    "expected_answer_label": null,
+    "rationale": "Target is recursion depth; candidate is memory error allocating massive array.",
+    "candidates": [
+      {
+        "id": "cand-neg-e05-a",
+        "query_text": "How do I resolve 'MemoryError' when allocating large numpy array in Python?",
+        "cached_response": "Process the data in chunks or use `np.memmap` instead of in-memory arrays.",
+        "answer_label": "fix_numpy_mem_error",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-err-test-001",
+    "query": "How to fix 'ZeroDivisionError: division by zero' in Python?",
+    "category": "error_difference",
+    "split": "test",
+    "expected_answer_label": null,
+    "rationale": "Target is division by zero; candidate is ValueError invalid literal for int.",
+    "candidates": [
+      {
+        "id": "cand-neg-et01-a",
+        "query_text": "How to fix 'ValueError: invalid literal for int() with base 10' in Python?",
+        "cached_response": "Strip invalid characters and verify `str.isdigit()` before converting to int.",
+        "answer_label": "fix_py_value_error_int",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-err-test-002",
+    "query": "How to resolve 'ModuleNotFoundError: No module named requests'?",
+    "category": "error_difference",
+    "split": "test",
+    "expected_answer_label": null,
+    "rationale": "Target is missing third party package; candidate is circular ImportError within project.",
+    "candidates": [
+      {
+        "id": "cand-neg-et02-a",
+        "query_text": "How to resolve circular import 'ImportError: cannot import name' in Python?",
+        "cached_response": "Refactor common types into a separate module or move the import inside the function.",
+        "answer_label": "fix_py_circular_import",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-err-test-003",
+    "query": "How to fix 'SyntaxError: unexpected token' in JavaScript JSON.parse?",
+    "category": "error_difference",
+    "split": "test",
+    "expected_answer_label": null,
+    "rationale": "Target is JSON malformed syntax error; candidate is TypeError calling undefined function.",
+    "candidates": [
+      {
+        "id": "cand-neg-et03-a",
+        "query_text": "How to fix 'TypeError: fn is not a function' in JavaScript?",
+        "cached_response": "Ensure the variable is defined and of type function before calling: `typeof fn === 'function'`.",
+        "answer_label": "fix_js_not_a_func",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-err-test-004",
+    "query": "How to fix 'FileNotFoundError: [Errno 2] No such file or directory' in Python?",
+    "category": "error_difference",
+    "split": "test",
+    "expected_answer_label": null,
+    "rationale": "Target is file missing; candidate is PermissionError access denied.",
+    "candidates": [
+      {
+        "id": "cand-neg-et04-a",
+        "query_text": "How to fix 'PermissionError: [Errno 13] Permission denied' in Python?",
+        "cached_response": "Check file permissions and ensure the current process has write access.",
+        "answer_label": "fix_py_permission_error",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-err-test-005",
+    "query": "How to resolve 'git merge conflict in file.txt'?",
+    "category": "error_difference",
+    "split": "test",
+    "expected_answer_label": null,
+    "rationale": "Target is resolving merge conflicts; candidate is untracked working tree overwrite error.",
+    "candidates": [
+      {
+        "id": "cand-neg-et05-a",
+        "query_text": "How to resolve 'error: Your local changes to the following files would be overwritten by checkout'?",
+        "cached_response": "Run `git stash` to save local changes, then checkout, then `git stash pop`.",
+        "answer_label": "fix_git_overwrite_stash",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-con-dev-001",
+    "query": "How do I sort a list in Python in-place without allocating a new list?",
+    "category": "constraint_difference",
+    "split": "development",
+    "expected_answer_label": null,
+    "rationale": "Target requires in-place mutation (`list.sort()`); candidate uses `sorted()` returning a new list.",
+    "candidates": [
+      {
+        "id": "cand-neg-c01-a",
+        "query_text": "How do I sort a list in Python and return a new sorted copy?",
+        "cached_response": "Use `new_list = sorted(original_list)`.",
+        "answer_label": "py_sorted_new_copy",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-con-dev-002",
+    "query": "How to reverse a list in Python in place with O(1) extra space?",
+    "category": "constraint_difference",
+    "split": "development",
+    "expected_answer_label": null,
+    "rationale": "Target requires O(1) in-place reverse (`list.reverse()`); candidate uses slicing creating a full copy.",
+    "candidates": [
+      {
+        "id": "cand-neg-c02-a",
+        "query_text": "How to reverse a list in Python using slicing?",
+        "cached_response": "Use `reversed_list = items[::-1]` which creates a reversed copy.",
+        "answer_label": "py_slice_reversed_copy",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-con-dev-003",
+    "query": "How to perform case-sensitive string comparison in Python?",
+    "category": "constraint_difference",
+    "split": "development",
+    "expected_answer_label": null,
+    "rationale": "Target requires case-sensitive comparison; candidate does case-insensitive lower() comparison.",
+    "candidates": [
+      {
+        "id": "cand-neg-c03-a",
+        "query_text": "How to perform case-insensitive string comparison in Python?",
+        "cached_response": "Use `str1.lower() == str2.lower()` or `str1.casefold() == str2.casefold()`.",
+        "answer_label": "py_case_insensitive_cmp",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-con-dev-004",
+    "query": "How to sort numbers in descending order in Python?",
+    "category": "constraint_difference",
+    "split": "development",
+    "expected_answer_label": null,
+    "rationale": "Target is descending; candidate sorts ascending.",
+    "candidates": [
+      {
+        "id": "cand-neg-c04-a",
+        "query_text": "How to sort numbers in ascending order in Python?",
+        "cached_response": "Use `sorted(nums)` (ascending by default).",
+        "answer_label": "py_sort_ascending",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-con-dev-005",
+    "query": "How to remove duplicates from a list in Python while strictly preserving insertion order?",
+    "category": "constraint_difference",
+    "split": "development",
+    "expected_answer_label": null,
+    "rationale": "Target requires preserving insertion order; candidate uses `list(set(items))` which scrambles order.",
+    "candidates": [
+      {
+        "id": "cand-neg-c05-a",
+        "query_text": "How to deduplicate a list in Python using set?",
+        "cached_response": "Use `list(set(items))` (note: this does not preserve original order).",
+        "answer_label": "py_set_dedup_unodered",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-con-test-001",
+    "query": "How to implement a thread-safe singleton in Python?",
+    "category": "constraint_difference",
+    "split": "test",
+    "expected_answer_label": null,
+    "rationale": "Target requires thread-safety with locks; candidate provides naive non-thread-safe singleton.",
+    "candidates": [
+      {
+        "id": "cand-neg-ct01-a",
+        "query_text": "How to implement a basic singleton class in Python?",
+        "cached_response": "Override `__new__` and store `_instance` on the class without locking.",
+        "answer_label": "py_naive_singleton",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-con-test-002",
+    "query": "How to find an item in a sorted array in O(log n) time complexity?",
+    "category": "constraint_difference",
+    "split": "test",
+    "expected_answer_label": null,
+    "rationale": "Target requires O(log n) binary search; candidate uses O(n) linear search index().",
+    "candidates": [
+      {
+        "id": "cand-neg-ct02-a",
+        "query_text": "How to find an item in an array using linear scan?",
+        "cached_response": "Use `arr.index(target)` which scans from index 0 in O(N) time.",
+        "answer_label": "linear_search_scan",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-con-test-003",
+    "query": "How to modify a dictionary while iterating over it in Python without RuntimeError?",
+    "category": "constraint_difference",
+    "split": "test",
+    "expected_answer_label": null,
+    "rationale": "Target requires mutating during iteration (`list(d.keys())`); candidate iterates directly causing RuntimeError.",
+    "candidates": [
+      {
+        "id": "cand-neg-ct03-a",
+        "query_text": "How to loop through dictionary keys in Python?",
+        "cached_response": "Use `for k in my_dict: ...`.",
+        "answer_label": "py_simple_dict_loop",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-con-test-004",
+    "query": "How to do a non-blocking socket read with timeout in Python?",
+    "category": "constraint_difference",
+    "split": "test",
+    "expected_answer_label": null,
+    "rationale": "Target requires non-blocking timeout; candidate uses blocking socket.recv indefinitely.",
+    "candidates": [
+      {
+        "id": "cand-neg-ct04-a",
+        "query_text": "How to read bytes from a standard blocking socket in Python?",
+        "cached_response": "Use `data = sock.recv(1024)` which blocks until data arrives.",
+        "answer_label": "py_blocking_socket_recv",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-con-test-005",
+    "query": "How to deep clone an object containing functions and regex in JavaScript?",
+    "category": "constraint_difference",
+    "split": "test",
+    "expected_answer_label": null,
+    "rationale": "Target requires cloning functions/regex; candidate uses `JSON.parse(JSON.stringify(x))` which deletes functions.",
+    "candidates": [
+      {
+        "id": "cand-neg-ct05-a",
+        "query_text": "How to clone a pure JSON data object in JavaScript?",
+        "cached_response": "Use `JSON.parse(JSON.stringify(obj))`.",
+        "answer_label": "js_json_stringify_clone",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-rt-dev-001",
+    "query": "How to get current page URL in Browser JavaScript?",
+    "category": "runtime_difference",
+    "split": "development",
+    "expected_answer_label": null,
+    "rationale": "Target asks for Browser DOM `window.location.href`; candidate gives Node.js server request url.",
+    "candidates": [
+      {
+        "id": "cand-neg-r01-a",
+        "query_text": "How to get requested URL in Node.js HTTP server handler?",
+        "cached_response": "Access `req.url` on the incoming message object.",
+        "answer_label": "nodejs_req_url",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-rt-dev-002",
+    "query": "How to read a local file from disk in Node.js backend?",
+    "category": "runtime_difference",
+    "split": "development",
+    "expected_answer_label": null,
+    "rationale": "Target is Node.js `fs.readFile`; candidate gives browser FileReader on HTML input.",
+    "candidates": [
+      {
+        "id": "cand-neg-r02-a",
+        "query_text": "How to read user uploaded file in browser with FileReader?",
+        "cached_response": "Use `const reader = new FileReader(); reader.readAsText(file);`.",
+        "answer_label": "browser_filereader",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-rt-dev-003",
+    "query": "How to send a POSIX kill signal to a child process on Linux in Python?",
+    "category": "runtime_difference",
+    "split": "development",
+    "expected_answer_label": null,
+    "rationale": "Target is Linux POSIX signals; candidate gives Windows taskkill command.",
+    "candidates": [
+      {
+        "id": "cand-neg-r03-a",
+        "query_text": "How to terminate a process by PID on Windows command line?",
+        "cached_response": "Run `taskkill /F /PID <pid>` in cmd or PowerShell.",
+        "answer_label": "win_taskkill_pid",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-rt-dev-004",
+    "query": "How to store persistent key-value data in browser localStorage?",
+    "category": "runtime_difference",
+    "split": "development",
+    "expected_answer_label": null,
+    "rationale": "Target is browser localStorage API; candidate gives server-side Redis client set.",
+    "candidates": [
+      {
+        "id": "cand-neg-r04-a",
+        "query_text": "How to set a key-value in Redis using Node.js?",
+        "cached_response": "Use `await redisClient.set(key, value)`.",
+        "answer_label": "redis_node_set",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-rt-test-001",
+    "query": "How to access query string parameters in browser window location?",
+    "category": "runtime_difference",
+    "split": "test",
+    "expected_answer_label": null,
+    "rationale": "Target is browser `new URLSearchParams(window.location.search)`; candidate is Express `req.query`.",
+    "candidates": [
+      {
+        "id": "cand-neg-rt01-a",
+        "query_text": "How to access query parameters in Express.js backend request?",
+        "cached_response": "Access `req.query.paramName` on the Express request.",
+        "answer_label": "express_req_query",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-rt-test-002",
+    "query": "How to get system memory usage on Linux with /proc/meminfo?",
+    "category": "runtime_difference",
+    "split": "test",
+    "expected_answer_label": null,
+    "rationale": "Target is Linux /proc/meminfo; candidate is macOS vm_stat command.",
+    "candidates": [
+      {
+        "id": "cand-neg-rt02-a",
+        "query_text": "How to check memory statistics on macOS terminal?",
+        "cached_response": "Run `vm_stat` in the macOS terminal.",
+        "answer_label": "macos_vm_stat",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-rt-test-003",
+    "query": "How to handle SIGTERM signal in Node.js server process?",
+    "category": "runtime_difference",
+    "split": "test",
+    "expected_answer_label": null,
+    "rationale": "Target is Node.js `process.on('SIGTERM')`; candidate is Python signal.signal.",
+    "candidates": [
+      {
+        "id": "cand-neg-rt03-a",
+        "query_text": "How to register SIGINT handler in Python?",
+        "cached_response": "Use `signal.signal(signal.SIGINT, handler)`.",
+        "answer_label": "py_signal_handler",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-rt-test-004",
+    "query": "How to set HTTP cookies on client side in browser document?",
+    "category": "runtime_difference",
+    "split": "test",
+    "expected_answer_label": null,
+    "rationale": "Target is browser `document.cookie`; candidate is Express server `res.cookie`.",
+    "candidates": [
+      {
+        "id": "cand-neg-rt04-a",
+        "query_text": "How to send a cookie in Express response header?",
+        "cached_response": "Use `res.cookie('name', 'val', { httpOnly: true })`.",
+        "answer_label": "express_res_cookie",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-out-dev-001",
+    "query": "How to get a list of all dictionary keys in Python?",
+    "category": "output_difference",
+    "split": "development",
+    "expected_answer_label": null,
+    "rationale": "Target asks for keys; candidate returns dictionary values.",
+    "candidates": [
+      {
+        "id": "cand-neg-o01-a",
+        "query_text": "How to get all values from a dictionary in Python?",
+        "cached_response": "Use `list(my_dict.values())`.",
+        "answer_label": "py_dict_values",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-out-dev-002",
+    "query": "How to check if any item in a Python iterable satisfies a condition and return boolean?",
+    "category": "output_difference",
+    "split": "development",
+    "expected_answer_label": null,
+    "rationale": "Target expects boolean (any); candidate returns total count of matching items (sum).",
+    "candidates": [
+      {
+        "id": "cand-neg-o02-a",
+        "query_text": "How to count how many items in a list satisfy a predicate in Python?",
+        "cached_response": "Use `sum(1 for x in items if predicate(x))`.",
+        "answer_label": "py_count_predicate",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-out-dev-003",
+    "query": "How to convert a Python dict to a JSON string?",
+    "category": "output_difference",
+    "split": "development",
+    "expected_answer_label": null,
+    "rationale": "Target asks for string (json.dumps); candidate writes directly to a file on disk (json.dump).",
+    "candidates": [
+      {
+        "id": "cand-neg-o03-a",
+        "query_text": "How to serialize a Python dictionary directly into a file on disk?",
+        "cached_response": "Use `with open('out.json', 'w') as f: json.dump(data, f)`.",
+        "answer_label": "py_json_dump_file",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-out-dev-004",
+    "query": "How to get epoch timestamp as integer seconds in Python?",
+    "category": "output_difference",
+    "split": "development",
+    "expected_answer_label": null,
+    "rationale": "Target asks for integer epoch seconds; candidate returns ISO-8601 formatted string.",
+    "candidates": [
+      {
+        "id": "cand-neg-o04-a",
+        "query_text": "How to format current time as an ISO-8601 string in Python?",
+        "cached_response": "Use `datetime.now(timezone.utc).isoformat()`.",
+        "answer_label": "py_iso_format_str",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-out-test-001",
+    "query": "How to return only unique elements from a list preserving count frequencies in Python?",
+    "category": "output_difference",
+    "split": "test",
+    "expected_answer_label": null,
+    "rationale": "Target requires frequency counts (collections.Counter); candidate returns set discard duplicates.",
+    "candidates": [
+      {
+        "id": "cand-neg-ot01-a",
+        "query_text": "How to remove duplicates and get a set of unique elements in Python?",
+        "cached_response": "Use `set(items)`.",
+        "answer_label": "py_set_unique",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-out-test-002",
+    "query": "How to get a list of dictionary items as key-value tuples in Python?",
+    "category": "output_difference",
+    "split": "test",
+    "expected_answer_label": null,
+    "rationale": "Target requires key-value tuples (.items()); candidate returns keys only (.keys()).",
+    "candidates": [
+      {
+        "id": "cand-neg-ot02-a",
+        "query_text": "How to get an iterable of only keys from a dictionary in Python?",
+        "cached_response": "Use `my_dict.keys()`.",
+        "answer_label": "py_dict_keys_iter",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-out-test-003",
+    "query": "How to parse CSV text into a list of dictionaries in Python?",
+    "category": "output_difference",
+    "split": "test",
+    "expected_answer_label": null,
+    "rationale": "Target asks for dicts (csv.DictReader); candidate parses into list of lists (csv.reader).",
+    "candidates": [
+      {
+        "id": "cand-neg-ot03-a",
+        "query_text": "How to parse CSV rows into lists of raw strings in Python?",
+        "cached_response": "Use `csv.reader(file)` which produces lists of row strings.",
+        "answer_label": "py_csv_raw_lists",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "neg-out-test-004",
+    "query": "How to get file size in bytes as integer in Python?",
+    "category": "output_difference",
+    "split": "test",
+    "expected_answer_label": null,
+    "rationale": "Target asks for integer bytes; candidate returns human-readable formatted string '2.4 MB'.",
+    "candidates": [
+      {
+        "id": "cand-neg-ot04-a",
+        "query_text": "How to format bytes into a human readable string with units MB/GB in Python?",
+        "cached_response": "Divide by 1024**2 and format as f'{size_mb:.2f} MB'.",
+        "answer_label": "py_human_readable_bytes",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "amb-dev-001",
+    "query": "How do I clear the terminal screen?",
+    "category": "ambiguous_candidates",
+    "split": "development",
+    "expected_answer_label": null,
+    "rationale": "Query does not specify OS, and two candidates exist for Windows (cls) and Linux (clear) with similar scores.",
+    "candidates": [
+      {
+        "id": "cand-amb-001-a",
+        "query_text": "How do I clear the terminal screen in Windows command prompt?",
+        "cached_response": "Run `cls` in Windows CMD.",
+        "answer_label": "win_cls",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      },
+      {
+        "id": "cand-amb-001-b",
+        "query_text": "How do I clear the terminal screen on Linux bash?",
+        "cached_response": "Run `clear` or press Ctrl+L.",
+        "answer_label": "linux_clear",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "amb-dev-002",
+    "query": "How to set up database migration tool in Python?",
+    "category": "ambiguous_candidates",
+    "split": "development",
+    "expected_answer_label": null,
+    "rationale": "Alembic vs Django migrations: both are equally plausible migration answers.",
+    "candidates": [
+      {
+        "id": "cand-amb-002-a",
+        "query_text": "How to set up Alembic database migrations for SQLAlchemy?",
+        "cached_response": "Run `alembic init migrations` and configure env.py.",
+        "answer_label": "py_alembic_setup",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      },
+      {
+        "id": "cand-amb-002-b",
+        "query_text": "How to initialize Django database migrations?",
+        "cached_response": "Run `python manage.py makemigrations && python manage.py migrate`.",
+        "answer_label": "py_django_migrate",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "amb-dev-003",
+    "query": "How to parse XML in Python?",
+    "category": "ambiguous_candidates",
+    "split": "development",
+    "expected_answer_label": null,
+    "rationale": "DefusedXML/ElementTree vs BeautifulSoup - multiple distinct libraries with different APIs.",
+    "candidates": [
+      {
+        "id": "cand-amb-003-a",
+        "query_text": "How to parse XML using standard library xml.etree.ElementTree in Python?",
+        "cached_response": "Use `import xml.etree.ElementTree as ET; root = ET.fromstring(xml_text)`.",
+        "answer_label": "py_elementtree_parse",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      },
+      {
+        "id": "cand-amb-003-b",
+        "query_text": "How to parse XML using BeautifulSoup lxml parser in Python?",
+        "cached_response": "Use `from bs4 import BeautifulSoup; soup = BeautifulSoup(xml, 'xml')`.",
+        "answer_label": "py_bs4_xml_parse",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "amb-dev-004",
+    "query": "How to create an HTTP web server in Python?",
+    "category": "ambiguous_candidates",
+    "split": "development",
+    "expected_answer_label": null,
+    "rationale": "FastAPI vs Flask vs built-in http.server: ambiguous without framework specified.",
+    "candidates": [
+      {
+        "id": "cand-amb-004-a",
+        "query_text": "How to create a simple web server using Flask in Python?",
+        "cached_response": "Use `from flask import Flask; app = Flask(__name__)`.",
+        "answer_label": "py_flask_server",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      },
+      {
+        "id": "cand-amb-004-b",
+        "query_text": "How to create a high-performance web API with FastAPI in Python?",
+        "cached_response": "Use `from fastapi import FastAPI; app = FastAPI()`.",
+        "answer_label": "py_fastapi_server",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "amb-dev-005",
+    "query": "How to unit test async code in Python?",
+    "category": "ambiguous_candidates",
+    "split": "development",
+    "expected_answer_label": null,
+    "rationale": "pytest-asyncio vs unittest.IsolatedAsyncioTestCase: two incompatible test runner styles.",
+    "candidates": [
+      {
+        "id": "cand-amb-005-a",
+        "query_text": "How to test async coroutines with pytest-asyncio?",
+        "cached_response": "Decorate test with `@pytest.mark.asyncio` and define `async def test_x():`.",
+        "answer_label": "pytest_asyncio_test",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      },
+      {
+        "id": "cand-amb-005-b",
+        "query_text": "How to test async coroutines with standard unittest IsolatedAsyncioTestCase?",
+        "cached_response": "Subclass `unittest.IsolatedAsyncioTestCase` and define `async def test_x(self):`.",
+        "answer_label": "unittest_isolated_async",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "amb-dev-006",
+    "query": "How to containerize a web application?",
+    "category": "ambiguous_candidates",
+    "split": "development",
+    "expected_answer_label": null,
+    "rationale": "Docker Dockerfile vs Podman vs Kubernetes pod spec: ambiguous target platform.",
+    "candidates": [
+      {
+        "id": "cand-amb-006-a",
+        "query_text": "How to write a production Dockerfile for a Node.js web app?",
+        "cached_response": "Create a multi-stage Dockerfile with `FROM node:alpine`.",
+        "answer_label": "dockerfile_node_app",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      },
+      {
+        "id": "cand-amb-006-b",
+        "query_text": "How to write a production Dockerfile for a Python web app?",
+        "cached_response": "Create a Dockerfile with `FROM python:3.11-slim`.",
+        "answer_label": "dockerfile_python_app",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "amb-test-001",
+    "query": "How to connect to PostgreSQL database in Python?",
+    "category": "ambiguous_candidates",
+    "split": "test",
+    "expected_answer_label": null,
+    "rationale": "psycopg2 vs asyncpg: sync vs async database drivers with completely different APIs.",
+    "candidates": [
+      {
+        "id": "cand-amb-t01-a",
+        "query_text": "How to connect to PostgreSQL synchronously with psycopg2 in Python?",
+        "cached_response": "Use `conn = psycopg2.connect(dsn)`.",
+        "answer_label": "py_psycopg2_connect",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      },
+      {
+        "id": "cand-amb-t01-b",
+        "query_text": "How to connect to PostgreSQL asynchronously with asyncpg in Python?",
+        "cached_response": "Use `pool = await asyncpg.create_pool(dsn)`.",
+        "answer_label": "py_asyncpg_connect",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "amb-test-002",
+    "query": "How to do state management in React?",
+    "category": "ambiguous_candidates",
+    "split": "test",
+    "expected_answer_label": null,
+    "rationale": "Redux Toolkit vs Zustand vs React Context: ambiguous third party library.",
+    "candidates": [
+      {
+        "id": "cand-amb-t02-a",
+        "query_text": "How to manage global state with Redux Toolkit in React?",
+        "cached_response": "Use `createSlice` and `configureStore` from `@reduxjs/toolkit`.",
+        "answer_label": "react_redux_toolkit",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      },
+      {
+        "id": "cand-amb-t02-b",
+        "query_text": "How to manage global state with Zustand in React?",
+        "cached_response": "Use `create((set) => ({ count: 0, inc: () => set(...) }))` from `zustand`.",
+        "answer_label": "react_zustand",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "amb-test-003",
+    "query": "How to style React components?",
+    "category": "ambiguous_candidates",
+    "split": "test",
+    "expected_answer_label": null,
+    "rationale": "Tailwind CSS utility classes vs styled-components CSS-in-JS.",
+    "candidates": [
+      {
+        "id": "cand-amb-t03-a",
+        "query_text": "How to style React components using Tailwind CSS utility classes?",
+        "cached_response": "Add utility class names: `<div className=\"p-4 bg-blue-500\">`.",
+        "answer_label": "style_tailwind_react",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      },
+      {
+        "id": "cand-amb-t03-b",
+        "query_text": "How to style React components with styled-components CSS-in-JS?",
+        "cached_response": "Use `styled.div` tagged template literals.",
+        "answer_label": "style_styled_components",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "amb-test-004",
+    "query": "How to configure a linter for JavaScript?",
+    "category": "ambiguous_candidates",
+    "split": "test",
+    "expected_answer_label": null,
+    "rationale": "ESLint flat config (eslint.config.js) vs legacy (.eslintrc.json) vs Biome.",
+    "candidates": [
+      {
+        "id": "cand-amb-t04-a",
+        "query_text": "How to configure ESLint using new flat config eslint.config.js?",
+        "cached_response": "Export an array of config objects in `eslint.config.js`.",
+        "answer_label": "eslint_flat_config",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      },
+      {
+        "id": "cand-amb-t04-b",
+        "query_text": "How to configure Biome linter in biome.json?",
+        "cached_response": "Run `biome init` and configure rules in `biome.json`.",
+        "answer_label": "biome_config",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "amb-test-005",
+    "query": "How to run a scheduled background job in Python?",
+    "category": "ambiguous_candidates",
+    "split": "test",
+    "expected_answer_label": null,
+    "rationale": "Celery beat vs APScheduler vs standard cron: completely different architectures.",
+    "candidates": [
+      {
+        "id": "cand-amb-t05-a",
+        "query_text": "How to schedule periodic tasks using Celery Beat in Python?",
+        "cached_response": "Configure `beat_schedule` dictionary in Celery config.",
+        "answer_label": "celery_beat_schedule",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      },
+      {
+        "id": "cand-amb-t05-b",
+        "query_text": "How to schedule background jobs in-process with APScheduler in Python?",
+        "cached_response": "Use `BlockingScheduler()` or `AsyncIOScheduler()` from `apscheduler`.",
+        "answer_label": "apscheduler_inprocess",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "amb-test-006",
+    "query": "How to bundle a JavaScript application?",
+    "category": "ambiguous_candidates",
+    "split": "test",
+    "expected_answer_label": null,
+    "rationale": "Vite / Rollup vs Webpack vs esbuild.",
+    "candidates": [
+      {
+        "id": "cand-amb-t06-a",
+        "query_text": "How to configure Vite for bundling a web application?",
+        "cached_response": "Export config with `defineConfig({ ... })` in `vite.config.ts`.",
+        "answer_label": "vite_bundle_config",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      },
+      {
+        "id": "cand-amb-t06-b",
+        "query_text": "How to configure Webpack 5 with webpack.config.js?",
+        "cached_response": "Export module configuration with entry, output, and rules array.",
+        "answer_label": "webpack5_bundle_config",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "unr-dev-001",
+    "query": "How do I configure BGP routing peers on a Cisco router?",
+    "category": "unrelated_technical",
+    "split": "development",
+    "expected_answer_label": null,
+    "rationale": "BGP network routing question has no relation to Python or web dev candidates.",
+    "candidates": [
+      {
+        "id": "cand-unr-001-a",
+        "query_text": "How to reverse a string in Python using slicing?",
+        "cached_response": "Use `s[::-1]`.",
+        "answer_label": "py_str_slice_rev",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "unr-dev-002",
+    "query": "What is the difference between TCP and UDP transport protocols?",
+    "category": "unrelated_technical",
+    "split": "development",
+    "expected_answer_label": null,
+    "rationale": "Networking concepts question unrelated to React state management.",
+    "candidates": [
+      {
+        "id": "cand-unr-002-a",
+        "query_text": "How to manage form state with useState in React?",
+        "cached_response": "Use `const [form, setForm] = useState({})`.",
+        "answer_label": "react_use_state",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "unr-dev-003",
+    "query": "How to tune PostgreSQL shared_buffers memory parameter in postgresql.conf?",
+    "category": "unrelated_technical",
+    "split": "development",
+    "expected_answer_label": null,
+    "rationale": "Database server tuning question unrelated to CSS layout.",
+    "candidates": [
+      {
+        "id": "cand-unr-003-a",
+        "query_text": "How to center a div horizontally and vertically using CSS flexbox?",
+        "cached_response": "Use `display: flex; justify-content: center; align-items: center;`.",
+        "answer_label": "css_flex_center",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "unr-dev-004",
+    "query": "How does Raft consensus leader election work in distributed systems?",
+    "category": "unrelated_technical",
+    "split": "development",
+    "expected_answer_label": null,
+    "rationale": "Distributed consensus protocol question unrelated to git stash.",
+    "candidates": [
+      {
+        "id": "cand-unr-004-a",
+        "query_text": "How do I stash unstaged changes in git?",
+        "cached_response": "Run `git stash`.",
+        "answer_label": "git_stash_cmd",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "unr-dev-005",
+    "query": "How to calculate time complexity of QuickSort average and worst case?",
+    "category": "unrelated_technical",
+    "split": "development",
+    "expected_answer_label": null,
+    "rationale": "Algorithm analysis theory unrelated to HTML input form validation.",
+    "candidates": [
+      {
+        "id": "cand-unr-005-a",
+        "query_text": "How to validate an email format with regex in JavaScript?",
+        "cached_response": "Use `/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/` with regex.test().",
+        "answer_label": "js_email_regex",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "unr-dev-006",
+    "query": "How to configure RAID 10 array on Linux using mdadm?",
+    "category": "unrelated_technical",
+    "split": "development",
+    "expected_answer_label": null,
+    "rationale": "Storage management question unrelated to Python decorators.",
+    "candidates": [
+      {
+        "id": "cand-unr-006-a",
+        "query_text": "How do I write a custom function decorator in Python?",
+        "cached_response": "Use `def decorator(fn): def wrapper(*args, **kwargs): ... return wrapper`.",
+        "answer_label": "py_decorator_def",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "unr-test-001",
+    "query": "What is the purpose of the 3-way handshake in TCP connection establishment?",
+    "category": "unrelated_technical",
+    "split": "test",
+    "expected_answer_label": null,
+    "rationale": "Network protocol theory unrelated to JavaScript promises.",
+    "candidates": [
+      {
+        "id": "cand-unr-t01-a",
+        "query_text": "How to wait for multiple asynchronous promises with Promise.all in JS?",
+        "cached_response": "Use `await Promise.all([p1, p2])`.",
+        "answer_label": "js_promise_all",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "unr-test-002",
+    "query": "How to configure a DNS A record in Cloudflare?",
+    "category": "unrelated_technical",
+    "split": "test",
+    "expected_answer_label": null,
+    "rationale": "DNS configuration unrelated to Python generators.",
+    "candidates": [
+      {
+        "id": "cand-unr-t02-a",
+        "query_text": "How to create a generator function in Python using yield?",
+        "cached_response": "Define a function containing `yield value`.",
+        "answer_label": "py_generator_yield",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "unr-test-003",
+    "query": "How does public key asymmetric cryptography work with RSA?",
+    "category": "unrelated_technical",
+    "split": "test",
+    "expected_answer_label": null,
+    "rationale": "Cryptography mathematical theory unrelated to Docker port forwarding.",
+    "candidates": [
+      {
+        "id": "cand-unr-t03-a",
+        "query_text": "How to publish host ports in docker run container?",
+        "cached_response": "Use `-p <host-port>:<container-port>`.",
+        "answer_label": "docker_port_forward",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "unr-test-004",
+    "query": "How to configure Nginx reverse proxy SSL certificates with Let's Encrypt?",
+    "category": "unrelated_technical",
+    "split": "test",
+    "expected_answer_label": null,
+    "rationale": "Web server TLS certificate setup unrelated to SQL indexes.",
+    "candidates": [
+      {
+        "id": "cand-unr-t04-a",
+        "query_text": "How to create a B-tree index in PostgreSQL?",
+        "cached_response": "Use `CREATE INDEX idx_name ON table_name (column_name)`.",
+        "answer_label": "pg_create_btree_index",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "unr-test-005",
+    "query": "What is the difference between process and thread in operating systems kernel?",
+    "category": "unrelated_technical",
+    "split": "test",
+    "expected_answer_label": null,
+    "rationale": "OS theory question unrelated to Python string splitting.",
+    "candidates": [
+      {
+        "id": "cand-unr-t05-a",
+        "query_text": "How to split a string into words in Python?",
+        "cached_response": "Use `s.split()`.",
+        "answer_label": "py_str_split",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  },
+  {
+    "id": "unr-test-006",
+    "query": "How to configure Prometheus alerting rules for high CPU load?",
+    "category": "unrelated_technical",
+    "split": "test",
+    "expected_answer_label": null,
+    "rationale": "Prometheus monitoring config unrelated to React useEffect cleanups.",
+    "candidates": [
+      {
+        "id": "cand-unr-t06-a",
+        "query_text": "How to return a cleanup function from useEffect in React?",
+        "cached_response": "Return a function from the effect callback: `return () => { clearInterval(id); }`.",
+        "answer_label": "react_useeffect_cleanup",
+        "metadata": {
+          "llm_provider": "groq",
+          "llm_model": "llama-3.3-70b-versatile"
+        }
+      }
+    ]
+  }
+]
