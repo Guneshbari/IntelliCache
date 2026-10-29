@@ -31,6 +31,11 @@ def _get_list_from_env(key: str, default: List[str]) -> List[str]:
 class Settings(BaseModel):
     """Application settings and configuration schema."""
 
+    # LLM Provider Configuration
+    llm_provider: str = Field(
+        default_factory=lambda: os.getenv("LLM_PROVIDER", "groq").lower().strip()
+    )
+
     # Groq API Configuration
     groq_api_key: str = Field(
         default_factory=lambda: os.getenv("GROQ_API_KEY", "")
