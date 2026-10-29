@@ -37,7 +37,7 @@ The gateway uses conservative, deterministic exact matching to guarantee that an
 The SHA-256 cache fingerprint is computed by serializing a canonical JSON payload with sorted keys containing:
 - **`model`**: Lowercase, trimmed effective model identifier (e.g. `qwen/qwen3.8-27b`).
 - **`messages`**: Canonical sequence of `[{"role": role, "content": normalized_content}]`. If `system_prompt` is provided, it is prepended with role `"system"`.
-- **`temperature`**: Effective sampling temperature float rounded to 4 decimals (resolving to server default `0.7` if omitted).
+- **`temperature`**: Canonical effective sampling temperature float without lossy rounding (resolving to server default `0.7` if omitted).
 - **`max_tokens`**: Effective integer token ceiling (or `null` if unconstrained).
 
 Different models, temperatures, token limits, or message sequences produce strictly different fingerprints and never collide.
@@ -57,7 +57,7 @@ When `bypass_cache: true` is supplied:
 
 ---
 
-## Single-Flight Concurrency Coordination
+## Single-Flight Concurrency Coordination & Metrics
 
 To eliminate "thundering herd" duplicates when multiple identical queries arrive simultaneously, the gateway implements an in-memory **Single-Flight Coordinator** for eligible non-streaming requests:
 
@@ -66,8 +66,18 @@ To eliminate "thundering herd" duplicates when multiple identical queries arrive
 3. **Cancellation Isolation**: If a follower disconnects or cancels its HTTP request, the Leader's generation is protected and continues running.
 4. **Failure Propagation & Cleanup**: If the Leader encounters an exception or cancellation, the error is cleanly propagated to all waiting followers, and the in-flight state is cleared unconditionally in a `finally` block so subsequent requests can retry normally.
 5. **No Unretrieved Warnings**: If a Leader fails with zero followers waiting, the exception is consumed internally to prevent Python `Future exception was never retrieved` warnings.
+6. **Accurate Metrics (No Double-Counting)**: Awaiting followers do not increment cache misses. Instead, they are recorded as `coalesced_requests`. The cache statistics formula is strictly:
+   $$\text{total\_requests} = \text{hits} + \text{misses} + \text{coalesced\_requests}$$
 
 *Limitation*: Streaming requests (`stream: true`) currently bypass single-flight coordination; concurrent streaming misses execute independent Groq calls, but successfully completed streams are cached upon completion.
+
+---
+
+## Lazy Client Lifecycle & Offline Cache Availability
+
+The Groq API client is lazily instantiated through a dependency factory only when an actual upstream inference request is required (cache miss or cache bypass).
+- **Offline / Credential-Free Cache Serving**: If an identical query exists in the cache, the response is served immediately without instantiating `AsyncGroq` and without requiring `GROQ_API_KEY` to be configured.
+- **Resource Management**: When an upstream call is made (streaming or non-streaming), the HTTP client connection is explicitly closed (`await client.close()`) in a `finally` block to prevent lingering network sockets or unclosed connection warnings.
 
 ---
 
@@ -96,15 +106,16 @@ When `stream: true` is requested, the endpoint returns a `text/event-stream` str
 ### Environment Settings (`.env`)
 
 ```dotenv
-# Groq API Configuration (Required)
+# Groq API Configuration (Required for inference misses)
 GROQ_API_KEY=gsk_your_actual_groq_api_key_here
 GROQ_MODEL=qwen/qwen3.8-27b
 
 # Server Configuration (Optional)
-HOST=0.0.0.0
+HOST=127.0.0.1
 PORT=8000
 DEBUG=false
 CORS_ORIGINS=*
+ADMIN_API_TOKEN=replace_with_admin_secret_token
 
 # Caching Configuration (Optional)
 CACHE_ENABLED=true
@@ -122,10 +133,11 @@ MAX_MESSAGE_CHARS=131072
 ```
 
 ### Security Considerations
+- **Admin Endpoint Protection (`/cache/clear`)**: Administrative operations require `ADMIN_API_TOKEN` to be set on the server. Clients must supply the token via the `X-Admin-Token: <token>` header or `Authorization: Bearer <token>`. Requests are validated using constant-time comparison (`hmac.compare_digest`). If `ADMIN_API_TOKEN` is unset or the supplied token is invalid, the endpoint responds with HTTP 403 Forbidden.
+- **Network Exposure**: By default, the gateway binds to `127.0.0.1` (localhost) rather than `0.0.0.0` to avoid unintentionally exposing endpoints to the local network or container host interfaces.
+- **Secret & Path Redaction**: Upstream error messages and logs automatically redact Groq API keys (`gsk_***`), Bearer tokens, absolute filesystem paths (`<redacted_path>`), and IP addresses (`<redacted_ip>`).
 - **Payload Size Limits**: Character limits protect gateway memory against denial-of-service payloads. These represent inbound HTTP body limits, not model context token limits.
-- **Secret Redaction**: Upstream error messages and logs automatically redact Groq API keys (`gsk_***`) and authorization bearer tokens.
 - **CORS Behavior**: When `CORS_ORIGINS=*`, `allow_credentials` is set to `False` to maintain strict W3C specification compliance.
-- **Network Exposure**: Binding to `0.0.0.0` exposes the gateway to the local network. In production or shared environments, bind to `127.0.0.1` unless behind a reverse proxy, and note that administrative cache endpoints (`/cache/clear`) are unauthenticated.
 
 ---
 
@@ -133,7 +145,7 @@ MAX_MESSAGE_CHARS=131072
 
 ```bash
 cd gateway
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 Interactive documentation:
