@@ -17,6 +17,7 @@ class TestConfig(unittest.TestCase):
         settings = Settings()
         self.assertIsNotNone(settings.groq_model)
         # Default host must be 127.0.0.1 for local network safety
+        self.assertEqual(settings.llm_provider, "groq")
         self.assertEqual(settings.host, "127.0.0.1")
         self.assertEqual(settings.port, 8000)
         self.assertTrue(settings.cache_enabled)
@@ -30,6 +31,7 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(settings.max_system_prompt_chars, 65536)
 
     @patch.dict(os.environ, {
+        "LLM_PROVIDER": "custom_provider",
         "GROQ_MODEL": "test-model-custom",
         "HOST": "0.0.0.0",
         "PORT": "9090",
@@ -44,6 +46,7 @@ class TestConfig(unittest.TestCase):
     def test_env_overrides(self):
         """Verify environment variables correctly override default settings."""
         settings = Settings()
+        self.assertEqual(settings.llm_provider, "custom_provider")
         self.assertEqual(settings.groq_model, "test-model-custom")
         self.assertEqual(settings.host, "0.0.0.0")
         self.assertEqual(settings.port, 9090)
