@@ -128,6 +128,14 @@ class Settings(BaseModel):
         default_factory=lambda: float(os.getenv("EMBEDDING_TIMEOUT_SECONDS", "30.0"))
     )
 
+    # Semantic Cache & Vector Storage Configuration
+    semantic_cache_enabled: bool = Field(
+        default_factory=lambda: os.getenv("SEMANTIC_CACHE_ENABLED", "false").lower() in ("true", "1", "yes")
+    )
+    vector_dimensions: int = Field(
+        default_factory=lambda: int(os.getenv("VECTOR_DIMENSIONS", os.getenv("EMBEDDING_DIMENSIONS", "768")))
+    )
+
     @model_validator(mode="after")
     def validate_database_config(self) -> "Settings":
         if self.cache_backend == "postgres" and not self.database_url:
@@ -140,6 +148,17 @@ class Settings(BaseModel):
             raise ValueError("EMBEDDING_TIMEOUT_SECONDS must be positive.")
         if not (self.embedding_base_url.startswith("http://") or self.embedding_base_url.startswith("https://")):
             raise ValueError("EMBEDDING_BASE_URL must be a valid HTTP or HTTPS URL.")
+        return self
+
+    @model_validator(mode="after")
+    def validate_semantic_cache_config(self) -> "Settings":
+        if self.vector_dimensions <= 0:
+            raise ValueError("VECTOR_DIMENSIONS must be positive.")
+        if self.semantic_cache_enabled:
+            if self.cache_backend != "postgres":
+                raise ValueError("SEMANTIC_CACHE_ENABLED requires CACHE_BACKEND='postgres'.")
+            if not self.database_url:
+                raise ValueError("DATABASE_URL must be configured when SEMANTIC_CACHE_ENABLED is true.")
         return self
 
 

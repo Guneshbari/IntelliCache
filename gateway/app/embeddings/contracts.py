@@ -22,6 +22,7 @@ class EmbeddingResult:
     """
     Normalized embedding vector result from an embedding provider.
     Guarantees validation of dimensionality, finite values, and non-emptiness.
+    Vector is normalized into an immutable tuple of floats.
     """
     vector: Sequence[float]
     model: str
@@ -42,13 +43,18 @@ class EmbeddingResult:
                 f"Embedding vector length ({len(self.vector)}) does not match declared dimensions ({self.dimensions})."
             )
 
-        # Validate finite numeric values (reject NaN, +Inf, -Inf, non-numeric)
+        # Validate finite numeric values (reject booleans, NaN, +Inf, -Inf, non-numeric)
+        # and normalize into an immutable tuple of floats
+        validated_vector: List[float] = []
         for i, val in enumerate(self.vector):
-            if not isinstance(val, (int, float)) or math.isnan(val) or math.isinf(val):
+            if isinstance(val, bool) or not isinstance(val, (int, float)) or math.isnan(val) or math.isinf(val):
                 raise EmbeddingResponseError(
                     f"Embedding vector contains non-finite or invalid number at index {i}: {val}"
                 )
+            validated_vector.append(float(val))
+
+        object.__setattr__(self, "vector", tuple(validated_vector))
 
     def to_list(self) -> List[float]:
         """Returns the embedding vector as a standard Python list of floats."""
-        return [float(x) for x in self.vector]
+        return list(self.vector)

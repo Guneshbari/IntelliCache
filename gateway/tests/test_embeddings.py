@@ -77,6 +77,30 @@ class TestEmbeddingContracts(unittest.TestCase):
             EmbeddingResult(vector=[float("-inf"), 0.2, 0.3], model="m", dimensions=3)
         self.assertIn("non-finite", str(ctx.exception))
 
+    def test_boolean_in_vector_rejected(self):
+        """Boolean values disguised as numeric types raise EmbeddingResponseError."""
+        with self.assertRaises(EmbeddingResponseError):
+            EmbeddingResult(vector=[True, 0.2, 0.3], model="m", dimensions=3)
+
+    def test_input_mutation_does_not_mutate_result(self):
+        """Mutating the original input list does not mutate the frozen EmbeddingResult vector."""
+        input_vec = [0.1, 0.2, 0.3]
+        result = EmbeddingResult(
+            vector=input_vec,
+            model="nomic-embed-text",
+            dimensions=3,
+        )
+        # Mutate the source list
+        input_vec[0] = 999.9
+        input_vec.append(888.8)
+
+        # Assert result vector remains unchanged and is an immutable tuple
+        self.assertEqual(result.vector[0], 0.1)
+        self.assertEqual(len(result.vector), 3)
+        self.assertIsInstance(result.vector, tuple)
+        with self.assertRaises(TypeError):
+            result.vector[0] = 5.0  # type: ignore
+
 
 class TestOllamaEmbeddingProvider(unittest.IsolatedAsyncioTestCase):
     """Tests Ollama adapter with mock HTTP transport."""

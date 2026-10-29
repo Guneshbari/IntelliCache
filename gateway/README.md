@@ -39,17 +39,27 @@ gateway/
 │   │   ├── interfaces.py     # EmbeddingProvider abstract interface
 │   │   ├── ollama_adapter.py # Ollama embedding adapter with Nomic retrieval prefixes
 │   │   └── factory.py        # EmbeddingProviderFactory
+│   ├── vector_store/         # Provider-independent PostgreSQL + pgvector vector storage
+│   │   ├── __init__.py
+│   │   ├── contracts.py      # VectorRecord, VectorSearchResult, and similarity formulas
+│   │   ├── errors.py         # VectorStore error hierarchy
+│   │   ├── interfaces.py     # BaseVectorStore interface
+│   │   ├── postgres_store.py # PostgresVectorStore implementation
+│   │   └── migration.py      # Independent pgvector migration runner
 │   ├── routes/               # Backward compatibility facade for query routes
 │   │   ├── __init__.py
 │   │   └── query.py
 │   ├── config.py             # Pydantic Settings, environment loader, and payload size bounds
 │   └── main.py               # FastAPI application factory, lifespan, CORS, and health/admin routes
 ├── migrations/               # SQL migration scripts
-│   └── 001_create_cache_entries.sql
+│   ├── 001_create_cache_entries.sql
+│   └── vector/               # Vector store migrations (applied only when SEMANTIC_CACHE_ENABLED=true)
+│       └── 001_create_vector_records.sql
 ├── tests/
 │   ├── test_core.py          # Core orchestration tests using pure FakeProvider & AST import boundary tests
 │   ├── test_providers.py     # Groq adapter, client closure, and ProviderFactory tests
 │   ├── test_embeddings.py    # Embedding contracts, Ollama adapter, prefixes, error tests
+│   ├── test_vector_store.py  # Vector storage contracts, pgvector nearest-neighbour, cascade delete
 │   ├── test_query.py         # API route integration tests, streaming SSE, and exact caching
 │   ├── test_multi_client.py  # Multi-client auth, namespace isolation, and PostgreSQL persistence tests
 │   ├── test_config.py        # Settings validation, env overrides, and payload limits
@@ -247,6 +257,37 @@ IntelliCache includes a provider-independent embedding abstraction in `gateway/a
 
 ---
 
+## Vector Storage & pgvector Setup
+
+IntelliCache includes an optional, provider-independent vector storage layer in `gateway/app/vector_store/` backed by PostgreSQL and the `pgvector` extension.
+
+### Configuration
+```bash
+# Enable semantic vector storage (default: false)
+SEMANTIC_CACHE_ENABLED=false
+
+# Expected vector dimension (default: 768 for Nomic Embed Text)
+VECTOR_DIMENSIONS=768
+```
+
+### Exact-Only Preservation
+- `SEMANTIC_CACHE_ENABLED=false` by default. When disabled, the gateway operates as an exact-only cache and does not require `pgvector` to be installed on PostgreSQL.
+- Vector migrations (`migrations/vector/001_create_vector_records.sql`) are isolated from exact-cache migrations and are executed only when `SEMANTIC_CACHE_ENABLED=true`.
+- If `SEMANTIC_CACHE_ENABLED=true` but `pgvector` is not installed on the database server, the server fails during startup with a descriptive error.
+
+### Distance & Similarity Formulas
+PostgreSQL `pgvector` uses the cosine distance operator `<=>`:
+$$\text{distance} = 1 - \frac{u \cdot v}{\|u\| \|v\|}$$
+Cosine similarity is computed from the distance as:
+$$\text{similarity} = 1.0 - \text{distance} \quad (\text{clamped to } [-1.0, 1.0])$$
+
+### Re-Embedding & Migration Notice
+Vector dimensions are enforced at the database table level (`vector(768)`). If you change the embedding model or vector dimensions in the future:
+- PostgreSQL will reject vectors of different dimensions.
+- You must perform a deliberate database migration and re-embed existing cache entries.
+
+---
+
 ## Running the Server
 
 ```bash
@@ -274,6 +315,7 @@ To run individual test modules:
 python -m unittest tests/test_core.py          # Core orchestration & AST boundary tests
 python -m unittest tests/test_providers.py     # Groq adapter & provider factory tests
 python -m unittest tests/test_embeddings.py    # Embedding contracts, Ollama adapter, prefixes
+python -m unittest tests/test_vector_store.py  # Vector store, nearest-neighbour, cascade delete
 python -m unittest tests/test_query.py         # API route & streaming tests
 python -m unittest tests/test_multi_client.py  # Multi-client auth, namespaces & PostgreSQL tests
 python -m unittest tests/test_config.py        # Configuration tests
@@ -285,8 +327,7 @@ python -m unittest tests/test_main.py          # Application integration tests
 ## Current Scope & Future Architectural Boundaries
 
 The following capabilities represent intentional architectural boundaries for future steps:
-- **Current Scope**: Exact-match SHA-256 caching, centralized PostgreSQL storage, in-memory LRU/TTL storage, cancellation-safe single flight for non-streaming requests, Groq LLM provider adapter, and the provider-independent `EmbeddingProvider` abstraction (with `OllamaEmbeddingProvider`).
-- **Vector Storage & pgvector**: Vector database schema migrations (`pgvector`) and persistent vector indexing are deferred to the semantic caching phase.
-- **Semantic Cache Engine**: Semantic similarity retrieval, similarity thresholding, and cache hits will be introduced as an independent layer built on top of the embedding provider.
+- **Current Scope**: Exact-match SHA-256 caching, centralized PostgreSQL storage, in-memory LRU/TTL storage, cancellation-safe single flight for non-streaming requests, Groq LLM provider adapter, provider-independent `EmbeddingProvider` abstraction (with `OllamaEmbeddingProvider`), and provider-independent vector storage via PostgreSQL + pgvector (`PostgresVectorStore`).
+- **Semantic Cache Engine**: Semantic similarity retrieval, similarity thresholding, and cache hits will be introduced as an independent layer built on top of the vector store and embedding provider in Step 7.
 - **Conversation Manager**: Multi-turn conversation persistence will record every delivered prompt, response, and provenance trace in a persistent store.
 - **Demonstration Chatbot**: The web UI chatbot will consume the stable public REST API (`POST /query`).

@@ -16,6 +16,7 @@ import uvicorn
 
 from app.cache.migration import run_migrations
 from app.config import Settings, get_settings
+from app.vector_store import PostgresVectorStore, run_vector_migrations
 from app.routes.query import (
     BaseCache,
     CacheStats,
@@ -72,6 +73,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         set_query_cache(pg_cache)
         app.state.db_pool = pool
         app.state.cache = pg_cache
+
+        if settings.semantic_cache_enabled:
+            logger.info("Semantic cache enabled. Running vector store migrations...")
+            await run_vector_migrations(pool, dimensions=settings.vector_dimensions)
+            vector_store = PostgresVectorStore(
+                pool=pool,
+                default_namespace=settings.cache_namespace,
+                default_model=settings.embedding_model,
+                dimensions=settings.vector_dimensions,
+            )
+            app.state.vector_store = vector_store
+            logger.info(
+                "PostgreSQL vector store initialized: dimensions=%d, default_model=%s",
+                settings.vector_dimensions,
+                settings.embedding_model,
+            )
+        else:
+            app.state.vector_store = None
     else:
         mem_cache = ExactCache(
             max_entries=settings.cache_max_entries,
@@ -79,10 +98,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
         set_query_cache(mem_cache)
         app.state.cache = mem_cache
+        app.state.vector_store = None
 
     yield
 
     logger.info("Shutting down IntelliCache Gateway.")
+    if hasattr(app.state, "vector_store") and app.state.vector_store is not None:
+        await app.state.vector_store.close()
     active_cache = get_query_cache()
     if active_cache is not None:
         await active_cache.close()
