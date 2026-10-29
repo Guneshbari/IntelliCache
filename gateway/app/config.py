@@ -41,13 +41,16 @@ class Settings(BaseModel):
 
     # Server Configuration
     host: str = Field(
-        default_factory=lambda: os.getenv("HOST", "0.0.0.0")
+        default_factory=lambda: os.getenv("HOST", "127.0.0.1")
     )
     port: int = Field(
         default_factory=lambda: int(os.getenv("PORT", "8000"))
     )
     debug: bool = Field(
         default_factory=lambda: os.getenv("DEBUG", "false").lower() in ("true", "1", "yes")
+    )
+    admin_api_token: Optional[str] = Field(
+        default_factory=lambda: os.getenv("ADMIN_API_TOKEN") or None
     )
 
     # CORS Configuration
