@@ -2,18 +2,20 @@
 Query route for IntelliCache Gateway.
 Handles LLM query execution via Groq, with hardened exact caching,
 code-safe whitespace preservation, cancellation-safe single-flight coordination,
-streaming failure isolation, and API secret redaction.
+streaming failure isolation, lazy provider client lifecycle, administrative token
+protection, and API secret redaction.
 """
 
 import asyncio
 from datetime import datetime, timezone
 import hashlib
+import hmac
 import json
 import logging
 import re
 import time
-from typing import Any, AsyncGenerator, Dict, List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from typing import Any, AsyncGenerator, Callable, Dict, List, Optional
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 import groq
@@ -31,14 +33,47 @@ router = APIRouter()
 # ---------------------------------------------------------------------------
 
 def sanitize_error_message(msg: str) -> str:
-    """Masks API keys and authentication tokens from error messages."""
+    """Masks API keys, tokens, file paths, and network addresses from error messages."""
     if not msg:
         return ""
-    # Redact Groq API keys (gsk_...)
+    # Mask Groq keys
     sanitized = re.sub(r"gsk_[A-Za-z0-9]+", "gsk_***", msg)
-    # Redact Bearer authorization tokens
-    sanitized = re.sub(r"Bearer\s+[A-Za-z0-9_\-\.]+", "Bearer ***", sanitized)
+    # Mask Bearer tokens
+    sanitized = re.sub(r"Bearer\s+[A-Za-z0-9_\-\.]+", "Bearer ***", sanitized, flags=re.IGNORECASE)
+    # Mask local Unix/Windows absolute file paths
+    sanitized = re.sub(r"(/[a-zA-Z0-9_\.\-]+)+", "<redacted_path>", sanitized)
+    sanitized = re.sub(r"([a-zA-Z]:\\[a-zA-Z0-9_\.\-\\]+)", "<redacted_path>", sanitized)
+    # Mask IPv4 addresses
+    sanitized = re.sub(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b", "<redacted_ip>", sanitized)
     return sanitized
+
+
+def verify_admin_token(
+    settings: Settings = Depends(get_settings),
+    x_admin_token: Optional[str] = Header(None, alias="X-Admin-Token"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+) -> None:
+    """
+    Verifies administrative token for privileged endpoints (such as cache clear).
+    Denies access if ADMIN_API_TOKEN is not configured on the server.
+    """
+    if not settings.admin_api_token:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Administrative cache clear is disabled: ADMIN_API_TOKEN is not configured on the server.",
+        )
+
+    token = x_admin_token
+    if not token and authorization:
+        parts = authorization.split()
+        if len(parts) == 2 and parts[0].lower() == "bearer":
+            token = parts[1]
+
+    if not token or not hmac.compare_digest(token, settings.admin_api_token):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid or missing administrative token.",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +180,7 @@ class CacheStats(BaseModel):
     max_entries: int
     hits: int
     misses: int
+    coalesced_requests: int = 0
     total_requests: int
     hit_rate: float
     total_tokens_saved: int
@@ -188,6 +224,7 @@ class QueryCache:
         self._entries: Dict[str, CacheEntry] = {}
         self._hits: int = 0
         self._misses: int = 0
+        self._coalesced_requests: int = 0
         self._tokens_saved: int = 0
         self._latency_saved_ms: float = 0.0
 
@@ -248,7 +285,7 @@ class QueryCache:
         Generates a deterministic SHA-256 fingerprint from all answer-affecting inputs:
         - Exact normalized message sequence (role and content)
         - Model identifier
-        - Effective temperature
+        - Effective temperature (unrounded to preserve exact equivalence)
         - Effective max output tokens
         Uses deterministic JSON serialization with sorted keys.
         """
@@ -256,7 +293,7 @@ class QueryCache:
             "max_tokens": max_tokens,
             "messages": messages,
             "model": model.strip().lower(),
-            "temperature": round(temperature, 4),
+            "temperature": temperature,
         }
         serialized = json.dumps(
             canonical_payload,
@@ -267,18 +304,19 @@ class QueryCache:
         return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
     def get(self, key: str) -> Optional[CacheEntry]:
-        """Retrieve an unexpired entry from cache and increment hit counters."""
+        """
+        Retrieve an unexpired entry from cache and increment hit counter.
+        Does not increment miss counters (delegated to actual generation execution).
+        """
         entry = self._entries.get(key)
         if entry is None:
-            self._misses += 1
             return None
 
         if entry.is_expired(self.ttl_seconds):
             del self._entries[key]
-            self._misses += 1
             return None
 
-        # Cache hit
+        # Sequential cache hit
         entry.hit_count += 1
         entry.last_accessed = time.time()
         self._hits += 1
@@ -286,11 +324,15 @@ class QueryCache:
         self._latency_saved_ms += entry.latency_ms
         return entry
 
-    def record_shared_hit(self, entry: CacheEntry) -> None:
-        """Record a cache hit for a follower that reused a single-flight generation."""
+    def record_miss(self) -> None:
+        """Record an independent request that required upstream generation."""
+        self._misses += 1
+
+    def record_coalesced(self, entry: CacheEntry) -> None:
+        """Record a follower that shared an in-flight single-flight generation."""
         entry.hit_count += 1
         entry.last_accessed = time.time()
-        self._hits += 1
+        self._coalesced_requests += 1
         self._tokens_saved += entry.usage.total_tokens
         self._latency_saved_ms += entry.latency_ms
 
@@ -307,18 +349,21 @@ class QueryCache:
         self._entries.clear()
         self._hits = 0
         self._misses = 0
+        self._coalesced_requests = 0
         self._tokens_saved = 0
         self._latency_saved_ms = 0.0
 
     def stats(self, enabled: bool = True) -> CacheStats:
         """Returns statistical metrics on cache usage."""
-        total_req = self._hits + self._misses
-        hit_rate = (self._hits / total_req) if total_req > 0 else 0.0
+        total_req = self._hits + self._misses + self._coalesced_requests
+        reused_req = self._hits + self._coalesced_requests
+        hit_rate = (reused_req / total_req) if total_req > 0 else 0.0
         return CacheStats(
             total_entries=len(self._entries),
             max_entries=self.max_entries,
             hits=self._hits,
             misses=self._misses,
+            coalesced_requests=self._coalesced_requests,
             total_requests=total_req,
             hit_rate=round(hit_rate, 4),
             total_tokens_saved=self._tokens_saved,
@@ -415,22 +460,36 @@ def get_single_flight_coordinator() -> SingleFlightCoordinator:
 
 
 # ---------------------------------------------------------------------------
-# Groq Client Provider
+# Groq Client Factory & Provider (Lazy Initialization)
 # ---------------------------------------------------------------------------
 
+ClientFactory = Callable[[], AsyncGroq]
+
+
+def get_groq_client_factory(settings: Settings = Depends(get_settings)) -> ClientFactory:
+    """
+    Dependency provider for AsyncGroq client factory.
+    Does not construct the client immediately, allowing cache hits to execute
+    without requiring API keys or network client allocations.
+    """
+    def _create_client() -> AsyncGroq:
+        if not settings.groq_api_key or settings.groq_api_key == "replace_with_your_key":
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=(
+                    "GROQ_API_KEY is not configured or contains a placeholder value. "
+                    "Please configure GROQ_API_KEY in gateway/.env"
+                ),
+            )
+        return AsyncGroq(api_key=settings.groq_api_key)
+
+    return _create_client
+
+
 def get_groq_client(settings: Settings = Depends(get_settings)) -> AsyncGroq:
-    """Dependency provider for AsyncGroq client."""
-    if not isinstance(settings, Settings):
-        settings = get_settings()
-    if not settings.groq_api_key or settings.groq_api_key == "replace_with_your_key":
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=(
-                "GROQ_API_KEY is not configured or contains a placeholder value. "
-                "Please configure GROQ_API_KEY in gateway/.env"
-            ),
-        )
-    return AsyncGroq(api_key=settings.groq_api_key)
+    """Direct provider kept for backwards compatibility in standalone utility calls."""
+    factory = get_groq_client_factory(settings)
+    return factory()
 
 
 # ---------------------------------------------------------------------------
@@ -443,7 +502,7 @@ async def execute_query(
     request: QueryRequest,
     settings: Settings = Depends(get_settings),
     cache: QueryCache = Depends(get_query_cache),
-    client: AsyncGroq = Depends(get_groq_client),
+    client_factory: ClientFactory = Depends(get_groq_client_factory),
     single_flight: SingleFlightCoordinator = Depends(get_single_flight_coordinator),
 ) -> Any:
     """
@@ -455,7 +514,7 @@ async def execute_query(
     # Resolve effective parameters against application defaults
     effective_model = (request.model or settings.groq_model).strip()
     effective_temperature = (
-        request.temperature if request.temperature is not None else settings.default_temperature
+        float(request.temperature) if request.temperature is not None else settings.default_temperature
     )
     effective_max_tokens = (
         request.max_tokens if request.max_tokens is not None else settings.default_max_tokens
@@ -524,9 +583,12 @@ async def execute_query(
     # 2. Handle Streaming Miss (Streaming bypasses single-flight for now)
     # -----------------------------------------------------------------------
     if request.stream:
+        cache.record_miss()
+
         async def groq_stream_generator() -> AsyncGenerator[str, None]:
             accumulated_text: List[str] = []
             stream_success = False
+            client = client_factory()
             try:
                 stream = await client.chat.completions.create(
                     model=effective_model,
@@ -550,18 +612,35 @@ async def execute_query(
 
                 stream_success = True
             except asyncio.CancelledError:
-                logger.info("Client cancelled stream: %s", fingerprint[:12])
+                logger.info("Client cancelled stream for fingerprint [%s]", fingerprint[:12])
                 raise
+            except groq.AuthenticationError as err:
+                sanitized_err = sanitize_error_message(err.message)
+                logger.error("Provider authentication error during streaming: %s", sanitized_err)
+                err_payload = {"error": f"Provider Authentication Failed: {sanitized_err}", "status_code": 401, "done": True}
+                yield f"data: {json.dumps(err_payload)}\n\n"
+            except groq.RateLimitError as err:
+                sanitized_err = sanitize_error_message(err.message)
+                logger.warning("Provider rate limit during streaming: %s", sanitized_err)
+                err_payload = {"error": f"Provider Rate Limit Exceeded: {sanitized_err}", "status_code": 429, "done": True}
+                yield f"data: {json.dumps(err_payload)}\n\n"
+            except groq.APIConnectionError as err:
+                sanitized_err = sanitize_error_message(err.message)
+                logger.error("Provider connection error during streaming: %s", sanitized_err)
+                err_payload = {"error": f"Provider API connection failed: {sanitized_err}", "status_code": 503, "done": True}
+                yield f"data: {json.dumps(err_payload)}\n\n"
             except groq.APIStatusError as err:
                 sanitized_err = sanitize_error_message(err.message)
-                logger.error("Groq API error during streaming: %s", sanitized_err)
-                err_payload = {"error": f"Groq API Error: {sanitized_err}", "status_code": err.status_code, "done": True}
+                logger.error("Provider API error (%s) during streaming: %s", err.status_code, sanitized_err)
+                err_payload = {"error": f"Provider Upstream Error ({err.status_code}): {sanitized_err}", "status_code": err.status_code, "done": True}
                 yield f"data: {json.dumps(err_payload)}\n\n"
             except Exception as err:
                 sanitized_err = sanitize_error_message(str(err))
-                logger.error("Unexpected error during streaming: %s", sanitized_err)
-                err_payload = {"error": f"Stream Error: {sanitized_err}", "status_code": 500, "done": True}
+                logger.error("Unexpected error during streaming for [%s]: %s", fingerprint[:12], sanitized_err)
+                err_payload = {"error": f"Internal Gateway Error: {sanitized_err}", "status_code": 500, "done": True}
                 yield f"data: {json.dumps(err_payload)}\n\n"
+            finally:
+                await client.close()
 
             # Cache ONLY on complete, successful stream (and when not bypassed)
             full_response = "".join(accumulated_text)
@@ -595,8 +674,9 @@ async def execute_query(
     # -----------------------------------------------------------------------
     # Bypass requests never join or register in single-flight
     if request.bypass_cache or not settings.cache_enabled:
+        cache.record_miss()
         return await _execute_groq_direct(
-            client=client,
+            client_factory=client_factory,
             effective_model=effective_model,
             canonical_messages=canonical_messages,
             effective_temperature=effective_temperature,
@@ -616,8 +696,8 @@ async def execute_query(
         try:
             cached_entry = await asyncio.shield(shared_future)
             latency_ms = (time.perf_counter() - start_time) * 1000.0
-            # Record shared hit statistics
-            cache.record_shared_hit(cached_entry)
+            # Record coalesced hit statistics (distinct from sequential cache hits and misses)
+            cache.record_coalesced(cached_entry)
             return QueryResponse(
                 response=cached_entry.response,
                 cached=True,
@@ -638,10 +718,11 @@ async def execute_query(
             # Re-raise leader's exception cleanly
             raise exc
 
-    # Leader: execute Groq API call and resolve shared future
+    # Leader: record miss and execute Groq API call, then resolve shared future
+    cache.record_miss()
     try:
         response_obj, entry = await _execute_groq_and_cache(
-            client=client,
+            client_factory=client_factory,
             effective_model=effective_model,
             canonical_messages=canonical_messages,
             effective_temperature=effective_temperature,
@@ -668,6 +749,7 @@ async def _call_groq_api(
     messages: List[Dict[str, str]],
     temperature: float,
     max_tokens: Optional[int],
+    fingerprint_prefix: str = "",
 ) -> Any:
     """Executes chat completion with Groq SDK with secret-sanitized exceptions."""
     try:
@@ -679,37 +761,37 @@ async def _call_groq_api(
         )
     except groq.AuthenticationError as err:
         sanitized = sanitize_error_message(err.message)
-        logger.error("Groq Authentication Error: %s", sanitized)
+        logger.error("Provider authentication failed for fingerprint [%s]: %s", fingerprint_prefix, sanitized)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Groq Authentication Failed: {sanitized}",
+            detail=f"Provider Authentication Failed: {sanitized}",
         )
     except groq.RateLimitError as err:
         sanitized = sanitize_error_message(err.message)
-        logger.warning("Groq Rate Limit Exceeded: %s", sanitized)
+        logger.warning("Provider rate limit reached for fingerprint [%s]: %s", fingerprint_prefix, sanitized)
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=f"Groq Rate Limit Exceeded: {sanitized}",
+            detail=f"Provider Rate Limit Exceeded: {sanitized}",
         )
     except groq.APIConnectionError as err:
         sanitized = sanitize_error_message(err.message)
-        logger.error("Groq Connection Error: %s", sanitized)
+        logger.error("Provider connection failed for fingerprint [%s]: %s", fingerprint_prefix, sanitized)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Groq API connection failed: {sanitized}",
+            detail=f"Provider API connection failed: {sanitized}",
         )
     except groq.APIStatusError as err:
         sanitized = sanitize_error_message(err.message)
-        logger.error("Groq API Status Error: %s", sanitized)
+        logger.error("Provider API status error (%s) for fingerprint [%s]: %s", err.status_code, fingerprint_prefix, sanitized)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Groq Upstream Error ({err.status_code}): {sanitized}",
+            detail=f"Provider Upstream Error ({err.status_code}): {sanitized}",
         )
     except HTTPException:
         raise
     except Exception as err:
         sanitized = sanitize_error_message(str(err))
-        logger.exception("Unexpected error communicating with Groq: %s", sanitized)
+        logger.error("Unexpected error for fingerprint [%s]: %s", fingerprint_prefix, sanitized)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Internal Gateway Error: {sanitized}",
@@ -717,7 +799,7 @@ async def _call_groq_api(
 
 
 async def _execute_groq_and_cache(
-    client: AsyncGroq,
+    client_factory: ClientFactory,
     effective_model: str,
     canonical_messages: List[Dict[str, str]],
     effective_temperature: float,
@@ -727,14 +809,19 @@ async def _execute_groq_and_cache(
     start_time: float,
     cache: QueryCache,
 ) -> tuple[QueryResponse, CacheEntry]:
-    """Leader execution: calls Groq, populates cache, returns QueryResponse and CacheEntry."""
-    completion = await _call_groq_api(
-        client=client,
-        model=effective_model,
-        messages=canonical_messages,
-        temperature=effective_temperature,
-        max_tokens=effective_max_tokens,
-    )
+    """Leader execution: calls Groq with client lifecycle management, populates cache."""
+    client = client_factory()
+    try:
+        completion = await _call_groq_api(
+            client=client,
+            model=effective_model,
+            messages=canonical_messages,
+            temperature=effective_temperature,
+            max_tokens=effective_max_tokens,
+            fingerprint_prefix=fingerprint[:12],
+        )
+    finally:
+        await client.close()
 
     latency_ms = (time.perf_counter() - start_time) * 1000.0
 
@@ -773,7 +860,7 @@ async def _execute_groq_and_cache(
 
 
 async def _execute_groq_direct(
-    client: AsyncGroq,
+    client_factory: ClientFactory,
     effective_model: str,
     canonical_messages: List[Dict[str, str]],
     effective_temperature: float,
@@ -785,13 +872,18 @@ async def _execute_groq_direct(
     cache: QueryCache,
 ) -> QueryResponse:
     """Direct execution for bypassed requests: never writes to cache."""
-    completion = await _call_groq_api(
-        client=client,
-        model=effective_model,
-        messages=canonical_messages,
-        temperature=effective_temperature,
-        max_tokens=effective_max_tokens,
-    )
+    client = client_factory()
+    try:
+        completion = await _call_groq_api(
+            client=client,
+            model=effective_model,
+            messages=canonical_messages,
+            temperature=effective_temperature,
+            max_tokens=effective_max_tokens,
+            fingerprint_prefix=fingerprint[:12],
+        )
+    finally:
+        await client.close()
 
     latency_ms = (time.perf_counter() - start_time) * 1000.0
 
@@ -842,10 +934,14 @@ async def get_cache_statistics(
     return cache.stats(enabled=settings.cache_enabled)
 
 
-@router.post("/cache/clear", summary="Clear query cache")
+@router.post(
+    "/cache/clear",
+    dependencies=[Depends(verify_admin_token)],
+    summary="Clear query cache (Admin token required)",
+)
 async def clear_query_cache(
     cache: QueryCache = Depends(get_query_cache),
 ) -> Dict[str, Any]:
-    """Purge all entries from the query cache and reset statistics."""
+    """Purge all entries from the query cache and reset statistics. Requires administrative token."""
     cache.clear()
     return {"status": "ok", "message": "Cache successfully cleared."}
