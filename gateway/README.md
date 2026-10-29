@@ -1,25 +1,46 @@
 # IntelliCache Gateway
 
-A hardened, high-performance Python backend and exact-match LLM caching proxy for **IntelliCache**. The Gateway intercepts LLM inference requests, conservatively normalizes queries, computes deterministic SHA-256 query fingerprints across all answer-affecting parameters, coordinates concurrent identical requests via cancellation-safe single-flight execution, and reuses cached responses to reduce inference latency and API costs.
+A hardened, modular, provider-independent Python backend and exact-match LLM caching proxy for **IntelliCache**. The Gateway intercepts LLM inference requests, conservatively normalizes queries, computes deterministic SHA-256 query fingerprints across all answer-affecting parameters, coordinates concurrent identical requests via cancellation-safe single-flight execution, and reuses cached responses to reduce inference latency and API costs.
 
 ---
 
 ## Architecture & Directory Structure
 
+The backend is organized into decoupled layers where the caching core is strictly independent of web frameworks (FastAPI) and LLM vendor SDKs (Groq):
+
 ```
 gateway/
 ├── app/
-│   ├── __init__.py           # Application package definition & version
-│   ├── main.py               # FastAPI factory, lifespan, RFC-compliant CORS, and root/health routes
+│   ├── api/                  # HTTP route handling, request/response conversion, dependency wiring
+│   │   ├── __init__.py
+│   │   └── routes.py         # /query, /api/v1/query endpoints, SSE streaming formatter, error mappers
+│   ├── core/                 # Provider-independent caching & orchestration core (Zero FastAPI/Groq imports)
+│   │   ├── __init__.py
+│   │   ├── contracts.py      # Normalized generation requests, results, stream chunks, usage metrics
+│   │   ├── errors.py         # ProviderException hierarchy and sensitive secret/path redaction
+│   │   ├── fingerprinting.py # Exact text normalization and deterministic SHA-256 fingerprinting
+│   │   ├── singleflight.py   # Cancellation-safe SingleFlightCoordinator
+│   │   └── service.py        # IntelliCacheCore orchestrator
+│   ├── cache/                # Cache interface and storage implementations
+│   │   ├── __init__.py
+│   │   ├── interfaces.py     # BaseCache abstract interface, CacheEntry, CacheStats
+│   │   └── exact_cache.py    # LRU + TTL in-memory exact-match cache (ExactCache / QueryCache)
+│   ├── providers/            # Replaceable LLM provider adapters
+│   │   ├── __init__.py
+│   │   ├── interfaces.py     # LLMProvider abstract interface (generate, stream, close)
+│   │   ├── factory.py        # ProviderFactory registry (LLM_PROVIDER selection)
+│   │   └── groq_adapter.py   # Groq SDK adapter (isolated AsyncGroq mapping & lifecycle)
+│   ├── routes/               # Backward compatibility facade for query routes
+│   │   ├── __init__.py
+│   │   └── query.py
 │   ├── config.py             # Pydantic Settings, environment loader, and payload size bounds
-│   └── routes/
-│       ├── __init__.py       # Route exports
-│       └── query.py          # /query execution, Groq client, exact-match cache, single-flight coordinator
+│   └── main.py               # FastAPI application factory, CORS, and root/health/admin routes
 ├── tests/
-│   ├── __init__.py           # Test package initialization
-│   ├── test_config.py        # Settings validation, env overrides, and payload limits tests
-│   ├── test_main.py          # Root, health, CORS, and cache lifecycle integration tests
-│   └── test_query.py         # Exact caching, parameter isolation, single-flight, streaming, & security tests
+│   ├── test_core.py          # Core orchestration tests using pure FakeProvider & AST import boundary tests
+│   ├── test_providers.py     # Groq adapter, client closure, and ProviderFactory tests
+│   ├── test_query.py         # API route integration tests, streaming SSE, and exact caching
+│   ├── test_config.py        # Settings validation, env overrides, and payload limits
+│   └── test_main.py          # Root, health, CORS, and admin clear endpoint tests
 ├── .env                      # Local environment configuration (git-ignored)
 ├── .env.example              # Template environment configuration
 ├── .gitignore                # Python and environment ignore rules
@@ -29,75 +50,80 @@ gateway/
 
 ---
 
-## Exact-Match Caching Semantics
+## Layer Responsibilities
 
-The gateway uses conservative, deterministic exact matching to guarantee that answers are only reused when all answer-affecting inputs match.
+1. **API Layer (`gateway/app/api/`)**:
+   - Converts inbound HTTP JSON bodies to provider-neutral `GenerationRequest` contracts.
+   - Enforces character payload boundaries (`MAX_PROMPT_CHARS`, `MAX_MESSAGES_COUNT`).
+   - Translates domain exceptions (`ProviderAuthenticationError`, `ProviderRateLimitError`, etc.) to HTTP status codes (401, 429, 502, 503, 500).
+   - Formats streaming chunks as compliant Server-Sent Events (`text/event-stream`).
 
-### 1. Fingerprint Components
-The SHA-256 cache fingerprint is computed by serializing a canonical JSON payload with sorted keys containing:
-- **`model`**: Lowercase, trimmed effective model identifier (e.g. `qwen/qwen3.8-27b`).
-- **`messages`**: Canonical sequence of `[{"role": role, "content": normalized_content}]`. If `system_prompt` is provided, it is prepended with role `"system"`.
-- **`temperature`**: Canonical effective sampling temperature float without lossy rounding (resolving to server default `0.7` if omitted).
-- **`max_tokens`**: Effective integer token ceiling (or `null` if unconstrained).
+2. **IntelliCache Core (`gateway/app/core/`)**:
+   - Owns exact-cache orchestration, fingerprinting, admission policies, and single-flight execution.
+   - **Zero Vendor Dependencies**: Does not import FastAPI, Starlette, or the Groq SDK.
+   - Operates entirely on provider-neutral contracts (`GenerationRequest`, `GenerationResult`, `StreamChunk`).
+   - Verified via automated Abstract Syntax Tree (AST) boundary tests in `test_core.py`.
 
-Different models, temperatures, token limits, or message sequences produce strictly different fingerprints and never collide.
+3. **Cache Storage Layer (`gateway/app/cache/`)**:
+   - Exposes the `BaseCache` interface (`get`, `set`, `record_miss`, `record_coalesced_join`, `record_coalesced_success`, `clear`, `stats`).
+   - Implements in-memory LRU capacity eviction and TTL-based entry expiration.
+   - Accurate request accounting: `total_requests = hits + misses + coalesced_requests`.
 
-### 2. Conservative Whitespace Normalization
-Unlike lossy text-search engines, IntelliCache preserves syntax-sensitive code structures:
-- **Line Ending Canonicalization**: `\r\n` (CRLF) and `\r` (CR) are normalized to `\n` (LF).
-- **Outer Trimming**: Leading and trailing outer whitespace of the entire prompt/message string is trimmed.
-- **Code Indentation Preserved**: Internal indentation (spaces and tabs) is preserved intact. Code with 4-space indent vs 2-space indent produces distinct cache entries.
-- **Line Structure Preserved**: Blank lines, internal linebreaks, and line-trailing spaces (e.g. Markdown double-space line breaks) are never collapsed.
-
-### 3. Strict Cache Bypass (`bypass_cache=true`)
-When `bypass_cache: true` is supplied:
-- **No Cache Read**: Does not retrieve existing cached responses.
-- **No Cache Write**: Never inserts or replaces entries in the cache upon completion.
-- **Single-Flight Isolation**: Never joins an in-flight single-flight group; executes its own independent upstream generation.
+4. **Provider Adapter Layer (`gateway/app/providers/`)**:
+   - Defines the `LLMProvider` contract (`generate`, `stream`, `close`).
+   - `GroqProvider` encapsulates Groq SDK interactions, translates vendor exceptions, extracts token usage, and guarantees explicit `await client.close()` connection termination.
+   - `ProviderFactory` allows runtime provider selection (`LLM_PROVIDER=groq`) and clean extension for future providers.
 
 ---
 
-## Single-Flight Concurrency Coordination & Metrics
+## Provider Selection & Extensibility
 
-To eliminate "thundering herd" duplicates when multiple identical queries arrive simultaneously, the gateway implements an in-memory **Single-Flight Coordinator** for eligible non-streaming requests:
+The active provider is chosen via configuration:
 
-1. **Leader Election**: The first request for a given fingerprint becomes the Leader and initiates inference with Groq.
-2. **Follower Awaiting**: Subsequent concurrent requests for the exact same fingerprint register as Followers and await the Leader's completion via `asyncio.shield`.
-3. **Cancellation Isolation**: If a follower disconnects or cancels its HTTP request, the Leader's generation is protected and continues running.
-4. **Failure Propagation & Cleanup**: If the Leader encounters an exception or cancellation, the error is cleanly propagated to all waiting followers, and the in-flight state is cleared unconditionally in a `finally` block so subsequent requests can retry normally.
-5. **No Unretrieved Warnings**: If a Leader fails with zero followers waiting, the exception is consumed internally to prevent Python `Future exception was never retrieved` warnings.
-6. **Accurate Metrics (No Double-Counting)**: Awaiting followers do not increment cache misses. Instead, they are recorded as `coalesced_requests`. The cache statistics formula is strictly:
-   $$\text{total\_requests} = \text{hits} + \text{misses} + \text{coalesced\_requests}$$
+```dotenv
+LLM_PROVIDER=groq
+```
 
-*Limitation*: Streaming requests (`stream: true`) currently bypass single-flight coordination; concurrent streaming misses execute independent Groq calls, but successfully completed streams are cached upon completion.
+A new provider adapter can be registered dynamically without modifying core caching logic:
+
+```python
+from app.providers.factory import ProviderFactory
+from app.providers.interfaces import LLMProvider
+
+class CustomProvider(LLMProvider):
+    async def generate(self, request): ...
+    async def stream(self, request): ...
+    async def close(self): ...
+
+ProviderFactory.register("custom", CustomProvider)
+```
+
+---
+
+## Correctness & Metric Guarantees
+
+### 1. Consistent Model Identity (PRE-02)
+The effective model identifier (e.g. `qwen/qwen3.8-27b` or custom casing) is resolved once. The exact same canonical string is used for the SHA-256 cache fingerprint payload and the upstream LLM request, eliminating any casing or alias discrepancies between cache keys and upstream inference.
+
+### 2. Internally Consistent Single-Flight Metrics (PRE-01)
+To eliminate duplicate "thundering herd" inference calls when multiple identical queries arrive simultaneously:
+- **Leader Election**: The first request registers as the Leader and executes the provider generation.
+- **Followers Join & Record Immediately**: Subsequent requests register as Followers and record their join immediately in `coalesced_requests`.
+- **Cancellation Isolation**: Followers await `asyncio.shield(shared_future)` so a disconnecting follower cannot abort the leader.
+- **Consistent Total Accounting**: Even if the leader encounters an upstream failure or cancellation, every request is counted exactly once:
+  $$\text{total\_requests} = \text{hits} + \text{misses} + \text{coalesced\_requests}$$
+
+### 3. Conservative Normalization & Strict Cache Bypass
+- **Whitespace Preserved**: CRLF and CR are normalized to LF, and outer prompt whitespace is trimmed. Internal spaces, tabs, code indentation, and blank lines are preserved intact.
+- **Strict Bypass (`bypass_cache=true`)**: Requests with `bypass_cache=true` bypass cache reads, never join single-flight groups, and never write or overwrite entries in the cache.
 
 ---
 
 ## Lazy Client Lifecycle & Offline Cache Availability
 
-The Groq API client is lazily instantiated through a dependency factory only when an actual upstream inference request is required (cache miss or cache bypass).
+The provider client is lazily constructed only when an actual upstream inference call is required:
 - **Offline / Credential-Free Cache Serving**: If an identical query exists in the cache, the response is served immediately without instantiating `AsyncGroq` and without requiring `GROQ_API_KEY` to be configured.
-- **Resource Management**: When an upstream call is made (streaming or non-streaming), the HTTP client connection is explicitly closed (`await client.close()`) in a `finally` block to prevent lingering network sockets or unclosed connection warnings.
-
----
-
-## Streaming Response Contract (SSE)
-
-When `stream: true` is requested, the endpoint returns a `text/event-stream` stream:
-
-- **Incremental Chunks**:
-  ```
-  data: {"delta": "token", "done": false, "cached": false, "fingerprint": "..."}
-  ```
-- **Completion Event**:
-  ```
-  data: {"delta": "", "done": true, "cached": false, "latency_ms": 312.4, "model": "qwen/qwen3.8-27b", "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}, "fingerprint": "..."}
-  ```
-- **Sentinel**:
-  ```
-  data: [DONE]
-  ```
-- **Failure Isolation**: If a stream is interrupted or encounters an upstream API error, an error event is emitted, and the partial response is **never cached**.
+- **Resource Management**: When an upstream call is made (streaming or non-streaming), the HTTP client connection is explicitly closed (`await client.close()`) in a `finally` block to prevent lingering sockets.
 
 ---
 
@@ -106,7 +132,8 @@ When `stream: true` is requested, the endpoint returns a `text/event-stream` str
 ### Environment Settings (`.env`)
 
 ```dotenv
-# Groq API Configuration (Required for inference misses)
+# LLM Provider Configuration
+LLM_PROVIDER=groq
 GROQ_API_KEY=gsk_your_actual_groq_api_key_here
 GROQ_MODEL=qwen/qwen3.8-27b
 
@@ -133,11 +160,10 @@ MAX_MESSAGE_CHARS=131072
 ```
 
 ### Security Considerations
-- **Admin Endpoint Protection (`/cache/clear`)**: Administrative operations require `ADMIN_API_TOKEN` to be set on the server. Clients must supply the token via the `X-Admin-Token: <token>` header or `Authorization: Bearer <token>`. Requests are validated using constant-time comparison (`hmac.compare_digest`). If `ADMIN_API_TOKEN` is unset or the supplied token is invalid, the endpoint responds with HTTP 403 Forbidden.
+- **Admin Endpoint Protection (`/cache/clear`)**: Administrative operations require `ADMIN_API_TOKEN` to be set on the server. Clients must supply the token via `X-Admin-Token: <token>` or `Authorization: Bearer <token>`. Requests are validated using constant-time comparison (`hmac.compare_digest`). If unset or invalid, the endpoint responds with HTTP 403 Forbidden.
 - **Network Exposure**: By default, the gateway binds to `127.0.0.1` (localhost) rather than `0.0.0.0` to avoid unintentionally exposing endpoints to the local network or container host interfaces.
 - **Secret & Path Redaction**: Upstream error messages and logs automatically redact Groq API keys (`gsk_***`), Bearer tokens, absolute filesystem paths (`<redacted_path>`), and IP addresses (`<redacted_ip>`).
-- **Payload Size Limits**: Character limits protect gateway memory against denial-of-service payloads. These represent inbound HTTP body limits, not model context token limits.
-- **CORS Behavior**: When `CORS_ORIGINS=*`, `allow_credentials` is set to `False` to maintain strict W3C specification compliance.
+- **Payload Size Limits**: Inbound payload character limits protect gateway memory against denial-of-service payloads.
 
 ---
 
@@ -165,7 +191,20 @@ cd gateway
 
 To run individual test modules:
 ```bash
-python -m unittest tests/test_config.py
-python -m unittest tests/test_main.py
-python -m unittest tests/test_query.py
+python -m unittest tests/test_core.py        # Core orchestration & AST boundary tests
+python -m unittest tests/test_providers.py   # Groq adapter & provider factory tests
+python -m unittest tests/test_query.py       # API route & streaming tests
+python -m unittest tests/test_config.py      # Configuration tests
+python -m unittest tests/test_main.py        # Application integration tests
 ```
+
+---
+
+## Current Scope & Future Architectural Boundaries
+
+The following capabilities represent intentional architectural boundaries for future steps:
+- **Current Scope**: Exact-match SHA-256 caching, in-memory LRU/TTL storage, cancellation-safe single flight for non-streaming requests, and the Groq provider adapter.
+- **Embedding Provider**: Future embedding models will implement a separate `EmbeddingProvider` interface distinct from `LLMProvider`.
+- **Semantic Cache**: Future semantic retrieval will be introduced as an independent cache layer with similarity scoring and safety guardrails.
+- **Conversation Manager**: Multi-turn conversation persistence will record every delivered prompt, response, and provenance trace in a persistent store.
+- **Demonstration Chatbot**: The web UI chatbot will consume the stable public REST API (`POST /query`).
