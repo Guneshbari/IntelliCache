@@ -559,6 +559,197 @@ class TestSemanticEvaluation(unittest.IsolatedAsyncioTestCase):
         mock_semantic.lookup.assert_not_called()
         mock_provider.generate.assert_not_called()
 
+    def test_load_dataset_rejects_duplicate_ids(self) -> None:
+        """Verifies load_dataset rejects datasets containing duplicate case IDs."""
+        bad_data = [
+            {"id": "dup-1", "split": "development", "category": "positive_paraphrase", "query": "test query 1", "expected_answer_label": "l1", "candidates": [{"id": "c1", "query_text": "cand1", "cached_response": "resp1", "answer_label": "l1"}]},
+            {"id": "dup-1", "split": "development", "category": "positive_paraphrase", "query": "test query 2", "expected_answer_label": "l1", "candidates": [{"id": "c2", "query_text": "cand2", "cached_response": "resp2", "answer_label": "l1"}]},
+        ]
+        import tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+            json.dump(bad_data, f)
+            tpath = f.name
+        try:
+            with self.assertRaises(ValueError) as ctx:
+                load_dataset(tpath)
+            self.assertIn("Duplicate case id", str(ctx.exception))
+        finally:
+            Path(tpath).unlink(missing_ok=True)
+
+    def test_load_dataset_rejects_invalid_split_or_category(self) -> None:
+        """Verifies load_dataset rejects unknown splits or categories."""
+        bad_split = [
+            {"id": "c-1", "split": "staging", "category": "positive_paraphrase", "query": "test query 1", "candidates": [{"id": "c1", "query_text": "cand1", "cached_response": "resp1", "answer_label": "l1"}]}
+        ]
+        bad_cat = [
+            {"id": "c-2", "split": "development", "category": "unsupported_chat", "query": "test query 1", "candidates": [{"id": "c1", "query_text": "cand1", "cached_response": "resp1", "answer_label": "l1"}]}
+        ]
+        import tempfile
+        for data, expected_err in [(bad_split, "invalid split"), (bad_cat, "invalid category")]:
+            with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+                json.dump(data, f)
+                tpath = f.name
+            try:
+                with self.assertRaises(ValueError) as ctx:
+                    load_dataset(tpath)
+                self.assertIn(expected_err, str(ctx.exception).lower())
+            finally:
+                Path(tpath).unlink(missing_ok=True)
+
+    def test_load_dataset_rejects_empty_query_or_candidates(self) -> None:
+        """Verifies load_dataset rejects empty queries or empty candidates lists."""
+        bad_q = [
+            {"id": "c-1", "split": "development", "category": "positive_paraphrase", "query": "  ", "candidates": [{"id": "c1", "query_text": "cand1", "cached_response": "resp1", "answer_label": "l1"}]}
+        ]
+        bad_cands = [
+            {"id": "c-2", "split": "development", "category": "positive_paraphrase", "query": "valid query", "candidates": []}
+        ]
+        import tempfile
+        for data in [bad_q, bad_cands]:
+            with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+                json.dump(data, f)
+                tpath = f.name
+            try:
+                with self.assertRaises(ValueError):
+                    load_dataset(tpath)
+            finally:
+                Path(tpath).unlink(missing_ok=True)
+
+    def test_load_dataset_rejects_missing_candidate_fields(self) -> None:
+        """Verifies load_dataset rejects candidates with missing required fields."""
+        bad_c = [
+            {"id": "c-1", "split": "development", "category": "positive_paraphrase", "query": "valid query", "candidates": [{"id": "c1", "query_text": "cand1", "cached_response": ""}]}
+        ]
+        import tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+            json.dump(bad_c, f)
+            tpath = f.name
+        try:
+            with self.assertRaises(ValueError):
+                load_dataset(tpath)
+        finally:
+            Path(tpath).unlink(missing_ok=True)
+
+    def test_load_dataset_rejects_missing_positive_answer_label(self) -> None:
+        """Verifies positive case fails validation if expected_answer_label is not in candidates."""
+        bad_positive = [
+            {
+                "id": "c-pos-bad",
+                "split": "development",
+                "category": "positive_paraphrase",
+                "query": "valid query text",
+                "expected_answer_label": "expected_class_a",
+                "candidates": [
+                    {"id": "cand-1", "query_text": "cand query", "cached_response": "response", "answer_label": "mismatched_class_b"}
+                ],
+            }
+        ]
+        import tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+            json.dump(bad_positive, f)
+            tpath = f.name
+        try:
+            with self.assertRaises(ValueError) as ctx:
+                load_dataset(tpath)
+            self.assertIn("does not appear in any candidate", str(ctx.exception))
+        finally:
+            Path(tpath).unlink(missing_ok=True)
+
+    def test_load_dataset_rejects_overlapping_dev_and_test_ids(self) -> None:
+        """Verifies load_dataset rejects datasets where development and test IDs overlap."""
+        overlapping = [
+            {"id": "shared-id-01", "split": "development", "category": "positive_paraphrase", "query": "valid query text 1", "expected_answer_label": "l1", "candidates": [{"id": "c1", "query_text": "q1", "cached_response": "r1", "answer_label": "l1"}]},
+            {"id": "shared-id-01", "split": "test", "category": "positive_paraphrase", "query": "valid query text 2", "expected_answer_label": "l2", "candidates": [{"id": "c2", "query_text": "q2", "cached_response": "r2", "answer_label": "l2"}]},
+        ]
+        import tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+            json.dump(overlapping, f)
+            tpath = f.name
+        try:
+            with self.assertRaises(ValueError):
+                load_dataset(tpath)
+        finally:
+            Path(tpath).unlink(missing_ok=True)
+
+    async def test_threshold_sweep_strictly_restricted_to_development(self) -> None:
+        """Verifies that run_threshold_sweep ignores test cases even if requested."""
+        cases = [
+            EvaluationCase(
+                id="dev-c1", query="query text", category="positive_paraphrase", split="development",
+                expected_answer_label="l1", rationale="",
+                candidates=[CandidateData(id="c1", query_text="cand query", cached_response="resp", answer_label="l1")],
+            ),
+            EvaluationCase(
+                id="test-c1", query="query text", category="positive_paraphrase", split="test",
+                expected_answer_label="l1", rationale="",
+                candidates=[CandidateData(id="c2", query_text="cand query", cached_response="resp", answer_label="l1")],
+            ),
+        ]
+        provider = DeterministicMockEmbeddingProvider()
+        # Even if caller passes split="test", the function must force development
+        results = await run_threshold_sweep(cases, provider, thresholds=[0.82], margins=[0.03], split="test")
+        self.assertEqual(len(results), 1)
+        # Total cases evaluated should be 1 (the dev case only), not 2
+        total_eval = results[0]["tp"] + results[0]["fp"] + results[0]["fn"] + results[0]["tn"]
+        self.assertEqual(total_eval, 1)
+
+    async def test_savings_accounting_distinguishes_safe_and_hazardous_reuse(self) -> None:
+        """Verifies that safe reuse (TP) and incorrect reuse (FP) are accounted separately."""
+        cases = [
+            # 1. Positive case that will match (TP)
+            EvaluationCase(
+                id="pos-safe", query="How to reverse a string in Python?", category="positive_paraphrase", split="development",
+                expected_answer_label="py_rev", rationale="",
+                candidates=[CandidateData(id="c1", query_text="What is the slice syntax to reverse a string in Python?", cached_response="s[::-1]", answer_label="py_rev", total_tokens=300)],
+            ),
+            # 2. Negative case forced to match a candidate (FP)
+            EvaluationCase(
+                id="neg-unsafe", query="How to reverse a string in Python?", category="different_language", split="development",
+                expected_answer_label=None, rationale="",
+                candidates=[CandidateData(id="c2", query_text="What is the slice syntax to reverse a string in Python?", cached_response="s[::-1]", answer_label="py_rev", total_tokens=200)],
+            ),
+        ]
+        provider = DeterministicMockEmbeddingProvider()
+        policy = SemanticCachePolicy(min_similarity=0.70)  # low threshold so both match
+
+        metrics, outcomes = await evaluate_dataset(cases, policy, provider, split="development")
+        self.assertEqual(metrics.tp, 1)
+        self.assertEqual(metrics.fp, 1)
+        self.assertEqual(metrics.safe_reuse_count, 1)
+        self.assertEqual(metrics.incorrect_reuse_count, 1)
+        self.assertEqual(metrics.safe_provider_calls_avoided, 1)
+        self.assertEqual(metrics.hazardous_provider_calls_avoided, 1)
+        self.assertEqual(metrics.total_accepted_hits, 2)
+        # Tokens saved should ONLY contain the TP tokens (300), NOT 300+200
+        self.assertEqual(metrics.safe_tokens_saved, 300)
+        # Hazardous tokens must track the FP tokens separately
+        self.assertEqual(metrics.hazardous_tokens_involved, 200)
+
+    async def test_benchmark_offline_component_computes_actual_similarities(self) -> None:
+        """Verifies that run_benchmark computes real cosine similarity rather than hardcoded 0.9."""
+        from scripts.evaluate_semantic_cache import run_benchmark
+        case = EvaluationCase(
+            id="bench-case", query="How to reverse string?", category="positive_paraphrase", split="development",
+            expected_answer_label="l1", rationale="",
+            candidates=[CandidateData(id="c1", query_text="How to reverse string?", cached_response="resp", answer_label="l1")],
+        )
+        provider = DeterministicMockEmbeddingProvider()
+        policy = SemanticCachePolicy()
+
+        bench_res = await run_benchmark([case], policy, provider, split="development", iterations=2, benchmark_mode="component")
+        self.assertEqual(bench_res["benchmark_mode"], "offline_component")
+        self.assertIn("Synthetic/mock", bench_res["benchmark_label"])
+        self.assertGreater(bench_res["sample_count"], 0)
+        self.assertIn("query_embedding_latency_ms", bench_res)
+        self.assertIn("candidate_sim_and_ranking_latency_ms", bench_res)
+        self.assertIn("total_measured_latency_ms", bench_res)
+
+    def test_get_dataset_hash(self) -> None:
+        """Verifies SHA-256 hash computation for dataset files."""
+        from scripts.evaluate_semantic_cache import get_dataset_hash
+        h = get_dataset_hash(self.dataset_path)
+        self.assertEqual(len(h), 64)
+
 
 if __name__ == "__main__":
     unittest.main()
