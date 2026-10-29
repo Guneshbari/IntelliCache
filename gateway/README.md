@@ -46,6 +46,12 @@ gateway/
 │   │   ├── interfaces.py     # BaseVectorStore interface
 │   │   ├── postgres_store.py # PostgresVectorStore implementation
 │   │   └── migration.py      # Independent pgvector migration runner
+│   ├── semantic_cache/       # Semantic caching policy, candidate validation, and orchestration
+│   │   ├── __init__.py
+│   │   ├── contracts.py      # EligibilityResult, SemanticHit, and SemanticCacheStats
+│   │   ├── interfaces.py     # BaseSemanticCache interface
+│   │   ├── policy.py         # Deterministic technical query eligibility & candidate compatibility
+│   │   └── service.py        # SemanticCacheService (lookup, indexing, and failure safe-handling)
 │   ├── routes/               # Backward compatibility facade for query routes
 │   │   ├── __init__.py
 │   │   └── query.py
@@ -60,6 +66,7 @@ gateway/
 │   ├── test_providers.py     # Groq adapter, client closure, and ProviderFactory tests
 │   ├── test_embeddings.py    # Embedding contracts, Ollama adapter, prefixes, error tests
 │   ├── test_vector_store.py  # Vector storage contracts, pgvector nearest-neighbour, cascade delete
+│   ├── test_semantic_cache.py # Semantic policy, eligibility, candidate compatibility, ambiguity margin
 │   ├── test_query.py         # API route integration tests, streaming SSE, and exact caching
 │   ├── test_multi_client.py  # Multi-client auth, namespace isolation, and PostgreSQL persistence tests
 │   ├── test_config.py        # Settings validation, env overrides, and payload limits
@@ -288,6 +295,42 @@ Vector dimensions are enforced at the database table level (`vector(768)`). If y
 
 ---
 
+## Semantic Cache Pipeline & Policy
+
+IntelliCache includes a deterministic semantic caching layer in `gateway/app/semantic_cache/`. It operates between exact cache lookups and LLM provider calls for eligible, non-streaming programming queries.
+
+### Pipeline Execution Order
+1. **Exact-Cache Lookup**: Checks SHA-256 exact fingerprint. Returns immediately on hit (`cache_type="exact"`).
+2. **Eligibility Evaluation**: If exact miss, checks query against deterministic single-turn programming eligibility and sensitive credential detection.
+3. **Semantic Lookup**: Generates query embedding via `OllamaEmbeddingProvider` and searches nearest neighbours via `PostgresVectorStore`.
+4. **Candidate Verification**: Filters candidates by namespace, model, temperature, max_tokens, similarity threshold ($\ge 0.92$), and ambiguity margin ($\ge 0.03$).
+5. **Semantic Hit**: Returns cached answer without calling LLM (`cache_type="semantic"`). Semantic hits are not recursively indexed under new fingerprints.
+6. **Provider Fallback**: If semantic miss or error, invokes configured LLM provider (`cache_type="none"`).
+7. **Safe Indexing**: Writes exact-cache entry first, then indexes vector record in vector store. Indexing failures fail safely and do not fail the query.
+
+### Configuration
+```bash
+SEMANTIC_CACHE_ENABLED=false           # Disabled by default
+SEMANTIC_CACHE_MIN_SIMILARITY=0.92     # Minimum cosine similarity threshold
+SEMANTIC_CACHE_MIN_MARGIN=0.03         # Minimum margin required between top candidate and alternative candidate
+SEMANTIC_CACHE_TOP_K=5                 # Nearest neighbour candidates evaluated
+```
+
+### Observability Counters
+Available at `GET /cache/semantic/stats` and within `GET /cache/stats`:
+- `lookups`: Total semantic lookup attempts.
+- `hits`: Successful semantic cache hits.
+- `misses`: Lookups where no candidate passed similarity or compatibility checks.
+- `rejected_candidates`: Candidates rejected due to metadata, provider, or temperature mismatches.
+- `ambiguous_candidates`: Candidates rejected because an alternative candidate with a different answer fell within the margin.
+- `eligibility_rejections`: Queries rejected from semantic caching (multi-turn, non-technical, secrets).
+- `embedding_failures`: Embedding provider timeouts or connection failures.
+- `vector_store_failures`: Database retrieval errors.
+- `indexing_successes`: Successfully persisted vector records.
+- `indexing_failures`: Safely caught indexing errors.
+
+---
+
 ## Running the Server
 
 ```bash
@@ -316,6 +359,7 @@ python -m unittest tests/test_core.py          # Core orchestration & AST bounda
 python -m unittest tests/test_providers.py     # Groq adapter & provider factory tests
 python -m unittest tests/test_embeddings.py    # Embedding contracts, Ollama adapter, prefixes
 python -m unittest tests/test_vector_store.py  # Vector store, nearest-neighbour, cascade delete
+python -m unittest tests/test_semantic_cache.py # Semantic policy, eligibility, ambiguity, core pipeline
 python -m unittest tests/test_query.py         # API route & streaming tests
 python -m unittest tests/test_multi_client.py  # Multi-client auth, namespaces & PostgreSQL tests
 python -m unittest tests/test_config.py        # Configuration tests

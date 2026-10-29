@@ -66,6 +66,7 @@ class GenerationResult:
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
     metadata: Dict[str, Any] = field(default_factory=dict)
+    cache_type: str = "none"
 
 
 @dataclass
@@ -81,12 +82,14 @@ class StreamChunk:
     error: Optional[str] = None
     status_code: Optional[int] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    cache_type: str = "none"
 
     def to_dict(self) -> Dict[str, Any]:
         data: Dict[str, Any] = {
             "delta": self.delta,
             "done": self.done,
             "cached": self.cached,
+            "cache_type": self.cache_type,
             "fingerprint": self.fingerprint,
         }
         if self.done:

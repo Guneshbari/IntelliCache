@@ -44,6 +44,7 @@ from ..core.singleflight import SingleFlightCoordinator
 from ..providers.factory import ProviderFactory
 from ..providers.groq_adapter import GroqProvider
 from ..providers.interfaces import LLMProvider
+from ..semantic_cache.interfaces import BaseSemanticCache
 
 logger = logging.getLogger("intellicache.gateway.api")
 router = APIRouter()
@@ -138,6 +139,7 @@ class QueryResponse(BaseModel):
     conversation_id: Optional[str] = None
     fingerprint: str
     created_at: str
+    cache_type: str = "none"
 
 
 # ---------------------------------------------------------------------------
@@ -269,20 +271,40 @@ def get_single_flight_coordinator() -> SingleFlightCoordinator:
     return _single_flight_singleton
 
 
+_semantic_cache_singleton: Optional[BaseSemanticCache] = None
+
+
+def get_semantic_cache() -> Optional[BaseSemanticCache]:
+    """Dependency returning configured BaseSemanticCache singleton (or None if disabled)."""
+    return _semantic_cache_singleton
+
+
+def set_semantic_cache(semantic_cache: Optional[BaseSemanticCache]) -> None:
+    """Configures the global semantic cache singleton."""
+    global _semantic_cache_singleton
+    _semantic_cache_singleton = semantic_cache
+
+
 def get_core_service(
     settings: Settings = Depends(get_settings),
     cache: BaseCache = Depends(get_query_cache),
     single_flight: SingleFlightCoordinator = Depends(get_single_flight_coordinator),
+    semantic_cache: Optional[BaseSemanticCache] = Depends(get_semantic_cache),
 ) -> IntelliCacheCore:
     """Dependency returning IntelliCacheCore orchestration service."""
     global _core_singleton
     if not isinstance(settings, Settings):
         settings = get_settings()
-    if _core_singleton is None or _core_singleton.cache is not cache:
+    if (
+        _core_singleton is None
+        or _core_singleton.cache is not cache
+        or _core_singleton.semantic_cache is not semantic_cache
+    ):
         _core_singleton = IntelliCacheCore(
             cache=cache,
             single_flight=single_flight,
             cache_enabled=settings.cache_enabled,
+            semantic_cache=semantic_cache,
         )
     return _core_singleton
 
@@ -374,6 +396,7 @@ async def execute_query(
                             "delta": chunk.delta,
                             "done": False,
                             "cached": chunk.cached,
+                            "cache_type": chunk.cache_type,
                             "fingerprint": chunk.fingerprint,
                         }
                         yield f"data: {json.dumps(chunk_payload)}\n\n"
@@ -382,6 +405,7 @@ async def execute_query(
                             "delta": "",
                             "done": True,
                             "cached": chunk.cached,
+                            "cache_type": chunk.cache_type,
                             "latency_ms": chunk.latency_ms or 0.0,
                             "model": chunk.model or effective_model,
                             "usage": chunk.usage.to_dict() if chunk.usage else {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
@@ -407,6 +431,7 @@ async def execute_query(
             conversation_id=request.conversation_id,
             fingerprint=result.fingerprint,
             created_at=result.created_at,
+            cache_type=result.cache_type,
         )
     except ProviderAuthenticationError as err:
         logger.error("Provider authentication failed for [%s]: %s", err.message[:12], err.message)

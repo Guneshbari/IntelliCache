@@ -430,6 +430,50 @@ class TestPostgresVectorStoreIntegration(unittest.IsolatedAsyncioTestCase):
         self.assertLess(results[0].distance, results[1].distance)
         self.assertLess(results[1].distance, results[2].distance)
 
+    async def test_search_excludes_expired_cache_entries(self):
+        """Vector search excludes records whose associated exact-cache entry has expired."""
+        fp_active = "fp_active_search"
+        fp_expired = "fp_expired_search"
+
+        # Active entry (expires in future)
+        query_active = """
+            INSERT INTO cache_entries (cache_namespace, fingerprint, response, model, provider, expires_at)
+            VALUES ('test_vec_ns', $1, 'Active response', 'llama-3', 'groq', NOW() + INTERVAL '1 hour')
+            ON CONFLICT (cache_namespace, fingerprint) DO NOTHING;
+        """
+        # Expired entry (expired 10 minutes ago)
+        query_expired = """
+            INSERT INTO cache_entries (cache_namespace, fingerprint, response, model, provider, expires_at)
+            VALUES ('test_vec_ns', $1, 'Expired response', 'llama-3', 'groq', NOW() - INTERVAL '10 minutes')
+            ON CONFLICT (cache_namespace, fingerprint) DO NOTHING;
+        """
+        async with self.pool.acquire() as conn:
+            await conn.execute(query_active, fp_active)
+            await conn.execute(query_expired, fp_expired)
+
+        rec_active = VectorRecord(
+            cache_namespace="test_vec_ns",
+            fingerprint=fp_active,
+            query_text="Active query",
+            vector=self._make_vector([1.0, 0.0]),
+            model="nomic-embed-text",
+        )
+        rec_expired = VectorRecord(
+            cache_namespace="test_vec_ns",
+            fingerprint=fp_expired,
+            query_text="Expired query",
+            vector=self._make_vector([1.0, 0.0]),
+            model="nomic-embed-text",
+        )
+        await self.store.upsert(rec_active)
+        await self.store.upsert(rec_expired)
+
+        # Search should return ONLY the active entry, not the expired entry
+        results = await self.store.search(self._make_vector([1.0, 0.0]), top_k=5, namespace="test_vec_ns")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].fingerprint, fp_active)
+        self.assertEqual(results[0].cached_response, "Active response")
+
     async def test_namespace_isolation(self):
         """Vectors in namespace A are never returned when searching namespace B."""
         fp = "fp_ns_iso"

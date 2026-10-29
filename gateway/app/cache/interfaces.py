@@ -62,6 +62,7 @@ class CacheStats(BaseModel):
     ttl_seconds: int = 3600
     enabled: bool = True
     backend: str = "memory"
+    semantic: Optional[Dict[str, int]] = None
 
 
 class BaseCache(ABC):

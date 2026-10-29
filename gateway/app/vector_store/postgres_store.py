@@ -186,8 +186,10 @@ class PostgresVectorStore(BaseVectorStore):
                 (v.vector <=> $1::vector) AS distance,
                 c.response AS cached_response
             FROM vector_records v
-            LEFT JOIN cache_entries c
-                ON v.cache_namespace = c.cache_namespace AND v.fingerprint = c.fingerprint
+            JOIN cache_entries c
+                ON v.cache_namespace = c.cache_namespace
+               AND v.fingerprint = c.fingerprint
+               AND (c.expires_at IS NULL OR c.expires_at > NOW())
             WHERE v.cache_namespace = $2
               AND v.model = $3
             ORDER BY distance ASC

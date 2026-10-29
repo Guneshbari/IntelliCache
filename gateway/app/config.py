@@ -132,6 +132,15 @@ class Settings(BaseModel):
     semantic_cache_enabled: bool = Field(
         default_factory=lambda: os.getenv("SEMANTIC_CACHE_ENABLED", "false").lower() in ("true", "1", "yes")
     )
+    semantic_cache_min_similarity: float = Field(
+        default_factory=lambda: float(os.getenv("SEMANTIC_CACHE_MIN_SIMILARITY", "0.92"))
+    )
+    semantic_cache_min_margin: float = Field(
+        default_factory=lambda: float(os.getenv("SEMANTIC_CACHE_MIN_MARGIN", "0.03"))
+    )
+    semantic_cache_top_k: int = Field(
+        default_factory=lambda: int(os.getenv("SEMANTIC_CACHE_TOP_K", "5"))
+    )
     vector_dimensions: int = Field(
         default_factory=lambda: int(os.getenv("VECTOR_DIMENSIONS", os.getenv("EMBEDDING_DIMENSIONS", "768")))
     )
@@ -154,6 +163,12 @@ class Settings(BaseModel):
     def validate_semantic_cache_config(self) -> "Settings":
         if self.vector_dimensions <= 0:
             raise ValueError("VECTOR_DIMENSIONS must be positive.")
+        if not (0.0 <= self.semantic_cache_min_similarity <= 1.0):
+            raise ValueError("SEMANTIC_CACHE_MIN_SIMILARITY must be between 0.0 and 1.0.")
+        if not (0.0 <= self.semantic_cache_min_margin <= 1.0):
+            raise ValueError("SEMANTIC_CACHE_MIN_MARGIN must be between 0.0 and 1.0.")
+        if self.semantic_cache_top_k < 1:
+            raise ValueError("SEMANTIC_CACHE_TOP_K must be at least 1.")
         if self.semantic_cache_enabled:
             if self.cache_backend != "postgres":
                 raise ValueError("SEMANTIC_CACHE_ENABLED requires CACHE_BACKEND='postgres'.")

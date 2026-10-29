@@ -25,6 +25,7 @@ from .fingerprinting import generate_fingerprint
 from .singleflight import SingleFlightCoordinator
 from ..cache.interfaces import BaseCache, CacheEntry
 from ..providers.interfaces import LLMProvider
+from ..semantic_cache.interfaces import BaseSemanticCache
 
 
 class IntelliCacheCore:
@@ -38,10 +39,12 @@ class IntelliCacheCore:
         cache: BaseCache,
         single_flight: Optional[SingleFlightCoordinator] = None,
         cache_enabled: bool = True,
+        semantic_cache: Optional[BaseSemanticCache] = None,
     ):
         self.cache = cache
         self.single_flight = single_flight or SingleFlightCoordinator()
         self.cache_enabled = cache_enabled
+        self.semantic_cache = semantic_cache
 
     async def execute_query(
         self,
@@ -49,16 +52,19 @@ class IntelliCacheCore:
         provider: LLMProvider,
     ) -> GenerationResult:
         """
-        Executes a non-streaming query request using exact-match caching.
+        Executes a non-streaming query request using exact and semantic caching.
         1. Generates deterministic SHA-256 fingerprint.
-        2. Checks cache (skipped if bypass_cache=True or cache_enabled=False).
-        3. If hit: returns cached result immediately without calling provider.
-        4. If miss and not bypassed: coordinates in-flight requests via single-flight.
-        5. Caches successful completed responses. Never caches failures.
+        2. Checks exact cache (skipped if bypass_cache=True or cache_enabled=False).
+        3. If exact hit: returns cached result immediately without calling provider.
+        4. Coordinates in-flight requests via single-flight.
+        5. If leader and semantic cache enabled: performs semantic lookup.
+        6. If semantic hit: completes single-flight for followers and returns cached result.
+        7. If semantic miss: calls configured LLM provider.
+        8. Writes exact-cache entry first, then indexes vector record if semantic cache enabled.
         """
         start_time = time.perf_counter()
 
-        # PRE-02: Consistent model identity across fingerprint and generation
+        # Consistent model identity across fingerprint and generation
         fingerprint = generate_fingerprint(
             messages=request.messages,
             model=request.model,
@@ -67,7 +73,7 @@ class IntelliCacheCore:
             provider=request.provider,
         )
 
-        # 1. Cache Read
+        # 1. Exact Cache Read
         if self.cache_enabled and not request.bypass_cache:
             cached_entry = await self.cache.get(fingerprint, namespace=request.namespace)
             if cached_entry is not None:
@@ -81,6 +87,7 @@ class IntelliCacheCore:
                     cache_hit_count=cached_entry.hit_count,
                     fingerprint=fingerprint,
                     metadata=request.metadata,
+                    cache_type="exact",
                 )
 
         # 2. Strict Bypass Semantics
@@ -89,20 +96,22 @@ class IntelliCacheCore:
             result = await provider.generate(request)
             result.fingerprint = fingerprint
             result.metadata = request.metadata
+            result.cache_type = "none"
             return result
 
         # 3. Single-Flight Coordination
         is_leader, shared_future = await self.single_flight.register_or_wait(fingerprint)
 
         if not is_leader:
-            # PRE-01: Follower joined in-flight work -> record join immediately
+            # Follower joined in-flight work -> record join immediately
             await self.cache.record_coalesced_join()
             try:
                 # Follower awaits leader's shielded future so follower cancellation cannot cancel leader
                 cached_entry: CacheEntry = await asyncio.shield(shared_future)
                 latency_ms = (time.perf_counter() - start_time) * 1000.0
-                # PRE-01: Record successful reuse for tokens and latency saved
+                # Record successful reuse for tokens and latency saved
                 await self.cache.record_coalesced_success(cached_entry)
+                cache_type = cached_entry.metadata.get("cache_type", "exact")
                 return GenerationResult(
                     text=cached_entry.response,
                     model=cached_entry.model,
@@ -112,6 +121,7 @@ class IntelliCacheCore:
                     cache_hit_count=cached_entry.hit_count,
                     fingerprint=fingerprint,
                     metadata=request.metadata,
+                    cache_type=cache_type,
                 )
             except asyncio.CancelledError:
                 # Follower cancelled - leader continues unhindered
@@ -120,21 +130,63 @@ class IntelliCacheCore:
                 # Leader failed - error propagated to follower, follower already counted in coalesced_requests
                 raise
 
-        # Leader: record miss and execute provider generation
+        # 4. Leader: Semantic Cache Lookup (if enabled)
+        if self.semantic_cache is not None:
+            semantic_hit = await self.semantic_cache.lookup(request)
+            if semantic_hit is not None:
+                latency_ms = (time.perf_counter() - start_time) * 1000.0
+                hit_entry = CacheEntry(
+                    response=semantic_hit.cached_response,
+                    model=request.model,
+                    usage=UsageMetrics(),
+                    latency_ms=round(latency_ms, 2),
+                    provider=request.provider,
+                    metadata={
+                        "cache_type": "semantic",
+                        "candidate_fingerprint": semantic_hit.fingerprint,
+                    },
+                )
+                # Complete single-flight for followers with the semantic hit entry
+                # Do not write semantic hit under a new exact fingerprint (Rule 8)
+                await self.single_flight.complete_success(fingerprint, hit_entry)
+                return GenerationResult(
+                    text=semantic_hit.cached_response,
+                    model=request.model,
+                    usage=UsageMetrics(),
+                    latency_ms=round(latency_ms, 2),
+                    cached=True,
+                    cache_hit_count=1,
+                    fingerprint=fingerprint,
+                    metadata=request.metadata,
+                    cache_type="semantic",
+                )
+
+        # 5. Leader: Semantic miss or disabled -> call provider
         await self.cache.record_miss()
         try:
             result = await provider.generate(request)
             result.fingerprint = fingerprint
             result.metadata = request.metadata
+            result.cache_type = "none"
+
+            # 6. Write exact-cache entry first
             entry = CacheEntry(
                 response=result.text,
                 model=result.model,
                 usage=result.usage,
                 latency_ms=result.latency_ms,
                 provider=request.provider,
+                metadata={"cache_type": "exact"},
             )
             await self.cache.set(fingerprint, entry, namespace=request.namespace)
+
+            # Complete single-flight for followers
             await self.single_flight.complete_success(fingerprint, entry)
+
+            # 7. Post-generation: index in vector store if semantic cache enabled
+            if self.semantic_cache is not None:
+                await self.semantic_cache.index(request, result)
+
             return result
         except BaseException as exc:
             await self.single_flight.complete_failure(fingerprint, exc)
@@ -169,6 +221,7 @@ class IntelliCacheCore:
                     delta=cached_entry.response,
                     done=False,
                     cached=True,
+                    cache_type="exact",
                     fingerprint=fingerprint,
                     model=cached_entry.model,
                 )
@@ -176,6 +229,7 @@ class IntelliCacheCore:
                     delta="",
                     done=True,
                     cached=True,
+                    cache_type="exact",
                     fingerprint=fingerprint,
                     model=cached_entry.model,
                     usage=cached_entry.usage,

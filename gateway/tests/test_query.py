@@ -582,6 +582,32 @@ class TestQueryRoute(unittest.TestCase):
         self.assertNotIn("gsk_fakeKey999", resp.text)
         self.assertIn("Rate Limit Exceeded", resp.json()["detail"])
 
+    def test_query_response_cache_type_field(self):
+        """Verify API response contains cache_type='none' on miss and 'exact' on hit."""
+        # First query: miss -> cache_type = 'none'
+        resp1 = self.client.post("/query", json={"prompt": "Explain merge sort in Python"})
+        self.assertEqual(resp1.status_code, 200)
+        data1 = resp1.json()
+        self.assertFalse(data1["cached"])
+        self.assertEqual(data1["cache_type"], "none")
+
+        # Second query: exact hit -> cache_type = 'exact'
+        resp2 = self.client.post("/query", json={"prompt": "Explain merge sort in Python"})
+        self.assertEqual(resp2.status_code, 200)
+        data2 = resp2.json()
+        self.assertTrue(data2["cached"])
+        self.assertEqual(data2["cache_type"], "exact")
+
+    def test_semantic_stats_endpoint(self):
+        """Verify GET /cache/semantic/stats returns counter structure."""
+        resp = self.client.get("/cache/semantic/stats")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertIn("lookups", data)
+        self.assertIn("hits", data)
+        self.assertIn("misses", data)
+        self.assertIn("indexing_successes", data)
+
     # -----------------------------------------------------------------------
     # 8. TTL Expiration & LRU Eviction Tests
     # -----------------------------------------------------------------------
