@@ -14,7 +14,13 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
 from app.config import Settings, get_settings
-from app.routes.query import CacheStats, QueryCache, get_query_cache, router as query_router
+from app.routes.query import (
+    CacheStats,
+    QueryCache,
+    get_query_cache,
+    router as query_router,
+    verify_admin_token,
+)
 
 # Configure logger
 logging.basicConfig(
@@ -124,11 +130,16 @@ def create_app() -> FastAPI:
         """Global cache performance statistics endpoint."""
         return cache.stats(enabled=current_settings.cache_enabled)
 
-    @app.post("/cache/clear", tags=["Cache"], summary="Global Cache Purge")
+    @app.post(
+        "/cache/clear",
+        dependencies=[Depends(verify_admin_token)],
+        tags=["Cache"],
+        summary="Global Cache Purge",
+    )
     async def global_cache_clear(
         cache: QueryCache = Depends(get_query_cache),
     ) -> Dict[str, Any]:
-        """Purge all entries from the query cache."""
+        """Purge all entries from the query cache. Requires administrative token."""
         cache.clear()
         return {"status": "ok", "message": "Global query cache purged successfully."}
 
