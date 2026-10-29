@@ -114,10 +114,32 @@ class Settings(BaseModel):
         default_factory=lambda: int(os.getenv("MAX_MESSAGE_CHARS", "131072"))
     )
 
+    # Embedding Configuration
+    embedding_provider: str = Field(
+        default_factory=lambda: os.getenv("EMBEDDING_PROVIDER", "ollama").lower().strip()
+    )
+    embedding_model: str = Field(
+        default_factory=lambda: os.getenv("EMBEDDING_MODEL", "nomic-embed-text").strip()
+    )
+    embedding_base_url: str = Field(
+        default_factory=lambda: os.getenv("EMBEDDING_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
+    )
+    embedding_timeout_seconds: float = Field(
+        default_factory=lambda: float(os.getenv("EMBEDDING_TIMEOUT_SECONDS", "30.0"))
+    )
+
     @model_validator(mode="after")
     def validate_database_config(self) -> "Settings":
         if self.cache_backend == "postgres" and not self.database_url:
             raise ValueError("DATABASE_URL must be configured when CACHE_BACKEND='postgres'.")
+        return self
+
+    @model_validator(mode="after")
+    def validate_embedding_config(self) -> "Settings":
+        if self.embedding_timeout_seconds <= 0:
+            raise ValueError("EMBEDDING_TIMEOUT_SECONDS must be positive.")
+        if not (self.embedding_base_url.startswith("http://") or self.embedding_base_url.startswith("https://")):
+            raise ValueError("EMBEDDING_BASE_URL must be a valid HTTP or HTTPS URL.")
         return self
 
 

@@ -32,6 +32,13 @@ gateway/
 │   │   ├── interfaces.py     # LLMProvider abstract interface (generate, stream, close)
 │   │   ├── factory.py        # ProviderFactory registry (LLM_PROVIDER selection)
 │   │   └── groq_adapter.py   # Groq SDK adapter (isolated AsyncGroq mapping & lifecycle)
+│   ├── embeddings/           # Provider-independent vector embeddings layer
+│   │   ├── __init__.py
+│   │   ├── contracts.py      # EmbeddingResult and EmbeddingTask definitions
+│   │   ├── errors.py         # Embedding error hierarchy
+│   │   ├── interfaces.py     # EmbeddingProvider abstract interface
+│   │   ├── ollama_adapter.py # Ollama embedding adapter with Nomic retrieval prefixes
+│   │   └── factory.py        # EmbeddingProviderFactory
 │   ├── routes/               # Backward compatibility facade for query routes
 │   │   ├── __init__.py
 │   │   └── query.py
@@ -42,6 +49,7 @@ gateway/
 ├── tests/
 │   ├── test_core.py          # Core orchestration tests using pure FakeProvider & AST import boundary tests
 │   ├── test_providers.py     # Groq adapter, client closure, and ProviderFactory tests
+│   ├── test_embeddings.py    # Embedding contracts, Ollama adapter, prefixes, error tests
 │   ├── test_query.py         # API route integration tests, streaming SSE, and exact caching
 │   ├── test_multi_client.py  # Multi-client auth, namespace isolation, and PostgreSQL persistence tests
 │   ├── test_config.py        # Settings validation, env overrides, and payload limits
@@ -201,6 +209,12 @@ MAX_PROMPT_CHARS=131072
 MAX_SYSTEM_PROMPT_CHARS=65536
 MAX_MESSAGES_COUNT=100
 MAX_MESSAGE_CHARS=131072
+
+# Embedding Configuration (Optional - prepares for future semantic retrieval)
+EMBEDDING_PROVIDER=ollama
+EMBEDDING_MODEL=nomic-embed-text
+EMBEDDING_BASE_URL=http://127.0.0.1:11434
+EMBEDDING_TIMEOUT_SECONDS=30.0
 ```
 
 ### Security Considerations
@@ -210,6 +224,26 @@ MAX_MESSAGE_CHARS=131072
 - **Network Exposure**: By default, the gateway binds to `127.0.0.1` (localhost) rather than `0.0.0.0` to avoid unintentionally exposing endpoints to the local network or container host interfaces.
 - **Secret & Path Redaction**: Upstream error messages and logs automatically redact Groq API keys (`gsk_***`), Bearer tokens, absolute filesystem paths (`<redacted_path>`), and IP addresses (`<redacted_ip>`).
 - **Payload Size Limits**: Inbound payload character limits protect gateway memory against denial-of-service payloads.
+
+---
+
+## Embedding Layer & Ollama Setup
+
+IntelliCache includes a provider-independent embedding abstraction in `gateway/app/embeddings/` designed for future semantic retrieval. The embedding layer defines the `EmbeddingProvider` interface and normalizes outputs into `EmbeddingResult` vectors while validating dimensionality and finite numeric values.
+
+### Local Ollama Setup:
+1. **Install Ollama**: Follow instructions for your platform at [ollama.com](https://ollama.com).
+2. **Download Model**: Pull the recommended Nomic Embed Text model:
+   ```bash
+   ollama pull nomic-embed-text
+   ```
+3. **Verify Local Service**: Confirm the embedding endpoint is responsive:
+   ```bash
+   curl http://127.0.0.1:11434/api/embed -d '{"model": "nomic-embed-text", "input": "test embedding"}'
+   ```
+4. **Asymmetric Task Prefixes**:
+   Nomic models require asymmetric task prefixes: `search_query: ` for search queries and `search_document: ` for stored documents. The `OllamaEmbeddingProvider` automatically encapsulates and formats these prefixes according to the requested task (`task="query"` vs `task="document"`).
+5. **Zero Test Dependency**: Ollama is **not** required to be running for standard unit testing or gateway execution. Gateway unit tests mock the HTTP transport.
 
 ---
 
@@ -239,6 +273,7 @@ To run individual test modules:
 ```bash
 python -m unittest tests/test_core.py          # Core orchestration & AST boundary tests
 python -m unittest tests/test_providers.py     # Groq adapter & provider factory tests
+python -m unittest tests/test_embeddings.py    # Embedding contracts, Ollama adapter, prefixes
 python -m unittest tests/test_query.py         # API route & streaming tests
 python -m unittest tests/test_multi_client.py  # Multi-client auth, namespaces & PostgreSQL tests
 python -m unittest tests/test_config.py        # Configuration tests
@@ -250,8 +285,8 @@ python -m unittest tests/test_main.py          # Application integration tests
 ## Current Scope & Future Architectural Boundaries
 
 The following capabilities represent intentional architectural boundaries for future steps:
-- **Current Scope**: Exact-match SHA-256 caching, in-memory LRU/TTL storage, cancellation-safe single flight for non-streaming requests, and the Groq provider adapter.
-- **Embedding Provider**: Future embedding models will implement a separate `EmbeddingProvider` interface distinct from `LLMProvider`.
-- **Semantic Cache**: Future semantic retrieval will be introduced as an independent cache layer with similarity scoring and safety guardrails.
+- **Current Scope**: Exact-match SHA-256 caching, centralized PostgreSQL storage, in-memory LRU/TTL storage, cancellation-safe single flight for non-streaming requests, Groq LLM provider adapter, and the provider-independent `EmbeddingProvider` abstraction (with `OllamaEmbeddingProvider`).
+- **Vector Storage & pgvector**: Vector database schema migrations (`pgvector`) and persistent vector indexing are deferred to the semantic caching phase.
+- **Semantic Cache Engine**: Semantic similarity retrieval, similarity thresholding, and cache hits will be introduced as an independent layer built on top of the embedding provider.
 - **Conversation Manager**: Multi-turn conversation persistence will record every delivered prompt, response, and provenance trace in a persistent store.
 - **Demonstration Chatbot**: The web UI chatbot will consume the stable public REST API (`POST /query`).
