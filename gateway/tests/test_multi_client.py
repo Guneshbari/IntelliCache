@@ -232,31 +232,74 @@ class TestMultiClientSharingAndNamespaces(unittest.TestCase):
         asyncio.run(run_isolation())
 
 
+def _redact_db_url(url: str) -> str:
+    """Removes user credentials from a database URL for safe reporting."""
+    try:
+        from urllib.parse import urlsplit, urlunsplit
+        parsed = urlsplit(url)
+        if parsed.username or parsed.password:
+            netloc = parsed.hostname or ""
+            if parsed.port:
+                netloc = f"{netloc}:{parsed.port}"
+            return urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment))
+        return url
+    except Exception:
+        return "<redacted_database_url>"
+
+
 class TestPostgresCentralStorage(unittest.IsolatedAsyncioTestCase):
     """
     Tests persistent PostgreSQL exact-cache implementation.
     Uses TEST_DATABASE_URL environment variable if set, or defaults to local PostgreSQL.
-    Skips cleanly if PostgreSQL is unavailable.
+    Skips cleanly if default local PostgreSQL is unavailable, but fails if TEST_DATABASE_URL was explicitly provided.
     """
 
     async def asyncSetUp(self):
-        self.db_url = os.getenv(
-            "TEST_DATABASE_URL",
-            "postgresql://postgres@localhost:5432/intellicache_test",
-        )
+        explicit_url = os.getenv("TEST_DATABASE_URL")
+        self.is_explicit_url = explicit_url is not None
+        self.db_url = explicit_url or "postgresql://postgres@localhost:5432/intellicache_test"
+        safe_url = _redact_db_url(self.db_url)
+
+        # Safety check: ensure tests only run against a database containing 'test'
+        from urllib.parse import urlsplit
+        parsed = urlsplit(self.db_url)
+        db_name = (parsed.path or "").lstrip("/")
+        if "test" not in db_name.lower():
+            raise ValueError(
+                f"Safety check failed: Refusing to run tests against database '{db_name}'. "
+                "Integration test database name must contain 'test' to prevent modifying non-test databases."
+            )
+
         try:
-            self.pool = await asyncpg.create_pool(self.db_url, min_size=1, max_size=5)
+            self.pool = await asyncpg.create_pool(self.db_url, min_size=1, max_size=10)
             await run_migrations(self.pool)
             self.store_a = PostgresCache(self.pool, max_entries=5, ttl_seconds=3600, default_namespace="test_ns_a")
             self.store_b = PostgresCache(self.pool, max_entries=5, ttl_seconds=3600, default_namespace="test_ns_a")
             self.store_other_ns = PostgresCache(self.pool, max_entries=5, ttl_seconds=3600, default_namespace="test_ns_b")
             await self.store_a.clear()
+            await self.store_other_ns.clear()
         except Exception as e:
-            self.skipTest(f"PostgreSQL test database unavailable at {self.db_url}: {e}")
+            redacted_err = str(e)
+            if parsed.password and parsed.password in redacted_err:
+                redacted_err = redacted_err.replace(parsed.password, "***")
+            if parsed.username and parsed.username in redacted_err:
+                redacted_err = redacted_err.replace(parsed.username, "***")
+
+            if self.is_explicit_url:
+                self.fail(
+                    f"PostgreSQL integration test setup failed for explicitly configured "
+                    f"TEST_DATABASE_URL ({safe_url}): {redacted_err}"
+                )
+            else:
+                self.skipTest(
+                    f"Default local PostgreSQL test database unavailable at {safe_url}: {redacted_err}"
+                )
 
     async def asyncTearDown(self):
         if hasattr(self, "store_a"):
             await self.store_a.clear()
+        if hasattr(self, "store_other_ns"):
+            await self.store_other_ns.clear()
         if hasattr(self, "pool"):
             await self.pool.close()
 
@@ -343,3 +386,115 @@ class TestPostgresCentralStorage(unittest.IsolatedAsyncioTestCase):
         # Must return None on retrieval
         expired_result = await short_ttl_store.get("fp_expire")
         self.assertIsNone(expired_result)
+
+    async def test_provider_metadata_persistence_and_retrieval(self):
+        """Verify provider metadata is saved, retrieved, and updated on conflict in PostgreSQL."""
+        entry = CacheEntry(
+            response="Anthropic Response",
+            model="claude-3-5-sonnet",
+            usage=UsageMetrics(10, 20, 30),
+            latency_ms=35.0,
+            provider="anthropic",
+        )
+        await self.store_a.set("provider_fp", entry)
+
+        retrieved = await self.store_b.get("provider_fp")
+        self.assertIsNotNone(retrieved)
+        self.assertEqual(retrieved.provider, "anthropic")
+        self.assertEqual(retrieved.model, "claude-3-5-sonnet")
+        self.assertEqual(retrieved.response, "Anthropic Response")
+
+        # Update entry with a different provider and verify conflict update saves new provider
+        entry_updated = CacheEntry(
+            response="Updated Groq Response",
+            model="qwen/qwen3.8-27b",
+            usage=UsageMetrics(15, 25, 40),
+            latency_ms=25.0,
+            provider="groq",
+        )
+        await self.store_a.set("provider_fp", entry_updated)
+
+        retrieved_updated = await self.store_b.get("provider_fp")
+        self.assertIsNotNone(retrieved_updated)
+        self.assertEqual(retrieved_updated.provider, "groq")
+        self.assertEqual(retrieved_updated.response, "Updated Groq Response")
+
+    async def test_concurrent_writes_capacity_enforcement(self):
+        """Concurrently inserting many distinct fingerprints into a small cache never exceeds max_entries."""
+        small_store = PostgresCache(
+            self.pool,
+            max_entries=5,
+            ttl_seconds=3600,
+            default_namespace="test_concurrent_cap",
+        )
+        await small_store.clear()
+
+        # Insert 30 distinct keys concurrently across 30 tasks
+        tasks = [
+            small_store.set(
+                f"fp_concurrent_{i}",
+                CacheEntry(f"Response {i}", "model", UsageMetrics(), 10.0),
+            )
+            for i in range(30)
+        ]
+        await asyncio.gather(*tasks)
+
+        # Database count must strictly equal max_entries (5)
+        async with self.pool.acquire() as conn:
+            count = await conn.fetchval(
+                "SELECT COUNT(*) FROM cache_entries WHERE cache_namespace = $1",
+                "test_concurrent_cap",
+            )
+        self.assertEqual(count, 5)
+
+        stats = await small_store.stats(namespace="test_concurrent_cap")
+        self.assertEqual(stats.total_entries, 5)
+        await small_store.clear()
+
+    async def test_independent_namespace_concurrency(self):
+        """Concurrent writes into separate namespaces execute independently and maintain isolated caps."""
+        store_x = PostgresCache(self.pool, max_entries=4, ttl_seconds=3600, default_namespace="test_ns_x")
+        store_y = PostgresCache(self.pool, max_entries=4, ttl_seconds=3600, default_namespace="test_ns_y")
+        await store_x.clear()
+        await store_y.clear()
+
+        # Concurrently write 10 entries to ns_x and 10 to ns_y
+        tasks_x = [
+            store_x.set(f"fp_x_{i}", CacheEntry(f"X {i}", "model", UsageMetrics(), 1.0))
+            for i in range(10)
+        ]
+        tasks_y = [
+            store_y.set(f"fp_y_{i}", CacheEntry(f"Y {i}", "model", UsageMetrics(), 1.0))
+            for i in range(10)
+        ]
+        await asyncio.gather(*tasks_x, *tasks_y)
+
+        stats_x = await store_x.stats(namespace="test_ns_x")
+        stats_y = await store_y.stats(namespace="test_ns_y")
+        self.assertEqual(stats_x.total_entries, 4)
+        self.assertEqual(stats_y.total_entries, 4)
+
+        await store_x.clear()
+        await store_y.clear()
+
+    async def test_cache_clear_scoped_to_namespace_in_postgres(self):
+        """Clearing one namespace in PostgreSQL does not delete entries from other namespaces."""
+        entry_a = CacheEntry("Answer A", "model", UsageMetrics(), 5.0)
+        entry_b = CacheEntry("Answer B", "model", UsageMetrics(), 5.0)
+
+        await self.store_a.set("fp_a", entry_a)
+        await self.store_other_ns.set("fp_b", entry_b)
+
+        # Both entries exist
+        self.assertIsNotNone(await self.store_a.get("fp_a"))
+        self.assertIsNotNone(await self.store_other_ns.get("fp_b"))
+
+        # Clear only test_ns_a
+        await self.store_a.clear(namespace="test_ns_a")
+
+        # test_ns_a is cleared
+        self.assertIsNone(await self.store_a.get("fp_a"))
+        # test_ns_b is preserved
+        res_b = await self.store_other_ns.get("fp_b")
+        self.assertIsNotNone(res_b)
+        self.assertEqual(res_b.response, "Answer B")

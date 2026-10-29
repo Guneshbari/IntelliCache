@@ -14,6 +14,7 @@ class CacheEntry:
     __slots__ = (
         "response",
         "model",
+        "provider",
         "usage",
         "created_at",
         "last_accessed",
@@ -29,9 +30,11 @@ class CacheEntry:
         usage: Any,
         latency_ms: float,
         metadata: Optional[Dict[str, Any]] = None,
+        provider: Optional[str] = None,
     ):
         self.response = response
         self.model = model
+        self.provider = provider
         self.usage = usage
         self.created_at = time.time()
         self.last_accessed = self.created_at

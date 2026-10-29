@@ -19,8 +19,8 @@ class TestMainEndpoints(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app)
         reload_settings()
-        cache = get_query_cache()
-        asyncio.run(cache.clear())
+        self.cache = get_query_cache()
+        asyncio.run(self.cache.clear())
 
     def test_root_endpoint(self):
         """Verify root endpoint returns metadata and online status."""
@@ -77,11 +77,45 @@ class TestMainEndpoints(unittest.TestCase):
             resp_valid = self.client.post("/cache/clear", headers={"X-Admin-Token": "secret-adm-pass-123"})
             self.assertEqual(resp_valid.status_code, 200)
             self.assertEqual(resp_valid.json()["status"], "ok")
+            self.assertIn("default", resp_valid.json()["message"])
+            self.assertEqual(resp_valid.json()["namespace"], "default")
 
             # 4. Valid Bearer Authorization token -> 200
             resp_bearer = self.client.post("/cache/clear", headers={"Authorization": "Bearer secret-adm-pass-123"})
             self.assertEqual(resp_bearer.status_code, 200)
             self.assertEqual(resp_bearer.json()["status"], "ok")
+            self.assertEqual(resp_bearer.json()["namespace"], "default")
+
+    def test_cache_clear_scopes_strictly_to_configured_namespace(self):
+        """Verify /cache/clear only purges the server-configured namespace and preserves others."""
+        from app.cache.interfaces import CacheEntry
+        from app.core.contracts import UsageMetrics
+
+        with patch.dict(os.environ, {
+            "ADMIN_API_TOKEN": "secret-adm-pass-123",
+            "CACHE_NAMESPACE": "finance",
+        }, clear=False):
+            reload_settings()
+
+            # Seed entries in two separate namespaces
+            entry_fin = CacheEntry("Finance Data", "model", UsageMetrics(), 10.0)
+            entry_hr = CacheEntry("HR Data", "model", UsageMetrics(), 10.0)
+            asyncio.run(self.cache.set("fin_fp", entry_fin, namespace="finance"))
+            asyncio.run(self.cache.set("hr_fp", entry_hr, namespace="hr"))
+
+            # Clear cache via admin endpoint
+            resp = self.client.post("/cache/clear", headers={"X-Admin-Token": "secret-adm-pass-123"})
+            self.assertEqual(resp.status_code, 200)
+            data = resp.json()
+            self.assertEqual(data["status"], "ok")
+            self.assertEqual(data["namespace"], "finance")
+            self.assertIn("finance", data["message"])
+
+            # Verify 'finance' is cleared, but 'hr' is intact
+            self.assertIsNone(asyncio.run(self.cache.get("fin_fp", namespace="finance")))
+            res_hr = asyncio.run(self.cache.get("hr_fp", namespace="hr"))
+            self.assertIsNotNone(res_hr)
+            self.assertEqual(res_hr.response, "HR Data")
 
     def test_openapi_docs_accessible(self):
         """Verify Swagger OpenAPI documentation is accessible."""

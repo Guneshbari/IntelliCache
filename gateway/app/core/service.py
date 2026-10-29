@@ -131,6 +131,7 @@ class IntelliCacheCore:
                 model=result.model,
                 usage=result.usage,
                 latency_ms=result.latency_ms,
+                provider=request.provider,
             )
             await self.cache.set(fingerprint, entry, namespace=request.namespace)
             await self.single_flight.complete_success(fingerprint, entry)
@@ -211,6 +212,7 @@ class IntelliCacheCore:
                             model=chunk.model or request.model,
                             usage=chunk.usage or UsageMetrics(),
                             latency_ms=round(elapsed_ms, 2),
+                            provider=request.provider,
                         )
                         await self.cache.set(fingerprint, entry, namespace=request.namespace)
 

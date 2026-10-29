@@ -209,15 +209,20 @@ def create_app() -> FastAPI:
         "/cache/clear",
         dependencies=[Depends(verify_admin_token)],
         tags=["Cache"],
-        summary="Global Cache Purge",
+        summary="Clear Configured Cache Namespace",
     )
-    async def global_cache_clear(
+    async def clear_cache_namespace(
         current_settings: Settings = Depends(get_settings),
         cache: BaseCache = Depends(get_query_cache),
     ) -> Dict[str, Any]:
-        """Purge all entries from the query cache. Requires administrative token."""
-        await cache.clear(namespace=None)
-        return {"status": "ok", "message": "Global query cache purged successfully."}
+        """Purge entries from the server-configured cache namespace. Requires administrative token."""
+        target_ns = current_settings.cache_namespace
+        await cache.clear(namespace=target_ns)
+        return {
+            "status": "ok",
+            "message": f"Query cache namespace '{target_ns}' cleared successfully.",
+            "namespace": target_ns,
+        }
 
     return app
 

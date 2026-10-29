@@ -147,6 +147,24 @@ class TestIntelliCacheCoreOrchestration(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stats.misses, 1)
         self.assertEqual(stats.total_requests, 2)
 
+    async def test_provider_metadata_populated_on_cache_entry(self):
+        """Verify that CacheEntry created by core stores the request provider."""
+        provider = FakeProvider(response_text="Provider specific answer")
+        req = GenerationRequest(
+            model="custom-engine",
+            messages=[ChatMessage(role="user", content="Test provider metadata")],
+            provider="anthropic",
+            namespace="provider_ns",
+        )
+
+        res = await self.core.execute_query(req, provider)
+        self.assertEqual(res.text, "Provider specific answer")
+
+        entry = await self.cache.get(res.fingerprint, namespace="provider_ns")
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry.provider, "anthropic")
+        self.assertEqual(entry.model, "custom-engine")
+
     async def test_strict_bypass_semantics(self):
         provider = FakeProvider(response_text="Live Answer")
         req = GenerationRequest(

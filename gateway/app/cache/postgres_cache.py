@@ -4,6 +4,7 @@ Supports multi-client sharing, namespace isolation, bounded capacity, and LRU ev
 """
 
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 import logging
 from typing import Any, Dict, Optional
@@ -14,6 +15,12 @@ from .interfaces import BaseCache, CacheEntry, CacheStats
 from ..core.contracts import UsageMetrics
 
 logger = logging.getLogger("intellicache.gateway.postgres_cache")
+
+
+def _namespace_to_lock_id(namespace: str) -> int:
+    """Computes a deterministic 64-bit signed integer for PostgreSQL advisory locking."""
+    digest = hashlib.sha256(f"intellicache:ns:{namespace}".encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], byteorder="big", signed=True)
 
 
 class PostgresCache(BaseCache):
@@ -48,7 +55,7 @@ class PostgresCache(BaseCache):
         """
         ns = (namespace or self.default_namespace).strip()
         query = """
-            SELECT id, response, model, prompt_tokens, completion_tokens, total_tokens,
+            SELECT id, response, model, provider, prompt_tokens, completion_tokens, total_tokens,
                    latency_ms, hit_count, metadata, created_at, expires_at
             FROM cache_entries
             WHERE cache_namespace = $1 AND fingerprint = $2
@@ -107,6 +114,7 @@ class PostgresCache(BaseCache):
             usage=usage,
             latency_ms=latency,
             metadata=metadata,
+            provider=row["provider"],
         )
         entry.hit_count = row["hit_count"] + 1
         created = row["created_at"]
@@ -130,6 +138,7 @@ class PostgresCache(BaseCache):
         prompt_toks = getattr(entry.usage, "prompt_tokens", 0) or 0
         comp_toks = getattr(entry.usage, "completion_tokens", 0) or 0
         tot_toks = getattr(entry.usage, "total_tokens", 0) or 0
+        provider_name = (entry.provider or "groq").strip()
 
         upsert_query = """
             INSERT INTO cache_entries (
@@ -144,6 +153,7 @@ class PostgresCache(BaseCache):
             ON CONFLICT (cache_namespace, fingerprint) DO UPDATE SET
                 response = EXCLUDED.response,
                 model = EXCLUDED.model,
+                provider = EXCLUDED.provider,
                 prompt_tokens = EXCLUDED.prompt_tokens,
                 completion_tokens = EXCLUDED.completion_tokens,
                 total_tokens = EXCLUDED.total_tokens,
@@ -153,8 +163,12 @@ class PostgresCache(BaseCache):
                 expires_at = EXCLUDED.expires_at;
         """
 
+        lock_id = _namespace_to_lock_id(ns)
         async with self.pool.acquire() as conn:
             async with conn.transaction():
+                # Serialize upsert and capacity enforcement per namespace
+                await conn.execute("SELECT pg_advisory_xact_lock($1)", lock_id)
+
                 # 1. Conflict-safe upsert
                 await conn.execute(
                     upsert_query,
@@ -162,7 +176,7 @@ class PostgresCache(BaseCache):
                     key,
                     entry.response,
                     entry.model,
-                    "groq",
+                    provider_name,
                     prompt_toks,
                     comp_toks,
                     tot_toks,
@@ -174,9 +188,10 @@ class PostgresCache(BaseCache):
                     expires_at,
                 )
 
-                # 2. Evict expired entries
+                # 2. Evict expired entries in this namespace
                 await conn.execute(
-                    "DELETE FROM cache_entries WHERE expires_at IS NOT NULL AND expires_at <= NOW()"
+                    "DELETE FROM cache_entries WHERE cache_namespace = $1 AND expires_at IS NOT NULL AND expires_at <= NOW()",
+                    ns,
                 )
 
                 # 3. Bounded capacity check and LRU eviction for this namespace
