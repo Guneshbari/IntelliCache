@@ -110,10 +110,14 @@ describe('Diagnostic Instrumentation & Extraction Regression Tests', () => {
     `
 
     chatgptAdapter.start()
-    await chatgptAdapter.processConversation()
+
+    await vi.waitFor(async () => {
+      const interactions = await interactionRepo.getAll()
+      expect(interactions).toHaveLength(1)
+      expect(diagnosticStats.get('interactionsSaved')).toBe(1)
+    })
 
     const interactions = await interactionRepo.getAll()
-    expect(interactions).toHaveLength(1)
     const record = interactions[0]
 
     // Verify data contract integrity
