@@ -40,9 +40,22 @@ Benchmarks never fabricate similarities or assign arbitrary placeholder values. 
 - **Reporting Label**: `Real embedding provider in-memory evaluation`.
 - **Constraint**: Does not claim PostgreSQL pgvector disk index scan time was measured.
 
-### C. Optional PostgreSQL End-to-End Benchmark (`--benchmark-mode pgvector`)
-- **Requirement**: Dedicated test database with `pgvector` enabled (e.g. `postgresql://gnx@127.0.0.1:5433/intellicache_test`).
-- **Scope**: Writes vector records to PostgreSQL and executes `PostgresVectorStore.search()` using the `<=>` cosine distance index operator.
+### C. PostgreSQL / pgvector End-to-End Benchmark (`--benchmark-mode pgvector`)
+- **Provider**: Live `OllamaEmbeddingProvider` using configured model (e.g. `nomic-embed-text`).
+- **Database Requirement**: Dedicated test database specified via `TEST_DATABASE_URL` (e.g. `postgresql://gnx@127.0.0.1:5433/intellicache_test`).
+- **Safety Enforcement**:
+  - The database name in `TEST_DATABASE_URL` **must contain `test`**.
+  - Production `DATABASE_URL` is **never** used as a fallback.
+  - Automatically verifies that PostgreSQL is running and the `vector` extension is installed.
+  - Runs exact-cache (`001_create_cache_entries.sql`) and pgvector (`001_create_vector_records.sql`) migrations with runtime dimension checks.
+- **Foreign-Key Invariant**:
+  - Exact-cache entry inserted via `PostgresCache.set()` **first**.
+  - Vector record upserted via `PostgresVectorStore.upsert()` **second**.
+- **Scope**:
+  - Executes actual nearest-neighbour retrieval in PostgreSQL via `PostgresVectorStore.search()` using the `<=>` cosine distance index operator and exact-cache JOIN.
+  - Evaluates retrieved candidates through `SemanticCachePolicy.evaluate_candidates()`.
+  - Cleans up records in a `finally` block using namespace-scoped deletion (`vector_store.clear(case_ns)` and `cache.clear(case_ns)`). Never truncates or drops tables.
+- **Reporting Label**: `Real Ollama embeddings with PostgreSQL/pgvector retrieval`.
 
 ---
 
@@ -94,3 +107,61 @@ flowchart LR
 - **Safe Tokens Saved**: Sum of `total_tokens` for $TP$ cases only.
 - **Hazardous Tokens Served**: Sum of `total_tokens` for $FP$ cases (reported separately; **never** claimed as savings).
 - **Zero-Defect Status**: A configuration is labeled zero-defect **only** if $FP = 0$ on the evaluated partition. When $FP > 0$, the report clearly states that false positives occurred.
+
+---
+
+## 6. Latency Metrics Breakdown
+
+In `--benchmark-mode pgvector`, operations are measured independently across measured samples:
+
+| Measurement | Scope | Includes LLM Generation? |
+| :--- | :--- | :--- |
+| **Candidate Indexing Latency** | One-time setup: Document embedding + `PostgresCache.set()` + `PostgresVectorStore.upsert()` | No |
+| **Query Embedding Latency** | HTTP request to Ollama for `EmbeddingTask.QUERY` | No |
+| **PostgreSQL Retrieval Latency** | pgvector `<=>` index scan, filtering by model/namespace, and `cache_entries` JOIN | No |
+| **Policy Evaluation Latency** | Threshold, margin, model identity, and parameter compatibility checks | No |
+| **Semantic Lookup Latency** | Query Embedding + PostgreSQL Retrieval + Policy Evaluation | No |
+
+All latencies report `min`, `mean`, `median (p50)`, `p95`, and `p99`.
+
+> [!NOTE]
+> Semantic lookup latency measures the cost of a cache hit or miss determination. It **does not** include Groq or upstream LLM generation latency.
+
+---
+
+## 7. Example CLI Commands
+
+```bash
+# 1. Offline mock evaluation on development split
+python scripts/evaluate_semantic_cache.py --dataset evaluation/dataset.json --split development
+
+# 2. Offline mock evaluation on held-out test split
+python scripts/evaluate_semantic_cache.py --dataset evaluation/dataset.json --split test
+
+# 3. Development-only parameter grid sweep
+python scripts/evaluate_semantic_cache.py --sweep
+
+# 4. Offline synthetic component latency benchmark
+python scripts/evaluate_semantic_cache.py --benchmark --benchmark-mode component --iterations 10
+
+# 5. Real embedding in-memory evaluation (requires Ollama)
+python scripts/evaluate_semantic_cache.py --provider ollama --model nomic-embed-text --benchmark-mode real
+
+# 6. Real Ollama + PostgreSQL/pgvector end-to-end evaluation and benchmarking
+export TEST_DATABASE_URL="postgresql://gnx@127.0.0.1:5433/intellicache_test"
+python scripts/evaluate_semantic_cache.py \
+    --provider ollama \
+    --model nomic-embed-text \
+    --benchmark-mode pgvector \
+    --benchmark \
+    --iterations 5
+```
+
+---
+
+## 8. Known Evaluation Limitations
+
+1. **Synthetic Pilot Dataset**: The 114 dataset cases are carefully curated synthetic questions representing positive paraphrases and hard negatives. While structurally rigorous, they do not replace evaluation on production user traffic.
+2. **Single-Turn Scope**: The current policy and dataset target single-turn programming and technical inquiries. Multi-turn conversational history is not evaluated in this step.
+3. **Hardware Sensitivity**: Latency numbers for Ollama embeddings depend on CPU/GPU hardware. Measurements on development machines reflect local performance and should not be quoted as cloud production SLAs.
+4. **Zero-Defect Status**: Zero defects on the 57-case test set indicates promising discrimination for tested patterns, but does not guarantee zero false positives across arbitrary unbounded natural language inputs.

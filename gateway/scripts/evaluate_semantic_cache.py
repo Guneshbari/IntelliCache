@@ -37,6 +37,9 @@ import re
 import sys
 import time
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+from urllib.parse import urlsplit, urlunsplit
+
+import asyncpg
 
 # Ensure gateway package root is in sys.path
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -44,13 +47,33 @@ GATEWAY_ROOT = SCRIPT_DIR.parent
 if str(GATEWAY_ROOT) not in sys.path:
     sys.path.insert(0, str(GATEWAY_ROOT))
 
-from app.core.contracts import ChatMessage, GenerationRequest
+from app.cache.interfaces import BaseCache, CacheEntry
+from app.cache.migration import run_migrations
+from app.cache.postgres_cache import PostgresCache
+from app.core.contracts import ChatMessage, GenerationRequest, UsageMetrics
 from app.embeddings.contracts import EmbeddingResult, EmbeddingTask
 from app.embeddings.errors import EmbeddingError
 from app.embeddings.interfaces import EmbeddingProvider
 from app.embeddings.ollama_adapter import OllamaEmbeddingProvider
 from app.semantic_cache.policy import SemanticCachePolicy
-from app.vector_store.contracts import VectorSearchResult, cosine_distance_to_similarity
+from app.vector_store.contracts import (
+    VectorRecord,
+    VectorSearchResult,
+    cosine_distance_to_similarity,
+)
+from app.vector_store.errors import (
+    VectorDimensionMismatchError,
+    VectorInvalidError,
+    VectorStoreConfigurationError,
+    VectorStoreConnectionError,
+    VectorStoreError,
+)
+from app.vector_store.interfaces import BaseVectorStore
+from app.vector_store.migration import (
+    check_pgvector_available,
+    run_vector_migrations,
+)
+from app.vector_store.postgres_store import PostgresVectorStore
 
 logging.basicConfig(
     level=logging.INFO,
@@ -432,6 +455,66 @@ def load_dataset(dataset_path: str | Path) -> List[EvaluationCase]:
 # 3. Core Decision Quality & Evaluation Engine
 # =============================================================================
 
+def validate_test_database_url(url: Optional[str]) -> str:
+    """
+    Validates that a database URL is non-empty, contains 'test' in the database name,
+    and does not fall back to production DATABASE_URL.
+    """
+    if not url or not url.strip():
+        raise ValueError(
+            "TEST_DATABASE_URL must be explicitly configured when running in 'pgvector' mode. "
+            "Never use production DATABASE_URL for evaluation or benchmarking."
+        )
+    clean_url = url.strip()
+    parsed = urlsplit(clean_url)
+    db_name = (parsed.path or "").lstrip("/").lower()
+    if "test" not in db_name:
+        raise ValueError(
+            f"TEST_DATABASE_URL database name '{db_name}' must contain 'test' to prevent "
+            f"accidental writes or contamination of non-test databases."
+        )
+    return clean_url
+
+
+def redact_database_url(url: str) -> str:
+    """Redacts credentials from a database connection URL for safe logging and reporting."""
+    if not url:
+        return ""
+    try:
+        parsed = urlsplit(url)
+        netloc = parsed.netloc
+        if "@" in netloc:
+            _, host_part = netloc.split("@", 1)
+            netloc = f"***:***@{host_part}"
+        return urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment))
+    except Exception:
+        return "postgresql://***:***@redacted"
+
+
+def compute_candidate_fingerprint(dataset_hash: str, case_id: str, candidate_id: str) -> str:
+    """Computes a deterministic, collision-resistant candidate fingerprint."""
+    raw = f"{dataset_hash}:{case_id}:{candidate_id}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def compute_latency_stats(data: Sequence[float]) -> Dict[str, float]:
+    """
+    Calculates min, mean, median (p50), p90, p95, and p99 from a sequence of latency numbers (ms).
+    """
+    if not data:
+        return {"min": 0.0, "mean": 0.0, "p50": 0.0, "p90": 0.0, "p95": 0.0, "p99": 0.0}
+    s = sorted(data)
+    n = len(s)
+    return {
+        "min": round(s[0], 3),
+        "mean": round(sum(s) / n, 3),
+        "p50": round(s[int(n * 0.50)], 3),
+        "p90": round(s[int(n * 0.90)], 3),
+        "p95": round(s[min(n - 1, int(n * 0.95))], 3),
+        "p99": round(s[min(n - 1, int(n * 0.99))], 3),
+    }
+
+
 def compute_metrics_from_counts(
     tp: int, fp: int, fn: int, tn: int
 ) -> Tuple[float, float, float, float, float, float]:
@@ -464,131 +547,276 @@ async def evaluate_single_case(
     case: EvaluationCase,
     policy: SemanticCachePolicy,
     provider: EmbeddingProvider,
+    cache: Optional[BaseCache] = None,
+    vector_store: Optional[BaseVectorStore] = None,
+    dataset_hash: str = "eval",
+    run_id: str = "eval_run",
 ) -> EvaluationOutcome:
     """
-    Evaluates a single evaluation case against candidate questions using
-    cosine similarity ranking and SemanticCachePolicy.
+    Evaluates a single evaluation case against candidate questions.
+    If both `cache` and `vector_store` are provided, performs genuine PostgreSQL/pgvector
+    candidate indexing, nearest-neighbour retrieval, and policy evaluation.
+    Otherwise, executes the standard in-memory cosine ranking path.
     """
     t_start = time.perf_counter()
 
-    # 1. Embed query
-    query_embed = await provider.embed(case.query, task=EmbeddingTask.QUERY)
+    if cache is not None and vector_store is not None:
+        case_ns = f"eval_{run_id}_{case.id}"
+        cand_map: Dict[str, CandidateData] = {}
+        try:
+            # 1. Embed and store candidate documents
+            # Foreign-key constraint order: exact-cache entry FIRST, then vector upsert
+            for cand in case.candidates:
+                cand_embed = await provider.embed(cand.query_text, task=EmbeddingTask.DOCUMENT)
+                fp = compute_candidate_fingerprint(dataset_hash, case.id, cand.id)
+                cand_map[fp] = cand
 
-    # 2. Embed candidates and compute similarity
-    ranked_candidates: List[Tuple[float, VectorSearchResult, CandidateData]] = []
-    for cand in case.candidates:
-        cand_embed = await provider.embed(cand.query_text, task=EmbeddingTask.DOCUMENT)
-        dist, sim = calculate_cosine_similarity(query_embed.vector, cand_embed.vector)
+                meta = dict(cand.metadata)
+                meta.setdefault("llm_provider", "groq")
+                meta.setdefault("llm_model", "llama-3.3-70b-versatile")
+                meta.setdefault("temperature", 0.7)
+                meta.setdefault("max_tokens", 1000)
 
-        meta = dict(cand.metadata)
-        if "llm_provider" not in meta:
-            meta["llm_provider"] = "groq"
-        if "llm_model" not in meta:
-            meta["llm_model"] = "llama-3.3-70b-versatile"
-        if "temperature" not in meta:
-            meta["temperature"] = 0.7
-        if "max_tokens" not in meta:
-            meta["max_tokens"] = 1000
+                cache_entry = CacheEntry(
+                    response=cand.cached_response,
+                    model=meta["llm_model"],
+                    usage=UsageMetrics(
+                        prompt_tokens=cand.prompt_tokens,
+                        completion_tokens=cand.completion_tokens,
+                        total_tokens=cand.total_tokens,
+                    ),
+                    latency_ms=cand.original_latency_ms,
+                    metadata=meta,
+                    provider=meta["llm_provider"],
+                )
+                await cache.set(fp, cache_entry, namespace=case_ns)
 
-        vs_res = VectorSearchResult(
-            cache_namespace="default",
-            fingerprint=f"fp_{cand.id}",
-            query_text=cand.query_text,
-            model=policy.configured_model,
-            distance=dist,
-            similarity=sim,
-            cached_response=cand.cached_response,
-            prompt_tokens=cand.prompt_tokens,
-            completion_tokens=cand.completion_tokens,
-            total_tokens=cand.total_tokens,
-            original_latency_ms=cand.original_latency_ms,
-            metadata=meta,
-        )
-        ranked_candidates.append((sim, vs_res, cand))
+                vec_rec = VectorRecord(
+                    cache_namespace=case_ns,
+                    fingerprint=fp,
+                    query_text=cand.query_text,
+                    model=policy.configured_model,
+                    vector=cand_embed.vector,
+                    metadata=meta,
+                )
+                await vector_store.upsert(vec_rec)
 
-    # Sort descending by similarity
-    ranked_candidates.sort(key=lambda x: x[0], reverse=True)
-    vs_candidates = [x[1] for x in ranked_candidates]
+            # 2. Embed query
+            query_embed = await provider.embed(case.query, task=EmbeddingTask.QUERY)
 
-    top_sim = ranked_candidates[0][0] if ranked_candidates else 0.0
-    margin = None
-    if len(ranked_candidates) > 1:
-        margin = ranked_candidates[0][0] - ranked_candidates[1][0]
+            # 3. Execute actual nearest-neighbour retrieval in PostgreSQL
+            vs_candidates = await vector_store.search(
+                query_vector=query_embed.vector,
+                top_k=policy.top_k,
+                namespace=case_ns,
+                model=policy.configured_model,
+            )
 
-    # 3. Build synthetic single-turn GenerationRequest
-    request = GenerationRequest(
-        messages=[ChatMessage(role="user", content=case.query)],
-        provider="groq",
-        model="llama-3.3-70b-versatile",
-        temperature=0.7,
-        max_tokens=1000,
-        stream=False,
-        bypass_cache=False,
-        namespace="default",
-    )
+            top_sim = vs_candidates[0].similarity if vs_candidates else 0.0
+            margin = None
+            if len(vs_candidates) > 1:
+                margin = vs_candidates[0].similarity - vs_candidates[1].similarity
 
-    # 4. Evaluate using policy
-    winning_cand, rejection_reason = policy.evaluate_candidates(vs_candidates, request)
+            # 4. Build synthetic single-turn GenerationRequest
+            request = GenerationRequest(
+                messages=[ChatMessage(role="user", content=case.query)],
+                provider="groq",
+                model="llama-3.3-70b-versatile",
+                temperature=0.7,
+                max_tokens=1000,
+                stream=False,
+                bypass_cache=False,
+                namespace=case_ns,
+            )
 
-    lookup_latency_ms = (time.perf_counter() - t_start) * 1000.0
+            # 5. Evaluate using policy
+            winning_cand, rejection_reason = policy.evaluate_candidates(vs_candidates, request)
 
-    # 5. Classify decision quality
-    safe_expected = case.expected_answer_label is not None
-    accepted_id = None
-    accepted_label = None
-    prompt_tokens = 0
-    comp_tokens = 0
-    total_tokens = 0
-    orig_latency = 0.0
+            lookup_latency_ms = (time.perf_counter() - t_start) * 1000.0
 
-    if winning_cand is not None:
-        for _, vs_c, orig_c in ranked_candidates:
-            if vs_c.fingerprint == winning_cand.fingerprint:
-                accepted_id = orig_c.id
-                accepted_label = orig_c.answer_label
-                prompt_tokens = orig_c.prompt_tokens
-                comp_tokens = orig_c.completion_tokens
-                total_tokens = orig_c.total_tokens
-                orig_latency = orig_c.original_latency_ms
-                break
+            # 6. Classify decision quality
+            safe_expected = case.expected_answer_label is not None
+            accepted_id = None
+            accepted_label = None
+            prompt_tokens = 0
+            comp_tokens = 0
+            total_tokens = 0
+            orig_latency = 0.0
 
-    if safe_expected:
-        if accepted_label == case.expected_answer_label:
-            classification = "TP"
-            decision = "safe_reuse"
-        elif winning_cand is not None:
-            classification = "FP"
-            decision = "incorrect_reuse"
-        else:
-            classification = "FN"
-            decision = "incorrect_rejection"
+            if winning_cand is not None:
+                orig_c = cand_map.get(winning_cand.fingerprint)
+                if orig_c is not None:
+                    accepted_id = orig_c.id
+                    accepted_label = orig_c.answer_label
+                    prompt_tokens = orig_c.prompt_tokens
+                    comp_tokens = orig_c.completion_tokens
+                    total_tokens = orig_c.total_tokens
+                    orig_latency = orig_c.original_latency_ms
+
+            if safe_expected:
+                if accepted_label == case.expected_answer_label:
+                    classification = "TP"
+                    decision = "safe_reuse"
+                elif winning_cand is not None:
+                    classification = "FP"
+                    decision = "incorrect_reuse"
+                else:
+                    classification = "FN"
+                    decision = "incorrect_rejection"
+            else:
+                if winning_cand is not None:
+                    classification = "FP"
+                    decision = "incorrect_reuse"
+                else:
+                    classification = "TN"
+                    decision = "safe_rejection"
+
+            return EvaluationOutcome(
+                case_id=case.id,
+                category=case.category,
+                split=case.split,
+                expected_answer_label=case.expected_answer_label,
+                safe_reuse_expected=safe_expected,
+                accepted_candidate_id=accepted_id,
+                accepted_answer_label=accepted_label,
+                top_similarity=top_sim,
+                margin=margin,
+                decision=decision,
+                classification=classification,
+                rejection_reason=rejection_reason,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=comp_tokens,
+                total_tokens=total_tokens,
+                original_latency_ms=orig_latency,
+                lookup_latency_ms=lookup_latency_ms,
+            )
+        finally:
+            # Strictly namespace-scoped cleanup in finally block
+            try:
+                await vector_store.clear(case_ns)
+            except Exception as exc:
+                logger.warning("Failed to clear vector store namespace '%s': %s", case_ns, exc)
+            try:
+                await cache.clear(case_ns)
+            except Exception as exc:
+                logger.warning("Failed to clear cache namespace '%s': %s", case_ns, exc)
+
     else:
-        if winning_cand is not None:
-            classification = "FP"
-            decision = "incorrect_reuse"
-        else:
-            classification = "TN"
-            decision = "safe_rejection"
+        # Standard in-memory cosine ranking flow
+        # 1. Embed query
+        query_embed = await provider.embed(case.query, task=EmbeddingTask.QUERY)
 
-    return EvaluationOutcome(
-        case_id=case.id,
-        category=case.category,
-        split=case.split,
-        expected_answer_label=case.expected_answer_label,
-        safe_reuse_expected=safe_expected,
-        accepted_candidate_id=accepted_id,
-        accepted_answer_label=accepted_label,
-        top_similarity=top_sim,
-        margin=margin,
-        decision=decision,
-        classification=classification,
-        rejection_reason=rejection_reason,
-        prompt_tokens=prompt_tokens,
-        completion_tokens=comp_tokens,
-        total_tokens=total_tokens,
-        original_latency_ms=orig_latency,
-        lookup_latency_ms=lookup_latency_ms,
-    )
+        # 2. Embed candidates and compute similarity
+        ranked_candidates: List[Tuple[float, VectorSearchResult, CandidateData]] = []
+        for cand in case.candidates:
+            cand_embed = await provider.embed(cand.query_text, task=EmbeddingTask.DOCUMENT)
+            dist, sim = calculate_cosine_similarity(query_embed.vector, cand_embed.vector)
+
+            meta = dict(cand.metadata)
+            meta.setdefault("llm_provider", "groq")
+            meta.setdefault("llm_model", "llama-3.3-70b-versatile")
+            meta.setdefault("temperature", 0.7)
+            meta.setdefault("max_tokens", 1000)
+
+            vs_res = VectorSearchResult(
+                cache_namespace="default",
+                fingerprint=f"fp_{cand.id}",
+                query_text=cand.query_text,
+                model=policy.configured_model,
+                distance=dist,
+                similarity=sim,
+                cached_response=cand.cached_response,
+                prompt_tokens=cand.prompt_tokens,
+                completion_tokens=cand.completion_tokens,
+                total_tokens=cand.total_tokens,
+                original_latency_ms=cand.original_latency_ms,
+                metadata=meta,
+            )
+            ranked_candidates.append((sim, vs_res, cand))
+
+        # Sort descending by similarity
+        ranked_candidates.sort(key=lambda x: x[0], reverse=True)
+        vs_candidates = [x[1] for x in ranked_candidates]
+
+        top_sim = ranked_candidates[0][0] if ranked_candidates else 0.0
+        margin = None
+        if len(ranked_candidates) > 1:
+            margin = ranked_candidates[0][0] - ranked_candidates[1][0]
+
+        # 3. Build synthetic single-turn GenerationRequest
+        request = GenerationRequest(
+            messages=[ChatMessage(role="user", content=case.query)],
+            provider="groq",
+            model="llama-3.3-70b-versatile",
+            temperature=0.7,
+            max_tokens=1000,
+            stream=False,
+            bypass_cache=False,
+            namespace="default",
+        )
+
+        # 4. Evaluate using policy
+        winning_cand, rejection_reason = policy.evaluate_candidates(vs_candidates, request)
+
+        lookup_latency_ms = (time.perf_counter() - t_start) * 1000.0
+
+        # 5. Classify decision quality
+        safe_expected = case.expected_answer_label is not None
+        accepted_id = None
+        accepted_label = None
+        prompt_tokens = 0
+        comp_tokens = 0
+        total_tokens = 0
+        orig_latency = 0.0
+
+        if winning_cand is not None:
+            for _, vs_c, orig_c in ranked_candidates:
+                if vs_c.fingerprint == winning_cand.fingerprint:
+                    accepted_id = orig_c.id
+                    accepted_label = orig_c.answer_label
+                    prompt_tokens = orig_c.prompt_tokens
+                    comp_tokens = orig_c.completion_tokens
+                    total_tokens = orig_c.total_tokens
+                    orig_latency = orig_c.original_latency_ms
+                    break
+
+        if safe_expected:
+            if accepted_label == case.expected_answer_label:
+                classification = "TP"
+                decision = "safe_reuse"
+            elif winning_cand is not None:
+                classification = "FP"
+                decision = "incorrect_reuse"
+            else:
+                classification = "FN"
+                decision = "incorrect_rejection"
+        else:
+            if winning_cand is not None:
+                classification = "FP"
+                decision = "incorrect_reuse"
+            else:
+                classification = "TN"
+                decision = "safe_rejection"
+
+        return EvaluationOutcome(
+            case_id=case.id,
+            category=case.category,
+            split=case.split,
+            expected_answer_label=case.expected_answer_label,
+            safe_reuse_expected=safe_expected,
+            accepted_candidate_id=accepted_id,
+            accepted_answer_label=accepted_label,
+            top_similarity=top_sim,
+            margin=margin,
+            decision=decision,
+            classification=classification,
+            rejection_reason=rejection_reason,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=comp_tokens,
+            total_tokens=total_tokens,
+            original_latency_ms=orig_latency,
+            lookup_latency_ms=lookup_latency_ms,
+        )
 
 
 async def evaluate_dataset(
@@ -596,9 +824,15 @@ async def evaluate_dataset(
     policy: SemanticCachePolicy,
     provider: EmbeddingProvider,
     split: str = "development",
+    cache: Optional[BaseCache] = None,
+    vector_store: Optional[BaseVectorStore] = None,
+    dataset_hash: str = "eval",
+    run_id: Optional[str] = None,
 ) -> Tuple[EvaluationMetrics, List[EvaluationOutcome]]:
     """Evaluates all cases matching the specified split partition."""
     filtered_cases = [c for c in cases if split == "all" or c.split == split]
+    if run_id is None:
+        run_id = f"eval_{int(time.time()*1000)}"
 
     outcomes: List[EvaluationOutcome] = []
     tp = fp = fn = tn = 0
@@ -609,7 +843,15 @@ async def evaluate_dataset(
     category_counts: Dict[str, Dict[str, int]] = {}
 
     for case in filtered_cases:
-        outcome = await evaluate_single_case(case, policy, provider)
+        outcome = await evaluate_single_case(
+            case,
+            policy,
+            provider,
+            cache=cache,
+            vector_store=vector_store,
+            dataset_hash=dataset_hash,
+            run_id=run_id,
+        )
         outcomes.append(outcome)
 
         cat = case.category
@@ -688,6 +930,9 @@ async def run_threshold_sweep(
     thresholds: List[float],
     margins: List[float],
     split: str = "development",
+    cache: Optional[BaseCache] = None,
+    vector_store: Optional[BaseVectorStore] = None,
+    dataset_hash: str = "eval",
 ) -> List[Dict[str, Any]]:
     """
     Executes parameter grid sweep strictly across the development split.
@@ -713,7 +958,15 @@ async def run_threshold_sweep(
     for th in thresholds:
         for mg in margins:
             policy = SemanticCachePolicy(min_similarity=th, min_margin=mg)
-            metrics, _ = await evaluate_dataset(dev_cases, policy, provider, split="development")
+            metrics, _ = await evaluate_dataset(
+                dev_cases,
+                policy,
+                provider,
+                split="development",
+                cache=cache,
+                vector_store=vector_store,
+                dataset_hash=dataset_hash,
+            )
             results.append({
                 "threshold": round(th, 4),
                 "margin": round(mg, 4),
@@ -745,114 +998,234 @@ async def run_benchmark(
     split: str = "development",
     iterations: int = 5,
     benchmark_mode: str = "component",
-    db_pool: Optional[Any] = None,
+    cache: Optional[BaseCache] = None,
+    vector_store: Optional[BaseVectorStore] = None,
+    dataset_hash: str = "eval",
+    db_info: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Measures runtime latency across actual executed operations without live LLM calls.
-    Never fabricates similarities: computes real cosine distances from provider embeddings.
+    Never fabricates similarities or latencies.
+    Supports 'component' (synthetic mock), 'real' (Ollama in-memory), and 'pgvector' (Ollama + PostgreSQL/pgvector).
     """
     bench_cases = [c for c in cases if split == "all" or c.split == split]
-    logger.info("Running benchmark mode='%s' on %d cases with %d iterations...", benchmark_mode, len(bench_cases), iterations)
-
-    query_embed_ms: List[float] = []
-    candidate_sim_ms: List[float] = []
-    policy_eval_ms: List[float] = []
-    lookup_ms: List[float] = []
-
-    req = GenerationRequest(
-        messages=[ChatMessage(role="user", content="benchmark query")],
-        provider="groq",
-        model="llama-3.3-70b-versatile",
+    logger.info(
+        "Running benchmark mode='%s' on %d cases with %d iterations...",
+        benchmark_mode,
+        len(bench_cases),
+        iterations,
     )
 
-    for _ in range(iterations):
-        for case in bench_cases:
-            # 1. Measure Query Embedding Latency
-            t0 = time.perf_counter()
-            query_res = await provider.embed(case.query, task=EmbeddingTask.QUERY)
-            t_q_embed = (time.perf_counter() - t0) * 1000.0
-            query_embed_ms.append(t_q_embed)
+    if benchmark_mode == "pgvector":
+        if cache is None or vector_store is None:
+            raise ValueError("Benchmark mode 'pgvector' requires active cache and vector_store instances.")
 
-            # 2. Embed candidates and compute real similarity
-            t1 = time.perf_counter()
-            vs_candidates = []
-            for cand in case.candidates:
-                cand_res = await provider.embed(cand.query_text, task=EmbeddingTask.DOCUMENT)
-                dist, sim = calculate_cosine_similarity(query_res.vector, cand_res.vector)
-                vs_candidates.append(
-                    VectorSearchResult(
-                        cache_namespace="default",
-                        fingerprint=f"fp_{cand.id}",
+        candidate_indexing_ms: List[float] = []
+        query_embed_ms: List[float] = []
+        postgres_retrieval_ms: List[float] = []
+        policy_eval_ms: List[float] = []
+        semantic_lookup_ms: List[float] = []
+
+        run_id = f"bench_{int(time.time()*1000)}_{os.getpid()}"
+
+        active_namespaces: List[str] = []
+        try:
+            # 1. Candidate indexing / setup measurement (one-time setup per case)
+            for case in bench_cases:
+                case_ns = f"bench_{run_id}_{case.id}"
+                active_namespaces.append(case_ns)
+
+                for cand in case.candidates:
+                    t_idx0 = time.perf_counter()
+                    cand_embed = await provider.embed(cand.query_text, task=EmbeddingTask.DOCUMENT)
+                    fp = compute_candidate_fingerprint(dataset_hash, case.id, cand.id)
+
+                    meta = dict(cand.metadata)
+                    meta.setdefault("llm_provider", "groq")
+                    meta.setdefault("llm_model", "llama-3.3-70b-versatile")
+                    meta.setdefault("temperature", 0.7)
+                    meta.setdefault("max_tokens", 1000)
+
+                    # Order: exact-cache entry FIRST
+                    cache_entry = CacheEntry(
+                        response=cand.cached_response,
+                        model=meta["llm_model"],
+                        usage=UsageMetrics(
+                            prompt_tokens=cand.prompt_tokens,
+                            completion_tokens=cand.completion_tokens,
+                            total_tokens=cand.total_tokens,
+                        ),
+                        latency_ms=cand.original_latency_ms,
+                        metadata=meta,
+                        provider=meta["llm_provider"],
+                    )
+                    await cache.set(fp, cache_entry, namespace=case_ns)
+
+                    # VectorRecord SECOND
+                    vec_rec = VectorRecord(
+                        cache_namespace=case_ns,
+                        fingerprint=fp,
                         query_text=cand.query_text,
                         model=policy.configured_model,
-                        distance=dist,
-                        similarity=sim,
-                        cached_response=cand.cached_response,
-                        metadata={
-                            "llm_provider": "groq",
-                            "llm_model": "llama-3.3-70b-versatile",
-                            "temperature": 0.7,
-                            "max_tokens": 1000,
-                        },
+                        vector=cand_embed.vector,
+                        metadata=meta,
                     )
-                )
-            vs_candidates.sort(key=lambda x: x.similarity, reverse=True)
-            t_cand_sim = (time.perf_counter() - t1) * 1000.0
-            candidate_sim_ms.append(t_cand_sim)
+                    await vector_store.upsert(vec_rec)
+                    candidate_indexing_ms.append((time.perf_counter() - t_idx0) * 1000.0)
 
-            # 3. Measure policy evaluation latency
-            case_req = GenerationRequest(
-                messages=[ChatMessage(role="user", content=case.query)],
-                provider="groq",
-                model="llama-3.3-70b-versatile",
-            )
-            t2 = time.perf_counter()
-            policy.evaluate_candidates(vs_candidates, case_req)
-            t_pol = (time.perf_counter() - t2) * 1000.0
-            policy_eval_ms.append(t_pol)
+            # 2. Repeated query lookup measurement
+            for _ in range(iterations):
+                for case in bench_cases:
+                    case_ns = f"bench_{run_id}_{case.id}"
 
-            # Total measured lookup latency (query embed + candidate similarity + policy eval)
-            lookup_ms.append(t_q_embed + t_cand_sim + t_pol)
+                    # Measure query embedding latency
+                    t0 = time.perf_counter()
+                    query_res = await provider.embed(case.query, task=EmbeddingTask.QUERY)
+                    t_q = (time.perf_counter() - t0) * 1000.0
+                    query_embed_ms.append(t_q)
 
-    def stats(data: List[float]) -> Dict[str, float]:
-        if not data:
-            return {"mean": 0.0, "p50": 0.0, "p90": 0.0, "p99": 0.0}
-        s = sorted(data)
-        n = len(s)
+                    # Measure actual PostgreSQL pgvector retrieval latency
+                    t1 = time.perf_counter()
+                    vs_candidates = await vector_store.search(
+                        query_vector=query_res.vector,
+                        top_k=policy.top_k,
+                        namespace=case_ns,
+                        model=policy.configured_model,
+                    )
+                    t_search = (time.perf_counter() - t1) * 1000.0
+                    postgres_retrieval_ms.append(t_search)
+
+                    # Measure policy evaluation latency
+                    case_req = GenerationRequest(
+                        messages=[ChatMessage(role="user", content=case.query)],
+                        provider="groq",
+                        model="llama-3.3-70b-versatile",
+                        temperature=0.7,
+                        max_tokens=1000,
+                        stream=False,
+                        bypass_cache=False,
+                        namespace=case_ns,
+                    )
+                    t2 = time.perf_counter()
+                    policy.evaluate_candidates(vs_candidates, case_req)
+                    t_pol = (time.perf_counter() - t2) * 1000.0
+                    policy_eval_ms.append(t_pol)
+
+                    # Semantic lookup latency = query embedding + postgres retrieval + policy evaluation
+                    semantic_lookup_ms.append(t_q + t_search + t_pol)
+        finally:
+            for ns in active_namespaces:
+                try:
+                    await vector_store.clear(ns)
+                except Exception as exc:
+                    logger.warning("Failed to clear vector store namespace '%s': %s", ns, exc)
+                try:
+                    await cache.clear(ns)
+                except Exception as exc:
+                    logger.warning("Failed to clear cache namespace '%s': %s", ns, exc)
+
         return {
-            "mean": round(sum(s) / n, 3),
-            "p50": round(s[int(n * 0.50)], 3),
-            "p90": round(s[int(n * 0.90)], 3),
-            "p99": round(s[min(n - 1, int(n * 0.99))], 3),
+            "benchmark_mode": "pgvector",
+            "benchmark_label": "Real Ollama embeddings with PostgreSQL/pgvector retrieval",
+            "disclaimer": (
+                "Measured using real OllamaEmbeddingProvider and live PostgreSQL/pgvector. "
+                "Captures real HTTP embedding requests, actual pgvector cosine-distance index scan, "
+                "exact-cache JOIN, and policy candidate evaluation. Does NOT include LLM generation latency."
+            ),
+            "iterations": iterations,
+            "sample_count": len(semantic_lookup_ms),
+            "candidate_indexing_latency_ms": compute_latency_stats(candidate_indexing_ms),
+            "query_embedding_latency_ms": compute_latency_stats(query_embed_ms),
+            "postgres_retrieval_latency_ms": compute_latency_stats(postgres_retrieval_ms),
+            "policy_evaluation_latency_ms": compute_latency_stats(policy_eval_ms),
+            "semantic_lookup_latency_ms": compute_latency_stats(semantic_lookup_ms),
+            "total_measured_latency_ms": compute_latency_stats(semantic_lookup_ms),
+            "database_info": db_info or {},
         }
 
-    is_mock = isinstance(provider, DeterministicMockEmbeddingProvider)
-    if is_mock:
-        mode_label = "Synthetic/mock component timings (offline)"
-        disclaimer = (
-            "Measured using DeterministicMockEmbeddingProvider. Captures local CPU vector hashing, "
-            "dot-product cosine similarity, and in-memory policy rules. Does NOT reflect live production latency "
-            "or PostgreSQL pgvector disk index scan time."
-        )
     else:
-        mode_label = "Real embedding provider in-memory evaluation"
-        disclaimer = (
-            f"Measured using real {provider.__class__.__name__} ({provider.model_name}). "
-            "Captures HTTP API embedding latency, in-memory cosine ranking, and policy rules. "
-            "Does NOT measure PostgreSQL pgvector disk index scan time."
-        )
+        # Standard in-memory benchmark (component or real)
+        query_embed_ms = []
+        candidate_sim_ms = []
+        policy_eval_ms = []
+        lookup_ms = []
 
-    return {
-        "benchmark_mode": "offline_component" if is_mock else "real_in_memory",
-        "benchmark_label": mode_label,
-        "disclaimer": disclaimer,
-        "iterations": iterations,
-        "sample_count": len(lookup_ms),
-        "query_embedding_latency_ms": stats(query_embed_ms),
-        "candidate_sim_and_ranking_latency_ms": stats(candidate_sim_ms),
-        "policy_evaluation_latency_ms": stats(policy_eval_ms),
-        "total_measured_latency_ms": stats(lookup_ms),
-    }
+        for _ in range(iterations):
+            for case in bench_cases:
+                # 1. Measure Query Embedding Latency
+                t0 = time.perf_counter()
+                query_res = await provider.embed(case.query, task=EmbeddingTask.QUERY)
+                t_q_embed = (time.perf_counter() - t0) * 1000.0
+                query_embed_ms.append(t_q_embed)
+
+                # 2. Embed candidates and compute real similarity
+                t1 = time.perf_counter()
+                vs_candidates = []
+                for cand in case.candidates:
+                    cand_res = await provider.embed(cand.query_text, task=EmbeddingTask.DOCUMENT)
+                    dist, sim = calculate_cosine_similarity(query_res.vector, cand_res.vector)
+                    vs_candidates.append(
+                        VectorSearchResult(
+                            cache_namespace="default",
+                            fingerprint=f"fp_{cand.id}",
+                            query_text=cand.query_text,
+                            model=policy.configured_model,
+                            distance=dist,
+                            similarity=sim,
+                            cached_response=cand.cached_response,
+                            metadata={
+                                "llm_provider": "groq",
+                                "llm_model": "llama-3.3-70b-versatile",
+                                "temperature": 0.7,
+                                "max_tokens": 1000,
+                            },
+                        )
+                    )
+                vs_candidates.sort(key=lambda x: x.similarity, reverse=True)
+                t_cand_sim = (time.perf_counter() - t1) * 1000.0
+                candidate_sim_ms.append(t_cand_sim)
+
+                # 3. Measure policy evaluation latency
+                case_req = GenerationRequest(
+                    messages=[ChatMessage(role="user", content=case.query)],
+                    provider="groq",
+                    model="llama-3.3-70b-versatile",
+                )
+                t2 = time.perf_counter()
+                policy.evaluate_candidates(vs_candidates, case_req)
+                t_pol = (time.perf_counter() - t2) * 1000.0
+                policy_eval_ms.append(t_pol)
+
+                # Total measured lookup latency (query embed + candidate similarity + policy eval)
+                lookup_ms.append(t_q_embed + t_cand_sim + t_pol)
+
+        is_mock = isinstance(provider, DeterministicMockEmbeddingProvider)
+        if is_mock:
+            mode_label = "Synthetic/mock component timings (offline)"
+            disclaimer = (
+                "Measured using DeterministicMockEmbeddingProvider. Captures local CPU vector hashing, "
+                "dot-product cosine similarity, and in-memory policy rules. Does NOT reflect live production latency "
+                "or PostgreSQL pgvector disk index scan time."
+            )
+        else:
+            mode_label = "Real embedding provider in-memory evaluation"
+            disclaimer = (
+                f"Measured using real {provider.__class__.__name__} ({provider.model_name}). "
+                "Captures HTTP API embedding latency, in-memory cosine ranking, and policy rules. "
+                "Does NOT measure PostgreSQL pgvector disk index scan time."
+            )
+
+        return {
+            "benchmark_mode": "offline_component" if is_mock else "real_in_memory",
+            "benchmark_label": mode_label,
+            "disclaimer": disclaimer,
+            "iterations": iterations,
+            "sample_count": len(lookup_ms),
+            "query_embedding_latency_ms": compute_latency_stats(query_embed_ms),
+            "candidate_sim_and_ranking_latency_ms": compute_latency_stats(candidate_sim_ms),
+            "policy_evaluation_latency_ms": compute_latency_stats(policy_eval_ms),
+            "total_measured_latency_ms": compute_latency_stats(lookup_ms),
+        }
 
 
 # =============================================================================
@@ -1010,8 +1383,14 @@ async def async_main() -> None:
         "--benchmark-mode",
         type=str,
         default="auto",
-        choices=["auto", "component", "real"],
-        help="Benchmark execution mode: component (offline mock), real (live Ollama in-memory).",
+        choices=["auto", "component", "real", "pgvector"],
+        help="Benchmark execution mode: auto, component (offline mock), real (live Ollama in-memory), pgvector (Ollama + PostgreSQL/pgvector).",
+    )
+    parser.add_argument(
+        "--test-database-url",
+        type=str,
+        default=None,
+        help="Explicit PostgreSQL test database URL for pgvector mode (must contain 'test' in db name; defaults to TEST_DATABASE_URL env var).",
     )
     parser.add_argument(
         "--iterations",
@@ -1041,6 +1420,69 @@ async def async_main() -> None:
     dataset_hash = get_dataset_hash(dataset_path)
     logger.info("Dataset validated successfully: %d cases loaded (SHA256: %s...)", len(cases), dataset_hash[:12])
 
+    # 1. Determine effective benchmark mode
+    if args.benchmark_mode == "auto":
+        effective_benchmark_mode = "component" if args.provider == "mock" else "real"
+    else:
+        effective_benchmark_mode = args.benchmark_mode
+
+    # 2. Strict safety checks for pgvector mode
+    db_pool = None
+    pg_cache = None
+    pg_vector_store = None
+    db_info: Dict[str, Any] = {}
+
+    if effective_benchmark_mode == "pgvector":
+        if args.provider != "ollama":
+            logger.error(
+                "Benchmark mode 'pgvector' strictly requires '--provider ollama'. "
+                "Synthetic mock embeddings cannot be used for genuine pgvector evaluation."
+            )
+            sys.exit(1)
+
+        raw_db_url = args.test_database_url or os.environ.get("TEST_DATABASE_URL")
+        try:
+            db_url = validate_test_database_url(raw_db_url)
+        except ValueError as exc:
+            logger.error("Database configuration error: %s", exc)
+            sys.exit(1)
+
+        redacted_url = redact_database_url(db_url)
+        logger.info("Connecting to test PostgreSQL instance: %s", redacted_url)
+
+        try:
+            db_pool = await asyncpg.create_pool(dsn=db_url, min_size=1, max_size=5)
+            async with db_pool.acquire() as conn:
+                pg_version = await conn.fetchval("SHOW server_version")
+                has_pgvector = await check_pgvector_available(conn)
+                if not has_pgvector:
+                    logger.error(
+                        "pgvector extension 'vector' is not available on PostgreSQL at %s. "
+                        "Please install pgvector on the PostgreSQL server.",
+                        redacted_url,
+                    )
+                    await db_pool.close()
+                    sys.exit(1)
+
+                pgv_row = await conn.fetchrow(
+                    "SELECT default_version, installed_version FROM pg_available_extensions WHERE name = 'vector'"
+                )
+                pgv_version = (pgv_row["installed_version"] or pgv_row["default_version"]) if pgv_row else "unknown"
+
+            # Run exact-cache migrations
+            await run_migrations(db_pool)
+
+            db_info = {
+                "postgres_version": str(pg_version),
+                "pgvector_version": str(pgv_version),
+                "database_url": redacted_url,
+            }
+        except Exception as exc:
+            logger.error("Failed to connect or initialize PostgreSQL at %s: %s", redacted_url, exc)
+            if db_pool:
+                await db_pool.close()
+            sys.exit(1)
+
     provider: EmbeddingProvider
     actual_provider_name: str
     mock_used: bool
@@ -1060,7 +1502,17 @@ async def async_main() -> None:
             mock_fallback_occurred = False
         except Exception as exc:
             await temp_provider.close()
-            if not args.allow_mock_fallback:
+            if effective_benchmark_mode == "pgvector":
+                logger.error(
+                    "Ollama embedding provider at %s is unavailable for pgvector mode: %s\n"
+                    "Failing clearly without silent fallback. Mock fallback is not permitted in pgvector mode.",
+                    ollama_url,
+                    exc,
+                )
+                if db_pool:
+                    await db_pool.close()
+                sys.exit(1)
+            elif not args.allow_mock_fallback:
                 logger.error(
                     "Requested embedding provider 'ollama' is unavailable at %s: %s\n"
                     "Failing clearly without silent fallback. To explicitly permit offline mock fallback, re-run with --allow-mock-fallback.",
@@ -1085,6 +1537,20 @@ async def async_main() -> None:
         mock_fallback_occurred = False
 
     try:
+        if effective_benchmark_mode == "pgvector":
+            try:
+                await run_vector_migrations(db_pool, dimensions=provider.dimensions)
+                pg_cache = PostgresCache(pool=db_pool, default_namespace="default")
+                pg_vector_store = PostgresVectorStore(
+                    pool=db_pool,
+                    default_namespace="default",
+                    default_model=args.model,
+                    dimensions=provider.dimensions,
+                )
+            except Exception as exc:
+                logger.error("Vector migration or initialization failed: %s", exc)
+                sys.exit(1)
+
         policy = SemanticCachePolicy(
             min_similarity=args.threshold,
             min_margin=args.margin,
@@ -1097,7 +1563,14 @@ async def async_main() -> None:
             thresholds = [0.70, 0.75, 0.80, 0.82, 0.85, 0.88, 0.90, 0.95]
             margins = [0.01, 0.02, 0.03, 0.05, 0.08]
             sweep_results = await run_threshold_sweep(
-                cases, provider, thresholds, margins, split="development"
+                cases,
+                provider,
+                thresholds,
+                margins,
+                split="development",
+                cache=pg_cache,
+                vector_store=pg_vector_store,
+                dataset_hash=dataset_hash,
             )
             print("\n=== TOP 5 CONFIGURATIONS FROM DEV SWEEP (SPLIT = DEVELOPMENT) ===")
             print(f"{'Threshold':<10} {'Margin':<8} {'Precision':<10} {'Recall':<8} {'F1':<8} {'FPR':<8} {'Rejection':<10}")
@@ -1115,10 +1588,22 @@ async def async_main() -> None:
             base_pol = SemanticCachePolicy(min_similarity=0.82, min_margin=0.03, configured_model=args.model)
             sel_pol = SemanticCachePolicy(min_similarity=selected_config["threshold"], min_margin=selected_config["margin"], configured_model=args.model)
 
-            m_b_dev, _ = await evaluate_dataset(dev_cases, base_pol, provider, split="development")
-            m_s_dev, _ = await evaluate_dataset(dev_cases, sel_pol, provider, split="development")
-            m_b_test, _ = await evaluate_dataset(test_cases, base_pol, provider, split="test")
-            m_s_test, _ = await evaluate_dataset(test_cases, sel_pol, provider, split="test")
+            m_b_dev, _ = await evaluate_dataset(
+                dev_cases, base_pol, provider, split="development",
+                cache=pg_cache, vector_store=pg_vector_store, dataset_hash=dataset_hash,
+            )
+            m_s_dev, _ = await evaluate_dataset(
+                dev_cases, sel_pol, provider, split="development",
+                cache=pg_cache, vector_store=pg_vector_store, dataset_hash=dataset_hash,
+            )
+            m_b_test, _ = await evaluate_dataset(
+                test_cases, base_pol, provider, split="test",
+                cache=pg_cache, vector_store=pg_vector_store, dataset_hash=dataset_hash,
+            )
+            m_s_test, _ = await evaluate_dataset(
+                test_cases, sel_pol, provider, split="test",
+                cache=pg_cache, vector_store=pg_vector_store, dataset_hash=dataset_hash,
+            )
 
             sel_th = selected_config["threshold"]
             sel_mg = selected_config["margin"]
@@ -1139,30 +1624,70 @@ async def async_main() -> None:
 
         benchmark_results = None
         if args.benchmark:
-            b_mode = "component" if mock_used else "real"
             benchmark_results = await run_benchmark(
-                cases, policy, provider, split=args.split, iterations=args.iterations, benchmark_mode=b_mode
+                cases,
+                policy,
+                provider,
+                split=args.split,
+                iterations=args.iterations,
+                benchmark_mode=effective_benchmark_mode,
+                cache=pg_cache,
+                vector_store=pg_vector_store,
+                dataset_hash=dataset_hash,
+                db_info=db_info,
             )
-            print("\n=== RUNTIME BENCHMARK METRICS (NO LLM CALLS) ===")
-            print(f"Mode:                   {benchmark_results['benchmark_label']}")
-            print(f"Disclaimer:             {benchmark_results['disclaimer']}")
-            print(f"Iterations:             {benchmark_results['iterations']}, Samples: {benchmark_results['sample_count']}")
-            q_emb = benchmark_results["query_embedding_latency_ms"]
-            c_sim = benchmark_results["candidate_sim_and_ranking_latency_ms"]
-            pol = benchmark_results["policy_evaluation_latency_ms"]
-            tot = benchmark_results["total_measured_latency_ms"]
-            print(f"Query Embedding Latency:     mean={q_emb['mean']}ms, p50={q_emb['p50']}ms, p90={q_emb['p90']}ms, p99={q_emb['p99']}ms")
-            print(f"Candidate Sim & Ranking:     mean={c_sim['mean']}ms, p50={c_sim['p50']}ms, p90={c_sim['p90']}ms, p99={c_sim['p99']}ms")
-            print(f"Policy Candidate Evaluation: mean={pol['mean']}ms, p50={pol['p50']}ms, p90={pol['p90']}ms, p99={pol['p99']}ms")
-            print(f"Total Measured Lookup:       mean={tot['mean']}ms, p50={tot['p50']}ms, p90={tot['p90']}ms, p99={tot['p99']}ms")
+
+            if effective_benchmark_mode == "pgvector":
+                print("\n=== POSTGRESQL / PGVECTOR BENCHMARK METRICS (NO LLM CALLS) ===")
+                print(f"Mode:                        {benchmark_results['benchmark_label']}")
+                print(f"PostgreSQL Version:          {db_info.get('postgres_version', 'unknown')}")
+                print(f"pgvector Version:            {db_info.get('pgvector_version', 'unknown')}")
+                print(f"Database URL:                {db_info.get('database_url', 'redacted')}")
+                print(f"Iterations:                  {benchmark_results['iterations']}, Samples: {benchmark_results['sample_count']}")
+                idx = benchmark_results["candidate_indexing_latency_ms"]
+                q_emb = benchmark_results["query_embedding_latency_ms"]
+                pg_ret = benchmark_results["postgres_retrieval_latency_ms"]
+                pol = benchmark_results["policy_evaluation_latency_ms"]
+                tot = benchmark_results["semantic_lookup_latency_ms"]
+                print(f"Candidate Indexing Latency:  min={idx['min']}ms, mean={idx['mean']}ms, p50={idx['p50']}ms, p95={idx['p95']}ms, p99={idx['p99']}ms")
+                print(f"Query Embedding Latency:     min={q_emb['min']}ms, mean={q_emb['mean']}ms, p50={q_emb['p50']}ms, p95={q_emb['p95']}ms, p99={q_emb['p99']}ms")
+                print(f"PostgreSQL Retrieval Latency:min={pg_ret['min']}ms, mean={pg_ret['mean']}ms, p50={pg_ret['p50']}ms, p95={pg_ret['p95']}ms, p99={pg_ret['p99']}ms")
+                print(f"Policy Candidate Evaluation: min={pol['min']}ms, mean={pol['mean']}ms, p50={pol['p50']}ms, p95={pol['p95']}ms, p99={pol['p99']}ms")
+                print(f"Semantic Lookup Latency:     min={tot['min']}ms, mean={tot['mean']}ms, p50={tot['p50']}ms, p95={tot['p95']}ms, p99={tot['p99']}ms")
+            else:
+                print("\n=== RUNTIME BENCHMARK METRICS (NO LLM CALLS) ===")
+                print(f"Mode:                        {benchmark_results['benchmark_label']}")
+                print(f"Disclaimer:                  {benchmark_results['disclaimer']}")
+                print(f"Iterations:                  {benchmark_results['iterations']}, Samples: {benchmark_results['sample_count']}")
+                q_emb = benchmark_results["query_embedding_latency_ms"]
+                c_sim = benchmark_results["candidate_sim_and_ranking_latency_ms"]
+                pol = benchmark_results["policy_evaluation_latency_ms"]
+                tot = benchmark_results["total_measured_latency_ms"]
+                print(f"Query Embedding Latency:     min={q_emb['min']}ms, mean={q_emb['mean']}ms, p50={q_emb['p50']}ms, p95={q_emb['p95']}ms, p99={q_emb['p99']}ms")
+                print(f"Candidate Sim & Ranking:     min={c_sim['min']}ms, mean={c_sim['mean']}ms, p50={c_sim['p50']}ms, p95={c_sim['p95']}ms, p99={c_sim['p99']}ms")
+                print(f"Policy Candidate Evaluation: min={pol['min']}ms, mean={pol['mean']}ms, p50={pol['p50']}ms, p95={pol['p95']}ms, p99={pol['p99']}ms")
+                print(f"Total Measured Lookup:       min={tot['min']}ms, mean={tot['mean']}ms, p50={tot['p50']}ms, p95={tot['p95']}ms, p99={tot['p99']}ms")
 
         # Evaluate target split
-        metrics, outcomes = await evaluate_dataset(cases, policy, provider, split=args.split)
+        metrics, outcomes = await evaluate_dataset(
+            cases,
+            policy,
+            provider,
+            split=args.split,
+            cache=pg_cache,
+            vector_store=pg_vector_store,
+            dataset_hash=dataset_hash,
+        )
 
         print(f"\n=== EVALUATION REPORT: SPLIT = '{args.split.upper()}' ===")
         print(f"Dataset SHA-256:        {dataset_hash[:16]}... ({len(cases)} total cases)")
         print(f"Cases Evaluated:        {metrics.total_cases}")
         print(f"Embedding Provider:     {actual_provider_name} ({provider.model_name}, dim={provider.dimensions})")
+        print(f"Benchmark Mode:         {effective_benchmark_mode}")
+        if db_info:
+            print(f"PostgreSQL Version:     {db_info.get('postgres_version')}")
+            print(f"pgvector Version:       {db_info.get('pgvector_version')}")
+            print(f"Database URL:           {db_info.get('database_url')}")
         print(f"Mock Embeddings Used:   {mock_used}")
         print(f"Mock Fallback Occurred: {mock_fallback_occurred}")
         print(f"Threshold:              {args.threshold:.2f}, Margin: {args.margin:.2f}")
@@ -1207,7 +1732,8 @@ async def async_main() -> None:
             "mock_fallback_occurred": mock_fallback_occurred,
             "similarity_threshold": args.threshold,
             "ambiguity_margin": args.margin,
-            "benchmark_mode": "offline_component" if mock_used else "real_in_memory",
+            "benchmark_mode": effective_benchmark_mode,
+            "database_info": db_info,
         }
 
         json_path, csv_path = save_reports(
@@ -1217,6 +1743,9 @@ async def async_main() -> None:
         print(f"Saved CSV report:  {csv_path}")
 
     finally:
+        if db_pool is not None:
+            await db_pool.close()
+            logger.info("Closed test PostgreSQL connection pool.")
         await provider.close()
 
 

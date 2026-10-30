@@ -6,11 +6,18 @@ model-identity validation, and savings accounting.
 import asyncio
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import urlsplit
+
+import asyncpg
 
 from app.cache.exact_cache import ExactCache
+from app.cache.migration import run_migrations
+from app.cache.postgres_cache import PostgresCache
 from app.core.contracts import ChatMessage, GenerationRequest, GenerationResult, UsageMetrics
 from app.core.service import IntelliCacheCore
 from app.embeddings.contracts import EmbeddingResult, EmbeddingTask
@@ -25,16 +32,26 @@ from app.vector_store.contracts import (
     VectorSearchResult,
     cosine_distance_to_similarity,
 )
+from app.vector_store.migration import check_pgvector_available, run_vector_migrations
+from app.vector_store.postgres_store import PostgresVectorStore
 from scripts.evaluate_semantic_cache import (
     CandidateData,
     DeterministicMockEmbeddingProvider,
     EvaluationCase,
+    EvaluationMetrics,
+    EvaluationOutcome,
     calculate_cosine_similarity,
+    compute_candidate_fingerprint,
+    compute_latency_stats,
     compute_metrics_from_counts,
     evaluate_dataset,
     evaluate_single_case,
     load_dataset,
+    redact_database_url,
+    run_benchmark,
     run_threshold_sweep,
+    save_reports,
+    validate_test_database_url,
 )
 
 
@@ -749,6 +766,510 @@ class TestSemanticEvaluation(unittest.IsolatedAsyncioTestCase):
         from scripts.evaluate_semantic_cache import get_dataset_hash
         h = get_dataset_hash(self.dataset_path)
         self.assertEqual(len(h), 64)
+
+    def test_validate_test_database_url(self) -> None:
+        """Verifies TEST_DATABASE_URL validation and safety enforcement."""
+        # Valid URL containing 'test' in db name
+        valid = "postgresql://user:secret@localhost:5432/intellicache_test"
+        self.assertEqual(validate_test_database_url(valid), valid)
+
+        # Missing or empty URL
+        with self.assertRaises(ValueError) as ctx:
+            validate_test_database_url(None)
+        self.assertIn("TEST_DATABASE_URL must be explicitly configured", str(ctx.exception))
+
+        with self.assertRaises(ValueError) as ctx:
+            validate_test_database_url("   ")
+        self.assertIn("TEST_DATABASE_URL must be explicitly configured", str(ctx.exception))
+
+        # Rejects non-test database name
+        non_test_urls = [
+            "postgresql://user:secret@localhost:5432/production_db",
+            "postgresql://user:secret@localhost:5432/intellicache",
+            "postgresql://user:secret@localhost:5432/postgres",
+        ]
+        for bad_url in non_test_urls:
+            with self.assertRaises(ValueError) as ctx:
+                validate_test_database_url(bad_url)
+            self.assertIn("must contain 'test'", str(ctx.exception))
+
+    def test_redact_database_url(self) -> None:
+        """Verifies redaction of sensitive credentials in database URLs."""
+        url = "postgresql://cache_admin:super_secret_pw@db.internal:5432/intellicache_test"
+        redacted = redact_database_url(url)
+        self.assertEqual(redacted, "postgresql://***:***@db.internal:5432/intellicache_test")
+        self.assertNotIn("cache_admin", redacted)
+        self.assertNotIn("super_secret_pw", redacted)
+
+        # Empty string
+        self.assertEqual(redact_database_url(""), "")
+
+    def test_compute_candidate_fingerprint_deterministic_and_unique(self) -> None:
+        """Verifies deterministic and collision-resistant fingerprint hashing."""
+        fp1 = compute_candidate_fingerprint("hash_abc", "case_1", "cand_1")
+        fp2 = compute_candidate_fingerprint("hash_abc", "case_1", "cand_1")
+        self.assertEqual(fp1, fp2)
+        self.assertEqual(len(fp1), 64)
+
+        fp_diff = compute_candidate_fingerprint("hash_abc", "case_1", "cand_2")
+        self.assertNotEqual(fp1, fp_diff)
+
+    def test_compute_latency_stats(self) -> None:
+        """Verifies latency distribution statistics (min, mean, p50, p90, p95, p99)."""
+        data = [10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0, 100.0]
+        stats = compute_latency_stats(data)
+        self.assertEqual(stats["min"], 10.0)
+        self.assertEqual(stats["mean"], 55.0)
+        self.assertEqual(stats["p50"], 60.0)
+        self.assertGreaterEqual(stats["p95"], 90.0)
+        self.assertGreaterEqual(stats["p99"], 90.0)
+
+        # Empty data safety
+        empty_stats = compute_latency_stats([])
+        self.assertEqual(empty_stats["min"], 0.0)
+        self.assertEqual(empty_stats["mean"], 0.0)
+        self.assertEqual(empty_stats["p50"], 0.0)
+
+    async def test_pgvector_insertion_order_exact_cache_before_vector(self) -> None:
+        """Verifies strict foreign-key insertion order: exact cache entry before vector upsert."""
+        call_order = []
+
+        mock_cache = AsyncMock()
+        async def fake_cache_set(*args, **kwargs):
+            call_order.append("cache.set")
+        mock_cache.set.side_effect = fake_cache_set
+        mock_cache.clear = AsyncMock()
+
+        mock_vector_store = AsyncMock()
+        async def fake_vector_upsert(*args, **kwargs):
+            call_order.append("vector_store.upsert")
+        mock_vector_store.upsert.side_effect = fake_vector_upsert
+        mock_vector_store.clear = AsyncMock()
+        mock_vector_store.search.return_value = []
+
+        case = EvaluationCase(
+            id="test-order",
+            query="Test query",
+            category="positive_paraphrase",
+            split="development",
+            expected_answer_label="l1",
+            rationale="",
+            candidates=[
+                CandidateData(
+                    id="c1",
+                    query_text="Cand query",
+                    cached_response="Resp",
+                    answer_label="l1",
+                )
+            ],
+        )
+        provider = DeterministicMockEmbeddingProvider()
+        policy = SemanticCachePolicy()
+
+        await evaluate_single_case(
+            case,
+            policy,
+            provider,
+            cache=mock_cache,
+            vector_store=mock_vector_store,
+            dataset_hash="hash123",
+            run_id="run456",
+        )
+
+        self.assertEqual(call_order, ["cache.set", "vector_store.upsert"])
+        mock_cache.set.assert_called_once()
+        mock_vector_store.upsert.assert_called_once()
+
+    async def test_pgvector_namespace_isolation_and_search_invocation(self) -> None:
+        """Verifies that vector search is scoped to the run-specific case namespace."""
+        mock_cache = AsyncMock()
+        mock_vector_store = AsyncMock()
+        mock_vector_store.search.return_value = []
+
+        case = EvaluationCase(
+            id="test-ns-case",
+            query="Isolation test query",
+            category="positive_paraphrase",
+            split="development",
+            expected_answer_label="l1",
+            rationale="",
+            candidates=[
+                CandidateData(
+                    id="c1",
+                    query_text="Cand query",
+                    cached_response="Resp",
+                    answer_label="l1",
+                )
+            ],
+        )
+        provider = DeterministicMockEmbeddingProvider()
+        policy = SemanticCachePolicy(configured_model="nomic-embed-text")
+
+        await evaluate_single_case(
+            case,
+            policy,
+            provider,
+            cache=mock_cache,
+            vector_store=mock_vector_store,
+            dataset_hash="hash123",
+            run_id="run789",
+        )
+
+        expected_ns = "eval_run789_test-ns-case"
+        search_kwargs = mock_vector_store.search.call_args.kwargs
+        self.assertEqual(search_kwargs.get("namespace"), expected_ns)
+        self.assertEqual(search_kwargs.get("top_k"), policy.top_k)
+        self.assertEqual(search_kwargs.get("model"), "nomic-embed-text")
+
+    async def test_pgvector_cleanup_on_success_and_exception(self) -> None:
+        """Verifies that namespace-scoped cleanup is executed in finally block."""
+        mock_cache = AsyncMock()
+        mock_vector_store = AsyncMock()
+        mock_vector_store.search.return_value = []
+
+        case = EvaluationCase(
+            id="test-clean",
+            query="Clean test query",
+            category="positive_paraphrase",
+            split="development",
+            expected_answer_label="l1",
+            rationale="",
+            candidates=[
+                CandidateData(id="c1", query_text="Cand query", cached_response="Resp", answer_label="l1")
+            ],
+        )
+        provider = DeterministicMockEmbeddingProvider()
+        policy = SemanticCachePolicy()
+
+        # 1. Successful run triggers cleanup
+        await evaluate_single_case(
+            case, policy, provider, cache=mock_cache, vector_store=mock_vector_store,
+            dataset_hash="h1", run_id="r1",
+        )
+        expected_ns = "eval_r1_test-clean"
+        mock_vector_store.clear.assert_called_with(expected_ns)
+        mock_cache.clear.assert_called_with(expected_ns)
+
+        # 2. Exception during search still triggers cleanup
+        mock_vector_store.clear.reset_mock()
+        mock_cache.clear.reset_mock()
+        mock_vector_store.search.side_effect = RuntimeError("Simulated search failure")
+
+        with self.assertRaises(RuntimeError):
+            await evaluate_single_case(
+                case, policy, provider, cache=mock_cache, vector_store=mock_vector_store,
+                dataset_hash="h1", run_id="r2",
+            )
+        expected_ns2 = "eval_r2_test-clean"
+        mock_vector_store.clear.assert_called_with(expected_ns2)
+        mock_cache.clear.assert_called_with(expected_ns2)
+
+    async def test_pgvector_benchmark_measures_all_five_latencies(self) -> None:
+        """Verifies that pgvector benchmark measures and returns all required latency breakdown metrics."""
+        mock_cache = AsyncMock()
+        mock_vector_store = AsyncMock()
+        mock_vector_store.search.return_value = []
+
+        case = EvaluationCase(
+            id="bench-pgv",
+            query="How to reverse a string in Python?",
+            category="positive_paraphrase",
+            split="development",
+            expected_answer_label="l1",
+            rationale="",
+            candidates=[
+                CandidateData(
+                    id="c1",
+                    query_text="What is the slice syntax to reverse a string in Python?",
+                    cached_response="s[::-1]",
+                    answer_label="l1",
+                )
+            ],
+        )
+        provider = DeterministicMockEmbeddingProvider()
+        policy = SemanticCachePolicy()
+
+        db_info = {
+            "postgres_version": "17.0",
+            "pgvector_version": "0.8.7",
+            "database_url": "postgresql://***:***@127.0.0.1:5433/intellicache_test",
+        }
+
+        bench_res = await run_benchmark(
+            [case],
+            policy,
+            provider,
+            split="development",
+            iterations=2,
+            benchmark_mode="pgvector",
+            cache=mock_cache,
+            vector_store=mock_vector_store,
+            dataset_hash="hash999",
+            db_info=db_info,
+        )
+
+        self.assertEqual(bench_res["benchmark_mode"], "pgvector")
+        self.assertIn("PostgreSQL/pgvector", bench_res["benchmark_label"])
+        self.assertEqual(bench_res["iterations"], 2)
+        self.assertEqual(bench_res["sample_count"], 2)
+
+        # Verify all 5 separated latency measurement dictionaries
+        for key in [
+            "candidate_indexing_latency_ms",
+            "query_embedding_latency_ms",
+            "postgres_retrieval_latency_ms",
+            "policy_evaluation_latency_ms",
+            "semantic_lookup_latency_ms",
+        ]:
+            self.assertIn(key, bench_res)
+            stats = bench_res[key]
+            self.assertIn("min", stats)
+            self.assertIn("mean", stats)
+            self.assertIn("p50", stats)
+            self.assertIn("p95", stats)
+            self.assertIn("p99", stats)
+
+        self.assertEqual(bench_res["database_info"], db_info)
+
+    def test_save_reports_serializes_database_info_and_benchmark_mode(self) -> None:
+        """Verifies report serialization records pgvector provenance, labels, and safety status."""
+        metrics = EvaluationMetrics(
+            total_cases=2,
+            tp=2,
+            fp=0,
+            fn=0,
+            tn=0,
+            precision=1.0,
+            recall=1.0,
+            f1_score=1.0,
+            safe_reuse_count=2,
+            safe_tokens_saved=740,
+        )
+        outcomes = [
+            EvaluationOutcome(
+                case_id="c1",
+                category="positive_paraphrase",
+                split="development",
+                expected_answer_label="l1",
+                safe_reuse_expected=True,
+                accepted_candidate_id="cand1",
+                accepted_answer_label="l1",
+                top_similarity=0.95,
+                margin=None,
+                decision="safe_reuse",
+                classification="TP",
+                rejection_reason=None,
+            )
+        ]
+        meta = {
+            "dataset_hash": "a" * 64,
+            "dataset_split": "development",
+            "benchmark_mode": "pgvector",
+            "embedding_provider": "OllamaEmbeddingProvider",
+            "embedding_model": "nomic-embed-text",
+            "database_info": {
+                "postgres_version": "17.0",
+                "pgvector_version": "0.8.7",
+                "database_url": "postgresql://***:***@localhost:5433/intellicache_test",
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            json_p, csv_p = save_reports(metrics, outcomes, None, None, tmpdir, meta)
+            self.assertTrue(json_p.is_file())
+            self.assertTrue(csv_p.is_file())
+
+            with open(json_p, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            rep_meta = data["report_metadata"]
+            self.assertEqual(rep_meta["benchmark_mode"], "pgvector")
+            self.assertEqual(rep_meta["database_info"]["pgvector_version"], "0.8.7")
+            self.assertIn("Safe: Zero false positives", rep_meta["safety_status"])
+
+
+class TestPgvectorSemanticEvaluationIntegration(unittest.IsolatedAsyncioTestCase):
+    """
+    Genuine PostgreSQL/pgvector integration tests for semantic cache evaluation.
+    Only runs when TEST_DATABASE_URL is explicitly set and points to an active
+    PostgreSQL instance with the pgvector extension installed.
+    """
+
+    async def asyncSetUp(self) -> None:
+        raw_url = os.environ.get("TEST_DATABASE_URL")
+        self.is_explicit = raw_url is not None
+        if not self.is_explicit:
+            self.skipTest("TEST_DATABASE_URL not set; skipping live PostgreSQL pgvector integration tests.")
+
+        try:
+            self.db_url = validate_test_database_url(raw_url)
+        except ValueError as exc:
+            self.fail(f"Invalid TEST_DATABASE_URL: {exc}")
+
+        safe_url = redact_database_url(self.db_url)
+        try:
+            self.pool = await asyncpg.create_pool(self.db_url, min_size=1, max_size=5)
+            async with self.pool.acquire() as conn:
+                has_vector = await check_pgvector_available(conn)
+                if not has_vector:
+                    self.fail(f"pgvector extension 'vector' is not available at {safe_url}")
+
+            await run_migrations(self.pool)
+            await run_vector_migrations(self.pool, dimensions=768)
+
+            self.cache = PostgresCache(pool=self.pool, default_namespace="test_eval_ns")
+            self.store = PostgresVectorStore(
+                pool=self.pool,
+                default_namespace="test_eval_ns",
+                default_model="nomic-embed-text",
+                dimensions=768,
+            )
+        except Exception as exc:
+            self.fail(f"Live pgvector setup failed for TEST_DATABASE_URL ({safe_url}): {exc}")
+
+    async def asyncTearDown(self) -> None:
+        if hasattr(self, "pool") and self.pool is not None:
+            await self.pool.close()
+
+    async def test_live_pgvector_evaluation_positive_case(self) -> None:
+        """Verifies genuine PostgreSQL vector upsert, search, policy evaluation, and cleanup."""
+        case = EvaluationCase(
+            id="pgv-pos-test",
+            query="How to reverse a string in Python?",
+            category="positive_paraphrase",
+            split="development",
+            expected_answer_label="py_reverse",
+            rationale="Identical semantic intent",
+            candidates=[
+                CandidateData(
+                    id="cand-1",
+                    query_text="What is the slice syntax to reverse a string in Python?",
+                    cached_response="Use s[::-1]",
+                    answer_label="py_reverse",
+                    prompt_tokens=100,
+                    completion_tokens=200,
+                    total_tokens=300,
+                    original_latency_ms=1000.0,
+                )
+            ],
+        )
+        provider = DeterministicMockEmbeddingProvider(model="nomic-embed-text", dimensions=768)
+        policy = SemanticCachePolicy(min_similarity=0.75, configured_model="nomic-embed-text")
+
+        outcome = await evaluate_single_case(
+            case,
+            policy,
+            provider,
+            cache=self.cache,
+            vector_store=self.store,
+            dataset_hash="integration_hash",
+            run_id="test_run",
+        )
+
+        self.assertEqual(outcome.classification, "TP")
+        self.assertEqual(outcome.decision, "safe_reuse")
+        self.assertEqual(outcome.accepted_answer_label, "py_reverse")
+        self.assertGreaterEqual(outcome.top_similarity, 0.75)
+
+        # Verify namespace cleanup: case namespace must be completely empty
+        case_ns = "eval_test_run_pgv-pos-test"
+        async with self.pool.acquire() as conn:
+            vec_count = await conn.fetchval(
+                "SELECT COUNT(*) FROM vector_records WHERE cache_namespace = $1", case_ns
+            )
+            cache_count = await conn.fetchval(
+                "SELECT COUNT(*) FROM cache_entries WHERE cache_namespace = $1", case_ns
+            )
+        self.assertEqual(vec_count, 0)
+        self.assertEqual(cache_count, 0)
+
+    async def test_live_pgvector_evaluation_negative_case(self) -> None:
+        """Verifies genuine PostgreSQL vector search rejects hard negative below threshold."""
+        case = EvaluationCase(
+            id="pgv-neg-test",
+            query="How do I filter an array in Python?",
+            category="different_language",
+            split="development",
+            expected_answer_label=None,
+            rationale="Cannot reuse JS answer for Python query",
+            candidates=[
+                CandidateData(
+                    id="cand-js",
+                    query_text="How do I filter an array in JavaScript?",
+                    cached_response="arr.filter(...)",
+                    answer_label="js_array_filter",
+                )
+            ],
+        )
+        provider = DeterministicMockEmbeddingProvider(model="nomic-embed-text", dimensions=768)
+        policy = SemanticCachePolicy(min_similarity=0.82, configured_model="nomic-embed-text")
+
+        outcome = await evaluate_single_case(
+            case,
+            policy,
+            provider,
+            cache=self.cache,
+            vector_store=self.store,
+            dataset_hash="integration_hash",
+            run_id="test_run",
+        )
+
+        self.assertEqual(outcome.classification, "TN")
+        self.assertEqual(outcome.decision, "safe_rejection")
+        self.assertIsNone(outcome.accepted_candidate_id)
+
+        # Verify namespace cleanup
+        case_ns = "eval_test_run_pgv-neg-test"
+        async with self.pool.acquire() as conn:
+            vec_count = await conn.fetchval(
+                "SELECT COUNT(*) FROM vector_records WHERE cache_namespace = $1", case_ns
+            )
+        self.assertEqual(vec_count, 0)
+
+    async def test_live_pgvector_benchmark_execution(self) -> None:
+        """Verifies running genuine pgvector benchmarking across multiple iterations."""
+        case = EvaluationCase(
+            id="pgv-bench-case",
+            query="How to reverse a string in Python?",
+            category="positive_paraphrase",
+            split="development",
+            expected_answer_label="py_reverse",
+            rationale="",
+            candidates=[
+                CandidateData(
+                    id="cand-bench-1",
+                    query_text="What is the slice syntax to reverse a string in Python?",
+                    cached_response="s[::-1]",
+                    answer_label="py_reverse",
+                )
+            ],
+        )
+        provider = DeterministicMockEmbeddingProvider(model="nomic-embed-text", dimensions=768)
+        policy = SemanticCachePolicy(configured_model="nomic-embed-text")
+
+        db_info = {
+            "postgres_version": "17.0",
+            "pgvector_version": "0.8.7",
+            "database_url": redact_database_url(self.db_url),
+        }
+
+        bench_res = await run_benchmark(
+            [case],
+            policy,
+            provider,
+            split="development",
+            iterations=3,
+            benchmark_mode="pgvector",
+            cache=self.cache,
+            vector_store=self.store,
+            dataset_hash="integration_hash",
+            db_info=db_info,
+        )
+
+        self.assertEqual(bench_res["benchmark_mode"], "pgvector")
+        self.assertEqual(bench_res["sample_count"], 3)
+        self.assertGreater(bench_res["postgres_retrieval_latency_ms"]["mean"], 0.0)
+        self.assertGreater(bench_res["candidate_indexing_latency_ms"]["mean"], 0.0)
+        self.assertGreater(bench_res["semantic_lookup_latency_ms"]["mean"], 0.0)
 
 
 if __name__ == "__main__":

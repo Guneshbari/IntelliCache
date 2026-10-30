@@ -331,6 +331,53 @@ Available at `GET /cache/semantic/stats` and within `GET /cache/stats`:
 
 ---
 
+## Semantic Cache Evaluation & Benchmarking
+
+IntelliCache provides an offline evaluation and benchmarking harness at `gateway/scripts/evaluate_semantic_cache.py` using a curated dataset of 114 technical queries (`gateway/evaluation/dataset.json`).
+
+### Benchmark Modes
+
+1. **`--benchmark-mode component` (Offline Synthetic)**:
+   - Uses `DeterministicMockEmbeddingProvider`.
+   - Measures local CPU vector operations, cosine similarity ranking, and policy candidate evaluation.
+   - Requires no external daemons or database.
+2. **`--benchmark-mode real` (In-Memory Real Embeddings)**:
+   - Uses `OllamaEmbeddingProvider` with `nomic-embed-text`.
+   - Measures live HTTP query embedding, candidate embedding, in-memory cosine ranking, and policy checks.
+   - Fails fast if Ollama is unavailable without silent mock fallback.
+3. **`--benchmark-mode pgvector` (End-to-End PostgreSQL Retrieval)**:
+   - Uses `OllamaEmbeddingProvider` with real embeddings and live PostgreSQL + pgvector.
+   - **Database Safety**: Requires an explicit `TEST_DATABASE_URL` whose database name contains `test`. Never uses production `DATABASE_URL`.
+   - **Foreign-Key Order**: Inserts exact-cache entry via `PostgresCache.set()` first, then upserts `VectorRecord` via `PostgresVectorStore.upsert()`.
+   - **Retrieval**: Executes nearest-neighbour vector search via `PostgresVectorStore.search()` using the `<=>` pgvector index operator.
+   - **Cleanup**: Cleaned up in a `finally` block using namespace-scoped deletion.
+   - **Latency Breakdown**: Separates candidate indexing, query embedding, PostgreSQL retrieval, policy evaluation, and total semantic lookup latency.
+4. **`--benchmark-mode auto`**: Automatically selects `component` for mock provider and `real` for Ollama provider.
+
+### Example Commands
+
+```bash
+# Offline evaluation on development split
+python scripts/evaluate_semantic_cache.py --dataset evaluation/dataset.json --split development
+
+# Offline parameter grid sweep (strictly development partition)
+python scripts/evaluate_semantic_cache.py --sweep
+
+# Offline component latency benchmark
+python scripts/evaluate_semantic_cache.py --benchmark --benchmark-mode component --iterations 10
+
+# Real Ollama + PostgreSQL/pgvector evaluation and benchmarking
+export TEST_DATABASE_URL="postgresql://gnx@127.0.0.1:5433/intellicache_test"
+python scripts/evaluate_semantic_cache.py \
+    --provider ollama \
+    --model nomic-embed-text \
+    --benchmark-mode pgvector \
+    --benchmark \
+    --iterations 5
+```
+
+---
+
 ## Running the Server
 
 ```bash
@@ -362,6 +409,7 @@ python -m unittest tests/test_vector_store.py  # Vector store, nearest-neighbour
 python -m unittest tests/test_semantic_cache.py # Semantic policy, eligibility, ambiguity, core pipeline
 python -m unittest tests/test_query.py         # API route & streaming tests
 python -m unittest tests/test_multi_client.py  # Multi-client auth, namespaces & PostgreSQL tests
+python -m unittest tests/test_evaluation.py    # Semantic evaluation, threshold sweeps & pgvector benchmarking
 python -m unittest tests/test_config.py        # Configuration tests
 python -m unittest tests/test_main.py          # Application integration tests
 ```
