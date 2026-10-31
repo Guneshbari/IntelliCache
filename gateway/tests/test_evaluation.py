@@ -815,20 +815,67 @@ class TestSemanticEvaluation(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(fp1, fp_diff)
 
     def test_compute_latency_stats(self) -> None:
-        """Verifies latency distribution statistics (min, mean, p50, p90, p95, p99)."""
+        """Verifies latency distribution statistics, sample counts, and small-sample warnings."""
         data = [10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0, 100.0]
         stats = compute_latency_stats(data)
+        self.assertEqual(stats["sample_count"], 10)
         self.assertEqual(stats["min"], 10.0)
         self.assertEqual(stats["mean"], 55.0)
         self.assertEqual(stats["p50"], 60.0)
         self.assertGreaterEqual(stats["p95"], 90.0)
         self.assertGreaterEqual(stats["p99"], 90.0)
+        self.assertNotIn("warning", stats)
+
+        # Small sample size triggers warning
+        small_data = [12.0, 15.0, 18.0]
+        small_stats = compute_latency_stats(small_data)
+        self.assertEqual(small_stats["sample_count"], 3)
+        self.assertIn("warning", small_stats)
+        self.assertIn("Sample size < 10", small_stats["warning"])
 
         # Empty data safety
         empty_stats = compute_latency_stats([])
+        self.assertEqual(empty_stats["sample_count"], 0)
         self.assertEqual(empty_stats["min"], 0.0)
         self.assertEqual(empty_stats["mean"], 0.0)
         self.assertEqual(empty_stats["p50"], 0.0)
+        self.assertNotIn("warning", empty_stats)
+
+    async def test_indexing_latency_separated_from_lookup_and_does_not_reduce_savings(self) -> None:
+        """
+        Verifies Stage A (candidate indexing) is timed separately from Stage B (lookup),
+        and candidate indexing time does not penalize safe latency saved calculation.
+        """
+        case = EvaluationCase(
+            id="latency-sep-test",
+            query="How to reverse a string in Python?",
+            category="positive_paraphrase",
+            split="development",
+            expected_answer_label="py_reverse",
+            rationale="Test latency separation",
+            candidates=[
+                CandidateData(
+                    id="cand-sep-1",
+                    query_text="What is the slice syntax to reverse a string in Python?",
+                    cached_response="s[::-1]",
+                    answer_label="py_reverse",
+                    original_latency_ms=1000.0,
+                )
+            ],
+        )
+        provider = DeterministicMockEmbeddingProvider(model="nomic-embed-text", dimensions=768)
+        policy = SemanticCachePolicy(min_similarity=0.75, configured_model="nomic-embed-text")
+
+        outcome = await evaluate_single_case(case, policy, provider)
+        self.assertGreater(outcome.indexing_latency_ms, 0.0)
+        self.assertGreater(outcome.lookup_latency_ms, 0.0)
+        self.assertEqual(outcome.classification, "TP")
+
+        metrics, outcomes = await evaluate_dataset([case], policy, provider, split="development")
+        expected_saved = round(max(0.0, 1000.0 - outcomes[0].lookup_latency_ms), 2)
+        self.assertEqual(metrics.safe_latency_saved_ms, expected_saved)
+        # Latency saved must NOT be reduced by indexing_latency_ms
+        self.assertGreater(metrics.safe_latency_saved_ms, 1000.0 - outcomes[0].lookup_latency_ms - outcomes[0].indexing_latency_ms)
 
     async def test_pgvector_insertion_order_exact_cache_before_vector(self) -> None:
         """Verifies strict foreign-key insertion order: exact cache entry before vector upsert."""
@@ -1012,6 +1059,12 @@ class TestSemanticEvaluation(unittest.IsolatedAsyncioTestCase):
         self.assertIn("PostgreSQL/pgvector", bench_res["benchmark_label"])
         self.assertEqual(bench_res["iterations"], 2)
         self.assertEqual(bench_res["sample_count"], 2)
+        self.assertIn("per_metric_sample_counts", bench_res)
+        self.assertEqual(bench_res["per_metric_sample_counts"]["candidate_indexing"], 1)
+        self.assertEqual(bench_res["per_metric_sample_counts"]["query_embedding"], 2)
+        self.assertEqual(bench_res["per_metric_sample_counts"]["postgres_retrieval"], 2)
+        self.assertEqual(bench_res["per_metric_sample_counts"]["policy_evaluation"], 2)
+        self.assertEqual(bench_res["per_metric_sample_counts"]["semantic_lookup"], 2)
 
         # Verify all 5 separated latency measurement dictionaries
         for key in [
@@ -1028,6 +1081,8 @@ class TestSemanticEvaluation(unittest.IsolatedAsyncioTestCase):
             self.assertIn("p50", stats)
             self.assertIn("p95", stats)
             self.assertIn("p99", stats)
+            self.assertGreater(stats["sample_count"], 0)
+            self.assertIn("warning", stats)
 
         self.assertEqual(bench_res["database_info"], db_info)
 
@@ -1059,6 +1114,8 @@ class TestSemanticEvaluation(unittest.IsolatedAsyncioTestCase):
                 decision="safe_reuse",
                 classification="TP",
                 rejection_reason=None,
+                indexing_latency_ms=15.2,
+                lookup_latency_ms=6.8,
             )
         ]
         meta = {
@@ -1067,6 +1124,10 @@ class TestSemanticEvaluation(unittest.IsolatedAsyncioTestCase):
             "benchmark_mode": "pgvector",
             "embedding_provider": "OllamaEmbeddingProvider",
             "embedding_model": "nomic-embed-text",
+            "vector_index_type": "hnsw",
+            "vector_index_available": True,
+            "vector_index_used": True,
+            "retrieval_method": "HNSW approximate nearest-neighbour search",
             "database_info": {
                 "postgres_version": "17.0",
                 "pgvector_version": "0.8.7",
@@ -1083,13 +1144,25 @@ class TestSemanticEvaluation(unittest.IsolatedAsyncioTestCase):
                 data = json.load(f)
             rep_meta = data["report_metadata"]
             self.assertEqual(rep_meta["benchmark_mode"], "pgvector")
+            self.assertEqual(rep_meta["vector_index_type"], "hnsw")
+            self.assertTrue(rep_meta["vector_index_available"])
+            self.assertTrue(rep_meta["vector_index_used"])
+            self.assertEqual(rep_meta["retrieval_method"], "HNSW approximate nearest-neighbour search")
             self.assertEqual(rep_meta["database_info"]["pgvector_version"], "0.8.7")
             self.assertIn("Safe: Zero false positives", rep_meta["safety_status"])
+            self.assertEqual(data["outcomes"][0]["indexing_latency_ms"], 15.2)
+            self.assertEqual(data["outcomes"][0]["lookup_latency_ms"], 6.8)
+
+            with open(csv_p, "r", encoding="utf-8") as f:
+                csv_lines = f.readlines()
+            self.assertTrue(any("VectorIndex: hnsw" in line for line in csv_lines))
+            self.assertTrue(any("indexing_latency_ms" in line for line in csv_lines))
 
 
-class TestPgvectorSemanticEvaluationIntegration(unittest.IsolatedAsyncioTestCase):
+class TestMockPgvectorSemanticEvaluationIntegration(unittest.IsolatedAsyncioTestCase):
     """
-    Genuine PostgreSQL/pgvector integration tests for semantic cache evaluation.
+    Integration tests verifying PostgreSQL vector persistence, pgvector ANN retrieval,
+    exact-cache JOIN, and policy evaluation using deterministic mock embeddings.
     Only runs when TEST_DATABASE_URL is explicitly set and points to an active
     PostgreSQL instance with the pgvector extension installed.
     """
@@ -1270,6 +1343,106 @@ class TestPgvectorSemanticEvaluationIntegration(unittest.IsolatedAsyncioTestCase
         self.assertGreater(bench_res["postgres_retrieval_latency_ms"]["mean"], 0.0)
         self.assertGreater(bench_res["candidate_indexing_latency_ms"]["mean"], 0.0)
         self.assertGreater(bench_res["semantic_lookup_latency_ms"]["mean"], 0.0)
+
+
+class TestRealOllamaPgvectorIntegration(unittest.IsolatedAsyncioTestCase):
+    """
+    Opt-in end-to-end integration tests using real OllamaEmbeddingProvider with nomic-embed-text
+    against live PostgreSQL/pgvector database.
+    Guarded by environment variable: OLLAMA_INTEGRATION_TEST=true.
+    Fails fast with clear error message if enabled and Ollama or PostgreSQL is unreachable.
+    """
+
+    async def asyncSetUp(self) -> None:
+        enabled = os.environ.get("OLLAMA_INTEGRATION_TEST", "").strip().lower() in {"true", "1", "yes"}
+        if not enabled:
+            self.skipTest("Opt-in test: set OLLAMA_INTEGRATION_TEST=true to run real Ollama model integration.")
+
+        raw_url = os.environ.get("TEST_DATABASE_URL")
+        if not raw_url:
+            self.fail("OLLAMA_INTEGRATION_TEST=true requires TEST_DATABASE_URL to be set.")
+
+        try:
+            self.db_url = validate_test_database_url(raw_url)
+        except ValueError as exc:
+            self.fail(f"Invalid TEST_DATABASE_URL: {exc}")
+
+        ollama_url = os.environ.get("EMBEDDING_BASE_URL", "http://127.0.0.1:11434")
+        from app.embeddings.ollama_adapter import OllamaEmbeddingProvider
+        self.provider = OllamaEmbeddingProvider(model="nomic-embed-text", base_url=ollama_url)
+        try:
+            await self.provider.embed("ping", task=EmbeddingTask.QUERY)
+        except Exception as exc:
+            await self.provider.close()
+            self.fail(f"Ollama integration test enabled, but Ollama provider at {ollama_url} failed: {exc}")
+
+        safe_url = redact_database_url(self.db_url)
+        try:
+            self.pool = await asyncpg.create_pool(self.db_url, min_size=1, max_size=5)
+            async with self.pool.acquire() as conn:
+                has_vector = await check_pgvector_available(conn)
+                if not has_vector:
+                    self.fail(f"pgvector extension 'vector' is not available at {safe_url}")
+
+            await run_migrations(self.pool)
+            await run_vector_migrations(self.pool, dimensions=self.provider.dimensions)
+
+            self.cache = PostgresCache(pool=self.pool, default_namespace="test_real_eval_ns")
+            self.store = PostgresVectorStore(
+                pool=self.pool,
+                default_namespace="test_real_eval_ns",
+                default_model="nomic-embed-text",
+                dimensions=self.provider.dimensions,
+            )
+        except Exception as exc:
+            self.fail(f"Real Ollama pgvector setup failed for TEST_DATABASE_URL ({safe_url}): {exc}")
+
+    async def asyncTearDown(self) -> None:
+        if hasattr(self, "provider") and self.provider is not None:
+            await self.provider.close()
+        if hasattr(self, "pool") and self.pool is not None:
+            await self.pool.close()
+
+    async def test_real_ollama_semantic_retrieval_and_decision(self) -> None:
+        """Verifies genuine Ollama embeddings against PostgreSQL vector store."""
+        case = EvaluationCase(
+            id="real-pos-test",
+            query="How to reverse a string in Python?",
+            category="positive_paraphrase",
+            split="development",
+            expected_answer_label="py_reverse",
+            rationale="Identical semantic intent with real model embeddings",
+            candidates=[
+                CandidateData(
+                    id="cand-real-1",
+                    query_text="What is the slice syntax to reverse a string in Python?",
+                    cached_response="Use s[::-1]",
+                    answer_label="py_reverse",
+                    prompt_tokens=100,
+                    completion_tokens=200,
+                    total_tokens=300,
+                    original_latency_ms=1200.0,
+                )
+            ],
+        )
+        policy = SemanticCachePolicy(min_similarity=0.75, configured_model="nomic-embed-text")
+
+        outcome = await evaluate_single_case(
+            case,
+            policy,
+            self.provider,
+            cache=self.cache,
+            vector_store=self.store,
+            dataset_hash="real_model_hash",
+            run_id="real_test_run",
+        )
+
+        self.assertEqual(outcome.classification, "TP")
+        self.assertEqual(outcome.decision, "safe_reuse")
+        self.assertEqual(outcome.accepted_answer_label, "py_reverse")
+        self.assertGreaterEqual(outcome.top_similarity, 0.75)
+        self.assertGreater(outcome.indexing_latency_ms, 0.0)
+        self.assertGreater(outcome.lookup_latency_ms, 0.0)
 
 
 if __name__ == "__main__":

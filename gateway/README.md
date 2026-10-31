@@ -60,7 +60,8 @@ gateway/
 ├── migrations/               # SQL migration scripts
 │   ├── 001_create_cache_entries.sql
 │   └── vector/               # Vector store migrations (applied only when SEMANTIC_CACHE_ENABLED=true)
-│       └── 001_create_vector_records.sql
+│       ├── 001_create_vector_records.sql
+│       └── 002_create_hnsw_index.sql
 ├── tests/
 │   ├── test_core.py          # Core orchestration tests using pure FakeProvider & AST import boundary tests
 │   ├── test_providers.py     # Groq adapter, client closure, and ProviderFactory tests
@@ -279,8 +280,14 @@ VECTOR_DIMENSIONS=768
 
 ### Exact-Only Preservation
 - `SEMANTIC_CACHE_ENABLED=false` by default. When disabled, the gateway operates as an exact-only cache and does not require `pgvector` to be installed on PostgreSQL.
-- Vector migrations (`migrations/vector/001_create_vector_records.sql`) are isolated from exact-cache migrations and are executed only when `SEMANTIC_CACHE_ENABLED=true`.
+- Vector migrations (`migrations/vector/001_create_vector_records.sql`, `migrations/vector/002_create_hnsw_index.sql`) are isolated from exact-cache migrations and are executed only when `SEMANTIC_CACHE_ENABLED=true`.
 - If `SEMANTIC_CACHE_ENABLED=true` but `pgvector` is not installed on the database server, the server fails during startup with a descriptive error.
+
+### HNSW Approximate Nearest-Neighbour (ANN) Indexing
+- **Index Migration**: [`002_create_hnsw_index.sql`](file:///home/gnx/Projects/IntelliCache/gateway/migrations/vector/002_create_hnsw_index.sql) establishes an HNSW index on `vector_records(vector vector_cosine_ops)` configured with `m = 16, ef_construction = 64`.
+- **Query Execution Plan Inspection**: `PostgresVectorStore.explain_search()` executes `EXPLAIN (ANALYZE, BUFFERS)` to verify whether the query planner selected the HNSW index scan vs exact B-tree/seq scan, with sensitive embedding coordinates sanitized in summaries (`[vector(...)]`).
+- **Planner Cost Optimization**: On small candidate datasets (< 1,000 rows), PostgreSQL's cost planner prefers sequential or B-tree scans over graph traversal. At scale ($\ge 3,000$ rows), it automatically chooses `Index Scan using idx_vector_records_embedding_hnsw`.
+- **Retrieval Overlap**: Controlled evaluation confirms Recall@5 = 1.0 against exact cosine distance calculation.
 
 ### Distance & Similarity Formulas
 PostgreSQL `pgvector` uses the cosine distance operator `<=>`:
@@ -351,7 +358,9 @@ IntelliCache provides an offline evaluation and benchmarking harness at `gateway
    - **Foreign-Key Order**: Inserts exact-cache entry via `PostgresCache.set()` first, then upserts `VectorRecord` via `PostgresVectorStore.upsert()`.
    - **Retrieval**: Executes nearest-neighbour vector search via `PostgresVectorStore.search()` using the `<=>` pgvector index operator.
    - **Cleanup**: Cleaned up in a `finally` block using namespace-scoped deletion.
-   - **Latency Breakdown**: Separates candidate indexing, query embedding, PostgreSQL retrieval, policy evaluation, and total semantic lookup latency.
+   - **Latency Accounting Separation**: Strictly isolates Stage A (write-time candidate indexing) from Stage B (read-time semantic lookup). Lookup latency saved calculations are not penalized by write setup.
+   - **Per-Metric Sample Counts**: Reports explicit sample counts per measured operation with warnings for sample sizes under 10.
+   - **HNSW Plan Verification**: Checks `pg_indexes` and executes query plan inspections to report whether HNSW index scan was chosen.
 4. **`--benchmark-mode auto`**: Automatically selects `component` for mock provider and `real` for Ollama provider.
 
 ### Example Commands

@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 import json
 import logging
 import math
+from pathlib import Path
+import re
 from typing import Any, Dict, List, Optional, Sequence
 
 import asyncpg
@@ -335,6 +337,109 @@ class PostgresVectorStore(BaseVectorStore):
             raise VectorStoreError(f"Database error during namespace clear: {e}") from e
         except Exception as e:
             raise VectorStoreConnectionError(f"Connection failure during namespace clear: {e}") from e
+
+    async def get_index_info(self) -> Dict[str, Any]:
+        """
+        Inspects whether vector indexes (e.g. HNSW) are present on the vector_records table.
+        """
+        query = """
+            SELECT indexname, indexdef
+            FROM pg_indexes
+            WHERE tablename = 'vector_records';
+        """
+        try:
+            async with self.pool.acquire() as conn:
+                rows = await conn.fetch(query)
+            indexes = {r["indexname"]: r["indexdef"] for r in rows}
+            hnsw_present = any("hnsw" in (idef or "").lower() for idef in indexes.values())
+            return {
+                "vector_index_type": "hnsw" if hnsw_present else "none",
+                "vector_index_available": hnsw_present,
+                "indexes": list(indexes.keys()),
+            }
+        except Exception as e:
+            logger.warning("Failed to query index information: %s", e)
+            return {
+                "vector_index_type": "unknown",
+                "vector_index_available": False,
+                "error": str(e),
+            }
+
+    async def explain_search(
+        self,
+        query_vector: Sequence[float],
+        top_k: int = 5,
+        namespace: Optional[str] = None,
+        model: Optional[str] = None,
+        analyze: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Executes EXPLAIN (or EXPLAIN ANALYZE) on the nearest-neighbour search query.
+        Returns whether the HNSW index was actually selected by the query planner,
+        the retrieval method classification, and sanitized execution plan lines.
+        """
+        self._validate_vector_dimensions(query_vector, context="Query vector")
+        ns = (namespace or self.default_namespace).strip()
+        target_model = (model or self.default_model).strip()
+        vec_str = _format_vector(query_vector)
+
+        explain_cmd = "EXPLAIN (ANALYZE, BUFFERS)" if analyze else "EXPLAIN (BUFFERS)"
+        query = f"""
+            {explain_cmd}
+            SELECT
+                v.id,
+                v.cache_namespace,
+                v.fingerprint,
+                v.query_text,
+                v.model,
+                v.metadata,
+                v.created_at,
+                (v.vector <=> $1::vector) AS distance,
+                c.response AS cached_response,
+                c.prompt_tokens,
+                c.completion_tokens,
+                c.total_tokens,
+                c.latency_ms AS original_latency_ms
+            FROM vector_records v
+            JOIN cache_entries c
+                ON v.cache_namespace = c.cache_namespace
+               AND v.fingerprint = c.fingerprint
+               AND (c.expires_at IS NULL OR c.expires_at > NOW())
+            WHERE v.cache_namespace = $2
+              AND v.model = $3
+            ORDER BY distance ASC
+            LIMIT $4;
+        """
+        try:
+            async with self.pool.acquire() as conn:
+                rows = await conn.fetch(query, vec_str, ns, target_model, top_k)
+            plan_lines = [r[0] for r in rows]
+            plan_text = " ".join(plan_lines).lower()
+
+            hnsw_used = "idx_vector_records_embedding_hnsw" in plan_text
+            retrieval_method = (
+                "HNSW approximate nearest-neighbour search"
+                if hnsw_used
+                else "Exact filtered vector search (B-tree index / sequential scan with exact distance sort)"
+            )
+            sanitized_lines = []
+            for line in plan_lines:
+                sanitized = re.sub(r"\'?\[[0-9\.\,\s\-eE]+\]\'?::vector", "[vector(...)]", line)
+                sanitized_lines.append(sanitized)
+
+            return {
+                "vector_index_used": hnsw_used,
+                "retrieval_method": retrieval_method,
+                "execution_plan_summary": sanitized_lines[:8],
+            }
+        except Exception as e:
+            logger.warning("Failed to run explain_search: %s", e)
+            return {
+                "vector_index_used": False,
+                "retrieval_method": "Unknown",
+                "error": str(e),
+                "execution_plan_summary": [],
+            }
 
     async def close(self) -> None:
         """Closes the underlying pool if owned by this instance."""

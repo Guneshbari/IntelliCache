@@ -47,7 +47,13 @@ Benchmarks never fabricate similarities or assign arbitrary placeholder values. 
   - The database name in `TEST_DATABASE_URL` **must contain `test`**.
   - Production `DATABASE_URL` is **never** used as a fallback.
   - Automatically verifies that PostgreSQL is running and the `vector` extension is installed.
-  - Runs exact-cache (`001_create_cache_entries.sql`) and pgvector (`001_create_vector_records.sql`) migrations with runtime dimension checks.
+  - Runs exact-cache (`001_create_cache_entries.sql`) and pgvector migrations (`001_create_vector_records.sql`, `002_create_hnsw_index.sql`) with runtime dimension checks.
+- **HNSW Vector Indexing**:
+  - Applies versioned migration [`002_create_hnsw_index.sql`](file:///home/gnx/Projects/IntelliCache/gateway/migrations/vector/002_create_hnsw_index.sql) creating `idx_vector_records_embedding_hnsw` on `vector_records(vector vector_cosine_ops)` with `m = 16, ef_construction = 64`.
+  - Query execution plan inspection (`explain_search` using `EXPLAIN (ANALYZE, BUFFERS)`): reports whether HNSW index scan was actually selected by the query planner vs an exact B-tree/sequential scan.
+  - Query plan sanitization: Embedding vector floats in execution plan output are redacted to `[vector(...)]` to avoid leaking coordinates.
+  - Planner trade-offs: For small candidate datasets (< 1,000 rows), PostgreSQL planner's cost model favors B-tree or sequential scans due to low page count. At scale ($\ge 3,000$ rows), the planner chooses `Index Scan using idx_vector_records_embedding_hnsw`.
+  - Retrieval accuracy: In controlled testing, HNSW ANN cosine retrieval achieves Recall@5 = 1.0 (100% overlap with exact nearest-neighbour search).
 - **Foreign-Key Invariant**:
   - Exact-cache entry inserted via `PostgresCache.set()` **first**.
   - Vector record upserted via `PostgresVectorStore.upsert()` **second**.
@@ -110,26 +116,50 @@ flowchart LR
 
 ---
 
-## 6. Latency Metrics Breakdown
+## 6. Latency Metrics Breakdown & Accounting Separation
 
-In `--benchmark-mode pgvector`, operations are measured independently across measured samples:
+To avoid penalizing cache lookup latency with write-time overhead, evaluation separates the lifecycle into two independent stages:
 
-| Measurement | Scope | Includes LLM Generation? |
-| :--- | :--- | :--- |
-| **Candidate Indexing Latency** | One-time setup: Document embedding + `PostgresCache.set()` + `PostgresVectorStore.upsert()` | No |
-| **Query Embedding Latency** | HTTP request to Ollama for `EmbeddingTask.QUERY` | No |
-| **PostgreSQL Retrieval Latency** | pgvector `<=>` index scan, filtering by model/namespace, and `cache_entries` JOIN | No |
-| **Policy Evaluation Latency** | Threshold, margin, model identity, and parameter compatibility checks | No |
-| **Semantic Lookup Latency** | Query Embedding + PostgreSQL Retrieval + Policy Evaluation | No |
+1. **Stage A: Candidate Indexing Latency (`indexing_latency_ms`)**:
+   - Represents the write path: Document embedding + `PostgresCache.set()` + `PostgresVectorStore.upsert()`.
+   - Measured once during candidate preparation.
+   - **Does NOT** reduce or penalize lookup latency or safe latency saved.
 
-All latencies report `min`, `mean`, `median (p50)`, `p95`, and `p99`.
+2. **Stage B: Semantic Lookup Latency (`lookup_latency_ms`)**:
+   - Represents the incoming query path: Query embedding + vector retrieval + policy candidate evaluation.
+   - Strictly begins *after* candidate indexing completes.
+   - Used for calculating latency saved:
+     $$\text{safe\_latency\_saved} = \max(0, \text{original\_generation\_latency} - \text{lookup\_latency})$$
 
-> [!NOTE]
-> Semantic lookup latency measures the cost of a cache hit or miss determination. It **does not** include Groq or upstream LLM generation latency.
+### Measured Operations
+
+| Measurement | Scope | Includes Write Indexing? | Includes LLM Generation? |
+| :--- | :--- | :--- | :--- |
+| **Candidate Indexing Latency** | Document embedding + exact cache set + vector upsert | Yes (measures write setup) | No |
+| **Query Embedding Latency** | HTTP request to Ollama for `EmbeddingTask.QUERY` | No | No |
+| **PostgreSQL Retrieval Latency** | pgvector `<=>` index scan, filtering by model/namespace, and `cache_entries` JOIN | No | No |
+| **Policy Evaluation Latency** | Threshold, margin, model identity, and parameter compatibility checks | No | No |
+| **Semantic Lookup Latency** | Query Embedding + PostgreSQL Retrieval + Policy Evaluation (Stage B) | No | No |
+
+All operations report `sample_count`, `min`, `mean`, `median (p50)`, `p95`, and `p99`.
+
+### Per-Metric Sample Counts & Small-Sample Warnings
+Because candidate indexing occurs once per candidate setup while lookup is evaluated repeatedly across benchmark iterations, each metric records its own explicit `sample_count` in `per_metric_sample_counts`. When any metric has $0 < \text{sample\_count} < 10$, a warning is included alerting that tail percentiles ($p95, p99$) may be statistically unstable.
 
 ---
 
-## 7. Example CLI Commands
+## 7. Real-Model Verification & Provenance
+
+### Mock vs Real Test Separation
+- **Offline Integration Tests**: `TestMockPgvectorSemanticEvaluationIntegration` tests PostgreSQL/pgvector storage, migrations, HNSW index verification, and policy logic using `DeterministicMockEmbeddingProvider`. These tests are fast, deterministic, and run without external daemons.
+- **Opt-In Real-Model Integration**: `TestRealOllamaPgvectorIntegration` tests real model embeddings via `OllamaEmbeddingProvider` with `nomic-embed-text` against live PostgreSQL/pgvector.
+  - Activated strictly via environment variable: `OLLAMA_INTEGRATION_TEST=true`.
+  - **Fail-Fast Guarantee**: If `OLLAMA_INTEGRATION_TEST=true` is set, failure to reach Ollama or PostgreSQL fails immediately with an `AssertionError` (no silent skipping).
+  - When unset, the suite skips with an informative message.
+
+---
+
+## 8. Example CLI Commands
 
 ```bash
 # 1. Offline mock evaluation on development split
@@ -159,7 +189,7 @@ python scripts/evaluate_semantic_cache.py \
 
 ---
 
-## 8. Known Evaluation Limitations
+## 9. Known Evaluation Limitations
 
 1. **Synthetic Pilot Dataset**: The 114 dataset cases are carefully curated synthetic questions representing positive paraphrases and hard negatives. While structurally rigorous, they do not replace evaluation on production user traffic.
 2. **Single-Turn Scope**: The current policy and dataset target single-turn programming and technical inquiries. Multi-turn conversational history is not evaluated in this step.

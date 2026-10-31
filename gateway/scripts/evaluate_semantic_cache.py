@@ -274,6 +274,7 @@ class EvaluationOutcome:
     completion_tokens: int = 0
     total_tokens: int = 0
     original_latency_ms: float = 0.0
+    indexing_latency_ms: float = 0.0
     lookup_latency_ms: float = 0.0
 
 
@@ -497,15 +498,25 @@ def compute_candidate_fingerprint(dataset_hash: str, case_id: str, candidate_id:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def compute_latency_stats(data: Sequence[float]) -> Dict[str, float]:
+def compute_latency_stats(data: Sequence[float]) -> Dict[str, Any]:
     """
-    Calculates min, mean, median (p50), p90, p95, and p99 from a sequence of latency numbers (ms).
+    Calculates sample_count, min, mean, median (p50), p90, p95, and p99 from a sequence of latency numbers (ms).
+    Adds warning if sample size is under 10.
     """
+    n = len(data)
     if not data:
-        return {"min": 0.0, "mean": 0.0, "p50": 0.0, "p90": 0.0, "p95": 0.0, "p99": 0.0}
+        return {
+            "sample_count": 0,
+            "min": 0.0,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p90": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+        }
     s = sorted(data)
-    n = len(s)
-    return {
+    stats: Dict[str, Any] = {
+        "sample_count": n,
         "min": round(s[0], 3),
         "mean": round(sum(s) / n, 3),
         "p50": round(s[int(n * 0.50)], 3),
@@ -513,6 +524,9 @@ def compute_latency_stats(data: Sequence[float]) -> Dict[str, float]:
         "p95": round(s[min(n - 1, int(n * 0.95))], 3),
         "p99": round(s[min(n - 1, int(n * 0.99))], 3),
     }
+    if 0 < n < 10:
+        stats["warning"] = "Sample size < 10; tail percentiles (p95, p99) may be statistically unstable."
+    return stats
 
 
 def compute_metrics_from_counts(
@@ -558,13 +572,12 @@ async def evaluate_single_case(
     candidate indexing, nearest-neighbour retrieval, and policy evaluation.
     Otherwise, executes the standard in-memory cosine ranking path.
     """
-    t_start = time.perf_counter()
-
     if cache is not None and vector_store is not None:
         case_ns = f"eval_{run_id}_{case.id}"
         cand_map: Dict[str, CandidateData] = {}
         try:
-            # 1. Embed and store candidate documents
+            # Stage A: Candidate indexing / storage
+            t_idx_start = time.perf_counter()
             # Foreign-key constraint order: exact-cache entry FIRST, then vector upsert
             for cand in case.candidates:
                 cand_embed = await provider.embed(cand.query_text, task=EmbeddingTask.DOCUMENT)
@@ -600,11 +613,15 @@ async def evaluate_single_case(
                     metadata=meta,
                 )
                 await vector_store.upsert(vec_rec)
+            indexing_latency_ms = (time.perf_counter() - t_idx_start) * 1000.0
 
-            # 2. Embed query
+            # Stage B: Semantic cache lookup (strictly timed separately from indexing)
+            t_lookup_start = time.perf_counter()
+
+            # 1. Embed query
             query_embed = await provider.embed(case.query, task=EmbeddingTask.QUERY)
 
-            # 3. Execute actual nearest-neighbour retrieval in PostgreSQL
+            # 2. Execute actual nearest-neighbour retrieval in PostgreSQL
             vs_candidates = await vector_store.search(
                 query_vector=query_embed.vector,
                 top_k=policy.top_k,
@@ -617,7 +634,7 @@ async def evaluate_single_case(
             if len(vs_candidates) > 1:
                 margin = vs_candidates[0].similarity - vs_candidates[1].similarity
 
-            # 4. Build synthetic single-turn GenerationRequest
+            # 3. Build synthetic single-turn GenerationRequest
             request = GenerationRequest(
                 messages=[ChatMessage(role="user", content=case.query)],
                 provider="groq",
@@ -629,12 +646,12 @@ async def evaluate_single_case(
                 namespace=case_ns,
             )
 
-            # 5. Evaluate using policy
+            # 4. Evaluate using policy
             winning_cand, rejection_reason = policy.evaluate_candidates(vs_candidates, request)
 
-            lookup_latency_ms = (time.perf_counter() - t_start) * 1000.0
+            lookup_latency_ms = (time.perf_counter() - t_lookup_start) * 1000.0
 
-            # 6. Classify decision quality
+            # 5. Classify decision quality
             safe_expected = case.expected_answer_label is not None
             accepted_id = None
             accepted_label = None
@@ -688,6 +705,7 @@ async def evaluate_single_case(
                 completion_tokens=comp_tokens,
                 total_tokens=total_tokens,
                 original_latency_ms=orig_latency,
+                indexing_latency_ms=indexing_latency_ms,
                 lookup_latency_ms=lookup_latency_ms,
             )
         finally:
@@ -703,13 +721,22 @@ async def evaluate_single_case(
 
     else:
         # Standard in-memory cosine ranking flow
+        # Stage A: Candidate indexing (document pre-embedding)
+        t_idx_start = time.perf_counter()
+        pre_embedded_candidates: List[Tuple[EmbeddingResult, CandidateData]] = []
+        for cand in case.candidates:
+            cand_embed = await provider.embed(cand.query_text, task=EmbeddingTask.DOCUMENT)
+            pre_embedded_candidates.append((cand_embed, cand))
+        indexing_latency_ms = (time.perf_counter() - t_idx_start) * 1000.0
+
+        # Stage B: Semantic cache lookup
+        t_lookup_start = time.perf_counter()
         # 1. Embed query
         query_embed = await provider.embed(case.query, task=EmbeddingTask.QUERY)
 
-        # 2. Embed candidates and compute similarity
+        # 2. Compute similarity against candidate embeddings
         ranked_candidates: List[Tuple[float, VectorSearchResult, CandidateData]] = []
-        for cand in case.candidates:
-            cand_embed = await provider.embed(cand.query_text, task=EmbeddingTask.DOCUMENT)
+        for cand_embed, cand in pre_embedded_candidates:
             dist, sim = calculate_cosine_similarity(query_embed.vector, cand_embed.vector)
 
             meta = dict(cand.metadata)
@@ -758,7 +785,7 @@ async def evaluate_single_case(
         # 4. Evaluate using policy
         winning_cand, rejection_reason = policy.evaluate_candidates(vs_candidates, request)
 
-        lookup_latency_ms = (time.perf_counter() - t_start) * 1000.0
+        lookup_latency_ms = (time.perf_counter() - t_lookup_start) * 1000.0
 
         # 5. Classify decision quality
         safe_expected = case.expected_answer_label is not None
@@ -815,6 +842,7 @@ async def evaluate_single_case(
             completion_tokens=comp_tokens,
             total_tokens=total_tokens,
             original_latency_ms=orig_latency,
+            indexing_latency_ms=indexing_latency_ms,
             lookup_latency_ms=lookup_latency_ms,
         )
 
@@ -1134,6 +1162,13 @@ async def run_benchmark(
             ),
             "iterations": iterations,
             "sample_count": len(semantic_lookup_ms),
+            "per_metric_sample_counts": {
+                "candidate_indexing": len(candidate_indexing_ms),
+                "query_embedding": len(query_embed_ms),
+                "postgres_retrieval": len(postgres_retrieval_ms),
+                "policy_evaluation": len(policy_eval_ms),
+                "semantic_lookup": len(semantic_lookup_ms),
+            },
             "candidate_indexing_latency_ms": compute_latency_stats(candidate_indexing_ms),
             "query_embedding_latency_ms": compute_latency_stats(query_embed_ms),
             "postgres_retrieval_latency_ms": compute_latency_stats(postgres_retrieval_ms),
@@ -1145,6 +1180,20 @@ async def run_benchmark(
 
     else:
         # Standard in-memory benchmark (component or real)
+        # Stage A: Candidate indexing measurement (one-time candidate document embedding)
+        candidate_indexing_ms: List[float] = []
+        case_candidates_map: Dict[str, List[Tuple[EmbeddingResult, CandidateData]]] = {}
+        for case in bench_cases:
+            case_cands = []
+            for cand in case.candidates:
+                t_idx0 = time.perf_counter()
+                cand_res = await provider.embed(cand.query_text, task=EmbeddingTask.DOCUMENT)
+                t_idx = (time.perf_counter() - t_idx0) * 1000.0
+                candidate_indexing_ms.append(t_idx)
+                case_cands.append((cand_res, cand))
+            case_candidates_map[case.id] = case_cands
+
+        # Stage B: Repeated query lookup measurement
         query_embed_ms = []
         candidate_sim_ms = []
         policy_eval_ms = []
@@ -1158,11 +1207,10 @@ async def run_benchmark(
                 t_q_embed = (time.perf_counter() - t0) * 1000.0
                 query_embed_ms.append(t_q_embed)
 
-                # 2. Embed candidates and compute real similarity
+                # 2. Compute similarity against pre-embedded candidate documents and rank
                 t1 = time.perf_counter()
                 vs_candidates = []
-                for cand in case.candidates:
-                    cand_res = await provider.embed(cand.query_text, task=EmbeddingTask.DOCUMENT)
+                for cand_res, cand in case_candidates_map[case.id]:
                     dist, sim = calculate_cosine_similarity(query_res.vector, cand_res.vector)
                     vs_candidates.append(
                         VectorSearchResult(
@@ -1221,6 +1269,14 @@ async def run_benchmark(
             "disclaimer": disclaimer,
             "iterations": iterations,
             "sample_count": len(lookup_ms),
+            "per_metric_sample_counts": {
+                "candidate_indexing": len(candidate_indexing_ms),
+                "query_embedding": len(query_embed_ms),
+                "candidate_sim_and_ranking": len(candidate_sim_ms),
+                "policy_evaluation": len(policy_eval_ms),
+                "total_measured_lookup": len(lookup_ms),
+            },
+            "candidate_indexing_latency_ms": compute_latency_stats(candidate_indexing_ms),
             "query_embedding_latency_ms": compute_latency_stats(query_embed_ms),
             "candidate_sim_and_ranking_latency_ms": compute_latency_stats(candidate_sim_ms),
             "policy_evaluation_latency_ms": compute_latency_stats(policy_eval_ms),
@@ -1279,6 +1335,7 @@ def save_reports(
                 "decision": o.decision,
                 "classification": o.classification,
                 "rejection_reason": o.rejection_reason,
+                "indexing_latency_ms": round(o.indexing_latency_ms, 2),
                 "lookup_latency_ms": round(o.lookup_latency_ms, 2),
             }
             for o in outcomes
@@ -1296,11 +1353,14 @@ def save_reports(
             f"Split: {metadata.get('dataset_split')}",
             f"Provider: {metadata.get('embedding_provider')}",
             f"Model: {metadata.get('embedding_model')}",
+            f"VectorIndex: {metadata.get('vector_index_type', 'none')}",
+            f"IndexUsed: {metadata.get('vector_index_used', False)}",
             f"Timestamp: {metadata.get('evaluation_timestamp')}",
         ])
         writer.writerow([
             "case_id", "category", "split", "safe_reuse_expected",
-            "top_similarity", "margin", "classification", "decision", "rejection_reason"
+            "top_similarity", "margin", "classification", "decision",
+            "indexing_latency_ms", "lookup_latency_ms", "rejection_reason"
         ])
         for o in outcomes:
             writer.writerow([
@@ -1312,6 +1372,8 @@ def save_reports(
                 round(o.margin, 4) if o.margin is not None else "",
                 o.classification,
                 o.decision,
+                round(o.indexing_latency_ms, 2),
+                round(o.lookup_latency_ms, 2),
                 o.rejection_reason or "",
             ])
 
@@ -1547,6 +1609,16 @@ async def async_main() -> None:
                     default_model=args.model,
                     dimensions=provider.dimensions,
                 )
+                idx_info = await pg_vector_store.get_index_info()
+                dummy_vec = [0.0] * provider.dimensions
+                plan_info = await pg_vector_store.explain_search(dummy_vec, analyze=False)
+                db_info.update({
+                    "vector_index_type": idx_info.get("vector_index_type", "none"),
+                    "vector_index_available": idx_info.get("vector_index_available", False),
+                    "vector_index_used": plan_info.get("vector_index_used", False),
+                    "retrieval_method": plan_info.get("retrieval_method", "Unknown"),
+                    "execution_plan_summary": plan_info.get("execution_plan_summary", []),
+                })
             except Exception as exc:
                 logger.error("Vector migration or initialization failed: %s", exc)
                 sys.exit(1)
@@ -1642,8 +1714,14 @@ async def async_main() -> None:
                 print(f"Mode:                        {benchmark_results['benchmark_label']}")
                 print(f"PostgreSQL Version:          {db_info.get('postgres_version', 'unknown')}")
                 print(f"pgvector Version:            {db_info.get('pgvector_version', 'unknown')}")
+                print(f"Vector Index Type:           {db_info.get('vector_index_type', 'none')}")
+                print(f"Vector Index Available:      {db_info.get('vector_index_available', False)}")
+                print(f"Vector Index Used:           {db_info.get('vector_index_used', False)}")
+                print(f"Retrieval Method:            {db_info.get('retrieval_method', 'Unknown')}")
                 print(f"Database URL:                {db_info.get('database_url', 'redacted')}")
                 print(f"Iterations:                  {benchmark_results['iterations']}, Samples: {benchmark_results['sample_count']}")
+                if "per_metric_sample_counts" in benchmark_results:
+                    print(f"Per-Metric Sample Counts:    {benchmark_results['per_metric_sample_counts']}")
                 idx = benchmark_results["candidate_indexing_latency_ms"]
                 q_emb = benchmark_results["query_embedding_latency_ms"]
                 pg_ret = benchmark_results["postgres_retrieval_latency_ms"]
@@ -1659,6 +1737,8 @@ async def async_main() -> None:
                 print(f"Mode:                        {benchmark_results['benchmark_label']}")
                 print(f"Disclaimer:                  {benchmark_results['disclaimer']}")
                 print(f"Iterations:                  {benchmark_results['iterations']}, Samples: {benchmark_results['sample_count']}")
+                if "per_metric_sample_counts" in benchmark_results:
+                    print(f"Per-Metric Sample Counts:    {benchmark_results['per_metric_sample_counts']}")
                 q_emb = benchmark_results["query_embedding_latency_ms"]
                 c_sim = benchmark_results["candidate_sim_and_ranking_latency_ms"]
                 pol = benchmark_results["policy_evaluation_latency_ms"]
@@ -1687,6 +1767,8 @@ async def async_main() -> None:
         if db_info:
             print(f"PostgreSQL Version:     {db_info.get('postgres_version')}")
             print(f"pgvector Version:       {db_info.get('pgvector_version')}")
+            print(f"Vector Index Type:      {db_info.get('vector_index_type', 'none')}")
+            print(f"Retrieval Method:       {db_info.get('retrieval_method', 'Unknown')}")
             print(f"Database URL:           {db_info.get('database_url')}")
         print(f"Mock Embeddings Used:   {mock_used}")
         print(f"Mock Fallback Occurred: {mock_fallback_occurred}")
@@ -1733,6 +1815,10 @@ async def async_main() -> None:
             "similarity_threshold": args.threshold,
             "ambiguity_margin": args.margin,
             "benchmark_mode": effective_benchmark_mode,
+            "vector_index_type": db_info.get("vector_index_type", "none"),
+            "vector_index_available": db_info.get("vector_index_available", False),
+            "vector_index_used": db_info.get("vector_index_used", False),
+            "retrieval_method": db_info.get("retrieval_method", "In-memory exact cosine similarity"),
             "database_info": db_info,
         }
 

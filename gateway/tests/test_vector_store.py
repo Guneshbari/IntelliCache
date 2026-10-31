@@ -597,6 +597,132 @@ class TestPostgresVectorStoreIntegration(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(count, 1)
 
+    async def test_hnsw_index_info_and_availability(self):
+        """get_index_info reports the HNSW vector index presence on vector_records."""
+        info = await self.store.get_index_info()
+        self.assertEqual(info["vector_index_type"], "hnsw")
+        self.assertTrue(info["vector_index_available"])
+        self.assertIn("idx_vector_records_embedding_hnsw", info["indexes"])
+
+    async def test_hnsw_migration_is_idempotent(self):
+        """Applying vector migrations multiple times succeeds without error."""
+        await run_vector_migrations(self.pool, dimensions=768)
+        info = await self.store.get_index_info()
+        self.assertTrue(info["vector_index_available"])
+
+    async def test_explain_search_small_table_and_plan_sanitization(self):
+        """
+        On small tables, PostgreSQL chooses exact sequential/B-tree scan;
+        explain_search reports vector_index_used=False and sanitizes vector coordinates.
+        """
+        fp = "fp_small_table_test"
+        await self._create_exact_entry(fp)
+        rec = VectorRecord(
+            cache_namespace="test_vec_ns",
+            fingerprint=fp,
+            query_text="Small table query",
+            vector=self._make_vector([0.1, 0.2]),
+            model="nomic-embed-text",
+        )
+        await self.store.upsert(rec)
+
+        query_vec = self._make_vector([0.15, 0.25])
+        plan = await self.store.explain_search(query_vec, top_k=5, namespace="test_vec_ns")
+        self.assertFalse(plan["vector_index_used"])
+        self.assertIn("Exact filtered vector search", plan["retrieval_method"])
+        self.assertGreater(len(plan["execution_plan_summary"]), 0)
+
+        # Confirm coordinates are sanitized from execution plan summary
+        plan_str = " ".join(plan["execution_plan_summary"])
+        self.assertNotIn("0.15", plan_str)
+        self.assertNotIn("0.25", plan_str)
+
+    async def test_explain_search_hnsw_selection_on_seeded_table(self):
+        """
+        On seeded tables (>= 3,000 vectors), query planner selects HNSW index scan.
+        explain_search verifies idx_vector_records_embedding_hnsw selection.
+        """
+        ns = "test_hnsw_seed_ns"
+        async with self.pool.acquire() as conn:
+            cache_entries = [(ns, f"fp_seed_{i}", f"resp_{i}", "llama-3", "groq") for i in range(3000)]
+            vec_records = [
+                (ns, f"fp_seed_{i}", f"query {i}", "nomic-embed-text", f"[{0.001 * i},{0.002 * i}" + ",0.0" * 766 + "]")
+                for i in range(3000)
+            ]
+            await conn.executemany(
+                "INSERT INTO cache_entries (cache_namespace, fingerprint, response, model, provider) VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
+                cache_entries,
+            )
+            await conn.executemany(
+                "INSERT INTO vector_records (cache_namespace, fingerprint, query_text, model, vector) VALUES ($1, $2, $3, $4, $5::vector) ON CONFLICT DO NOTHING",
+                vec_records,
+            )
+            await conn.execute("ANALYZE vector_records;")
+            await conn.execute("ANALYZE cache_entries;")
+
+        try:
+            query_vec = self._make_vector([0.05, 0.1])
+            plan = await self.store.explain_search(query_vec, top_k=5, namespace=ns, analyze=True)
+            self.assertTrue(plan["vector_index_used"])
+            self.assertEqual(plan["retrieval_method"], "HNSW approximate nearest-neighbour search")
+            self.assertTrue(any("idx_vector_records_embedding_hnsw" in line for line in plan["execution_plan_summary"]))
+        finally:
+            async with self.pool.acquire() as conn:
+                await conn.execute("DELETE FROM vector_records WHERE cache_namespace = $1", ns)
+                await conn.execute("DELETE FROM cache_entries WHERE cache_namespace = $1", ns)
+
+    async def test_controlled_ann_vs_exact_retrieval_recall(self):
+        """
+        Controlled comparison between exact nearest-neighbour search and HNSW retrieval:
+        verifies Recall@5 is 1.0 (identical top-5 nearest neighbours).
+        """
+        ns = "test_ann_recall_ns"
+        async with self.pool.acquire() as conn:
+            cache_entries = [(ns, f"fp_ann_{i}", f"resp_{i}", "llama-3", "groq") for i in range(50)]
+            vec_records = [
+                (ns, f"fp_ann_{i}", f"query {i}", "nomic-embed-text", f"[{0.05 * i},{0.02 * i}" + ",0.0" * 766 + "]")
+                for i in range(50)
+            ]
+            await conn.executemany(
+                "INSERT INTO cache_entries (cache_namespace, fingerprint, response, model, provider) VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
+                cache_entries,
+            )
+            await conn.executemany(
+                "INSERT INTO vector_records (cache_namespace, fingerprint, query_text, model, vector) VALUES ($1, $2, $3, $4, $5::vector) ON CONFLICT DO NOTHING",
+                vec_records,
+            )
+
+        try:
+            query_vec = self._make_vector([0.25, 0.10])
+            # Exact scan via SQL without planner index preference
+            async with self.pool.acquire() as conn:
+                exact_rows = await conn.fetch(
+                    """
+                    SELECT fingerprint
+                    FROM vector_records
+                    WHERE cache_namespace = $1
+                    ORDER BY (vector <=> $2::vector) ASC
+                    LIMIT 5;
+                    """,
+                    ns,
+                    f"[{query_vec[0]},{query_vec[1]}" + ",0.0" * 766 + "]",
+                )
+            exact_fps = [r["fingerprint"] for r in exact_rows]
+
+            # Vector store search
+            ann_results = await self.store.search(query_vec, top_k=5, namespace=ns)
+            ann_fps = [r.fingerprint for r in ann_results]
+
+            # Calculate Recall@5
+            overlap = len(set(exact_fps).intersection(set(ann_fps)))
+            recall_at_5 = overlap / 5.0
+            self.assertEqual(recall_at_5, 1.0)
+            self.assertEqual(ann_fps, exact_fps)
+        finally:
+            async with self.pool.acquire() as conn:
+                await conn.execute("DELETE FROM vector_records WHERE cache_namespace = $1", ns)
+                await conn.execute("DELETE FROM cache_entries WHERE cache_namespace = $1", ns)
+
 
 class TestPgvectorAvailabilityAndDisabledBehavior(unittest.IsolatedAsyncioTestCase):
     """
