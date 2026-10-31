@@ -275,6 +275,18 @@ class TestPostgresVectorStoreIntegration(unittest.IsolatedAsyncioTestCase):
         """Formats a float vector into a PostgreSQL pgvector literal string [x1,x2,...]."""
         return "[" + ",".join(f"{x:.6f}" for x in vec) + "]"
 
+    @staticmethod
+    def _compute_percentiles(values: list[float]) -> tuple[float, float, float]:
+        """Calculates (mean, p50, p95) in milliseconds for a list of latency samples."""
+        if not values:
+            return 0.0, 0.0, 0.0
+        s = sorted(values)
+        n = len(s)
+        mean_val = sum(s) / n
+        p50_val = s[int(n * 0.50)]
+        p95_val = s[min(int(n * 0.95), n - 1)]
+        return round(mean_val, 3), round(p50_val, 3), round(p95_val, 3)
+
     async def test_insert_and_retrieve_vector_record(self):
         """Successfully inserts and retrieves a vector record."""
         fp = "fp_test_001"
@@ -964,6 +976,7 @@ class TestPostgresVectorStoreIntegration(unittest.IsolatedAsyncioTestCase):
                 if label == "large_nomic":
                     self.assertTrue(plan_info["vector_index_used"], "Large namespace must select HNSW")
                     self.assertEqual(plan_info["retrieval_method"], "HNSW approximate nearest-neighbour search")
+                    iterative_hnsw_status = "Applicable (HNSW index selected)"
                 elif label == "selective_nomic":
                     self.assertFalse(plan_info["vector_index_used"], "Selective namespace should not use HNSW")
                     self.assertIn("Exact filtered vector search", plan_info["retrieval_method"])
@@ -971,6 +984,16 @@ class TestPostgresVectorStoreIntegration(unittest.IsolatedAsyncioTestCase):
                         any("idx_vector_records_" in l for l in plan_info["execution_plan_summary"]),
                         "Selective namespace should use a B-tree index on vector_records",
                     )
+                    iterative_hnsw_status = "Not applicable (B-tree index selected)"
+                else:
+                    iterative_hnsw_status = (
+                        "Applicable (HNSW index selected)"
+                        if plan_info["vector_index_used"]
+                        else "Not applicable (B-tree index selected)"
+                    )
+
+                if not plan_info["vector_index_used"]:
+                    self.assertEqual(iterative_hnsw_status, "Not applicable (B-tree index selected)")
 
                 # 2. Test with SET LOCAL hnsw.iterative_scan = 'strict_order'
                 async with self.pool.acquire() as conn:
@@ -979,7 +1002,6 @@ class TestPostgresVectorStoreIntegration(unittest.IsolatedAsyncioTestCase):
                         in_tx_setting = await conn.fetchval("SHOW hnsw.iterative_scan;")
                         self.assertEqual(in_tx_setting, "strict_order")
 
-                        t_it0 = time.perf_counter()
                         it_rows = await conn.fetch(
                             f"""
                             SELECT v.fingerprint
@@ -991,7 +1013,6 @@ class TestPostgresVectorStoreIntegration(unittest.IsolatedAsyncioTestCase):
                             LIMIT 10;
                             """
                         )
-                        lat_strict_ms = (time.perf_counter() - t_it0) * 1000.0
                         self.assertEqual(len(it_rows), min(10, expected_total))
 
                     # Verify that SET LOCAL did not leak outside transaction
@@ -1002,6 +1023,248 @@ class TestPostgresVectorStoreIntegration(unittest.IsolatedAsyncioTestCase):
             async with self.pool.acquire() as conn:
                 await conn.execute("DELETE FROM vector_records WHERE cache_namespace = ANY($1)", all_namespaces)
                 await conn.execute("DELETE FROM cache_entries WHERE cache_namespace = ANY($1)", all_namespaces)
+
+    async def test_controlled_iterative_hnsw_scan_comparison(self):
+        """
+        Controlled verification of HNSW iterative scan (hnsw.iterative_scan = strict_order vs off)
+        under selective filtering and varying hnsw.ef_search (10, 20, 40):
+        1. Seeds controlled workload of 5,000 vectors (3,800 target, 1,200 distractor/bg).
+        2. Confirms HNSW index scan (idx_vector_records_embedding_hnsw) is selected naturally via EXPLAIN (ANALYZE, BUFFERS).
+        3. Establishes exact baseline with indexscan/bitmapscan disabled (asserting HNSW is not used).
+        4. Compares candidate count, exact NN overlap, Recall@5, and Recall@10 across Mode A (off) and Mode B (strict_order).
+        5. Reports whether iterative scan provided a measurable recall improvement for this workload.
+        6. Runs >= 30 interleaved measured iterations (with warmup) to report sample count, mean, p50, and p95 latency.
+        7. Produces a structured result dictionary containing all required configuration and performance fields.
+        """
+        ns_target = "test_iter_target_ns"
+        ns_distractor = "test_iter_distractor_ns"
+        model = "nomic-embed-text"
+        total_target = 3800
+        total_distractor = 1200
+        total_vectors = total_target + total_distractor
+        selectivity = total_target / total_vectors  # 0.76
+
+        rng = random.Random(42)
+        dim = 768
+
+        target_vectors = [self._generate_normalized_vector(rng, dim) for _ in range(total_target)]
+        distractor_vectors = [self._generate_normalized_vector(rng, dim) for _ in range(total_distractor)]
+
+        q_vec = self._generate_normalized_vector(rng, dim)
+        q_str = self._format_pgvector(q_vec)
+
+        # Distractor: 50 vectors very close to q_vec (epsilon = 0.02..0.05) to exercise post-filtering
+        for k in range(50):
+            distractor_vectors[k] = self._perturb_vector(q_vec, rng, epsilon=0.02 + k * 0.0006)
+
+        # Target: 10 vectors at moderate distance (epsilon = 0.15..0.25)
+        for k in range(10):
+            target_vectors[k] = self._perturb_vector(q_vec, rng, epsilon=0.15 + k * 0.01)
+
+        async with self.pool.acquire() as conn:
+            await conn.execute("LOAD 'vector';")
+            pg_version = await conn.fetchval("SHOW server_version;")
+            pgvector_version = await conn.fetchval("SELECT extversion FROM pg_extension WHERE extname = 'vector';")
+
+            await conn.execute("DELETE FROM vector_records WHERE cache_namespace IN ($1, $2)", ns_target, ns_distractor)
+            await conn.execute("DELETE FROM cache_entries WHERE cache_namespace IN ($1, $2)", ns_target, ns_distractor)
+
+            cache_records = []
+            vec_records = []
+            for i in range(total_target):
+                fp = f"fp_iter_t_{i}"
+                cache_records.append((ns_target, fp, f"resp_iter_t_{i}", "llama-3", "groq"))
+                vec_records.append((ns_target, fp, f"target q {i}", model, self._format_pgvector(target_vectors[i])))
+
+            for i in range(total_distractor):
+                fp = f"fp_iter_d_{i}"
+                cache_records.append((ns_distractor, fp, f"resp_iter_d_{i}", "llama-3", "groq"))
+                vec_records.append((ns_distractor, fp, f"distractor q {i}", model, self._format_pgvector(distractor_vectors[i])))
+
+            chunk_size = 500
+            for i in range(0, len(cache_records), chunk_size):
+                await conn.executemany(
+                    "INSERT INTO cache_entries (cache_namespace, fingerprint, response, model, provider) VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
+                    cache_records[i : i + chunk_size],
+                )
+                await conn.executemany(
+                    "INSERT INTO vector_records (cache_namespace, fingerprint, query_text, model, vector) VALUES ($1, $2, $3, $4, $5::vector) ON CONFLICT DO NOTHING",
+                    vec_records[i : i + chunk_size],
+                )
+
+            await conn.execute("ANALYZE vector_records;")
+            await conn.execute("ANALYZE cache_entries;")
+
+        try:
+            query_sql = f"""
+                SELECT v.fingerprint, (v.vector <=> '{q_str}'::vector) as dist
+                FROM vector_records v
+                JOIN cache_entries c ON v.cache_namespace = c.cache_namespace AND v.fingerprint = c.fingerprint
+                WHERE v.cache_namespace = '{ns_target}' AND v.model = '{model}'
+                  AND (c.expires_at IS NULL OR c.expires_at > NOW())
+                ORDER BY (v.vector <=> '{q_str}'::vector) ASC
+                LIMIT 10;
+            """
+
+            # 1. Verify HNSW index naturally selected by query planner with EXPLAIN (ANALYZE, BUFFERS)
+            async with self.pool.acquire() as conn:
+                plan_rows = await conn.fetch(f"EXPLAIN (ANALYZE, BUFFERS) {query_sql}")
+            plan_summary = [r[0] for r in plan_rows]
+            plan_str = " ".join(plan_summary)
+            hnsw_selected = "idx_vector_records_embedding_hnsw" in plan_str
+            self.assertTrue(hnsw_selected, f"HNSW index was not selected by planner: {plan_summary[:10]}")
+
+            # 2. Exact baseline
+            async with self.pool.acquire() as conn:
+                async with conn.transaction():
+                    await conn.execute("SET LOCAL enable_indexscan = off;")
+                    await conn.execute("SET LOCAL enable_bitmapscan = off;")
+                    exact_plan_rows = await conn.fetch(f"EXPLAIN {query_sql}")
+                    exact_plan_str = " ".join(r[0] for r in exact_plan_rows)
+                    self.assertNotIn("idx_vector_records_embedding_hnsw", exact_plan_str, "Exact baseline should not use HNSW")
+                    exact_rows = await conn.fetch(query_sql)
+            exact_fps = [r["fingerprint"] for r in exact_rows]
+            self.assertEqual(len(exact_fps), 10, f"Expected 10 exact matches, got {len(exact_fps)}")
+
+            # 3. Compare Default (off) vs Iterative (strict_order) across ef_search in [10, 20, 40]
+            structured_results: list[dict] = []
+
+            for ef in [10, 20, 40]:
+                quality_by_mode = {}
+
+                for mode in ["off", "strict_order"]:
+                    # Verification of HNSW usage in transaction and result quality
+                    async with self.pool.acquire() as conn:
+                        async with conn.transaction():
+                            await conn.execute(f"SET LOCAL hnsw.ef_search = {ef};")
+                            await conn.execute(f"SET LOCAL hnsw.iterative_scan = '{mode}';")
+                            mode_plan = await conn.fetch(f"EXPLAIN {query_sql}")
+                            mode_plan_str = " ".join(r[0] for r in mode_plan)
+                            hnsw_in_mode = "idx_vector_records_embedding_hnsw" in mode_plan_str
+                            self.assertTrue(hnsw_in_mode, f"Mode {mode} (ef={ef}) did not use HNSW index")
+
+                            res_rows = await conn.fetch(query_sql)
+                            ret_fps = [r["fingerprint"] for r in res_rows]
+                            overlap = len(set(ret_fps).intersection(set(exact_fps)))
+                            r5 = len(set(ret_fps[:5]).intersection(set(exact_fps[:5]))) / 5.0
+                            r10 = len(set(ret_fps[:10]).intersection(set(exact_fps[:10]))) / 10.0
+                            quality_by_mode[mode] = {
+                                "hnsw_used": hnsw_in_mode,
+                                "returned_count": len(ret_fps),
+                                "overlap": overlap,
+                                "recall_at_5": r5,
+                                "recall_at_10": r10,
+                            }
+
+                # Evaluate whether iterative scan provided a recall improvement
+                default_q = quality_by_mode["off"]
+                strict_q = quality_by_mode["strict_order"]
+                if default_q["recall_at_10"] >= 1.0 and default_q["returned_count"] == 10:
+                    recall_improvement_note = (
+                        f"Iterative scanning did not provide a measurable recall improvement for ef_search={ef} "
+                        f"because default retrieval already achieved full recall (1.0) and returned all 10 candidates."
+                    )
+                else:
+                    recall_improvement_note = (
+                        f"Recall change at ef_search={ef}: default R@10={default_q['recall_at_10']:.2f}, "
+                        f"iterative R@10={strict_q['recall_at_10']:.2f}."
+                    )
+
+                # 4. Latency Measurements: Warmup runs followed by >= 30 interleaved iterations
+                async with self.pool.acquire() as conn:
+                    # Warmup: 5 runs for each mode
+                    for _ in range(5):
+                        async with conn.transaction():
+                            await conn.execute(f"SET LOCAL hnsw.ef_search = {ef};")
+                            await conn.execute("SET LOCAL hnsw.iterative_scan = 'off';")
+                            await conn.fetch(query_sql)
+                        async with conn.transaction():
+                            await conn.execute(f"SET LOCAL hnsw.ef_search = {ef};")
+                            await conn.execute("SET LOCAL hnsw.iterative_scan = 'strict_order';")
+                            await conn.fetch(query_sql)
+
+                    # 30 measured interleaved iterations (alternating Mode A and Mode B)
+                    latencies_default_ms: list[float] = []
+                    latencies_strict_ms: list[float] = []
+
+                    for _ in range(30):
+                        # Mode A: off
+                        async with conn.transaction():
+                            await conn.execute(f"SET LOCAL hnsw.ef_search = {ef};")
+                            await conn.execute("SET LOCAL hnsw.iterative_scan = 'off';")
+                            t0 = time.perf_counter()
+                            await conn.fetch(query_sql)
+                            latencies_default_ms.append((time.perf_counter() - t0) * 1000.0)
+
+                        # Mode B: strict_order
+                        async with conn.transaction():
+                            await conn.execute(f"SET LOCAL hnsw.ef_search = {ef};")
+                            await conn.execute("SET LOCAL hnsw.iterative_scan = 'strict_order';")
+                            t0 = time.perf_counter()
+                            await conn.fetch(query_sql)
+                            latencies_strict_ms.append((time.perf_counter() - t0) * 1000.0)
+
+                mean_def, p50_def, p95_def = self._compute_percentiles(latencies_default_ms)
+                mean_str, p50_str, p95_str = self._compute_percentiles(latencies_strict_ms)
+
+                # 5. Export Reproducible Results dictionary for each mode
+                record_default = {
+                    "postgres_version": pg_version,
+                    "pgvector_version": pgvector_version,
+                    "dataset_size": total_vectors,
+                    "namespace_selectivity": round(selectivity, 4),
+                    "embedding_model": model,
+                    "hnsw.ef_search": ef,
+                    "hnsw.iterative_scan": "off",
+                    "execution_plan_confirmed": default_q["hnsw_used"],
+                    "returned_candidate_count": default_q["returned_count"],
+                    "recall_at_5": default_q["recall_at_5"],
+                    "recall_at_10": default_q["recall_at_10"],
+                    "mean_latency_ms": mean_def,
+                    "p50_latency_ms": p50_def,
+                    "p95_latency_ms": p95_def,
+                    "sample_count": len(latencies_default_ms),
+                    "recall_improvement_note": recall_improvement_note,
+                }
+                record_strict = {
+                    "postgres_version": pg_version,
+                    "pgvector_version": pgvector_version,
+                    "dataset_size": total_vectors,
+                    "namespace_selectivity": round(selectivity, 4),
+                    "embedding_model": model,
+                    "hnsw.ef_search": ef,
+                    "hnsw.iterative_scan": "strict_order",
+                    "execution_plan_confirmed": strict_q["hnsw_used"],
+                    "returned_candidate_count": strict_q["returned_count"],
+                    "recall_at_5": strict_q["recall_at_5"],
+                    "recall_at_10": strict_q["recall_at_10"],
+                    "mean_latency_ms": mean_str,
+                    "p50_latency_ms": p50_str,
+                    "p95_latency_ms": p95_str,
+                    "sample_count": len(latencies_strict_ms),
+                    "recall_improvement_note": recall_improvement_note,
+                }
+
+                structured_results.extend([record_default, record_strict])
+
+            # Assert structured results properties
+            self.assertEqual(len(structured_results), 6)  # 3 ef_search * 2 modes
+            for rec in structured_results:
+                self.assertTrue(rec["execution_plan_confirmed"])
+                self.assertEqual(rec["sample_count"], 30)
+                self.assertEqual(rec["returned_candidate_count"], 10)
+                self.assertGreaterEqual(rec["recall_at_5"], 0.90)
+                self.assertGreaterEqual(rec["recall_at_10"], 0.90)
+
+            # Confirm transaction isolation: hnsw.iterative_scan reverted outside transactions
+            async with self.pool.acquire() as conn:
+                outer_guc = await conn.fetchval("SHOW hnsw.iterative_scan;")
+                self.assertEqual(outer_guc, "off", "SET LOCAL leaked outside transaction boundary")
+
+        finally:
+            async with self.pool.acquire() as conn:
+                await conn.execute("DELETE FROM vector_records WHERE cache_namespace IN ($1, $2)", ns_target, ns_distractor)
+                await conn.execute("DELETE FROM cache_entries WHERE cache_namespace IN ($1, $2)", ns_target, ns_distractor)
 
 
 class TestPgvectorAvailabilityAndDisabledBehavior(unittest.IsolatedAsyncioTestCase):
