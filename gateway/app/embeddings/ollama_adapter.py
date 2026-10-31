@@ -31,14 +31,26 @@ class OllamaEmbeddingProvider(EmbeddingProvider):
         base_url: str = "http://127.0.0.1:11434",
         model: str = "nomic-embed-text",
         timeout_seconds: float = 30.0,
+        dimensions: Optional[int] = None,
         client: Optional[httpx.AsyncClient] = None,
     ):
         self.base_url = base_url.rstrip("/")
         self.model = model.strip()
         self.timeout_seconds = float(timeout_seconds)
+        self._dimensions = int(dimensions) if dimensions is not None else (768 if "nomic" in self.model.lower() else None)
         self._custom_client = client
         self._client: Optional[httpx.AsyncClient] = client
         self._owns_client = client is None
+
+    @property
+    def model_name(self) -> str:
+        """Returns the configured embedding model identifier."""
+        return self.model
+
+    @property
+    def dimensions(self) -> int:
+        """Returns the embedding vector dimensionality (defaults to 768 for Nomic models)."""
+        return self._dimensions or 768
 
     def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -158,6 +170,7 @@ class OllamaEmbeddingProvider(EmbeddingProvider):
             )
 
         model_name = data.get("model") or self.model
+        self._dimensions = len(vector)
 
         # Instantiating EmbeddingResult validates finite numeric values and dimensionality
         return EmbeddingResult(

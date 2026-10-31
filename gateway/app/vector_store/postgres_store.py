@@ -430,7 +430,7 @@ class PostgresVectorStore(BaseVectorStore):
             return {
                 "vector_index_used": hnsw_used,
                 "retrieval_method": retrieval_method,
-                "execution_plan_summary": sanitized_lines[:8],
+                "execution_plan_summary": sanitized_lines[:40],
             }
         except Exception as e:
             logger.warning("Failed to run explain_search: %s", e)

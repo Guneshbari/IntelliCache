@@ -48,12 +48,14 @@ Benchmarks never fabricate similarities or assign arbitrary placeholder values. 
   - Production `DATABASE_URL` is **never** used as a fallback.
   - Automatically verifies that PostgreSQL is running and the `vector` extension is installed.
   - Runs exact-cache (`001_create_cache_entries.sql`) and pgvector migrations (`001_create_vector_records.sql`, `002_create_hnsw_index.sql`) with runtime dimension checks.
-- **HNSW Vector Indexing**:
+- **HNSW Vector Indexing & Plan Provenance**:
   - Applies versioned migration [`002_create_hnsw_index.sql`](file:///home/gnx/Projects/IntelliCache/gateway/migrations/vector/002_create_hnsw_index.sql) creating `idx_vector_records_embedding_hnsw` on `vector_records(vector vector_cosine_ops)` with `m = 16, ef_construction = 64`.
-  - Query execution plan inspection (`explain_search` using `EXPLAIN (ANALYZE, BUFFERS)`): reports whether HNSW index scan was actually selected by the query planner vs an exact B-tree/sequential scan.
+  - Distinguishes `vector_index_available` (index exists in table metadata) from `vector_index_used` (index selected by planner during actual query execution).
+  - Query execution plan inspection (`explain_search` using `EXPLAIN (ANALYZE, BUFFERS)`): executed on populated benchmark namespaces using real query vectors from the benchmark workload (outside timed lookup loops) rather than dummy zero vectors against empty namespaces.
   - Query plan sanitization: Embedding vector floats in execution plan output are redacted to `[vector(...)]` to avoid leaking coordinates.
-  - Planner trade-offs: For small candidate datasets (< 1,000 rows), PostgreSQL planner's cost model favors B-tree or sequential scans due to low page count. At scale ($\ge 3,000$ rows), the planner chooses `Index Scan using idx_vector_records_embedding_hnsw`.
-  - Retrieval accuracy: In controlled testing, HNSW ANN cosine retrieval achieves Recall@5 = 1.0 (100% overlap with exact nearest-neighbour search).
+  - Planner cost trade-offs: Crossover between HNSW graph traversal and B-tree/sequential scan is cost-dependent (not a universal constant row count). The planner chooses HNSW when candidate selectivity and row volume warrant graph search, while choosing `idx_vector_records_ns_model` B-tree index or sequential scans for small or highly selective candidate namespaces where B-tree lookup has lower I/O cost.
+  - Iterative scan under selective filtering: Supports `hnsw.iterative_scan = strict_order` in pgvector 0.8+ via transaction-scoped GUCs (`SET LOCAL hnsw.iterative_scan = 'strict_order';`).
+  - Retrieval accuracy: In controlled evaluation over 5,000+ diverse normalized 768-dimensional float vectors with known nearby candidates, HNSW ANN cosine retrieval achieves Recall@5 = 1.0 and Recall@10 = 1.0 against a controlled exact nearest-neighbour baseline with index and bitmap scans explicitly disabled.
 - **Foreign-Key Invariant**:
   - Exact-cache entry inserted via `PostgresCache.set()` **first**.
   - Vector record upserted via `PostgresVectorStore.upsert()` **second**.

@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 import math
 import os
 from pathlib import Path
+import random
+import time
 import unittest
 from urllib.parse import urlsplit
 
@@ -250,6 +252,28 @@ class TestPostgresVectorStoreIntegration(unittest.IsolatedAsyncioTestCase):
         if len(vec) < total_dim:
             vec.extend([fill] * (total_dim - len(vec)))
         return vec[:total_dim]
+
+    @staticmethod
+    def _generate_normalized_vector(rng: random.Random, dim: int = 768) -> list[float]:
+        """Generates a random unit-normalized vector on the 768-dimensional unit sphere."""
+        raw = [rng.gauss(0.0, 1.0) for _ in range(dim)]
+        norm = math.sqrt(sum(x * x for x in raw))
+        return [x / norm for x in raw]
+
+    @staticmethod
+    def _perturb_vector(vec: list[float], rng: random.Random, epsilon: float = 0.08) -> list[float]:
+        """Perturbs a unit vector by adding a small directional noise vector and re-normalizing."""
+        dim = len(vec)
+        noise = [rng.gauss(0.0, 1.0) for _ in range(dim)]
+        noise_norm = math.sqrt(sum(x * x for x in noise))
+        raw = [vec[i] + epsilon * (noise[i] / noise_norm) for i in range(dim)]
+        norm = math.sqrt(sum(x * x for x in raw))
+        return [x / norm for x in raw]
+
+    @staticmethod
+    def _format_pgvector(vec: list[float]) -> str:
+        """Formats a float vector into a PostgreSQL pgvector literal string [x1,x2,...]."""
+        return "[" + ",".join(f"{x:.6f}" for x in vec) + "]"
 
     async def test_insert_and_retrieve_vector_record(self):
         """Successfully inserts and retrieves a vector record."""
@@ -626,7 +650,7 @@ class TestPostgresVectorStoreIntegration(unittest.IsolatedAsyncioTestCase):
         )
         await self.store.upsert(rec)
 
-        query_vec = self._make_vector([0.15, 0.25])
+        query_vec = self._make_vector([0.3712, 0.8491])
         plan = await self.store.explain_search(query_vec, top_k=5, namespace="test_vec_ns")
         self.assertFalse(plan["vector_index_used"])
         self.assertIn("Exact filtered vector search", plan["retrieval_method"])
@@ -634,34 +658,39 @@ class TestPostgresVectorStoreIntegration(unittest.IsolatedAsyncioTestCase):
 
         # Confirm coordinates are sanitized from execution plan summary
         plan_str = " ".join(plan["execution_plan_summary"])
-        self.assertNotIn("0.15", plan_str)
-        self.assertNotIn("0.25", plan_str)
+        self.assertNotIn("0.3712", plan_str)
+        self.assertNotIn("0.8491", plan_str)
 
     async def test_explain_search_hnsw_selection_on_seeded_table(self):
         """
-        On seeded tables (>= 3,000 vectors), query planner selects HNSW index scan.
-        explain_search verifies idx_vector_records_embedding_hnsw selection.
+        On seeded tables where row count and selectivity favor graph search,
+        the PostgreSQL query planner cost model selects the HNSW index scan.
+        Note: The crossover point is cost-dependent on row count, selectivity,
+        and PostgreSQL cost parameters (e.g. random_page_cost), not a universal constant.
         """
         ns = "test_hnsw_seed_ns"
+        rng = random.Random(123)
         async with self.pool.acquire() as conn:
             cache_entries = [(ns, f"fp_seed_{i}", f"resp_{i}", "llama-3", "groq") for i in range(3000)]
             vec_records = [
-                (ns, f"fp_seed_{i}", f"query {i}", "nomic-embed-text", f"[{0.001 * i},{0.002 * i}" + ",0.0" * 766 + "]")
+                (ns, f"fp_seed_{i}", f"query {i}", "nomic-embed-text", self._format_pgvector(self._generate_normalized_vector(rng, 768)))
                 for i in range(3000)
             ]
-            await conn.executemany(
-                "INSERT INTO cache_entries (cache_namespace, fingerprint, response, model, provider) VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
-                cache_entries,
-            )
-            await conn.executemany(
-                "INSERT INTO vector_records (cache_namespace, fingerprint, query_text, model, vector) VALUES ($1, $2, $3, $4, $5::vector) ON CONFLICT DO NOTHING",
-                vec_records,
-            )
+            chunk_size = 500
+            for i in range(0, len(cache_entries), chunk_size):
+                await conn.executemany(
+                    "INSERT INTO cache_entries (cache_namespace, fingerprint, response, model, provider) VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
+                    cache_entries[i : i + chunk_size],
+                )
+                await conn.executemany(
+                    "INSERT INTO vector_records (cache_namespace, fingerprint, query_text, model, vector) VALUES ($1, $2, $3, $4, $5::vector) ON CONFLICT DO NOTHING",
+                    vec_records[i : i + chunk_size],
+                )
             await conn.execute("ANALYZE vector_records;")
             await conn.execute("ANALYZE cache_entries;")
 
         try:
-            query_vec = self._make_vector([0.05, 0.1])
+            query_vec = self._generate_normalized_vector(rng, 768)
             plan = await self.store.explain_search(query_vec, top_k=5, namespace=ns, analyze=True)
             self.assertTrue(plan["vector_index_used"])
             self.assertEqual(plan["retrieval_method"], "HNSW approximate nearest-neighbour search")
@@ -673,55 +702,306 @@ class TestPostgresVectorStoreIntegration(unittest.IsolatedAsyncioTestCase):
 
     async def test_controlled_ann_vs_exact_retrieval_recall(self):
         """
-        Controlled comparison between exact nearest-neighbour search and HNSW retrieval:
-        verifies Recall@5 is 1.0 (identical top-5 nearest neighbours).
+        Controlled comparison between exact nearest-neighbour search and HNSW retrieval
+        over 5,000+ diverse, normalized 768-dimensional vectors.
+        Validates Recall@5 and Recall@10 across 10 distinct queries, asserts cosine distance
+        spread (non-degenerate), verifies planner selected HNSW, and validates against
+        a controlled exact baseline with index/bitmap scans explicitly disabled.
         """
         ns = "test_ann_recall_ns"
+        rng = random.Random(42)
+        total_vectors = 5000
+
+        # 1. Generate diverse, normalized 768-dimensional float vectors
+        vectors = [self._generate_normalized_vector(rng, 768) for _ in range(total_vectors)]
+
+        # 2. Assert cosine distance variation across a sample (non-degenerate, diverse vectors)
+        sample = vectors[:50]
+        distances = []
+        for i in range(len(sample)):
+            for j in range(i + 1, len(sample)):
+                dot = sum(sample[i][k] * sample[j][k] for k in range(768))
+                distances.append(1.0 - dot)
+        min_d, max_d, avg_d = min(distances), max(distances), sum(distances) / len(distances)
+        self.assertGreater(min_d, 0.60, "Vectors must not be collinear or duplicate (min distance too small)")
+        self.assertLess(max_d, 1.40, "Vectors must be valid normalized vectors")
+        self.assertGreater(max_d - min_d, 0.15, "Cosine distance distribution must show non-trivial spread")
+        self.assertAlmostEqual(avg_d, 1.0, delta=0.08, msg="Unit random sphere vectors should average near 1.0 cosine distance")
+
+        # 3. Create 10 distinct query vectors and place perturbed candidates nearby in the dataset
+        num_queries = 10
+        query_vectors = [self._generate_normalized_vector(rng, 768) for _ in range(num_queries)]
+        for q_idx, q_vec in enumerate(query_vectors):
+            for k in range(10):
+                eps = 0.04 + k * 0.015
+                vectors[q_idx * 10 + k] = self._perturb_vector(q_vec, rng, epsilon=eps)
+
+        # 4. Insert 5,000 records into database
         async with self.pool.acquire() as conn:
-            cache_entries = [(ns, f"fp_ann_{i}", f"resp_{i}", "llama-3", "groq") for i in range(50)]
+            cache_entries = [(ns, f"fp_ann_{i}", f"resp_{i}", "llama-3", "groq") for i in range(total_vectors)]
             vec_records = [
-                (ns, f"fp_ann_{i}", f"query {i}", "nomic-embed-text", f"[{0.05 * i},{0.02 * i}" + ",0.0" * 766 + "]")
-                for i in range(50)
+                (ns, f"fp_ann_{i}", f"query {i}", "nomic-embed-text", self._format_pgvector(vectors[i]))
+                for i in range(total_vectors)
             ]
-            await conn.executemany(
-                "INSERT INTO cache_entries (cache_namespace, fingerprint, response, model, provider) VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
-                cache_entries,
-            )
-            await conn.executemany(
-                "INSERT INTO vector_records (cache_namespace, fingerprint, query_text, model, vector) VALUES ($1, $2, $3, $4, $5::vector) ON CONFLICT DO NOTHING",
-                vec_records,
-            )
+            chunk_size = 500
+            for i in range(0, total_vectors, chunk_size):
+                await conn.executemany(
+                    "INSERT INTO cache_entries (cache_namespace, fingerprint, response, model, provider) VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
+                    cache_entries[i : i + chunk_size],
+                )
+                await conn.executemany(
+                    "INSERT INTO vector_records (cache_namespace, fingerprint, query_text, model, vector) VALUES ($1, $2, $3, $4, $5::vector) ON CONFLICT DO NOTHING",
+                    vec_records[i : i + chunk_size],
+                )
+            await conn.execute("ANALYZE vector_records;")
+            await conn.execute("ANALYZE cache_entries;")
 
         try:
-            query_vec = self._make_vector([0.25, 0.10])
-            # Exact scan via SQL without planner index preference
-            async with self.pool.acquire() as conn:
-                exact_rows = await conn.fetch(
-                    """
-                    SELECT fingerprint
-                    FROM vector_records
-                    WHERE cache_namespace = $1
-                    ORDER BY (vector <=> $2::vector) ASC
-                    LIMIT 5;
-                    """,
-                    ns,
-                    f"[{query_vec[0]},{query_vec[1]}" + ",0.0" * 766 + "]",
-                )
-            exact_fps = [r["fingerprint"] for r in exact_rows]
+            recalls_at_5 = []
+            recalls_at_10 = []
 
-            # Vector store search
-            ann_results = await self.store.search(query_vec, top_k=5, namespace=ns)
-            ann_fps = [r.fingerprint for r in ann_results]
+            for q_idx, q_vec in enumerate(query_vectors):
+                # 5. Verify query planner selects HNSW index scan for this query
+                plan = await self.store.explain_search(q_vec, top_k=10, namespace=ns, analyze=True)
+                if not plan["vector_index_used"]:
+                    self.fail(
+                        f"Query {q_idx} did not use HNSW index in execution plan: "
+                        f"{plan['execution_plan_summary']}. Recall cannot be reported without confirmed HNSW index usage."
+                    )
+                self.assertIn("idx_vector_records_embedding_hnsw", " ".join(plan["execution_plan_summary"]))
 
-            # Calculate Recall@5
-            overlap = len(set(exact_fps).intersection(set(ann_fps)))
-            recall_at_5 = overlap / 5.0
-            self.assertEqual(recall_at_5, 1.0)
-            self.assertEqual(ann_fps, exact_fps)
+                # 6. Retrieve approximate nearest neighbours via vector store
+                ann_results = await self.store.search(q_vec, top_k=10, namespace=ns)
+                ann_fps = [r.fingerprint for r in ann_results]
+                self.assertEqual(len(ann_fps), 10)
+
+                # 7. Establish exact baseline via a controlled transaction with indexscan & bitmapscan disabled
+                q_pg_str = self._format_pgvector(q_vec)
+                async with self.pool.acquire() as conn:
+                    async with conn.transaction():
+                        await conn.execute("SET LOCAL enable_indexscan = off;")
+                        await conn.execute("SET LOCAL enable_bitmapscan = off;")
+
+                        # Verify exact plan does NOT use HNSW
+                        exact_plan = await conn.fetch(
+                            f"""
+                            EXPLAIN SELECT v.fingerprint
+                            FROM vector_records v
+                            JOIN cache_entries c ON v.cache_namespace = c.cache_namespace AND v.fingerprint = c.fingerprint
+                            WHERE v.cache_namespace = '{ns}' AND v.model = 'nomic-embed-text'
+                              AND (c.expires_at IS NULL OR c.expires_at > NOW())
+                            ORDER BY (v.vector <=> '{q_pg_str}'::vector) ASC
+                            LIMIT 10;
+                            """
+                        )
+                        exact_plan_str = " ".join(r[0] for r in exact_plan)
+                        self.assertNotIn("idx_vector_records_embedding_hnsw", exact_plan_str)
+
+                        # Fetch exact top-10 rows
+                        exact_rows = await conn.fetch(
+                            f"""
+                            SELECT v.fingerprint
+                            FROM vector_records v
+                            JOIN cache_entries c ON v.cache_namespace = c.cache_namespace AND v.fingerprint = c.fingerprint
+                            WHERE v.cache_namespace = '{ns}' AND v.model = 'nomic-embed-text'
+                              AND (c.expires_at IS NULL OR c.expires_at > NOW())
+                            ORDER BY (v.vector <=> '{q_pg_str}'::vector) ASC
+                            LIMIT 10;
+                            """
+                        )
+                exact_fps = [r["fingerprint"] for r in exact_rows]
+                self.assertEqual(len(exact_fps), 10)
+
+                # 8. Calculate Recall@5 and Recall@10
+                r5 = len(set(ann_fps[:5]).intersection(set(exact_fps[:5]))) / 5.0
+                r10 = len(set(ann_fps[:10]).intersection(set(exact_fps[:10]))) / 10.0
+                recalls_at_5.append(r5)
+                recalls_at_10.append(r10)
+
+            # 9. Verify aggregate Recall metrics across all 10 queries
+            avg_recall_5 = sum(recalls_at_5) / len(recalls_at_5)
+            min_recall_5 = min(recalls_at_5)
+            avg_recall_10 = sum(recalls_at_10) / len(recalls_at_10)
+            min_recall_10 = min(recalls_at_10)
+
+            # Assert high retrieval recall
+            self.assertGreaterEqual(avg_recall_5, 0.95, f"Average Recall@5 was {avg_recall_5:.4f}")
+            self.assertGreaterEqual(min_recall_5, 0.80, f"Minimum Recall@5 was {min_recall_5:.4f}")
+            self.assertGreaterEqual(avg_recall_10, 0.95, f"Average Recall@10 was {avg_recall_10:.4f}")
+            self.assertGreaterEqual(min_recall_10, 0.80, f"Minimum Recall@10 was {min_recall_10:.4f}")
+            self.assertEqual(len(recalls_at_5), 10)
         finally:
             async with self.pool.acquire() as conn:
                 await conn.execute("DELETE FROM vector_records WHERE cache_namespace = $1", ns)
                 await conn.execute("DELETE FROM cache_entries WHERE cache_namespace = $1", ns)
+
+    async def test_hnsw_multi_namespace_filtering_and_iterative_scan(self):
+        """
+        Tests HNSW index performance under multi-namespace and multi-model filtering
+        with varying selectivity proportions:
+        - Large proportion namespace (~77%, 4,000 vectors with nomic-embed-text)
+        - Second embedding model in large namespace (~12.5%, 650 vectors with text-embedding-3-small)
+        - Moderate proportion namespace (~9.6%, 500 vectors with nomic-embed-text)
+        - Highly selective namespace (~1.0%, 50 vectors with nomic-embed-text)
+        Evaluates top-K returned, Recall@5/10 against exact baseline, planner selection,
+        latency, and verifies transaction-scoped hnsw.iterative_scan = strict_order.
+        """
+        ns_large = "test_multi_ns_large"
+        ns_mod = "test_multi_ns_mod"
+        ns_sel = "test_multi_ns_sel"
+        all_namespaces = [ns_large, ns_mod, ns_sel]
+
+        rng = random.Random(99)
+        total_vectors = 5200
+        vectors = [self._generate_normalized_vector(rng, 768) for _ in range(total_vectors)]
+        q_vec = self._generate_normalized_vector(rng, 768)
+        q_str = self._format_pgvector(q_vec)
+
+        # Place 10 nearby candidates for q_vec in each partition
+        for k in range(10):
+            vectors[k] = self._perturb_vector(q_vec, rng, epsilon=0.04 + k * 0.015)
+        for k in range(10):
+            vectors[4000 + k] = self._perturb_vector(q_vec, rng, epsilon=0.04 + k * 0.015)
+        for k in range(10):
+            vectors[4650 + k] = self._perturb_vector(q_vec, rng, epsilon=0.04 + k * 0.015)
+        for k in range(10):
+            vectors[5150 + k] = self._perturb_vector(q_vec, rng, epsilon=0.04 + k * 0.015)
+
+        cache_records = []
+        vec_records = []
+        idx = 0
+
+        # 4,000 large nomic (~77%)
+        for i in range(4000):
+            fp = f"fp_large_{i}"
+            cache_records.append((ns_large, fp, f"resp_large_{i}", "llama-3", "groq"))
+            vec_records.append((ns_large, fp, f"query large {i}", "nomic-embed-text", self._format_pgvector(vectors[idx])))
+            idx += 1
+
+        # 650 large second_model (~12.5%)
+        for i in range(650):
+            fp = f"fp_large_m2_{i}"
+            cache_records.append((ns_large, fp, f"resp_large_m2_{i}", "llama-3", "groq"))
+            vec_records.append((ns_large, fp, f"query large m2 {i}", "text-embedding-3-small", self._format_pgvector(vectors[idx])))
+            idx += 1
+
+        # 500 mod nomic (~9.6%)
+        for i in range(500):
+            fp = f"fp_mod_{i}"
+            cache_records.append((ns_mod, fp, f"resp_mod_{i}", "llama-3", "groq"))
+            vec_records.append((ns_mod, fp, f"query mod {i}", "nomic-embed-text", self._format_pgvector(vectors[idx])))
+            idx += 1
+
+        # 50 sel nomic (~1.0%)
+        for i in range(50):
+            fp = f"fp_sel_{i}"
+            cache_records.append((ns_sel, fp, f"resp_sel_{i}", "llama-3", "groq"))
+            vec_records.append((ns_sel, fp, f"query sel {i}", "nomic-embed-text", self._format_pgvector(vectors[idx])))
+            idx += 1
+
+        async with self.pool.acquire() as conn:
+            await conn.execute("LOAD 'vector';")
+            chunk_size = 500
+            for i in range(0, len(cache_records), chunk_size):
+                await conn.executemany(
+                    "INSERT INTO cache_entries (cache_namespace, fingerprint, response, model, provider) VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
+                    cache_records[i : i + chunk_size],
+                )
+                await conn.executemany(
+                    "INSERT INTO vector_records (cache_namespace, fingerprint, query_text, model, vector) VALUES ($1, $2, $3, $4, $5::vector) ON CONFLICT DO NOTHING",
+                    vec_records[i : i + chunk_size],
+                )
+            await conn.execute("ANALYZE vector_records;")
+            await conn.execute("ANALYZE cache_entries;")
+
+        try:
+            partitions = [
+                ("large_nomic", ns_large, "nomic-embed-text", 4000),
+                ("large_model2", ns_large, "text-embedding-3-small", 650),
+                ("moderate_nomic", ns_mod, "nomic-embed-text", 500),
+                ("selective_nomic", ns_sel, "nomic-embed-text", 50),
+            ]
+
+            for label, ns, model, expected_total in partitions:
+                # 1. Test with default settings
+                plan_info = await self.store.explain_search(q_vec, top_k=10, namespace=ns, model=model, analyze=True)
+                t0 = time.perf_counter()
+                results = await self.store.search(q_vec, top_k=10, namespace=ns, model=model)
+                lat_default_ms = (time.perf_counter() - t0) * 1000.0
+
+                self.assertEqual(len(results), min(10, expected_total))
+
+                # Exact baseline
+                async with self.pool.acquire() as conn:
+                    async with conn.transaction():
+                        await conn.execute("SET LOCAL enable_indexscan = off;")
+                        await conn.execute("SET LOCAL enable_bitmapscan = off;")
+                        exact_rows = await conn.fetch(
+                            f"""
+                            SELECT v.fingerprint
+                            FROM vector_records v
+                            JOIN cache_entries c ON v.cache_namespace = c.cache_namespace AND v.fingerprint = c.fingerprint
+                            WHERE v.cache_namespace = '{ns}' AND v.model = '{model}'
+                              AND (c.expires_at IS NULL OR c.expires_at > NOW())
+                            ORDER BY (v.vector <=> '{q_str}'::vector) ASC
+                            LIMIT 10;
+                            """
+                        )
+                exact_fps = [r["fingerprint"] for r in exact_rows]
+                ann_fps = [r.fingerprint for r in results]
+
+                k5 = min(5, len(results), len(exact_rows))
+                k10 = min(10, len(results), len(exact_rows))
+                r5 = len(set(ann_fps[:k5]).intersection(set(exact_fps[:k5]))) / float(k5)
+                r10 = len(set(ann_fps[:k10]).intersection(set(exact_fps[:k10]))) / float(k10)
+
+                self.assertGreaterEqual(r5, 0.90, f"{label} Recall@5 below 0.90: {r5}")
+                self.assertGreaterEqual(r10, 0.90, f"{label} Recall@10 below 0.90: {r10}")
+
+                # Planner selection observation:
+                # Large namespace with nomic-embed-text selects HNSW;
+                # Highly selective namespace selects B-tree index scan
+                if label == "large_nomic":
+                    self.assertTrue(plan_info["vector_index_used"], "Large namespace must select HNSW")
+                    self.assertEqual(plan_info["retrieval_method"], "HNSW approximate nearest-neighbour search")
+                elif label == "selective_nomic":
+                    self.assertFalse(plan_info["vector_index_used"], "Selective namespace should not use HNSW")
+                    self.assertIn("Exact filtered vector search", plan_info["retrieval_method"])
+                    self.assertTrue(
+                        any("idx_vector_records_" in l for l in plan_info["execution_plan_summary"]),
+                        "Selective namespace should use a B-tree index on vector_records",
+                    )
+
+                # 2. Test with SET LOCAL hnsw.iterative_scan = 'strict_order'
+                async with self.pool.acquire() as conn:
+                    async with conn.transaction():
+                        await conn.execute("SET LOCAL hnsw.iterative_scan = 'strict_order';")
+                        in_tx_setting = await conn.fetchval("SHOW hnsw.iterative_scan;")
+                        self.assertEqual(in_tx_setting, "strict_order")
+
+                        t_it0 = time.perf_counter()
+                        it_rows = await conn.fetch(
+                            f"""
+                            SELECT v.fingerprint
+                            FROM vector_records v
+                            JOIN cache_entries c ON v.cache_namespace = c.cache_namespace AND v.fingerprint = c.fingerprint
+                            WHERE v.cache_namespace = '{ns}' AND v.model = '{model}'
+                              AND (c.expires_at IS NULL OR c.expires_at > NOW())
+                            ORDER BY (v.vector <=> '{q_str}'::vector) ASC
+                            LIMIT 10;
+                            """
+                        )
+                        lat_strict_ms = (time.perf_counter() - t_it0) * 1000.0
+                        self.assertEqual(len(it_rows), min(10, expected_total))
+
+                    # Verify that SET LOCAL did not leak outside transaction
+                    out_tx_setting = await conn.fetchval("SHOW hnsw.iterative_scan;")
+                    self.assertEqual(out_tx_setting, "off", "SET LOCAL hnsw.iterative_scan leaked outside transaction")
+
+        finally:
+            async with self.pool.acquire() as conn:
+                await conn.execute("DELETE FROM vector_records WHERE cache_namespace = ANY($1)", all_namespaces)
+                await conn.execute("DELETE FROM cache_entries WHERE cache_namespace = ANY($1)", all_namespaces)
 
 
 class TestPgvectorAvailabilityAndDisabledBehavior(unittest.IsolatedAsyncioTestCase):

@@ -1101,6 +1101,27 @@ async def run_benchmark(
                     await vector_store.upsert(vec_rec)
                     candidate_indexing_ms.append((time.perf_counter() - t_idx0) * 1000.0)
 
+            # Inspect execution plan using a real query vector and populated benchmark namespace
+            # (Executed outside timed lookup iterations to ensure benchmark timing purity)
+            if bench_cases:
+                first_case = bench_cases[0]
+                first_case_ns = f"bench_{run_id}_{first_case.id}"
+                try:
+                    sample_query_res = await provider.embed(first_case.query, task=EmbeddingTask.QUERY)
+                    plan_info = await vector_store.explain_search(
+                        query_vector=sample_query_res.vector,
+                        top_k=policy.top_k,
+                        namespace=first_case_ns,
+                        model=policy.configured_model,
+                        analyze=True,
+                    )
+                    if db_info is not None:
+                        db_info["vector_index_used"] = plan_info.get("vector_index_used", False)
+                        db_info["retrieval_method"] = plan_info.get("retrieval_method", "Unknown")
+                        db_info["execution_plan_summary"] = plan_info.get("execution_plan_summary", [])
+                except Exception as exc:
+                    logger.warning("Failed to inspect query execution plan during benchmark: %s", exc)
+
             # 2. Repeated query lookup measurement
             for _ in range(iterations):
                 for case in bench_cases:
@@ -1152,14 +1173,31 @@ async def run_benchmark(
                 except Exception as exc:
                     logger.warning("Failed to clear cache namespace '%s': %s", ns, exc)
 
+        vector_index_available = db_info.get("vector_index_available", False) if db_info else False
+        vector_index_used = db_info.get("vector_index_used", False) if db_info else False
+        provider_name = provider.__class__.__name__
+
+        if vector_index_used:
+            scan_detail = "actual pgvector HNSW approximate nearest-neighbour index scan (idx_vector_records_embedding_hnsw)"
+        else:
+            scan_detail = (
+                "pgvector exact filtered scan (planner selected exact scan for benchmark workload size/selectivity; "
+                "HNSW index is available)"
+            )
+
+        disclaimer = (
+            f"Measured using real {provider_name} and live PostgreSQL/pgvector. "
+            f"Captures real HTTP embedding requests, {scan_detail}, "
+            f"exact-cache JOIN, and policy candidate evaluation. Does NOT include LLM generation latency."
+        )
+
         return {
             "benchmark_mode": "pgvector",
-            "benchmark_label": "Real Ollama embeddings with PostgreSQL/pgvector retrieval",
-            "disclaimer": (
-                "Measured using real OllamaEmbeddingProvider and live PostgreSQL/pgvector. "
-                "Captures real HTTP embedding requests, actual pgvector cosine-distance index scan, "
-                "exact-cache JOIN, and policy candidate evaluation. Does NOT include LLM generation latency."
-            ),
+            "benchmark_label": f"PostgreSQL/pgvector retrieval ({'HNSW ANN' if vector_index_used else 'Exact Filtered'}) with {provider_name}",
+            "disclaimer": disclaimer,
+            "vector_index_available": vector_index_available,
+            "vector_index_used": vector_index_used,
+            "retrieval_method": db_info.get("retrieval_method", "Unknown") if db_info else "Unknown",
             "iterations": iterations,
             "sample_count": len(semantic_lookup_ms),
             "per_metric_sample_counts": {
@@ -1610,14 +1648,12 @@ async def async_main() -> None:
                     dimensions=provider.dimensions,
                 )
                 idx_info = await pg_vector_store.get_index_info()
-                dummy_vec = [0.0] * provider.dimensions
-                plan_info = await pg_vector_store.explain_search(dummy_vec, analyze=False)
                 db_info.update({
                     "vector_index_type": idx_info.get("vector_index_type", "none"),
                     "vector_index_available": idx_info.get("vector_index_available", False),
-                    "vector_index_used": plan_info.get("vector_index_used", False),
-                    "retrieval_method": plan_info.get("retrieval_method", "Unknown"),
-                    "execution_plan_summary": plan_info.get("execution_plan_summary", []),
+                    "vector_index_used": False,
+                    "retrieval_method": "Pending benchmark workload execution",
+                    "execution_plan_summary": [],
                 })
             except Exception as exc:
                 logger.error("Vector migration or initialization failed: %s", exc)

@@ -1340,6 +1340,10 @@ class TestMockPgvectorSemanticEvaluationIntegration(unittest.IsolatedAsyncioTest
 
         self.assertEqual(bench_res["benchmark_mode"], "pgvector")
         self.assertEqual(bench_res["sample_count"], 3)
+        self.assertIn("vector_index_used", bench_res)
+        self.assertFalse(bench_res["vector_index_used"])  # Workload with 1 candidate uses exact scan
+        self.assertIn("exact filtered scan", bench_res["disclaimer"])
+        self.assertIn("vector_index_used", db_info)
         self.assertGreater(bench_res["postgres_retrieval_latency_ms"]["mean"], 0.0)
         self.assertGreater(bench_res["candidate_indexing_latency_ms"]["mean"], 0.0)
         self.assertGreater(bench_res["semantic_lookup_latency_ms"]["mean"], 0.0)
@@ -1371,7 +1375,8 @@ class TestRealOllamaPgvectorIntegration(unittest.IsolatedAsyncioTestCase):
         from app.embeddings.ollama_adapter import OllamaEmbeddingProvider
         self.provider = OllamaEmbeddingProvider(model="nomic-embed-text", base_url=ollama_url)
         try:
-            await self.provider.embed("ping", task=EmbeddingTask.QUERY)
+            ping_res = await self.provider.embed("ping", task=EmbeddingTask.QUERY)
+            self.dimensions = ping_res.dimensions
         except Exception as exc:
             await self.provider.close()
             self.fail(f"Ollama integration test enabled, but Ollama provider at {ollama_url} failed: {exc}")
@@ -1385,14 +1390,14 @@ class TestRealOllamaPgvectorIntegration(unittest.IsolatedAsyncioTestCase):
                     self.fail(f"pgvector extension 'vector' is not available at {safe_url}")
 
             await run_migrations(self.pool)
-            await run_vector_migrations(self.pool, dimensions=self.provider.dimensions)
+            await run_vector_migrations(self.pool, dimensions=self.dimensions)
 
             self.cache = PostgresCache(pool=self.pool, default_namespace="test_real_eval_ns")
             self.store = PostgresVectorStore(
                 pool=self.pool,
                 default_namespace="test_real_eval_ns",
                 default_model="nomic-embed-text",
-                dimensions=self.provider.dimensions,
+                dimensions=self.dimensions,
             )
         except Exception as exc:
             self.fail(f"Real Ollama pgvector setup failed for TEST_DATABASE_URL ({safe_url}): {exc}")
