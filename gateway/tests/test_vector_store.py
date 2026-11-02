@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import random
 import re
+from statistics import median
 import time
 import unittest
 from urllib.parse import urlsplit
@@ -285,7 +286,7 @@ class TestPostgresVectorStoreIntegration(unittest.IsolatedAsyncioTestCase):
         s = sorted(values)
         n = len(s)
         mean_val = sum(s) / n
-        p50_val = s[int(n * 0.50)]
+        p50_val = float(median(s))
         p95_val = s[min(int(n * 0.95), n - 1)]
         return round(mean_val, 3), round(p50_val, 3), round(p95_val, 3)
 
@@ -1288,6 +1289,7 @@ class TestPostgresVectorStoreIntegration(unittest.IsolatedAsyncioTestCase):
 
             report_file.parent.mkdir(parents=True, exist_ok=True)
             report_payload = {
+                "schema_version": "1.0",
                 "generated_at": datetime.now(timezone.utc).isoformat(),
                 "postgres_version": pg_version,
                 "pgvector_version": pgvector_version,
@@ -1307,7 +1309,7 @@ class TestPostgresVectorStoreIntegration(unittest.IsolatedAsyncioTestCase):
                         "recall improvement in this experiment because default retrieval already retrieved all valid candidates."
                     ),
                     "latency_conclusion": (
-                        "Latency differences across 30 deterministic interleaved iterations were inconsistent and within normal execution variance. "
+                        "The observed latency differences were small and inconsistent. This experiment does not establish a statistically significant performance difference between the two modes. "
                         "The results do not establish that iterative scanning is universally faster or more accurate; "
                         "iterative scanning is an algorithmic completeness trade-off designed to prevent candidate truncation under heavy filtering, "
                         "not a latency optimization."
@@ -1334,6 +1336,7 @@ class TestPostgresVectorStoreIntegration(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(report_file.exists(), f"Report file not found: {report_file}")
             with open(report_file, "r", encoding="utf-8") as f:
                 parsed_report = json.load(f)
+            self.assertEqual(parsed_report.get("schema_version"), "1.0")
             self.assertIn("results", parsed_report)
             self.assertEqual(len(parsed_report["results"]), 6)
             for rec in parsed_report["results"]:
@@ -1388,6 +1391,8 @@ class TestPgvectorAvailabilityAndDisabledBehavior(unittest.IsolatedAsyncioTestCa
             self.skipTest(f"Non-pgvector PostgreSQL instance unavailable: {e}")
 
         try:
+            if await check_pgvector_available(conn):
+                self.skipTest("PostgreSQL instance has pgvector extension available; skipping missing-pgvector test.")
             with self.assertRaises(VectorStoreConfigurationError) as ctx:
                 await run_vector_migrations(conn, dimensions=768)
             self.assertIn("pgvector extension 'vector' is not available", str(ctx.exception))
@@ -1407,6 +1412,10 @@ class TestPgvectorAvailabilityAndDisabledBehavior(unittest.IsolatedAsyncioTestCa
             self.skipTest(f"Non-pgvector PostgreSQL instance unavailable: {e}")
 
         try:
+            async with pool.acquire() as conn:
+                if await check_pgvector_available(conn):
+                    self.skipTest("PostgreSQL instance has pgvector extension available; skipping non-pgvector environment test.")
+
             # Exact cache migration runs fine without pgvector
             await run_migrations(pool)
 
