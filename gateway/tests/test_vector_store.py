@@ -1354,8 +1354,8 @@ class TestPostgresVectorStoreIntegration(unittest.IsolatedAsyncioTestCase):
                         "Latency measurements reflect the algorithmic trade-off: default retrieval ('off') terminates quickly after examining "
                         "ef_search candidates without joining cache entries (since 0 candidates survive filtering), while iterative scanning "
                         "('strict_order') incurs additional graph traversal and 10 cache index lookups to find valid matching entries. "
-                        "Iterative scanning is an algorithmic completeness mechanism to prevent candidate starvation under challenging post-filtering, "
-                        "not a latency reduction optimization."
+                        "Iterative scanning can improve candidate completeness under post-filtering by continuing HNSW traversal, "
+                        "subject to configured scan limits; it is not a latency reduction optimization."
                     ),
                 },
             }

@@ -4,4 +4,5 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .coverage
-evaluation/reports/
+evaluation/reports/*
+!evaluation/reports/iterative_hnsw_benchmark.json
