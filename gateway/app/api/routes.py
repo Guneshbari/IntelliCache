@@ -173,25 +173,41 @@ def verify_admin_token(
 def verify_client_token(
     request: Request,
     settings: Settings = Depends(get_settings),
-) -> None:
+) -> str:
     """
     Dependency verifying client API token for query endpoints.
-    Enforces authentication when CLIENT_API_TOKEN is set or when bound beyond loopback.
+    Enforces authentication when client tokens are configured or when bound beyond loopback.
+    Returns the server-authorized cache_namespace for the authenticated client.
     """
-    # 1. If client_api_token is configured, enforce it strictly
-    if settings.client_api_token:
+    token_map = settings.get_client_token_map()
+
+    # 1. If any client tokens are configured, enforce strict authentication
+    if token_map:
         token_candidate: Optional[str] = request.headers.get("X-Client-Token")
         if not token_candidate:
             auth_header = request.headers.get("Authorization", "")
             if auth_header.lower().startswith("bearer "):
                 token_candidate = auth_header[7:].strip()
 
-        if not token_candidate or not hmac.compare_digest(token_candidate, settings.client_api_token):
+        if not token_candidate:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Unauthorized: Invalid or missing client API token.",
             )
-        return
+
+        matched_namespace: Optional[str] = None
+        for valid_token, ns in token_map.items():
+            if hmac.compare_digest(token_candidate, valid_token):
+                matched_namespace = ns
+                break
+
+        if matched_namespace is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Unauthorized: Invalid or missing client API token.",
+            )
+
+        return matched_namespace
 
     # 2. Central deployment security check:
     # If bound beyond loopback without client_api_token configured, fail closed
@@ -200,6 +216,9 @@ def verify_client_token(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Unauthorized: Central deployment bound beyond loopback requires CLIENT_API_TOKEN to be configured on the gateway.",
         )
+
+    # 3. Local development loopback fallback without configured tokens
+    return settings.cache_namespace
 
 
 # ---------------------------------------------------------------------------
@@ -344,6 +363,7 @@ async def execute_query(
     settings: Settings = Depends(get_settings),
     core: IntelliCacheCore = Depends(get_core_service),
     provider: LLMProvider = Depends(get_llm_provider),
+    client_namespace: str = Depends(verify_client_token),
 ) -> Any:
     """
     Execute a natural language query against the configured LLM provider
@@ -373,7 +393,7 @@ async def execute_query(
         temperature=effective_temperature,
         max_tokens=effective_max_tokens,
         provider=settings.llm_provider,
-        namespace=settings.cache_namespace,
+        namespace=client_namespace,
         stream=request.stream,
         bypass_cache=request.bypass_cache,
         conversation_id=request.conversation_id,

@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, patch
 
 import asyncpg
 from fastapi.testclient import TestClient
+import httpx
 
 from app.cache.exact_cache import ExactCache
 from app.cache.interfaces import CacheEntry
@@ -208,6 +209,45 @@ class TestMultiClientSharingAndNamespaces(unittest.TestCase):
             self.assertEqual(entries_trusted.total_entries, 1)
 
         asyncio.run(verify())
+
+    @patch.dict(os.environ, {
+        "CLIENT_API_TOKENS": '{"tok_alpha": "ns_team_alpha", "tok_beta": "ns_team_alpha", "tok_gamma": "ns_team_gamma"}',
+    }, clear=False)
+    def test_multi_token_json_configuration_and_sharing(self):
+        """Tokens tok_alpha and tok_beta share ns_team_alpha; tok_gamma is in ns_team_gamma."""
+        reload_settings()
+        headers_a = {"X-Client-Token": "tok_alpha"}
+        headers_b = {"X-Client-Token": "tok_beta"}
+        headers_c = {"X-Client-Token": "tok_gamma"}
+
+        # Client A requests -> Miss -> 1 provider call
+        resp_a = self.client.post("/query", json={"prompt": "Multi-token test"}, headers=headers_a)
+        self.assertEqual(resp_a.status_code, 200)
+        self.assertFalse(resp_a.json()["cached"])
+        self.assertEqual(self.api_call_count, 1)
+
+        # Client B requests same query -> Hit -> 0 extra provider calls
+        resp_b = self.client.post("/query", json={"prompt": "Multi-token test"}, headers=headers_b)
+        self.assertEqual(resp_b.status_code, 200)
+        self.assertTrue(resp_b.json()["cached"])
+        self.assertEqual(self.api_call_count, 1)
+
+        # Client C requests same query -> Miss because it's in ns_team_gamma -> 1 extra provider call
+        resp_c = self.client.post("/query", json={"prompt": "Multi-token test"}, headers=headers_c)
+        self.assertEqual(resp_c.status_code, 200)
+        self.assertFalse(resp_c.json()["cached"])
+        self.assertEqual(self.api_call_count, 2)
+
+    @patch.dict(os.environ, {
+        "CLIENT_API_TOKENS": "tok1:ns_one,tok2:ns_one,tok3:ns_two",
+    }, clear=False)
+    def test_multi_token_delimiter_configuration(self):
+        """Tokens formatted as comma-separated token:namespace pairs parse correctly."""
+        settings = reload_settings()
+        token_map = settings.get_client_token_map()
+        self.assertEqual(token_map["tok1"], "ns_one")
+        self.assertEqual(token_map["tok2"], "ns_one")
+        self.assertEqual(token_map["tok3"], "ns_two")
 
     def test_namespace_isolation_at_storage_layer(self):
         """Different namespaces store entries independently and never collide."""
@@ -498,3 +538,400 @@ class TestPostgresCentralStorage(unittest.IsolatedAsyncioTestCase):
         res_b = await self.store_other_ns.get("fp_b")
         self.assertIsNotNone(res_b)
         self.assertEqual(res_b.response, "Answer B")
+
+
+class TestCentralMultiClientPostgresValidation(unittest.IsolatedAsyncioTestCase):
+    """
+    Step 10: Validates that multiple independently authenticated clients can use a
+    centrally deployed IntelliCache gateway and share authorised cached responses
+    through PostgreSQL, while maintaining strict namespace isolation between unrelated clients.
+    """
+
+    async def asyncSetUp(self):
+        explicit_url = os.getenv("TEST_DATABASE_URL")
+        self.is_explicit_url = explicit_url is not None
+        self.db_url = explicit_url or "postgresql://postgres@localhost:5432/intellicache_test"
+        safe_url = _redact_db_url(self.db_url)
+
+        from urllib.parse import urlsplit
+        parsed = urlsplit(self.db_url)
+        db_name = (parsed.path or "").lstrip("/")
+        if "test" not in db_name.lower():
+            raise ValueError(
+                f"Safety check failed: Refusing to run tests against database '{db_name}'. "
+                "Integration test database name must contain 'test' to prevent modifying non-test databases."
+            )
+
+        self.ns_shared = "mc_test_shared_team"
+        self.ns_isolated = "mc_test_isolated_team"
+        self.token_a = "client_a_token_secret_111"
+        self.token_b = "client_b_token_secret_222"
+        self.token_c = "client_c_token_secret_333"
+
+        try:
+            self.pool = await asyncpg.create_pool(self.db_url, min_size=1, max_size=5)
+            await run_migrations(self.pool)
+
+            # Clean test namespaces before running
+            async with self.pool.acquire() as conn:
+                await conn.execute(
+                    "DELETE FROM cache_entries WHERE cache_namespace IN ($1, $2)",
+                    self.ns_shared,
+                    self.ns_isolated,
+                )
+
+            # Configure PostgreSQL cache on gateway
+            self.pg_cache = PostgresCache(
+                pool=self.pool,
+                max_entries=100,
+                ttl_seconds=3600,
+                default_namespace=self.ns_shared,
+            )
+            set_query_cache(self.pg_cache)
+
+            # Mock Groq provider with invocation counter
+            self.provider_call_count = 0
+            self.mock_groq = AsyncMock()
+
+            def side_effect(*args, **kwargs):
+                self.provider_call_count += 1
+                return MockCompletion(f"Central Response #{self.provider_call_count}")
+
+            self.mock_groq.chat.completions.create.side_effect = side_effect
+            self.mock_groq.close = AsyncMock()
+
+            app.dependency_overrides[get_groq_client_factory] = lambda: lambda: self.mock_groq
+
+            # Configure server environment with multi-client token mapping
+            import json
+            tokens_json = json.dumps({
+                self.token_a: self.ns_shared,
+                self.token_b: self.ns_shared,
+                self.token_c: self.ns_isolated,
+            })
+            self.env_patcher = patch.dict(os.environ, {
+                "CLIENT_API_TOKENS": tokens_json,
+                "CACHE_BACKEND": "postgres",
+                "DATABASE_URL": self.db_url,
+                "CACHE_ENABLED": "true",
+            }, clear=False)
+            self.env_patcher.start()
+            reload_settings()
+
+        except Exception as e:
+            redacted_err = str(e)
+            if parsed.password and parsed.password in redacted_err:
+                redacted_err = redacted_err.replace(parsed.password, "***")
+            if parsed.username and parsed.username in redacted_err:
+                redacted_err = redacted_err.replace(parsed.username, "***")
+
+            if self.is_explicit_url:
+                self.fail(
+                    f"PostgreSQL integration test setup failed for explicitly configured "
+                    f"TEST_DATABASE_URL ({safe_url}): {redacted_err}"
+                )
+            else:
+                self.skipTest(
+                    f"Default local PostgreSQL test database unavailable at {safe_url}: {redacted_err}"
+                )
+
+    async def asyncTearDown(self):
+        if hasattr(self, "env_patcher"):
+            self.env_patcher.stop()
+        app.dependency_overrides.clear()
+        reload_settings()
+
+        if hasattr(self, "pool"):
+            try:
+                async with self.pool.acquire() as conn:
+                    await conn.execute(
+                        "DELETE FROM cache_entries WHERE cache_namespace IN ($1, $2)",
+                        self.ns_shared,
+                        self.ns_isolated,
+                    )
+                await self.pool.close()
+            except Exception:
+                pass
+
+    async def test_multi_client_cache_sharing_same_namespace_via_gateway(self):
+        """
+        Phase 2: Client A and Client B authenticate with separate tokens mapped to the same
+        namespace. Client A triggers LLM generation; Client B reuses cached response from PostgreSQL.
+        """
+        prompt = "Explain WAL (Write-Ahead Logging) in PostgreSQL"
+        transport = httpx.ASGITransport(app=app)
+
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client_a, \
+                   httpx.AsyncClient(transport=transport, base_url="http://testserver") as client_b:
+
+            # 1. Client A queries gateway -> Cache miss -> 1 LLM call -> Stored in PostgreSQL
+            resp_a = await client_a.post(
+                "/query",
+                json={"prompt": prompt},
+                headers={"X-Client-Token": self.token_a},
+            )
+            self.assertEqual(resp_a.status_code, 200)
+            data_a = resp_a.json()
+            self.assertEqual(data_a["response"], "Central Response #1")
+            self.assertFalse(data_a["cached"])
+            self.assertEqual(data_a["cache_type"], "none")
+            self.assertEqual(self.provider_call_count, 1)
+
+            # Verify entry exists in PostgreSQL directly
+            async with self.pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT response, hit_count FROM cache_entries WHERE cache_namespace = $1",
+                    self.ns_shared,
+                )
+                self.assertIsNotNone(row)
+                self.assertEqual(row["response"], "Central Response #1")
+                self.assertEqual(row["hit_count"], 0)
+
+            # 2. Client B sends identical request using its own token and separate client instance
+            resp_b = await client_b.post(
+                "/query",
+                json={"prompt": prompt},
+                headers={"X-Client-Token": self.token_b},
+            )
+            self.assertEqual(resp_b.status_code, 200)
+            data_b = resp_b.json()
+            self.assertEqual(data_b["response"], "Central Response #1")
+            self.assertTrue(data_b["cached"])
+            self.assertEqual(data_b["cache_type"], "exact")
+            self.assertEqual(data_b["cache_hit_count"], 1)
+            # Upstream provider call count MUST remain unchanged
+            self.assertEqual(self.provider_call_count, 1)
+
+        # 3. Third independent client instance also accesses same prompt -> Cache hit
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client_b_new:
+            resp_b_new = await client_b_new.post(
+                "/query",
+                json={"prompt": prompt},
+                headers={"Authorization": f"Bearer {self.token_b}"},
+            )
+            self.assertEqual(resp_b_new.status_code, 200)
+            self.assertTrue(resp_b_new.json()["cached"])
+            self.assertEqual(resp_b_new.json()["cache_hit_count"], 2)
+            self.assertEqual(self.provider_call_count, 1)
+
+    async def test_namespace_isolation_prevents_cross_client_leakage(self):
+        """
+        Phase 3: Client C has a valid token mapped to a different namespace.
+        Submitting the identical query results in a cache miss and separate provider call.
+        """
+        prompt = "How does B-Tree indexing work in relational databases?"
+        transport = httpx.ASGITransport(app=app)
+
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client_a, \
+                   httpx.AsyncClient(transport=transport, base_url="http://testserver") as client_c:
+
+            # 1. Client A queries gateway in shared namespace
+            resp_a = await client_a.post(
+                "/query",
+                json={"prompt": prompt},
+                headers={"X-Client-Token": self.token_a},
+            )
+            self.assertEqual(resp_a.status_code, 200)
+            self.assertFalse(resp_a.json()["cached"])
+            self.assertEqual(self.provider_call_count, 1)
+
+            # 2. Client C sends identical query in its isolated namespace
+            # MUST NOT access Client A's entry; must trigger its own provider invocation
+            resp_c = await client_c.post(
+                "/query",
+                json={"prompt": prompt},
+                headers={"X-Client-Token": self.token_c},
+            )
+            self.assertEqual(resp_c.status_code, 200)
+            data_c = resp_c.json()
+            self.assertFalse(data_c["cached"])
+            self.assertEqual(data_c["cache_type"], "none")
+            self.assertEqual(data_c["response"], "Central Response #2")
+            self.assertEqual(self.provider_call_count, 2)
+
+        # 3. Verify PostgreSQL has 1 record in shared namespace and 1 record in isolated namespace
+        async with self.pool.acquire() as conn:
+            count_shared = await conn.fetchval(
+                "SELECT COUNT(*) FROM cache_entries WHERE cache_namespace = $1",
+                self.ns_shared,
+            )
+            count_isolated = await conn.fetchval(
+                "SELECT COUNT(*) FROM cache_entries WHERE cache_namespace = $1",
+                self.ns_isolated,
+            )
+            self.assertEqual(count_shared, 1)
+            self.assertEqual(count_isolated, 1)
+
+        # 4. Client B (in shared namespace) can still reuse Client A's response
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client_b:
+            resp_b = await client_b.post(
+                "/query",
+                json={"prompt": prompt},
+                headers={"X-Client-Token": self.token_b},
+            )
+            self.assertEqual(resp_b.status_code, 200)
+            self.assertTrue(resp_b.json()["cached"])
+            self.assertEqual(resp_b.json()["response"], "Central Response #1")
+            self.assertEqual(self.provider_call_count, 2)
+
+    async def test_client_payload_cannot_override_authenticated_namespace(self):
+        """
+        Phase 3: Attempting to supply a different namespace through the request body
+        is ignored. The server strictly uses the namespace derived from authenticated token.
+        """
+        prompt = "Explain ACID transaction properties"
+        transport = httpx.ASGITransport(app=app)
+
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client_c:
+            # Client C (authorized for ns_isolated) attempts to write into ns_shared via payload
+            resp_c = await client_c.post(
+                "/query",
+                json={
+                    "prompt": prompt,
+                    "namespace": self.ns_shared,
+                    "cache_namespace": self.ns_shared,
+                },
+                headers={"X-Client-Token": self.token_c},
+            )
+            self.assertEqual(resp_c.status_code, 200)
+            self.assertEqual(self.provider_call_count, 1)
+
+        # Database verification: Entry must be stored in ns_isolated, NOT ns_shared
+        async with self.pool.acquire() as conn:
+            count_shared = await conn.fetchval(
+                "SELECT COUNT(*) FROM cache_entries WHERE cache_namespace = $1",
+                self.ns_shared,
+            )
+            count_isolated = await conn.fetchval(
+                "SELECT COUNT(*) FROM cache_entries WHERE cache_namespace = $1",
+                self.ns_isolated,
+            )
+            self.assertEqual(count_shared, 0)
+            self.assertEqual(count_isolated, 1)
+
+        # Client A queries for the same prompt in ns_shared -> Cache miss (proving ns_shared is clean)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client_a:
+            resp_a = await client_a.post(
+                "/query",
+                json={"prompt": prompt},
+                headers={"X-Client-Token": self.token_a},
+            )
+            self.assertEqual(resp_a.status_code, 200)
+            self.assertFalse(resp_a.json()["cached"])
+            self.assertEqual(self.provider_call_count, 2)
+
+    async def test_cache_persistence_across_new_database_connections(self):
+        """
+        Phase 2: Cache entries stored in PostgreSQL persist and are reusable
+        when a new connection pool / separate application instance attaches to the same database.
+        """
+        prompt = "Explain MVCC concurrency in PostgreSQL"
+        transport = httpx.ASGITransport(app=app)
+
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client_a:
+            # Client A populates cache in PostgreSQL
+            resp_a = await client_a.post(
+                "/query",
+                json={"prompt": prompt},
+                headers={"X-Client-Token": self.token_a},
+            )
+            self.assertEqual(resp_a.status_code, 200)
+            self.assertEqual(self.provider_call_count, 1)
+
+        # Simulate fresh application connection to PostgreSQL
+        new_pool = await asyncpg.create_pool(self.db_url, min_size=1, max_size=5)
+        try:
+            fresh_cache = PostgresCache(
+                pool=new_pool,
+                max_entries=100,
+                ttl_seconds=3600,
+                default_namespace=self.ns_shared,
+            )
+            set_query_cache(fresh_cache)
+
+            # Client B accesses via fresh pool -> Cache hit without provider call
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client_b:
+                resp_b = await client_b.post(
+                    "/query",
+                    json={"prompt": prompt},
+                    headers={"X-Client-Token": self.token_b},
+                )
+                self.assertEqual(resp_b.status_code, 200)
+                self.assertTrue(resp_b.json()["cached"])
+                self.assertEqual(resp_b.json()["response"], "Central Response #1")
+                self.assertEqual(self.provider_call_count, 1)
+        finally:
+            await new_pool.close()
+            # Restore original cache for cleanup
+            set_query_cache(self.pg_cache)
+
+    async def test_invalid_authentication_fails_closed(self):
+        """
+        Invalid or missing tokens are rejected with 401 Unauthorized, avoiding provider calls.
+        """
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            # 1. Missing token
+            resp_none = await client.post("/query", json={"prompt": "test"})
+            self.assertEqual(resp_none.status_code, 401)
+
+            # 2. Unknown header token
+            resp_bad = await client.post(
+                "/query",
+                json={"prompt": "test"},
+                headers={"X-Client-Token": "unauthorized_malicious_token"},
+            )
+            self.assertEqual(resp_bad.status_code, 401)
+
+            # 3. Unknown Bearer token
+            resp_bad_bearer = await client.post(
+                "/query",
+                json={"prompt": "test"},
+                headers={"Authorization": "Bearer unknown_bearer_token"},
+            )
+            self.assertEqual(resp_bad_bearer.status_code, 401)
+
+        self.assertEqual(self.provider_call_count, 0)
+
+    async def test_request_parameter_fingerprint_consistency(self):
+        """
+        Varying request parameters (e.g. temperature) produces distinct fingerprints
+        and results in separate cache entries even within the same shared namespace.
+        """
+        prompt = "Generate Fibonacci sequence in Python"
+        transport = httpx.ASGITransport(app=app)
+
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client_a, \
+                   httpx.AsyncClient(transport=transport, base_url="http://testserver") as client_b:
+
+            # Client A with temperature 0.2
+            resp_a = await client_a.post(
+                "/query",
+                json={"prompt": prompt, "temperature": 0.2},
+                headers={"X-Client-Token": self.token_a},
+            )
+            self.assertEqual(resp_a.status_code, 200)
+            self.assertFalse(resp_a.json()["cached"])
+            self.assertEqual(self.provider_call_count, 1)
+
+            # Client B with temperature 0.8 (different fingerprint) -> Cache miss
+            resp_b_diff = await client_b.post(
+                "/query",
+                json={"prompt": prompt, "temperature": 0.8},
+                headers={"X-Client-Token": self.token_b},
+            )
+            self.assertEqual(resp_b_diff.status_code, 200)
+            self.assertFalse(resp_b_diff.json()["cached"])
+            self.assertEqual(self.provider_call_count, 2)
+
+            # Client B with temperature 0.2 (matching fingerprint) -> Cache hit
+            resp_b_match = await client_b.post(
+                "/query",
+                json={"prompt": prompt, "temperature": 0.2},
+                headers={"X-Client-Token": self.token_b},
+            )
+            self.assertEqual(resp_b_match.status_code, 200)
+            self.assertTrue(resp_b_match.json()["cached"])
+            self.assertEqual(resp_b_match.json()["response"], resp_a.json()["response"])
+            self.assertEqual(self.provider_call_count, 2)
+

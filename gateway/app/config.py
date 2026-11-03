@@ -5,7 +5,7 @@ Loads settings from environment variables and .env file.
 
 from pathlib import Path
 import os
-from typing import List, Optional
+from typing import Dict, List, Optional
 from pydantic import BaseModel, Field, model_validator
 from dotenv import load_dotenv
 
@@ -59,6 +59,9 @@ class Settings(BaseModel):
     )
     client_api_token: Optional[str] = Field(
         default_factory=lambda: os.getenv("CLIENT_API_TOKEN") or None
+    )
+    client_api_tokens: Optional[str] = Field(
+        default_factory=lambda: os.getenv("CLIENT_API_TOKENS") or None
     )
 
     # CORS Configuration
@@ -175,6 +178,48 @@ class Settings(BaseModel):
             if not self.database_url:
                 raise ValueError("DATABASE_URL must be configured when SEMANTIC_CACHE_ENABLED is true.")
         return self
+
+    def get_client_token_map(self) -> Dict[str, str]:
+        """
+        Returns a mapping of {token: namespace} for client authentication.
+        Supports:
+        - CLIENT_API_TOKENS as a JSON object: '{"tok_a": "ns_a", "tok_b": "ns_a"}'
+        - CLIENT_API_TOKENS as comma-separated pairs: 'tok_a:ns_a,tok_b:ns_a'
+        - CLIENT_API_TOKEN (single string) falling back to self.cache_namespace.
+        """
+        token_map: Dict[str, str] = {}
+
+        if self.client_api_tokens:
+            raw = self.client_api_tokens.strip()
+            if raw.startswith("{") and raw.endswith("}"):
+                try:
+                    import json
+                    parsed = json.loads(raw)
+                    if isinstance(parsed, dict):
+                        for k, v in parsed.items():
+                            if k and str(k).strip():
+                                token_map[str(k).strip()] = str(v).strip() if v else self.cache_namespace
+                except Exception:
+                    pass
+            else:
+                for item in raw.split(","):
+                    item = item.strip()
+                    if not item:
+                        continue
+                    if ":" in item:
+                        token_part, ns_part = item.split(":", 1)
+                        if token_part.strip():
+                            token_map[token_part.strip()] = ns_part.strip() or self.cache_namespace
+                    else:
+                        token_map[item] = self.cache_namespace
+
+        # Backwards compatibility: single CLIENT_API_TOKEN
+        if self.client_api_token and self.client_api_token.strip():
+            tok = self.client_api_token.strip()
+            if tok not in token_map:
+                token_map[tok] = self.cache_namespace
+
+        return token_map
 
 
 _settings_instance: Optional[Settings] = None
