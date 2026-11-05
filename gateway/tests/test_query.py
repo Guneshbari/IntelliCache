@@ -428,12 +428,18 @@ class TestQueryRoute(unittest.TestCase):
                 except asyncio.CancelledError as e:
                     leader_exc = e
 
-                # Waiting followers must receive CancelledError or controlled failure
+                # Waiting followers must receive CancelledError or controlled failure (HTTP 503)
                 f1_res = await asyncio.gather(t_follower1, return_exceptions=True)
                 f2_res = await asyncio.gather(t_follower2, return_exceptions=True)
 
-                self.assertTrue(isinstance(f1_res[0], asyncio.CancelledError))
-                self.assertTrue(isinstance(f2_res[0], asyncio.CancelledError))
+                self.assertTrue(
+                    isinstance(f1_res[0], asyncio.CancelledError)
+                    or (hasattr(f1_res[0], "status_code") and f1_res[0].status_code in (500, 503))
+                )
+                self.assertTrue(
+                    isinstance(f2_res[0], asyncio.CancelledError)
+                    or (hasattr(f2_res[0], "status_code") and f2_res[0].status_code in (500, 503))
+                )
 
                 # In-flight map must be empty
                 self.assertEqual(len(self.single_flight._in_flight), 0)

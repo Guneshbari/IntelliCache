@@ -5,7 +5,9 @@ Core modules MUST NOT import FastAPI or Groq SDK.
 """
 
 import asyncio
-from typing import Any, Dict, Hashable, Tuple, Union
+from typing import Any, Dict, Hashable, Optional, Tuple, Union
+
+from .errors import SingleFlightLeaderCancelledError
 
 FlightKey = Union[Tuple[str, str], str, Hashable]
 
@@ -19,7 +21,6 @@ class SingleFlightCoordinator:
 
     def __init__(self) -> None:
         self._in_flight: Dict[FlightKey, asyncio.Future[Any]] = {}
-        self._lock = asyncio.Lock()
 
     async def register_or_wait(self, key: FlightKey) -> Tuple[bool, asyncio.Future[Any]]:
         """
@@ -27,37 +28,82 @@ class SingleFlightCoordinator:
         The flight key is typically a composite (namespace, fingerprint).
         Returns (is_leader, future).
         """
-        async with self._lock:
-            if key in self._in_flight:
-                return False, self._in_flight[key]
+        if key in self._in_flight:
+            return False, self._in_flight[key]
 
-            loop = asyncio.get_running_loop()
-            fut: asyncio.Future[Any] = loop.create_future()
-            self._in_flight[key] = fut
-            return True, fut
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future[Any] = loop.create_future()
+        self._in_flight[key] = fut
+        return True, fut
 
-    async def complete_success(self, key: FlightKey, result: Any) -> None:
-        """Leader marks the shared future as resolved with success."""
-        async with self._lock:
-            fut = self._in_flight.pop(key, None)
-            if fut is not None and not fut.done():
-                fut.set_result(result)
+    async def complete_success(
+        self,
+        key: FlightKey,
+        result: Any,
+        expected_future: Optional[asyncio.Future[Any]] = None,
+        release: bool = True,
+    ) -> None:
+        """
+        Leader marks the shared future as resolved with success.
+        Idempotent, synchronous, and immune to cancellation interruptions.
+        If release is True (default), removes the key from _in_flight immediately.
+        If release is False, resolves waiting followers immediately while retaining the entry
+        until release() is explicitly called (e.g. after cache persistence).
+        """
+        fut = self._in_flight.get(key)
+        if release and fut is not None and (expected_future is None or fut is expected_future):
+            self._in_flight.pop(key, None)
+        target = fut if (fut is not None and (expected_future is None or fut is expected_future)) else expected_future
+        if target is not None and not target.done():
+            target.set_result(result)
 
-    async def complete_failure(self, key: FlightKey, exc: BaseException) -> None:
+    async def release(
+        self,
+        key: FlightKey,
+        expected_future: Optional[asyncio.Future[Any]] = None,
+    ) -> None:
+        """
+        Removes the flight key from _in_flight once persistence or indexing has concluded.
+        Immune to cancellation interruptions.
+        """
+        fut = self._in_flight.get(key)
+        if fut is not None and (expected_future is None or fut is expected_future):
+            self._in_flight.pop(key, None)
+
+    async def complete_failure(
+        self,
+        key: FlightKey,
+        exc: BaseException,
+        expected_future: Optional[asyncio.Future[Any]] = None,
+    ) -> None:
         """
         Leader marks the shared future resolved with exception or cancellation.
+        When leader is cancelled (asyncio.CancelledError), completes future with
+        SingleFlightLeaderCancelledError so followers receive a controlled domain error
+        rather than being marked cancelled.
         Marks the exception retrieved immediately to prevent
         'Future exception was never retrieved' warnings when zero followers wait.
+        Idempotent, synchronous, and immune to cancellation interruptions.
         """
-        async with self._lock:
-            fut = self._in_flight.pop(key, None)
-            if fut is not None and not fut.done():
-                if isinstance(exc, asyncio.CancelledError):
-                    fut.cancel()
-                else:
-                    fut.set_exception(exc)
-                    # Mark exception retrieved to eliminate unretrieved future warning
-                    try:
-                        fut.exception()
-                    except Exception:
-                        pass
+        fut = self._in_flight.get(key)
+        if fut is not None and (expected_future is None or fut is expected_future):
+            self._in_flight.pop(key, None)
+        target = fut if (fut is not None and (expected_future is None or fut is expected_future)) else expected_future
+        if target is not None and not target.done():
+            if isinstance(exc, asyncio.CancelledError):
+                target.set_exception(SingleFlightLeaderCancelledError())
+            else:
+                target.set_exception(exc)
+            # Mark exception retrieved to eliminate unretrieved future warning
+            try:
+                target.exception()
+            except (Exception, asyncio.CancelledError):
+                pass
+
+    def in_flight_count(self) -> int:
+        """Returns the number of currently active in-flight SingleFlight keys."""
+        return len(self._in_flight)
+
+    def is_in_flight(self, key: FlightKey) -> bool:
+        """Returns True if the given flight key is currently registered in flight."""
+        return key in self._in_flight

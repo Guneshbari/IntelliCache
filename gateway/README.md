@@ -365,6 +365,37 @@ Available at `GET /cache/semantic/stats` and within `GET /cache/stats`:
 
 ---
 
+## Cancellation-Safe SingleFlight Coordination (Step 11.2)
+
+IntelliCache implements a cancellation-safe, process-local request coalescing coordinator in [`gateway/app/core/singleflight.py`](file:///home/gnx/Projects/IntelliCache/gateway/app/core/singleflight.py). SingleFlight ensures that simultaneous identical cache misses within the same tenant namespace execute exactly one upstream provider generation, sharing the resulting response among all waiting followers.
+
+### Concurrency & Cancellation Model
+
+1. **Namespace-Isolated Flight Keys**:
+   - SingleFlight keys use the composite tuple `(namespace, fingerprint)`.
+   - Identical queries from distinct tenant namespaces execute independently without coalescing or cross-tenant cache contamination.
+2. **Deterministic Leader Lifecycle**:
+   - The first request to arrive for a `(namespace, fingerprint)` key registers as the leader; concurrent identical requests register as followers and await the leader's shielded future (`asyncio.shield(shared_future)`).
+   - Every registered leader is guaranteed to complete its shared future on all exit paths: success, failure, or cancellation. No abandoned futures remain in `_in_flight`.
+3. **Controlled Follower Resolution on Leader Cancellation**:
+   - If a leader task is cancelled (e.g. client disconnect during embedding generation, vector search, or provider inference), the coordinator completes the shared future with `SingleFlightLeaderCancelledError` rather than silently cancelling unrelated follower tasks.
+   - Followers catch `SingleFlightLeaderCancelledError`, record a coalesced failure (`coalesced_failures`), and the gateway returns a controlled `503 Service Unavailable` response advising client retry.
+   - Followers are never counted as cancelled requests because their client connections remained intact.
+4. **Follower Cancellation Isolation**:
+   - Followers await the leader's shared future wrapped in `asyncio.shield`. If a follower client disconnects or is cancelled, only that follower coroutine exits. The leader continues executing unhindered and persists its completed result to cache.
+   - The cancelled follower increments `request_cancellations` without affecting provider metrics or corrupting the in-flight coordinator.
+5. **Immediate Follower Unblocking**:
+   - When the upstream provider returns a generated answer, the leader immediately resolves the SingleFlight future for waiting followers before initiating exact-cache database writes (`cache.set`) or post-generation vector indexing (`semantic_cache.index`).
+   - Followers receive their response instantly without waiting for disk or database I/O. Subsequent leader cancellation during cache writes does not impact already-completed followers.
+6. **Cancellation Metric Separation**:
+   - Client request cancellations are tracked in a dedicated `request_cancellations` metric counter and are strictly excluded from upstream provider failures (`provider_calls_failed`).
+7. **Process-Local Boundary**:
+   - SingleFlight operates strictly within the current Python asyncio event loop and process. Multi-worker deployments (e.g. multiple Uvicorn worker processes) do not coalesce requests across worker boundaries.
+
+---
+
+---
+
 ## Runtime Metrics & Observability (Step 11)
 
 IntelliCache incorporates an in-memory, thread-safe, and namespace-isolated metrics collection layer in [`gateway/app/metrics/`](file:///home/gnx/Projects/IntelliCache/gateway/app/metrics/). The metrics engine captures fine-grained runtime telemetry across exact caching, semantic caching, SingleFlight request coalescing, upstream provider execution, token savings, and bounded-window latency distributions.
@@ -398,6 +429,7 @@ IntelliCache incorporates an in-memory, thread-safe, and namespace-isolated metr
 - `coalesced_joins`: Requests that joined an in-flight single-flight group.
 - `coalesced_successes`: Followers that successfully received the leader's generated response.
 - `coalesced_failures`: Followers that received an error due to leader failure.
+- `request_cancellations`: Total requests cancelled by clients (client disconnects or cancelled coroutines). Strictly observable and never counted as provider failures.
 - `cache_bypass_requests`: Requests with `bypass_cache=true` that deliberately skipped caching.
 - `streaming_requests`: Streaming inference requests (`stream=true`).
 

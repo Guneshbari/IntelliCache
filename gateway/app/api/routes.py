@@ -33,6 +33,7 @@ from ..core.errors import (
     ProviderError,
     ProviderRateLimitError,
     ProviderUpstreamError,
+    SingleFlightLeaderCancelledError,
     sanitize_error_message,
 )
 from ..core.fingerprinting import (
@@ -567,6 +568,12 @@ async def execute_query(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=err.message,
+        )
+    except SingleFlightLeaderCancelledError as err:
+        logger.warning("SingleFlight leader query was cancelled: %s", err.message)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Upstream leader request was cancelled. Please retry.",
         )
     except HTTPException:
         raise

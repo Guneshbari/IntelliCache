@@ -39,6 +39,18 @@ class IntelliCacheError(Exception):
         super().__init__(self.message)
 
 
+class SingleFlightError(IntelliCacheError):
+    """Base exception for SingleFlight coordination errors."""
+    pass
+
+
+class SingleFlightLeaderCancelledError(SingleFlightError):
+    """Raised to followers when a SingleFlight leader request is cancelled."""
+
+    def __init__(self, message: str = "SingleFlight leader request was cancelled"):
+        super().__init__(message)
+
+
 class ProviderError(IntelliCacheError):
     """Base exception for LLM provider failures."""
     pass

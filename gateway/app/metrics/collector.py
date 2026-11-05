@@ -93,6 +93,7 @@ class _NamespaceData:
         self.coalesced_joins = 0
         self.coalesced_successes = 0
         self.coalesced_failures = 0
+        self.request_cancellations = 0
 
         # Provider & Savings Counters
         self.provider_calls_attempted = 0
@@ -186,6 +187,10 @@ class _NamespaceData:
     def record_coalesced_failure(self) -> None:
         with self.lock:
             self.coalesced_failures += 1
+
+    def record_cancellation(self) -> None:
+        with self.lock:
+            self.request_cancellations += 1
 
     def record_semantic_eligibility_check(self, eligible: bool) -> None:
         with self.lock:
@@ -298,6 +303,7 @@ class _NamespaceData:
                 coalesced_joins=self.coalesced_joins,
                 coalesced_successes=self.coalesced_successes,
                 coalesced_failures=self.coalesced_failures,
+                request_cancellations=self.request_cancellations,
             )
 
             prov_savings = ProviderAndSavingsMetrics(
@@ -492,6 +498,13 @@ class RuntimeMetricsCollector:
         except Exception as e:
             logger.debug("Metrics record_coalesced_failure failed: %s", e)
 
+    def record_cancellation(self, namespace: str) -> None:
+        try:
+            ns_data = self.get_or_create_namespace(namespace)
+            ns_data.record_cancellation()
+        except Exception as e:
+            logger.debug("Metrics record_cancellation failed: %s", e)
+
     def record_semantic_eligibility_check(self, namespace: str, eligible: bool) -> None:
         try:
             ns_data = self.get_or_create_namespace(namespace)
@@ -671,6 +684,7 @@ class RuntimeMetricsCollector:
             agg_req.coalesced_joins += r.coalesced_joins
             agg_req.coalesced_successes += r.coalesced_successes
             agg_req.coalesced_failures += r.coalesced_failures
+            agg_req.request_cancellations += r.request_cancellations
 
             p = snap.provider_and_savings
             agg_prov.provider_calls_attempted += p.provider_calls_attempted

@@ -741,6 +741,7 @@ class TestMetricsIntegration(unittest.TestCase):
         # Cancellation must NOT increment provider failure
         self.assertEqual(snap.provider_and_savings.provider_calls_failed, 0)
         self.assertEqual(snap.provider_and_savings.provider_calls_attempted, 1)
+        self.assertEqual(snap.request_and_cache.request_cancellations, 1)
 
     def test_cache_clear_does_not_reset_runtime_metrics(self):
         """Step 11.1: Clearing cache entries must NOT wipe process lifetime metrics in collector."""

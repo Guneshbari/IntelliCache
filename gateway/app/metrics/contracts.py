@@ -28,6 +28,7 @@ class RequestAndCacheMetrics(BaseModel):
     coalesced_joins: int = 0
     coalesced_successes: int = 0
     coalesced_failures: int = 0
+    request_cancellations: int = 0
 
 
 class ProviderAndSavingsMetrics(BaseModel):
