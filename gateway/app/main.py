@@ -237,10 +237,6 @@ def create_app() -> FastAPI:
         cache: BaseCache = Depends(get_query_cache),
     ) -> Dict[str, Any]:
         """Health check endpoint for liveness and readiness monitoring."""
-        stats = await cache.stats(
-            enabled=current_settings.cache_enabled,
-            namespace=current_settings.cache_namespace,
-        )
         has_api_key = bool(
             current_settings.groq_api_key and current_settings.groq_api_key != "replace_with_your_key"
         )
@@ -268,7 +264,6 @@ def create_app() -> FastAPI:
             "groq_configured": has_api_key,
             "groq_model": current_settings.groq_model,
             "cache_backend": current_settings.cache_backend,
-            "cache_namespace": current_settings.cache_namespace,
             "database": {
                 "backend": current_settings.cache_backend,
                 "status": db_status,
@@ -276,11 +271,7 @@ def create_app() -> FastAPI:
             },
             "cache": {
                 "enabled": current_settings.cache_enabled,
-                "backend": stats.backend,
-                "entries": stats.total_entries,
-                "hit_rate": stats.hit_rate,
-                "hits": stats.hits,
-                "misses": stats.misses,
+                "backend": current_settings.cache_backend,
             },
         }
 

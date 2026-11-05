@@ -377,14 +377,14 @@ IntelliCache incorporates an in-memory, thread-safe, and namespace-isolated metr
    - Requests from unrelated namespaces cannot inspect or deduce another client's request volume, cache hit rates, or token savings.
 2. **Role-Based Access Control**:
    - `GET /metrics/me`: Requires a valid client token (`X-Client-Token` or Bearer header). Returns the caller's namespace metrics snapshot.
-   - `GET /admin/metrics`: Requires a valid admin token (`X-Admin-Token` or Bearer header). Returns aggregate gateway metrics and a map of per-namespace snapshots. Supports optional `?namespace=` query filtering.
+   - `GET /admin/metrics`: Requires a valid admin token (`X-Admin-Token` or Bearer header). Returns aggregate gateway metrics and a map of per-namespace snapshots.
    - `GET /cache/stats` and `GET /cache/semantic/stats`: Protected by `verify_metrics_auth`, returning namespace-scoped data for clients and global/unrestricted data for administrators.
    - Unauthorized requests receive `401 Unauthorized` (or `403 Forbidden` if an invalid admin token is presented). Authentication failures are never counted as cache misses or provider attempts.
 3. **Fail-Open & Non-Blocking Design**:
    - All metrics recording operations are executed within non-blocking, exception-shielded facades. Any unexpected error in the metrics collector fails open, ensuring client LLM inference is never interrupted or failed by observability overhead.
 4. **Bounded Rolling Latencies**:
    - Latencies are recorded in bounded ring buffers (`collections.deque(maxlen=1000)`) per metric and per namespace to eliminate unbounded memory growth.
-   - Percentiles (`p50`, `p90`, `p95`, `p99`) are computed via deterministic linear interpolation over the active window.
+   - Percentiles (`p50`, `p95`, `p99`) are computed via deterministic linear interpolation over the active window.
    - A `small_sample_warning` boolean flag is set to `true` whenever a metric's sample count is below 20.
 
 ### Metric Categories & Contracts
@@ -394,6 +394,7 @@ IntelliCache incorporates an in-memory, thread-safe, and namespace-isolated metr
 - `exact_cache_lookups`: Exact-cache lookup attempts.
 - `exact_cache_hits`: Requests served immediately from exact cache.
 - `exact_cache_misses`: Independent requests that missed exact cache.
+- `cache_write_failures`: Failures encountered while persisting entries to the exact cache store.
 - `coalesced_joins`: Requests that joined an in-flight single-flight group.
 - `coalesced_successes`: Followers that successfully received the leader's generated response.
 - `coalesced_failures`: Followers that received an error due to leader failure.
@@ -424,11 +425,11 @@ IntelliCache incorporates an in-memory, thread-safe, and namespace-isolated metr
 #### 4. Derived Rates (`DerivedRates`)
 - $\text{overall\_cache\_hit\_rate} = \frac{\text{exact\_cache\_hits} + \text{semantic\_hits} + \text{coalesced\_successes}}{\text{total\_authenticated\_requests}}$
 - $\text{exact\_hit\_rate} = \frac{\text{exact\_cache\_hits}}{\text{exact\_cache\_lookups}}$
-- $\text{semantic\_hit\_rate} = \frac{\text{semantic\_hits}}{\text{semantic\_lookups}}$
+- $\text{semantic\_hit\_rate} = \frac{\text{semantic\_hits}}{\text{semantic\_hits} + \text{semantic\_misses}}$ (over evaluated candidate outcomes)
 - $\text{coalesced\_reuse\_rate} = \frac{\text{coalesced\_successes}}{\text{coalesced\_joins}}$
 
 #### 5. Latency Distributions (`LatencyMetrics`)
-Each latency metric provides a `LatencySummary` containing `mean`, `p50`, `p90`, `p95`, `p99`, `min`, `max`, `sample_count`, and `small_sample_warning`:
+Each latency metric provides a `LatencySummary` containing `sample_count`, `min`, `mean`, `p50`, `p95`, `p99`, and `small_sample_warning`:
 - `total_request_latency_ms`: End-to-end gateway response latency.
 - `exact_lookup_latency_ms`: In-memory or PostgreSQL exact cache lookup time.
 - `semantic_lookup_latency_ms`: Total semantic lookup time (embedding + vector search + policy check).

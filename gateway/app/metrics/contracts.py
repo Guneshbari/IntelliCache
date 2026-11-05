@@ -14,6 +14,7 @@ class RequestAndCacheMetrics(BaseModel):
     exact_cache_lookups: int = 0
     exact_cache_hits: int = 0
     exact_cache_misses: int = 0
+    cache_write_failures: int = 0
     semantic_eligibility_checks: int = 0
     semantic_eligibility_rejections: int = 0
     semantic_lookups: int = 0

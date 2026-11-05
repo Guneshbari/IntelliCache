@@ -79,6 +79,7 @@ class _NamespaceData:
         self.exact_cache_lookups = 0
         self.exact_cache_hits = 0
         self.exact_cache_misses = 0
+        self.cache_write_failures = 0
         self.semantic_eligibility_checks = 0
         self.semantic_eligibility_rejections = 0
         self.semantic_lookups = 0
@@ -160,6 +161,10 @@ class _NamespaceData:
     def record_exact_miss(self) -> None:
         with self.lock:
             self.exact_cache_misses += 1
+
+    def record_cache_write_failure(self) -> None:
+        with self.lock:
+            self.cache_write_failures += 1
 
     def record_coalesced_join(self) -> None:
         with self.lock:
@@ -279,6 +284,7 @@ class _NamespaceData:
                 exact_cache_lookups=self.exact_cache_lookups,
                 exact_cache_hits=self.exact_cache_hits,
                 exact_cache_misses=self.exact_cache_misses,
+                cache_write_failures=self.cache_write_failures,
                 semantic_eligibility_checks=self.semantic_eligibility_checks,
                 semantic_eligibility_rejections=self.semantic_eligibility_rejections,
                 semantic_lookups=self.semantic_lookups,
@@ -326,9 +332,10 @@ class _NamespaceData:
                 if self.exact_cache_lookups > 0
                 else 0.0
             )
+            eval_outcomes = self.semantic_hits + self.semantic_misses
             sem_rate = (
-                (self.semantic_hits / self.semantic_lookups)
-                if self.semantic_lookups > 0
+                (self.semantic_hits / eval_outcomes)
+                if eval_outcomes > 0
                 else 0.0
             )
             overall_hits = self.exact_cache_hits + self.semantic_hits + self.coalesced_successes
@@ -446,6 +453,13 @@ class RuntimeMetricsCollector:
             ns_data.record_exact_miss()
         except Exception as e:
             logger.debug("Metrics record_exact_miss failed: %s", e)
+
+    def record_cache_write_failure(self, namespace: str) -> None:
+        try:
+            ns_data = self.get_or_create_namespace(namespace)
+            ns_data.record_cache_write_failure()
+        except Exception as e:
+            logger.debug("Metrics record_cache_write_failure failed: %s", e)
 
     def record_coalesced_join(self, namespace: str) -> None:
         try:
@@ -643,6 +657,7 @@ class RuntimeMetricsCollector:
             agg_req.exact_cache_lookups += r.exact_cache_lookups
             agg_req.exact_cache_hits += r.exact_cache_hits
             agg_req.exact_cache_misses += r.exact_cache_misses
+            agg_req.cache_write_failures += r.cache_write_failures
             agg_req.semantic_eligibility_checks += r.semantic_eligibility_checks
             agg_req.semantic_eligibility_rejections += r.semantic_eligibility_rejections
             agg_req.semantic_lookups += r.semantic_lookups
@@ -692,9 +707,10 @@ class RuntimeMetricsCollector:
             if agg_req.exact_cache_lookups > 0
             else 0.0
         )
+        agg_eval_outcomes = agg_sem.semantic_hits + agg_sem.semantic_misses
         sem_rate = (
-            (agg_req.semantic_hits / agg_req.semantic_lookups)
-            if agg_req.semantic_lookups > 0
+            (agg_sem.semantic_hits / agg_eval_outcomes)
+            if agg_eval_outcomes > 0
             else 0.0
         )
         overall_hits = agg_req.exact_cache_hits + agg_sem.semantic_hits + agg_req.coalesced_successes
@@ -717,16 +733,16 @@ class RuntimeMetricsCollector:
         )
 
         agg_latencies = LatencyMetrics(
-            total_request_latency_ms=compute_latency_summary(merged_samples["total_request_latency_ms"][-self.max_samples:]),
-            exact_lookup_latency_ms=compute_latency_summary(merged_samples["exact_lookup_latency_ms"][-self.max_samples:]),
-            semantic_lookup_latency_ms=compute_latency_summary(merged_samples["semantic_lookup_latency_ms"][-self.max_samples:]),
-            embedding_latency_ms=compute_latency_summary(merged_samples["embedding_latency_ms"][-self.max_samples:]),
-            vector_search_latency_ms=compute_latency_summary(merged_samples["vector_search_latency_ms"][-self.max_samples:]),
-            candidate_policy_latency_ms=compute_latency_summary(merged_samples["candidate_policy_latency_ms"][-self.max_samples:]),
-            provider_generation_latency_ms=compute_latency_summary(merged_samples["provider_generation_latency_ms"][-self.max_samples:]),
-            exact_cache_write_latency_ms=compute_latency_summary(merged_samples["exact_cache_write_latency_ms"][-self.max_samples:]),
-            vector_indexing_latency_ms=compute_latency_summary(merged_samples["vector_indexing_latency_ms"][-self.max_samples:]),
-            estimated_latency_saved_ms=compute_latency_summary(merged_samples["estimated_latency_saved_ms"][-self.max_samples:]),
+            total_request_latency_ms=compute_latency_summary(merged_samples["total_request_latency_ms"]),
+            exact_lookup_latency_ms=compute_latency_summary(merged_samples["exact_lookup_latency_ms"]),
+            semantic_lookup_latency_ms=compute_latency_summary(merged_samples["semantic_lookup_latency_ms"]),
+            embedding_latency_ms=compute_latency_summary(merged_samples["embedding_latency_ms"]),
+            vector_search_latency_ms=compute_latency_summary(merged_samples["vector_search_latency_ms"]),
+            candidate_policy_latency_ms=compute_latency_summary(merged_samples["candidate_policy_latency_ms"]),
+            provider_generation_latency_ms=compute_latency_summary(merged_samples["provider_generation_latency_ms"]),
+            exact_cache_write_latency_ms=compute_latency_summary(merged_samples["exact_cache_write_latency_ms"]),
+            vector_indexing_latency_ms=compute_latency_summary(merged_samples["vector_indexing_latency_ms"]),
+            estimated_latency_saved_ms=compute_latency_summary(merged_samples["estimated_latency_saved_ms"]),
         )
 
         aggregate_snapshot = NamespaceMetricsSnapshot(

@@ -113,6 +113,8 @@ class TestIntelliCacheCoreOrchestration(unittest.IsolatedAsyncioTestCase):
     """Tests core exact caching, single-flight coordination, and metric consistency."""
 
     def setUp(self):
+        from app.metrics import get_metrics_collector
+        get_metrics_collector().reset()
         self.cache = ExactCache(max_entries=100, ttl_seconds=3600)
         self.single_flight = SingleFlightCoordinator()
         self.core = IntelliCacheCore(
@@ -181,7 +183,7 @@ class TestIntelliCacheCoreOrchestration(unittest.IsolatedAsyncioTestCase):
         # Bypass query must NOT populate the cache
         stats = await self.cache.stats()
         self.assertEqual(stats.total_entries, 0)
-        self.assertEqual(stats.misses, 1)
+        self.assertEqual(stats.misses, 0)
 
     async def test_pre01_coalesced_metrics_on_leader_success(self):
         """PRE-01: In-flight followers increment coalesced_requests; total_requests counts every request."""
@@ -218,7 +220,8 @@ class TestIntelliCacheCoreOrchestration(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(provider.call_count, 1)
 
         stats = await self.cache.stats()
-        self.assertEqual(stats.misses, 1)
+        # All 4 requests perform exact cache lookup and miss before single-flight coalescing
+        self.assertEqual(stats.misses, 4)
         self.assertEqual(stats.coalesced_requests, 3)
         self.assertEqual(stats.hits, 0)
         self.assertEqual(stats.total_requests, 4)
@@ -254,9 +257,9 @@ class TestIntelliCacheCoreOrchestration(unittest.IsolatedAsyncioTestCase):
             self.assertIsInstance(r, ProviderError)
 
         stats = await self.cache.stats()
-        self.assertEqual(stats.misses, 1)
+        self.assertEqual(stats.misses, 3)
         self.assertEqual(stats.coalesced_requests, 2)
-        # 1 leader miss + 2 followers joined = 3 total requests accounted for!
+        # 3 leader and follower exact cache misses
         self.assertEqual(stats.total_requests, 3)
         self.assertEqual(stats.total_entries, 0)  # Failure was not cached
 
@@ -293,7 +296,7 @@ class TestIntelliCacheCoreOrchestration(unittest.IsolatedAsyncioTestCase):
         # Entry was cached by leader
         stats = await self.cache.stats()
         self.assertEqual(stats.total_entries, 1)
-        self.assertEqual(stats.misses, 1)
+        self.assertEqual(stats.misses, 2)
         self.assertEqual(stats.coalesced_requests, 1)
         self.assertEqual(stats.total_requests, 2)
 

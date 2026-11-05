@@ -257,8 +257,6 @@ class PostgresCache(BaseCache):
             self._coalesced_successes = 0
             self._tokens_saved = 0
             self._latency_saved_ms = 0.0
-            from ..metrics import get_metrics_collector
-            get_metrics_collector().reset()
 
     async def stats(self, enabled: bool = True, namespace: Optional[str] = None) -> CacheStats:
         """Returns statistical metrics on PostgreSQL cache capacity and session throughput."""
@@ -277,45 +275,27 @@ class PostgresCache(BaseCache):
 
         if ns is not None:
             snap = collector.get_namespace_snapshot(ns)
-            r = snap.request_and_cache
-            p = snap.provider_and_savings
-            hits = r.exact_cache_hits + r.semantic_hits
-            misses = r.exact_cache_misses
-            coalesced = r.coalesced_joins
-            total_req = r.total_authenticated_requests or (hits + misses + coalesced)
-            hit_rate = snap.derived_rates.overall_cache_hit_rate
-            tokens_saved = p.total_tokens_saved
-            lat_saved = (
-                round(snap.latencies.estimated_latency_saved_ms.mean * snap.latencies.estimated_latency_saved_ms.sample_count, 2)
-                if snap.latencies.estimated_latency_saved_ms.mean
-                else 0.0
-            )
         else:
             admin_snap = collector.get_admin_snapshot()
-            agg = admin_snap.aggregate
-            r = agg.request_and_cache
-            p = agg.provider_and_savings
-            if r.total_authenticated_requests > 0 or r.exact_cache_lookups > 0 or r.exact_cache_hits > 0:
-                hits = r.exact_cache_hits + r.semantic_hits
-                misses = r.exact_cache_misses
-                coalesced = r.coalesced_joins
-                total_req = r.total_authenticated_requests or (hits + misses + coalesced)
-                hit_rate = agg.derived_rates.overall_cache_hit_rate
-                tokens_saved = p.total_tokens_saved
-                lat_saved = (
-                    round(agg.latencies.estimated_latency_saved_ms.mean * agg.latencies.estimated_latency_saved_ms.sample_count, 2)
-                    if agg.latencies.estimated_latency_saved_ms.mean
-                    else 0.0
-                )
-            else:
-                total_req = self._hits + self._misses + self._coalesced_requests
-                reused_req = self._hits + self._coalesced_successes
-                hit_rate = (reused_req / total_req) if total_req > 0 else 0.0
-                hits = self._hits
-                misses = self._misses
-                coalesced = self._coalesced_requests
-                tokens_saved = self._tokens_saved
-                lat_saved = round(self._latency_saved_ms, 2)
+            snap = admin_snap.aggregate
+
+        r = snap.request_and_cache
+        p = snap.provider_and_savings
+        hits = r.exact_cache_hits + r.semantic_hits
+        misses = r.exact_cache_misses
+        coalesced = r.coalesced_joins
+        total_req = r.total_authenticated_requests or (hits + misses)
+        if r.total_authenticated_requests > 0:
+            hit_rate = snap.derived_rates.overall_cache_hit_rate
+        else:
+            overall_hits = hits + r.coalesced_successes
+            hit_rate = (overall_hits / total_req) if total_req > 0 else 0.0
+        tokens_saved = p.total_tokens_saved
+        lat_saved = (
+            round(snap.latencies.estimated_latency_saved_ms.mean * snap.latencies.estimated_latency_saved_ms.sample_count, 2)
+            if snap.latencies.estimated_latency_saved_ms.mean
+            else 0.0
+        )
 
         return CacheStats(
             total_entries=count or 0,

@@ -59,6 +59,8 @@ class TestSemanticEvaluation(unittest.IsolatedAsyncioTestCase):
     """Test suite covering offline semantic evaluation correctness and safety."""
 
     def setUp(self) -> None:
+        from app.metrics import get_metrics_collector
+        get_metrics_collector().reset()
         self.dataset_path = Path(__file__).resolve().parent.parent / "evaluation" / "dataset.json"
 
     def test_compute_metrics_from_counts(self) -> None:

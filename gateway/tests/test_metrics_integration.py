@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 import json
 import os
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi.testclient import TestClient
 import httpx
@@ -449,6 +449,382 @@ class TestMetricsIntegration(unittest.TestCase):
         # Follower saved 30 tokens
         self.assertEqual(snap.provider_and_savings.total_tokens_saved, 30)
         self.assertEqual(snap.derived_rates.coalesced_reuse_rate, 1.0)
+
+    def test_single_flight_cross_namespace_isolation(self):
+        """Step 11.1: Concurrent identical prompts across different namespaces must NOT coalesce."""
+        from app.core.contracts import ChatMessage, GenerationRequest
+        from app.core.service import IntelliCacheCore
+        from app.core.singleflight import SingleFlightCoordinator
+
+        coord = SingleFlightCoordinator()
+        core = IntelliCacheCore(
+            cache=self.cache,
+            single_flight=coord,
+            cache_enabled=True,
+            metrics_collector=self.collector,
+        )
+
+        call_log = []
+        provider = AsyncMock()
+
+        async def logging_generate(req):
+            call_log.append(req.namespace)
+            await asyncio.sleep(0.04)
+            return GenerationResult(
+                text=f"Response for {req.namespace}",
+                model="test-model",
+                usage=UsageMetrics(prompt_tokens=10, completion_tokens=15, total_tokens=25),
+                latency_ms=40.0,
+            )
+
+        provider.generate = AsyncMock(side_effect=logging_generate)
+
+        msgs = [ChatMessage(role="user", content="Cross-namespace concurrency test")]
+        req_alpha = GenerationRequest(model="test-model", messages=msgs, namespace="team_alpha")
+        req_beta = GenerationRequest(model="test-model", messages=msgs, namespace="team_beta")
+
+        async def run_isolated_concurrent():
+            t1 = asyncio.create_task(core.execute_query(req_alpha, provider))
+            t2 = asyncio.create_task(core.execute_query(req_beta, provider))
+            return await asyncio.gather(t1, t2)
+
+        res_alpha, res_beta = asyncio.run(run_isolated_concurrent())
+
+        # Must NOT coalesce across namespaces: both invoked provider independently
+        self.assertEqual(len(call_log), 2)
+        self.assertIn("team_alpha", call_log)
+        self.assertIn("team_beta", call_log)
+        self.assertEqual(res_alpha.text, "Response for team_alpha")
+        self.assertEqual(res_beta.text, "Response for team_beta")
+
+        # In-flight SingleFlight keys were distinct composite tuples
+        snap_alpha = self.collector.get_namespace_snapshot("team_alpha")
+        snap_beta = self.collector.get_namespace_snapshot("team_beta")
+        self.assertEqual(snap_alpha.request_and_cache.coalesced_joins, 0)
+        self.assertEqual(snap_beta.request_and_cache.coalesced_joins, 0)
+
+    def test_exact_cache_lookups_reconcile_with_hits_and_misses(self):
+        """Step 11.1: Invariant: exact_cache_lookups == exact_cache_hits + exact_cache_misses."""
+        from app.core.contracts import ChatMessage, GenerationRequest
+        from app.core.service import IntelliCacheCore
+        from app.core.singleflight import SingleFlightCoordinator
+
+        coord = SingleFlightCoordinator()
+        core = IntelliCacheCore(
+            cache=self.cache,
+            single_flight=coord,
+            cache_enabled=True,
+            metrics_collector=self.collector,
+        )
+
+        provider = AsyncMock()
+        async def slow_generate(req):
+            await asyncio.sleep(0.03)
+            return GenerationResult(
+                text="Leader text",
+                model="test-model",
+                usage=UsageMetrics(prompt_tokens=5, completion_tokens=5, total_tokens=10),
+                latency_ms=30.0,
+            )
+        provider.generate = AsyncMock(side_effect=slow_generate)
+
+        msgs = [ChatMessage(role="user", content="Accounting invariant test")]
+        req1 = GenerationRequest(model="test-model", messages=msgs, namespace="team_alpha")
+        req2 = GenerationRequest(model="test-model", messages=msgs, namespace="team_alpha")
+
+        async def run_pair():
+            t1 = asyncio.create_task(core.execute_query(req1, provider))
+            await asyncio.sleep(0.005)
+            t2 = asyncio.create_task(core.execute_query(req2, provider))
+            return await asyncio.gather(t1, t2)
+
+        asyncio.run(run_pair())
+
+        snap = self.collector.get_namespace_snapshot("team_alpha")
+        r = snap.request_and_cache
+        # Both leader and follower attempted exact lookup and missed before single-flight
+        self.assertEqual(r.exact_cache_lookups, 2)
+        self.assertEqual(r.exact_cache_misses, 2)
+        self.assertEqual(r.exact_cache_hits, 0)
+        self.assertEqual(r.exact_cache_lookups, r.exact_cache_hits + r.exact_cache_misses)
+
+    def test_semantic_indexing_and_eligibility_not_double_counted(self):
+        """Step 11.1: 1 eligible query that misses semantic cache must increment eligibility check once and index once."""
+        from app.core.contracts import ChatMessage, GenerationRequest
+        from app.core.service import IntelliCacheCore
+        from app.embeddings.interfaces import EmbeddingProvider
+        from app.embeddings.contracts import EmbeddingResult, EmbeddingTask
+        from app.semantic_cache.policy import SemanticCachePolicy
+        from app.semantic_cache.service import SemanticCacheService
+        from app.vector_store.interfaces import BaseVectorStore
+
+        mock_embedder = MagicMock(spec=EmbeddingProvider)
+        mock_embedder.embed = AsyncMock(return_value=EmbeddingResult(vector=[0.1] * 768, dimensions=768, model="nomic-embed-text"))
+
+        mock_vector_store = MagicMock(spec=BaseVectorStore)
+        mock_vector_store.search = AsyncMock(return_value=[])  # miss
+        mock_vector_store.upsert = AsyncMock(return_value=None)  # index success
+
+        policy = SemanticCachePolicy(configured_model="nomic-embed-text")
+        sem_service = SemanticCacheService(
+            embedding_provider=mock_embedder,
+            vector_store=mock_vector_store,
+            policy=policy,
+            metrics_collector=self.collector,
+        )
+
+        core = IntelliCacheCore(
+            cache=self.cache,
+            semantic_cache=sem_service,
+            cache_enabled=True,
+            metrics_collector=self.collector,
+        )
+
+        provider = AsyncMock()
+        provider.generate = AsyncMock(return_value=GenerationResult(
+            text="Indexed answer",
+            model="llama-3",
+            usage=UsageMetrics(prompt_tokens=10, completion_tokens=15, total_tokens=25),
+            latency_ms=45.0,
+        ))
+
+        req = GenerationRequest(
+            model="llama-3",
+            messages=[ChatMessage(role="user", content="How do I sort a list in Python?")],
+            temperature=0.7,
+            namespace="team_alpha",
+            provider="groq",
+        )
+
+        asyncio.run(core.execute_query(req, provider))
+
+        snap = self.collector.get_namespace_snapshot("team_alpha")
+        s = snap.semantic
+        # Exactly 1 request-level eligibility check (not duplicated by index())
+        ns_data = self.collector.get_or_create_namespace("team_alpha")
+        self.assertEqual(ns_data.semantic_eligibility_checks, 1)
+        self.assertEqual(s.semantic_eligibility_rejections, 0)
+        # Exactly 1 indexing success and 1 vector indexing latency sample
+        self.assertEqual(s.indexing_successes, 1)
+        self.assertEqual(s.indexing_failures, 0)
+        self.assertEqual(snap.latencies.vector_indexing_latency_ms.sample_count, 1)
+
+    def test_semantic_miss_only_on_completed_evaluation(self):
+        """Step 11.1: Ineligible requests, embedding failures, and vector failures are NOT semantic misses."""
+        from app.core.contracts import ChatMessage, GenerationRequest
+        from app.embeddings.interfaces import EmbeddingProvider
+        from app.embeddings.contracts import EmbeddingResult, EmbeddingTask
+        from app.embeddings.errors import EmbeddingTimeoutError
+        from app.semantic_cache.policy import SemanticCachePolicy
+        from app.semantic_cache.service import SemanticCacheService
+        from app.vector_store.interfaces import BaseVectorStore
+        from app.vector_store.errors import VectorStoreError
+
+        # 1. Ineligible request
+        mock_embedder = MagicMock(spec=EmbeddingProvider)
+        mock_vector_store = MagicMock(spec=BaseVectorStore)
+        policy = SemanticCachePolicy(configured_model="nomic-embed-text")
+        sem_service = SemanticCacheService(
+            embedding_provider=mock_embedder,
+            vector_store=mock_vector_store,
+            policy=policy,
+            metrics_collector=self.collector,
+        )
+
+        ineligible_req = GenerationRequest(
+            model="llama-3",
+            messages=[ChatMessage(role="user", content="Hi")],  # too short (< 3 tokens)
+            namespace="team_alpha",
+        )
+        res = asyncio.run(sem_service.lookup(ineligible_req))
+        self.assertIsNone(res)
+        snap = self.collector.get_namespace_snapshot("team_alpha")
+        self.assertEqual(snap.semantic.semantic_eligibility_rejections, 1)
+        self.assertEqual(snap.request_and_cache.semantic_lookups, 0)
+        self.assertEqual(snap.semantic.semantic_misses, 0)
+
+        # 2. Embedding failure
+        mock_embedder.embed = AsyncMock(side_effect=EmbeddingTimeoutError("Timeout"))
+        eligible_req = GenerationRequest(
+            model="llama-3",
+            messages=[ChatMessage(role="user", content="How do I reverse a binary tree in Python?")],
+            temperature=0.7,
+            namespace="team_alpha",
+        )
+        res = asyncio.run(sem_service.lookup(eligible_req))
+        self.assertIsNone(res)
+        snap = self.collector.get_namespace_snapshot("team_alpha")
+        self.assertEqual(snap.semantic.embedding_failures, 1)
+        self.assertEqual(snap.semantic.semantic_misses, 0)  # NOT counted as miss!
+
+        # 3. Vector store failure
+        mock_embedder.embed = AsyncMock(return_value=EmbeddingResult(vector=[0.1] * 768, dimensions=768, model="nomic-embed-text"))
+        mock_vector_store.search = AsyncMock(side_effect=VectorStoreError("DB fail"))
+        res = asyncio.run(sem_service.lookup(eligible_req))
+        self.assertIsNone(res)
+        snap = self.collector.get_namespace_snapshot("team_alpha")
+        self.assertEqual(snap.semantic.vector_store_failures, 1)
+        self.assertEqual(snap.semantic.semantic_misses, 0)  # NOT counted as miss!
+
+        # 4. Completed candidate search with no matching candidate
+        mock_vector_store.search = AsyncMock(return_value=[])
+        res = asyncio.run(sem_service.lookup(eligible_req))
+        self.assertIsNone(res)
+        snap = self.collector.get_namespace_snapshot("team_alpha")
+        # Now and only now is a semantic miss recorded!
+        self.assertEqual(snap.semantic.semantic_misses, 1)
+
+    def test_provider_failure_not_incremented_on_cache_write_error(self):
+        """Step 11.1: Exact cache write failure must NOT increment provider_calls_failed."""
+        from app.core.contracts import ChatMessage, GenerationRequest
+        from app.core.service import IntelliCacheCore
+
+        failing_cache = MagicMock()
+        failing_cache.get = AsyncMock(return_value=None)
+        failing_cache.set = AsyncMock(side_effect=RuntimeError("Disk write failed"))
+        failing_cache.record_miss = AsyncMock()
+
+        core = IntelliCacheCore(
+            cache=failing_cache,
+            cache_enabled=True,
+            metrics_collector=self.collector,
+        )
+
+        provider = AsyncMock()
+        provider.generate = AsyncMock(return_value=GenerationResult(
+            text="Valid LLM answer",
+            model="test-model",
+            usage=UsageMetrics(prompt_tokens=10, completion_tokens=10, total_tokens=20),
+            latency_ms=35.0,
+        ))
+
+        req = GenerationRequest(
+            model="test-model",
+            messages=[ChatMessage(role="user", content="Cache write failure test")],
+            namespace="team_alpha",
+        )
+
+        # Must succeed and return the generated answer
+        res = asyncio.run(core.execute_query(req, provider))
+        self.assertEqual(res.text, "Valid LLM answer")
+
+        snap = self.collector.get_namespace_snapshot("team_alpha")
+        p = snap.provider_and_savings
+        self.assertEqual(p.provider_calls_succeeded, 1)
+        self.assertEqual(p.provider_calls_failed, 0)  # Provider succeeded!
+        self.assertEqual(snap.request_and_cache.cache_write_failures, 1)  # Cache write failed!
+
+    def test_cancellation_does_not_increment_provider_failure(self):
+        """Step 11.1: asyncio.CancelledError must NOT be classified as upstream provider failure."""
+        from app.core.contracts import ChatMessage, GenerationRequest
+        from app.core.service import IntelliCacheCore
+
+        core = IntelliCacheCore(
+            cache=self.cache,
+            cache_enabled=True,
+            metrics_collector=self.collector,
+        )
+
+        provider = AsyncMock()
+        provider.generate = AsyncMock(side_effect=asyncio.CancelledError("Client cancelled"))
+
+        req = GenerationRequest(
+            model="test-model",
+            messages=[ChatMessage(role="user", content="Cancellation test")],
+            namespace="team_alpha",
+        )
+
+        with self.assertRaises(asyncio.CancelledError):
+            asyncio.run(core.execute_query(req, provider))
+
+        snap = self.collector.get_namespace_snapshot("team_alpha")
+        # Cancellation must NOT increment provider failure
+        self.assertEqual(snap.provider_and_savings.provider_calls_failed, 0)
+        self.assertEqual(snap.provider_and_savings.provider_calls_attempted, 1)
+
+    def test_cache_clear_does_not_reset_runtime_metrics(self):
+        """Step 11.1: Clearing cache entries must NOT wipe process lifetime metrics in collector."""
+        from app.core.contracts import ChatMessage, GenerationRequest
+        from app.core.service import IntelliCacheCore
+
+        core = IntelliCacheCore(
+            cache=self.cache,
+            cache_enabled=True,
+            metrics_collector=self.collector,
+        )
+
+        provider = AsyncMock()
+        provider.generate = AsyncMock(return_value=GenerationResult(
+            text="Clear cache test answer",
+            model="test-model",
+            usage=UsageMetrics(prompt_tokens=5, completion_tokens=5, total_tokens=10),
+            latency_ms=20.0,
+        ))
+
+        req = GenerationRequest(
+            model="test-model",
+            messages=[ChatMessage(role="user", content="Persistence test prompt")],
+            namespace="team_alpha",
+        )
+
+        asyncio.run(core.execute_query(req, provider))
+
+        # Metrics recorded
+        snap_before = self.collector.get_namespace_snapshot("team_alpha")
+        self.assertEqual(snap_before.request_and_cache.exact_cache_lookups, 1)
+
+        # Clear cache entries
+        asyncio.run(self.cache.clear())
+        self.assertEqual(len(self.cache._entries), 0)
+
+        # Metrics are preserved!
+        snap_after = self.collector.get_namespace_snapshot("team_alpha")
+        self.assertEqual(snap_after.request_and_cache.exact_cache_lookups, 1)
+        self.assertEqual(snap_after.provider_and_savings.provider_calls_succeeded, 1)
+
+    def test_unauthenticated_health_does_not_expose_usage_counters(self):
+        """Step 11.1: Public GET /health must not leak hits, misses, hit_rate, or tenant metrics."""
+        client = TestClient(app)
+        resp = client.get("/health")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+
+        # Operational counters must be absent
+        self.assertNotIn("hits", data)
+        self.assertNotIn("misses", data)
+        self.assertNotIn("hit_rate", data)
+        self.assertNotIn("entries", data)
+        self.assertNotIn("cache_namespace", data)
+
+        cache_dict = data.get("cache", {})
+        self.assertNotIn("hits", cache_dict)
+        self.assertNotIn("misses", cache_dict)
+        self.assertNotIn("hit_rate", cache_dict)
+        self.assertNotIn("entries", cache_dict)
+
+        # System readiness remains intact
+        self.assertIn("status", data)
+        self.assertIn("groq_configured", data)
+        self.assertIn("cache_backend", data)
+        self.assertIn("database", data)
+
+    def test_admin_percentiles_unbiased_across_namespaces(self):
+        """Step 11.1: Admin aggregate percentiles combine retained samples from all namespaces without insertion order bias."""
+        # Namespace A: 5 samples at 10.0 ms
+        for _ in range(5):
+            self.collector.record_latency("ns_alpha", "total_request_latency_ms", 10.0)
+
+        # Namespace B: 5 samples at 100.0 ms
+        for _ in range(5):
+            self.collector.record_latency("ns_beta", "total_request_latency_ms", 100.0)
+
+        admin_snap = self.collector.get_admin_snapshot()
+        summary = admin_snap.aggregate.latencies.total_request_latency_ms
+
+        self.assertEqual(summary.sample_count, 10)
+        self.assertEqual(summary.min, 10.0)
+        self.assertEqual(summary.mean, 55.0)  # (5 * 10 + 5 * 100) / 10 = 55.0
+        self.assertEqual(summary.p50, 55.0)
 
 
 if __name__ == "__main__":

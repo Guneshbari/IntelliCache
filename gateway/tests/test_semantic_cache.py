@@ -394,6 +394,8 @@ class TestCoreSemanticCachePipeline(unittest.IsolatedAsyncioTestCase):
     """
 
     async def asyncSetUp(self):
+        from app.metrics import get_metrics_collector
+        get_metrics_collector().reset()
         self.cache = ExactCache()
         self.mock_provider = MockLLMProvider("Live Generated LLM Response")
         self.mock_embedder = MockEmbeddingProvider(default_dim=768)
@@ -638,6 +640,8 @@ class TestPostgresSemanticCacheIntegration(unittest.IsolatedAsyncioTestCase):
     """
 
     async def asyncSetUp(self):
+        from app.metrics import get_metrics_collector
+        get_metrics_collector().reset()
         explicit_url = os.getenv("TEST_DATABASE_URL")
         self.is_explicit_url = explicit_url is not None
         self.db_url = explicit_url or "postgresql://gnx@127.0.0.1:5433/intellicache_test"

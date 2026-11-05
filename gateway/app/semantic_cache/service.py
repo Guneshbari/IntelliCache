@@ -62,6 +62,7 @@ class SemanticCacheService(BaseSemanticCache):
         """
         collector = self._get_collector()
         ns = request.namespace or self.default_namespace
+        lookup_start = time.perf_counter()
 
         eligibility = self.is_eligible(request)
         if not eligibility.eligible:
@@ -73,6 +74,7 @@ class SemanticCacheService(BaseSemanticCache):
             return None
 
         self.stats.lookups += 1
+        collector.record_semantic_lookup(ns)
         query_text = request.messages[0].content.strip()
 
         # 1. Generate query embedding
@@ -82,8 +84,12 @@ class SemanticCacheService(BaseSemanticCache):
             embed_lat_ms = (time.perf_counter() - embed_start) * 1000.0
             collector.record_latency(ns, "embedding_latency_ms", embed_lat_ms)
         except Exception as exc:
+            embed_lat_ms = (time.perf_counter() - embed_start) * 1000.0
+            collector.record_latency(ns, "embedding_latency_ms", embed_lat_ms)
             self.stats.embedding_failures += 1
             collector.record_embedding_failure(ns)
+            sem_lat_ms = (time.perf_counter() - lookup_start) * 1000.0
+            collector.record_latency(ns, "semantic_lookup_latency_ms", sem_lat_ms)
             logger.warning(
                 "Semantic lookup failed during embedding (%s): %s",
                 type(exc).__name__,
@@ -95,6 +101,8 @@ class SemanticCacheService(BaseSemanticCache):
         if embed_res.model != self.policy.configured_model:
             self.stats.embedding_failures += 1
             collector.record_embedding_failure(ns)
+            sem_lat_ms = (time.perf_counter() - lookup_start) * 1000.0
+            collector.record_latency(ns, "semantic_lookup_latency_ms", sem_lat_ms)
             logger.warning(
                 "Semantic lookup model mismatch: expected '%s', got '%s'",
                 self.policy.configured_model,
@@ -114,8 +122,12 @@ class SemanticCacheService(BaseSemanticCache):
             search_lat_ms = (time.perf_counter() - search_start) * 1000.0
             collector.record_latency(ns, "vector_search_latency_ms", search_lat_ms)
         except Exception as exc:
+            search_lat_ms = (time.perf_counter() - search_start) * 1000.0
+            collector.record_latency(ns, "vector_search_latency_ms", search_lat_ms)
             self.stats.vector_store_failures += 1
             collector.record_vector_store_failure(ns)
+            sem_lat_ms = (time.perf_counter() - lookup_start) * 1000.0
+            collector.record_latency(ns, "semantic_lookup_latency_ms", sem_lat_ms)
             logger.warning(
                 "Semantic lookup failed during vector search (%s): %s",
                 type(exc).__name__,
@@ -128,9 +140,12 @@ class SemanticCacheService(BaseSemanticCache):
         winning_candidate, rejection_reason = self.policy.evaluate_candidates(candidates, request)
         eval_lat_ms = (time.perf_counter() - eval_start) * 1000.0
         collector.record_latency(ns, "candidate_policy_latency_ms", eval_lat_ms)
+        sem_lat_ms = (time.perf_counter() - lookup_start) * 1000.0
+        collector.record_latency(ns, "semantic_lookup_latency_ms", sem_lat_ms)
 
         if winning_candidate is None:
             self.stats.misses += 1
+            collector.record_semantic_miss(ns)
             if rejection_reason and "ambiguous" in rejection_reason.lower():
                 self.stats.ambiguous_candidates += 1
                 collector.record_ambiguous_candidate(ns)
@@ -175,8 +190,8 @@ class SemanticCacheService(BaseSemanticCache):
         if result.cached or result.cache_type in ("exact", "semantic"):
             return False
 
-        # Only index eligible queries
-        eligibility = self.is_eligible(request)
+        # Only index eligible queries - evaluate policy directly to avoid duplicate request eligibility metrics
+        eligibility = self.policy.check_eligibility(request)
         if not eligibility.eligible:
             return False
 
@@ -189,9 +204,14 @@ class SemanticCacheService(BaseSemanticCache):
         embed_start = time.perf_counter()
         try:
             embed_res = await self.embedding_provider.embed(query_text, task=EmbeddingTask.DOCUMENT)
+            embed_lat_ms = (time.perf_counter() - embed_start) * 1000.0
+            collector.record_latency(ns, "embedding_latency_ms", embed_lat_ms)
         except Exception as exc:
+            embed_lat_ms = (time.perf_counter() - embed_start) * 1000.0
+            collector.record_latency(ns, "embedding_latency_ms", embed_lat_ms)
             self.stats.indexing_failures += 1
             collector.record_indexing_failure(ns)
+            collector.record_latency(ns, "vector_indexing_latency_ms", embed_lat_ms)
             logger.warning(
                 "Vector indexing failed during embedding (%s): %s",
                 type(exc).__name__,
@@ -203,6 +223,8 @@ class SemanticCacheService(BaseSemanticCache):
         if embed_res.model != self.policy.configured_model:
             self.stats.indexing_failures += 1
             collector.record_indexing_failure(ns)
+            idx_lat_ms = (time.perf_counter() - embed_start) * 1000.0
+            collector.record_latency(ns, "vector_indexing_latency_ms", idx_lat_ms)
             logger.warning(
                 "Vector indexing model mismatch: expected '%s', got '%s'",
                 self.policy.configured_model,
@@ -243,6 +265,8 @@ class SemanticCacheService(BaseSemanticCache):
         except Exception as exc:
             self.stats.indexing_failures += 1
             collector.record_indexing_failure(ns)
+            idx_lat_ms = (time.perf_counter() - embed_start) * 1000.0
+            collector.record_latency(ns, "vector_indexing_latency_ms", idx_lat_ms)
             logger.warning(
                 "Vector indexing failed during upsert (%s): %s",
                 type(exc).__name__,
@@ -252,23 +276,24 @@ class SemanticCacheService(BaseSemanticCache):
 
     def get_stats(self, namespace: Optional[str] = None) -> Dict[str, int]:
         """Returns diagnostic observability counters."""
+        collector = self._get_collector()
         if namespace is not None:
-            collector = self._get_collector()
             snap = collector.get_namespace_snapshot(namespace)
-            s = snap.semantic
-            return {
-                "lookups": snap.request_and_cache.semantic_lookups,
-                "hits": s.semantic_hits,
-                "misses": s.semantic_misses,
-                "rejected_candidates": s.incompatible_candidate_rejections,
-                "ambiguous_candidates": s.ambiguous_candidate_rejections,
-                "eligibility_rejections": s.semantic_eligibility_rejections,
-                "embedding_failures": s.embedding_failures,
-                "vector_store_failures": s.vector_store_failures,
-                "indexing_successes": s.indexing_successes,
-                "indexing_failures": s.indexing_failures,
-            }
-        return self.stats.to_dict()
+        else:
+            snap = collector.get_admin_snapshot().aggregate
+        s = snap.semantic
+        return {
+            "lookups": snap.request_and_cache.semantic_lookups,
+            "hits": s.semantic_hits,
+            "misses": s.semantic_misses,
+            "rejected_candidates": s.incompatible_candidate_rejections,
+            "ambiguous_candidates": s.ambiguous_candidate_rejections,
+            "eligibility_rejections": s.semantic_eligibility_rejections,
+            "embedding_failures": s.embedding_failures,
+            "vector_store_failures": s.vector_store_failures,
+            "indexing_successes": s.indexing_successes,
+            "indexing_failures": s.indexing_failures,
+        }
 
     async def close(self) -> None:
         """Closes owned embedding provider and vector store resources."""

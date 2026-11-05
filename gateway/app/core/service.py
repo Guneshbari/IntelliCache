@@ -5,8 +5,11 @@ This module MUST NOT import FastAPI or any provider-specific SDK.
 """
 
 import asyncio
+import logging
 import time
 from typing import AsyncGenerator, Optional
+
+logger = logging.getLogger("intellicache.gateway.core")
 
 from .contracts import (
     GenerationRequest,
@@ -115,6 +118,8 @@ class IntelliCacheCore:
                     metadata=request.metadata,
                     cache_type="exact",
                 )
+            else:
+                collector.record_exact_miss(ns)
 
         # 2. Strict Bypass Semantics
         if request.bypass_cache or not self.cache_enabled:
@@ -142,12 +147,23 @@ class IntelliCacheCore:
                 result.metadata = request.metadata
                 result.cache_type = "none"
                 return result
+            except asyncio.CancelledError:
+                prov_latency_ms = (time.perf_counter() - prov_start) * 1000.0
+                total_latency_ms = (time.perf_counter() - start_time) * 1000.0
+                collector.record_latency(ns, "provider_generation_latency_ms", prov_latency_ms)
+                collector.record_latency(ns, "total_request_latency_ms", total_latency_ms)
+                raise
             except BaseException:
+                prov_latency_ms = (time.perf_counter() - prov_start) * 1000.0
+                total_latency_ms = (time.perf_counter() - start_time) * 1000.0
                 collector.record_provider_failure(ns)
+                collector.record_latency(ns, "provider_generation_latency_ms", prov_latency_ms)
+                collector.record_latency(ns, "total_request_latency_ms", total_latency_ms)
                 raise
 
-        # 3. Single-Flight Coordination
-        is_leader, shared_future = await self.single_flight.register_or_wait(fingerprint)
+        # 3. Single-Flight Coordination (isolated per namespace and request fingerprint)
+        flight_key = (ns, fingerprint)
+        is_leader, shared_future = await self.single_flight.register_or_wait(flight_key)
 
         if not is_leader:
             # Follower joined in-flight work -> record join immediately
@@ -185,22 +201,19 @@ class IntelliCacheCore:
                 )
             except asyncio.CancelledError:
                 # Follower cancelled - leader continues unhindered
+                total_latency_ms = (time.perf_counter() - start_time) * 1000.0
+                collector.record_latency(ns, "total_request_latency_ms", total_latency_ms)
                 raise
             except BaseException:
                 # Leader failed - error propagated to follower
+                total_latency_ms = (time.perf_counter() - start_time) * 1000.0
+                collector.record_latency(ns, "total_request_latency_ms", total_latency_ms)
                 collector.record_coalesced_failure(ns)
                 raise
 
-        # Leader: Missed exact cache, now proceeding with generation or semantic lookup
-        collector.record_exact_miss(ns)
-
         # 4. Leader: Semantic Cache Lookup (if enabled)
         if self.semantic_cache is not None:
-            sem_lookup_start = time.perf_counter()
-            collector.record_semantic_lookup(ns)
             semantic_hit = await self.semantic_cache.lookup(request)
-            sem_lookup_latency_ms = (time.perf_counter() - sem_lookup_start) * 1000.0
-            collector.record_latency(ns, "semantic_lookup_latency_ms", sem_lookup_latency_ms)
 
             if semantic_hit is not None:
                 total_latency_ms = (time.perf_counter() - start_time) * 1000.0
@@ -239,7 +252,7 @@ class IntelliCacheCore:
                 )
                 # Complete single-flight for followers with the semantic hit entry
                 # Do not write semantic hit under a new exact fingerprint (Rule 8)
-                await self.single_flight.complete_success(fingerprint, hit_entry)
+                await self.single_flight.complete_success(flight_key, hit_entry)
                 return GenerationResult(
                     text=semantic_hit.cached_response,
                     model=request.model,
@@ -251,8 +264,6 @@ class IntelliCacheCore:
                     metadata=request.metadata,
                     cache_type="semantic",
                 )
-            else:
-                collector.record_semantic_miss(ns)
 
         # 5. Leader: Semantic miss or disabled -> call provider
         await self.cache.record_miss()
@@ -260,59 +271,81 @@ class IntelliCacheCore:
         prov_start = time.perf_counter()
         try:
             result = await provider.generate(request)
+        except asyncio.CancelledError as exc:
             prov_latency_ms = (time.perf_counter() - prov_start) * 1000.0
-            p_tok = getattr(result.usage, "prompt_tokens", 0) or 0
-            c_tok = getattr(result.usage, "completion_tokens", 0) or 0
-            t_tok = getattr(result.usage, "total_tokens", 0) or 0
+            total_latency_ms = (time.perf_counter() - start_time) * 1000.0
+            collector.record_latency(ns, "provider_generation_latency_ms", prov_latency_ms)
+            collector.record_latency(ns, "total_request_latency_ms", total_latency_ms)
+            await self.single_flight.complete_failure(flight_key, exc)
+            raise
+        except BaseException as exc:
+            prov_latency_ms = (time.perf_counter() - prov_start) * 1000.0
+            total_latency_ms = (time.perf_counter() - start_time) * 1000.0
+            collector.record_provider_failure(ns)
+            collector.record_latency(ns, "provider_generation_latency_ms", prov_latency_ms)
+            collector.record_latency(ns, "total_request_latency_ms", total_latency_ms)
+            await self.single_flight.complete_failure(flight_key, exc)
+            raise
 
-            collector.record_provider_success(
-                ns,
-                prompt_tokens=p_tok,
-                completion_tokens=c_tok,
-                total_tokens=t_tok,
-                latency_ms=prov_latency_ms,
-            )
+        prov_latency_ms = (time.perf_counter() - prov_start) * 1000.0
+        p_tok = getattr(result.usage, "prompt_tokens", 0) or 0
+        c_tok = getattr(result.usage, "completion_tokens", 0) or 0
+        t_tok = getattr(result.usage, "total_tokens", 0) or 0
 
-            result.fingerprint = fingerprint
-            result.metadata = request.metadata
-            result.cache_type = "none"
+        collector.record_provider_success(
+            ns,
+            prompt_tokens=p_tok,
+            completion_tokens=c_tok,
+            total_tokens=t_tok,
+            latency_ms=prov_latency_ms,
+        )
 
-            # 6. Write exact-cache entry first
-            entry = CacheEntry(
-                response=result.text,
-                model=result.model,
-                usage=result.usage,
-                latency_ms=result.latency_ms,
-                provider=request.provider,
-                metadata={"cache_type": "exact"},
-            )
-            write_start = time.perf_counter()
+        result.fingerprint = fingerprint
+        result.metadata = request.metadata
+        result.cache_type = "none"
+
+        # 6. Write exact-cache entry first
+        entry = CacheEntry(
+            response=result.text,
+            model=result.model,
+            usage=result.usage,
+            latency_ms=result.latency_ms,
+            provider=request.provider,
+            metadata={"cache_type": "exact"},
+        )
+        write_start = time.perf_counter()
+        try:
             await self.cache.set(fingerprint, entry, namespace=ns)
             write_latency_ms = (time.perf_counter() - write_start) * 1000.0
             collector.record_latency(ns, "exact_cache_write_latency_ms", write_latency_ms)
+        except Exception as write_err:
+            write_latency_ms = (time.perf_counter() - write_start) * 1000.0
+            collector.record_latency(ns, "exact_cache_write_latency_ms", write_latency_ms)
+            collector.record_cache_write_failure(ns)
+            logger.warning(
+                "Exact cache write failed for namespace='%s': %s",
+                ns,
+                sanitize_error_message(str(write_err)),
+            )
 
-            # Complete single-flight for followers
-            await self.single_flight.complete_success(fingerprint, entry)
+        # Complete single-flight for followers
+        await self.single_flight.complete_success(flight_key, entry)
 
-            # 7. Post-generation: index in vector store if semantic cache enabled
-            if self.semantic_cache is not None:
-                idx_start = time.perf_counter()
-                try:
-                    indexed = await self.semantic_cache.index(request, result)
-                    idx_latency_ms = (time.perf_counter() - idx_start) * 1000.0
-                    if indexed:
-                        collector.record_indexing_success(ns, latency_ms=idx_latency_ms)
-                except Exception:
-                    collector.record_indexing_failure(ns)
+        # 7. Post-generation: index in vector store if semantic cache enabled
+        if self.semantic_cache is not None:
+            try:
+                await self.semantic_cache.index(request, result)
+            except Exception as idx_err:
+                logger.warning(
+                    "Semantic indexing failed for namespace='%s': %s",
+                    ns,
+                    sanitize_error_message(str(idx_err)),
+                )
 
-            total_latency_ms = (time.perf_counter() - start_time) * 1000.0
-            collector.record_latency(ns, "total_request_latency_ms", total_latency_ms)
+        total_latency_ms = (time.perf_counter() - start_time) * 1000.0
+        collector.record_latency(ns, "total_request_latency_ms", total_latency_ms)
 
-            return result
-        except BaseException as exc:
-            collector.record_provider_failure(ns)
-            await self.single_flight.complete_failure(fingerprint, exc)
-            raise
+        return result
 
     async def execute_stream(
         self,
@@ -429,9 +462,19 @@ class IntelliCacheCore:
                             provider=request.provider,
                         )
                         write_start = time.perf_counter()
-                        await self.cache.set(fingerprint, entry, namespace=ns)
-                        write_latency_ms = (time.perf_counter() - write_start) * 1000.0
-                        collector.record_latency(ns, "exact_cache_write_latency_ms", write_latency_ms)
+                        try:
+                            await self.cache.set(fingerprint, entry, namespace=ns)
+                            write_latency_ms = (time.perf_counter() - write_start) * 1000.0
+                            collector.record_latency(ns, "exact_cache_write_latency_ms", write_latency_ms)
+                        except Exception as write_err:
+                            write_latency_ms = (time.perf_counter() - write_start) * 1000.0
+                            collector.record_latency(ns, "exact_cache_write_latency_ms", write_latency_ms)
+                            collector.record_cache_write_failure(ns)
+                            logger.warning(
+                                "Streaming exact cache write failed for namespace='%s': %s",
+                                ns,
+                                sanitize_error_message(str(write_err)),
+                            )
 
                     yield StreamChunk(
                         delta="",
@@ -443,10 +486,17 @@ class IntelliCacheCore:
                         latency_ms=round(elapsed_ms, 2),
                     )
         except asyncio.CancelledError:
-            collector.record_provider_failure(ns)
+            prov_latency_ms = (time.perf_counter() - prov_start) * 1000.0
+            elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+            collector.record_latency(ns, "provider_generation_latency_ms", prov_latency_ms)
+            collector.record_latency(ns, "total_request_latency_ms", elapsed_ms)
             raise
         except ProviderAuthenticationError as exc:
+            prov_latency_ms = (time.perf_counter() - prov_start) * 1000.0
+            elapsed_ms = (time.perf_counter() - start_time) * 1000.0
             collector.record_provider_failure(ns)
+            collector.record_latency(ns, "provider_generation_latency_ms", prov_latency_ms)
+            collector.record_latency(ns, "total_request_latency_ms", elapsed_ms)
             yield StreamChunk(
                 delta="",
                 done=True,
@@ -455,7 +505,11 @@ class IntelliCacheCore:
                 fingerprint=fingerprint,
             )
         except ProviderRateLimitError as exc:
+            prov_latency_ms = (time.perf_counter() - prov_start) * 1000.0
+            elapsed_ms = (time.perf_counter() - start_time) * 1000.0
             collector.record_provider_failure(ns)
+            collector.record_latency(ns, "provider_generation_latency_ms", prov_latency_ms)
+            collector.record_latency(ns, "total_request_latency_ms", elapsed_ms)
             yield StreamChunk(
                 delta="",
                 done=True,
@@ -464,7 +518,11 @@ class IntelliCacheCore:
                 fingerprint=fingerprint,
             )
         except ProviderConnectionError as exc:
+            prov_latency_ms = (time.perf_counter() - prov_start) * 1000.0
+            elapsed_ms = (time.perf_counter() - start_time) * 1000.0
             collector.record_provider_failure(ns)
+            collector.record_latency(ns, "provider_generation_latency_ms", prov_latency_ms)
+            collector.record_latency(ns, "total_request_latency_ms", elapsed_ms)
             yield StreamChunk(
                 delta="",
                 done=True,
@@ -473,7 +531,11 @@ class IntelliCacheCore:
                 fingerprint=fingerprint,
             )
         except ProviderUpstreamError as exc:
+            prov_latency_ms = (time.perf_counter() - prov_start) * 1000.0
+            elapsed_ms = (time.perf_counter() - start_time) * 1000.0
             collector.record_provider_failure(ns)
+            collector.record_latency(ns, "provider_generation_latency_ms", prov_latency_ms)
+            collector.record_latency(ns, "total_request_latency_ms", elapsed_ms)
             yield StreamChunk(
                 delta="",
                 done=True,
@@ -482,7 +544,11 @@ class IntelliCacheCore:
                 fingerprint=fingerprint,
             )
         except BaseException as exc:
+            prov_latency_ms = (time.perf_counter() - prov_start) * 1000.0
+            elapsed_ms = (time.perf_counter() - start_time) * 1000.0
             collector.record_provider_failure(ns)
+            collector.record_latency(ns, "provider_generation_latency_ms", prov_latency_ms)
+            collector.record_latency(ns, "total_request_latency_ms", elapsed_ms)
             sanitized = sanitize_error_message(str(exc))
             yield StreamChunk(
                 delta="",

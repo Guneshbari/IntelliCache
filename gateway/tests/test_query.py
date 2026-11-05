@@ -65,6 +65,8 @@ class TestQueryRoute(unittest.TestCase):
     """Test suite for hardened query route logic, exact caching, and single-flight coordination."""
 
     def setUp(self):
+        from app.metrics import get_metrics_collector
+        get_metrics_collector().reset()
         self.env_patcher = patch.dict(os.environ, {"ALLOW_UNAUTHENTICATED_LOOPBACK": "true"}, clear=False)
         self.env_patcher.start()
         self.client = TestClient(app)
@@ -90,6 +92,8 @@ class TestQueryRoute(unittest.TestCase):
         reload_settings()
         app.dependency_overrides.clear()
         asyncio.run(self.cache.clear())
+        from app.metrics import get_metrics_collector
+        get_metrics_collector().reset()
 
     # -----------------------------------------------------------------------
     # 1. Exact-Cache Correctness & Parameter Isolation Tests (TASK-01 / FIX-01)
@@ -289,8 +293,8 @@ class TestQueryRoute(unittest.TestCase):
 
                 # Exactly 4 total requests
                 self.assertEqual(stats["total_requests"], 4)
-                # Exactly 1 miss (leader)
-                self.assertEqual(stats["misses"], 1)
+                # Exactly 4 lookups that missed before single-flight leader/follower selection
+                self.assertEqual(stats["misses"], 4)
                 # Exactly 3 coalesced requests (followers)
                 self.assertEqual(stats["coalesced_requests"], 3)
                 # Exactly 0 sequential hits
