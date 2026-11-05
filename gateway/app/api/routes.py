@@ -42,6 +42,12 @@ from ..core.fingerprinting import (
 )
 from ..core.service import IntelliCacheCore
 from ..core.singleflight import SingleFlightCoordinator
+from ..metrics import (
+    AdminMetricsSnapshot,
+    NamespaceMetricsSnapshot,
+    RuntimeMetricsCollector,
+    get_metrics_collector,
+)
 from ..providers.factory import ProviderFactory
 from ..providers.groq_adapter import GroqProvider
 from ..providers.interfaces import LLMProvider
@@ -270,6 +276,29 @@ def verify_client_token(
     )
 
 
+def verify_metrics_auth(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+) -> tuple[bool, Optional[str]]:
+    """
+    Dependency verifying either admin token or client token for statistics endpoints.
+    Returns (is_admin, authorized_namespace).
+    """
+    # 1. Try admin token first if configured
+    if settings.admin_api_token:
+        admin_token_candidate: Optional[str] = request.headers.get("X-Admin-Token")
+        if not admin_token_candidate:
+            auth_header = request.headers.get("Authorization", "")
+            if auth_header.lower().startswith("bearer "):
+                admin_token_candidate = auth_header[7:].strip()
+        if admin_token_candidate and hmac.compare_digest(admin_token_candidate, settings.admin_api_token):
+            return True, None
+
+    # 2. Try client token (enforces loopback checks, forwarded header checks, or token mapping)
+    client_ns = verify_client_token(request, settings)
+    return False, client_ns
+
+
 # ---------------------------------------------------------------------------
 # Dependency Providers (Singletons & Factories)
 # ---------------------------------------------------------------------------
@@ -446,6 +475,13 @@ async def execute_query(
         stream=request.stream,
         bypass_cache=request.bypass_cache,
         conversation_id=request.conversation_id,
+    )
+
+    collector = get_metrics_collector()
+    collector.record_request(
+        client_namespace,
+        stream=request.stream,
+        bypass=request.bypass_cache or not settings.cache_enabled,
     )
 
     # 1. Streaming Query Execution

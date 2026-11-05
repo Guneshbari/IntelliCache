@@ -113,28 +113,51 @@ class ExactCache(BaseCache):
             self._coalesced_successes = 0
             self._tokens_saved = 0
             self._latency_saved_ms = 0.0
+            from ..metrics import get_metrics_collector
+            get_metrics_collector().reset()
 
     async def stats(self, enabled: bool = True, namespace: Optional[str] = None) -> CacheStats:
         """Returns statistical metrics on cache usage."""
-        total_req = self._hits + self._misses + self._coalesced_requests
-        reused_req = self._hits + self._coalesced_successes
-        hit_rate = (reused_req / total_req) if total_req > 0 else 0.0
+        from ..metrics import get_metrics_collector
+        collector = get_metrics_collector()
 
         if namespace is not None:
             entries_count = sum(1 for k in self._entries if k[0] == namespace)
+            snap = collector.get_namespace_snapshot(namespace)
+            r = snap.request_and_cache
+            p = snap.provider_and_savings
+            hits = r.exact_cache_hits + r.semantic_hits
+            misses = r.exact_cache_misses
+            coalesced = r.coalesced_joins
+            total_req = r.total_authenticated_requests or (hits + misses + coalesced)
+            hit_rate = snap.derived_rates.overall_cache_hit_rate
+            tokens_saved = p.total_tokens_saved
+            lat_saved = (
+                round(snap.latencies.estimated_latency_saved_ms.mean * snap.latencies.estimated_latency_saved_ms.sample_count, 2)
+                if snap.latencies.estimated_latency_saved_ms.mean
+                else 0.0
+            )
         else:
             entries_count = len(self._entries)
+            total_req = self._hits + self._misses + self._coalesced_requests
+            reused_req = self._hits + self._coalesced_successes
+            hit_rate = (reused_req / total_req) if total_req > 0 else 0.0
+            hits = self._hits
+            misses = self._misses
+            coalesced = self._coalesced_requests
+            tokens_saved = self._tokens_saved
+            lat_saved = round(self._latency_saved_ms, 2)
 
         return CacheStats(
             total_entries=entries_count,
             max_entries=self.max_entries,
-            hits=self._hits,
-            misses=self._misses,
-            coalesced_requests=self._coalesced_requests,
+            hits=hits,
+            misses=misses,
+            coalesced_requests=coalesced,
             total_requests=total_req,
             hit_rate=round(hit_rate, 4),
-            total_tokens_saved=self._tokens_saved,
-            total_latency_saved_ms=round(self._latency_saved_ms, 2),
+            total_tokens_saved=tokens_saved,
+            total_latency_saved_ms=lat_saved,
             ttl_seconds=self.ttl_seconds,
             enabled=enabled,
             backend="memory",

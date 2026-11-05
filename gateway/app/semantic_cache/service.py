@@ -6,6 +6,7 @@ safe failure fallbacks, and vector indexing.
 
 from datetime import datetime, timezone
 import logging
+import time
 from typing import Any, Dict, Optional
 
 from .contracts import EligibilityResult, SemanticCacheStats, SemanticHit
@@ -15,6 +16,7 @@ from ..core.contracts import GenerationRequest, GenerationResult
 from ..core.errors import sanitize_error_message
 from ..embeddings.contracts import EmbeddingTask
 from ..embeddings.interfaces import EmbeddingProvider
+from ..metrics import RuntimeMetricsCollector, get_metrics_collector
 from ..vector_store.contracts import VectorRecord
 from ..vector_store.interfaces import BaseVectorStore
 
@@ -33,16 +35,24 @@ class SemanticCacheService(BaseSemanticCache):
         vector_store: BaseVectorStore,
         policy: SemanticCachePolicy,
         default_namespace: str = "default",
+        metrics_collector: Optional[RuntimeMetricsCollector] = None,
     ):
         self.embedding_provider = embedding_provider
         self.vector_store = vector_store
         self.policy = policy
         self.default_namespace = default_namespace
         self.stats = SemanticCacheStats()
+        self.metrics_collector = metrics_collector
+
+    def _get_collector(self) -> RuntimeMetricsCollector:
+        return self.metrics_collector or get_metrics_collector()
 
     def is_eligible(self, request: GenerationRequest) -> EligibilityResult:
         """Evaluates whether the request is eligible for semantic caching."""
-        return self.policy.check_eligibility(request)
+        res = self.policy.check_eligibility(request)
+        ns = request.namespace or self.default_namespace
+        self._get_collector().record_semantic_eligibility_check(ns, eligible=res.eligible)
+        return res
 
     async def lookup(self, request: GenerationRequest) -> Optional[SemanticHit]:
         """
@@ -50,6 +60,9 @@ class SemanticCacheService(BaseSemanticCache):
         Fails open on embedding or vector storage errors, returning None.
         Never logs raw query text or embedding vectors.
         """
+        collector = self._get_collector()
+        ns = request.namespace or self.default_namespace
+
         eligibility = self.is_eligible(request)
         if not eligibility.eligible:
             self.stats.eligibility_rejections += 1
@@ -61,13 +74,16 @@ class SemanticCacheService(BaseSemanticCache):
 
         self.stats.lookups += 1
         query_text = request.messages[0].content.strip()
-        ns = request.namespace or self.default_namespace
 
         # 1. Generate query embedding
+        embed_start = time.perf_counter()
         try:
             embed_res = await self.embedding_provider.embed(query_text, task=EmbeddingTask.QUERY)
+            embed_lat_ms = (time.perf_counter() - embed_start) * 1000.0
+            collector.record_latency(ns, "embedding_latency_ms", embed_lat_ms)
         except Exception as exc:
             self.stats.embedding_failures += 1
+            collector.record_embedding_failure(ns)
             logger.warning(
                 "Semantic lookup failed during embedding (%s): %s",
                 type(exc).__name__,
@@ -78,6 +94,7 @@ class SemanticCacheService(BaseSemanticCache):
         # Validate reported model identity against configured model (fail open)
         if embed_res.model != self.policy.configured_model:
             self.stats.embedding_failures += 1
+            collector.record_embedding_failure(ns)
             logger.warning(
                 "Semantic lookup model mismatch: expected '%s', got '%s'",
                 self.policy.configured_model,
@@ -86,6 +103,7 @@ class SemanticCacheService(BaseSemanticCache):
             return None
 
         # 2. Search nearest neighbours in vector store
+        search_start = time.perf_counter()
         try:
             candidates = await self.vector_store.search(
                 query_vector=embed_res.vector,
@@ -93,8 +111,11 @@ class SemanticCacheService(BaseSemanticCache):
                 namespace=ns,
                 model=self.policy.configured_model,
             )
+            search_lat_ms = (time.perf_counter() - search_start) * 1000.0
+            collector.record_latency(ns, "vector_search_latency_ms", search_lat_ms)
         except Exception as exc:
             self.stats.vector_store_failures += 1
+            collector.record_vector_store_failure(ns)
             logger.warning(
                 "Semantic lookup failed during vector search (%s): %s",
                 type(exc).__name__,
@@ -103,13 +124,19 @@ class SemanticCacheService(BaseSemanticCache):
             return None
 
         # 3. Evaluate candidates against policy
+        eval_start = time.perf_counter()
         winning_candidate, rejection_reason = self.policy.evaluate_candidates(candidates, request)
+        eval_lat_ms = (time.perf_counter() - eval_start) * 1000.0
+        collector.record_latency(ns, "candidate_policy_latency_ms", eval_lat_ms)
+
         if winning_candidate is None:
             self.stats.misses += 1
             if rejection_reason and "ambiguous" in rejection_reason.lower():
                 self.stats.ambiguous_candidates += 1
+                collector.record_ambiguous_candidate(ns)
             elif rejection_reason and "compatible" in rejection_reason.lower():
                 self.stats.rejected_candidates += 1
+                collector.record_incompatible_candidate(ns)
 
             logger.debug("Semantic lookup miss: %s", rejection_reason)
             return None
@@ -156,11 +183,15 @@ class SemanticCacheService(BaseSemanticCache):
         query_text = request.messages[0].content.strip()
         ns = request.namespace or self.default_namespace
 
+        collector = self._get_collector()
+
         # 1. Generate document embedding
+        embed_start = time.perf_counter()
         try:
             embed_res = await self.embedding_provider.embed(query_text, task=EmbeddingTask.DOCUMENT)
         except Exception as exc:
             self.stats.indexing_failures += 1
+            collector.record_indexing_failure(ns)
             logger.warning(
                 "Vector indexing failed during embedding (%s): %s",
                 type(exc).__name__,
@@ -171,6 +202,7 @@ class SemanticCacheService(BaseSemanticCache):
         # Validate reported model identity against configured model (fail open)
         if embed_res.model != self.policy.configured_model:
             self.stats.indexing_failures += 1
+            collector.record_indexing_failure(ns)
             logger.warning(
                 "Vector indexing model mismatch: expected '%s', got '%s'",
                 self.policy.configured_model,
@@ -200,6 +232,8 @@ class SemanticCacheService(BaseSemanticCache):
         try:
             await self.vector_store.upsert(record)
             self.stats.indexing_successes += 1
+            idx_lat_ms = (time.perf_counter() - embed_start) * 1000.0
+            collector.record_indexing_success(ns, latency_ms=idx_lat_ms)
             logger.debug(
                 "Indexed vector record for fingerprint='%s...' in namespace='%s'",
                 result.fingerprint[:12],
@@ -208,6 +242,7 @@ class SemanticCacheService(BaseSemanticCache):
             return True
         except Exception as exc:
             self.stats.indexing_failures += 1
+            collector.record_indexing_failure(ns)
             logger.warning(
                 "Vector indexing failed during upsert (%s): %s",
                 type(exc).__name__,
@@ -215,8 +250,24 @@ class SemanticCacheService(BaseSemanticCache):
             )
             return False
 
-    def get_stats(self) -> Dict[str, int]:
+    def get_stats(self, namespace: Optional[str] = None) -> Dict[str, int]:
         """Returns diagnostic observability counters."""
+        if namespace is not None:
+            collector = self._get_collector()
+            snap = collector.get_namespace_snapshot(namespace)
+            s = snap.semantic
+            return {
+                "lookups": snap.request_and_cache.semantic_lookups,
+                "hits": s.semantic_hits,
+                "misses": s.semantic_misses,
+                "rejected_candidates": s.incompatible_candidate_rejections,
+                "ambiguous_candidates": s.ambiguous_candidate_rejections,
+                "eligibility_rejections": s.semantic_eligibility_rejections,
+                "embedding_failures": s.embedding_failures,
+                "vector_store_failures": s.vector_store_failures,
+                "indexing_successes": s.indexing_successes,
+                "indexing_failures": s.indexing_failures,
+            }
         return self.stats.to_dict()
 
     async def close(self) -> None:

@@ -17,6 +17,12 @@ import uvicorn
 from app.cache.migration import run_migrations
 from app.config import Settings, get_settings
 from app.embeddings.factory import EmbeddingProviderFactory
+from app.metrics import (
+    AdminMetricsSnapshot,
+    NamespaceMetricsSnapshot,
+    RuntimeMetricsCollector,
+    get_metrics_collector,
+)
 from app.semantic_cache import SemanticCachePolicy, SemanticCacheService
 from app.vector_store import PostgresVectorStore, run_vector_migrations
 from app.routes.query import (
@@ -31,6 +37,8 @@ from app.routes.query import (
     set_query_cache,
     set_semantic_cache,
     verify_admin_token,
+    verify_client_token,
+    verify_metrics_auth,
 )
 
 # Configure logger
@@ -48,6 +56,8 @@ _STARTUP_TIME = time.time()
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan manager for startup and shutdown events."""
     settings = get_settings()
+    collector = get_metrics_collector()
+    app.state.metrics_collector = collector
     logger.info("=" * 60)
     logger.info("Starting IntelliCache Gateway v1.0.0")
     logger.info("Model: %s", settings.groq_model)
@@ -194,9 +204,32 @@ def create_app() -> FastAPI:
                 "health": "GET /health",
                 "cache_stats": "GET /cache/stats",
                 "cache_clear": "POST /cache/clear",
+                "metrics_me": "GET /metrics/me",
+                "admin_metrics": "GET /admin/metrics",
                 "docs": "GET /docs",
             },
         }
+
+    @app.get("/metrics/me", response_model=NamespaceMetricsSnapshot, tags=["Metrics"], summary="Tenant Runtime Metrics")
+    async def get_tenant_metrics(
+        client_namespace: str = Depends(verify_client_token),
+        collector: RuntimeMetricsCollector = Depends(get_metrics_collector),
+    ) -> NamespaceMetricsSnapshot:
+        """Tenant runtime metrics snapshot isolated to the authenticated namespace."""
+        return collector.get_namespace_snapshot(client_namespace)
+
+    @app.get(
+        "/admin/metrics",
+        response_model=AdminMetricsSnapshot,
+        dependencies=[Depends(verify_admin_token)],
+        tags=["Metrics"],
+        summary="Administrator System Metrics",
+    )
+    async def get_admin_metrics(
+        collector: RuntimeMetricsCollector = Depends(get_metrics_collector),
+    ) -> AdminMetricsSnapshot:
+        """Global administrative metrics snapshot with aggregate totals and per-namespace breakdown."""
+        return collector.get_admin_snapshot()
 
     @app.get("/health", summary="Health Check")
     async def health_check(
@@ -256,23 +289,29 @@ def create_app() -> FastAPI:
         request: Request,
         current_settings: Settings = Depends(get_settings),
         cache: BaseCache = Depends(get_query_cache),
+        auth_info: tuple[bool, Optional[str]] = Depends(verify_metrics_auth),
     ) -> CacheStats:
-        """Global cache performance statistics endpoint."""
+        """Cache performance statistics endpoint. Scoped to authenticated client namespace or global for admin."""
+        is_admin, client_ns = auth_info
+        target_ns = None if is_admin else client_ns
         stats = await cache.stats(
             enabled=current_settings.cache_enabled,
-            namespace=current_settings.cache_namespace,
+            namespace=target_ns,
         )
         if hasattr(request.app.state, "semantic_cache") and request.app.state.semantic_cache is not None:
-            stats.semantic = request.app.state.semantic_cache.get_stats()
+            stats.semantic = request.app.state.semantic_cache.get_stats(namespace=target_ns)
         return stats
 
     @app.get("/cache/semantic/stats", tags=["Cache"], summary="Semantic Cache Statistics")
     async def semantic_cache_stats(
         request: Request,
+        auth_info: tuple[bool, Optional[str]] = Depends(verify_metrics_auth),
     ) -> Dict[str, Any]:
-        """Observability counters for semantic cache operations."""
+        """Observability counters for semantic cache operations. Scoped to authenticated client namespace or global for admin."""
+        is_admin, client_ns = auth_info
+        target_ns = None if is_admin else client_ns
         if hasattr(request.app.state, "semantic_cache") and request.app.state.semantic_cache is not None:
-            stats_dict = request.app.state.semantic_cache.get_stats()
+            stats_dict = request.app.state.semantic_cache.get_stats(namespace=target_ns)
             stats_dict["enabled"] = True
             return stats_dict
         return {

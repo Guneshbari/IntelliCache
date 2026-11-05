@@ -17,10 +17,16 @@ class TestMainEndpoints(unittest.TestCase):
     """Test suite for root, health, cache, administrative protection, and OpenAPI endpoints."""
 
     def setUp(self):
+        self.env_patcher = patch.dict(os.environ, {"ALLOW_UNAUTHENTICATED_LOOPBACK": "true"}, clear=False)
+        self.env_patcher.start()
         self.client = TestClient(app)
         reload_settings()
         self.cache = get_query_cache()
         asyncio.run(self.cache.clear())
+
+    def tearDown(self):
+        self.env_patcher.stop()
+        reload_settings()
 
     def test_root_endpoint(self):
         """Verify root endpoint returns metadata and online status."""

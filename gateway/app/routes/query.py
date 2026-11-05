@@ -23,6 +23,7 @@ from ..api.routes import (
     set_semantic_cache,
     verify_admin_token,
     verify_client_token,
+    verify_metrics_auth,
 )
 from ..cache.exact_cache import ExactCache, QueryCache
 from ..cache.postgres_cache import PostgresCache
@@ -100,4 +101,5 @@ __all__ = [
     "set_semantic_cache",
     "verify_admin_token",
     "verify_client_token",
+    "verify_metrics_auth",
 ]

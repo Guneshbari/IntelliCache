@@ -52,6 +52,10 @@ gateway/
 │   │   ├── interfaces.py     # BaseSemanticCache interface
 │   │   ├── policy.py         # Deterministic technical query eligibility & candidate compatibility
 │   │   └── service.py        # SemanticCacheService (lookup, indexing, and failure safe-handling)
+│   ├── metrics/              # Runtime metrics and observability layer (Step 11)
+│   │   ├── __init__.py       # Singleton collector access and lifecycle
+│   │   ├── contracts.py      # Pydantic schemas for namespace, admin, and latency metrics
+│   │   └── collector.py      # Thread-safe, bounded-window, namespace-isolated RuntimeMetricsCollector
 │   ├── routes/               # Backward compatibility facade for query routes
 │   │   ├── __init__.py
 │   │   └── query.py
@@ -68,6 +72,8 @@ gateway/
 │   ├── test_embeddings.py    # Embedding contracts, Ollama adapter, prefixes, error tests
 │   ├── test_vector_store.py  # Vector storage contracts, pgvector nearest-neighbour, cascade delete
 │   ├── test_semantic_cache.py # Semantic policy, eligibility, candidate compatibility, ambiguity margin
+│   ├── test_metrics.py       # Metrics collector math, percentiles, and schema verification (Step 11)
+│   ├── test_metrics_integration.py # Multi-client metrics isolation, token sharing & admin aggregation
 │   ├── test_query.py         # API route integration tests, streaming SSE, and exact caching
 │   ├── test_multi_client.py  # Multi-client auth, namespace isolation, and PostgreSQL persistence tests
 │   ├── test_config.py        # Settings validation, env overrides, and payload limits
@@ -359,7 +365,89 @@ Available at `GET /cache/semantic/stats` and within `GET /cache/stats`:
 
 ---
 
-## Semantic Cache Evaluation & Benchmarking
+## Runtime Metrics & Observability (Step 11)
+
+IntelliCache incorporates an in-memory, thread-safe, and namespace-isolated metrics collection layer in [`gateway/app/metrics/`](file:///home/gnx/Projects/IntelliCache/gateway/app/metrics/). The metrics engine captures fine-grained runtime telemetry across exact caching, semantic caching, SingleFlight request coalescing, upstream provider execution, token savings, and bounded-window latency distributions.
+
+### Architecture & Security Model
+
+1. **Namespace Isolation**:
+   - Every metric counter and latency sample is partitioned by the client's authenticated cache namespace (`NamespaceMetricsSnapshot`).
+   - Clients authenticated via `CLIENT_API_TOKENS` can only access metrics for their mapped namespace (`GET /metrics/me`).
+   - Requests from unrelated namespaces cannot inspect or deduce another client's request volume, cache hit rates, or token savings.
+2. **Role-Based Access Control**:
+   - `GET /metrics/me`: Requires a valid client token (`X-Client-Token` or Bearer header). Returns the caller's namespace metrics snapshot.
+   - `GET /admin/metrics`: Requires a valid admin token (`X-Admin-Token` or Bearer header). Returns aggregate gateway metrics and a map of per-namespace snapshots. Supports optional `?namespace=` query filtering.
+   - `GET /cache/stats` and `GET /cache/semantic/stats`: Protected by `verify_metrics_auth`, returning namespace-scoped data for clients and global/unrestricted data for administrators.
+   - Unauthorized requests receive `401 Unauthorized` (or `403 Forbidden` if an invalid admin token is presented). Authentication failures are never counted as cache misses or provider attempts.
+3. **Fail-Open & Non-Blocking Design**:
+   - All metrics recording operations are executed within non-blocking, exception-shielded facades. Any unexpected error in the metrics collector fails open, ensuring client LLM inference is never interrupted or failed by observability overhead.
+4. **Bounded Rolling Latencies**:
+   - Latencies are recorded in bounded ring buffers (`collections.deque(maxlen=1000)`) per metric and per namespace to eliminate unbounded memory growth.
+   - Percentiles (`p50`, `p90`, `p95`, `p99`) are computed via deterministic linear interpolation over the active window.
+   - A `small_sample_warning` boolean flag is set to `true` whenever a metric's sample count is below 20.
+
+### Metric Categories & Contracts
+
+#### 1. Request & Cache Lifecycle (`RequestAndCacheMetrics`)
+- `total_authenticated_requests`: Total valid requests admitted to the gateway.
+- `exact_cache_lookups`: Exact-cache lookup attempts.
+- `exact_cache_hits`: Requests served immediately from exact cache.
+- `exact_cache_misses`: Independent requests that missed exact cache.
+- `coalesced_joins`: Requests that joined an in-flight single-flight group.
+- `coalesced_successes`: Followers that successfully received the leader's generated response.
+- `coalesced_failures`: Followers that received an error due to leader failure.
+- `cache_bypass_requests`: Requests with `bypass_cache=true` that deliberately skipped caching.
+- `streaming_requests`: Streaming inference requests (`stream=true`).
+
+#### 2. Semantic Cache Metrics (`SemanticMetrics`)
+- `semantic_eligibility_rejections`: Queries rejected prior to embedding (multi-turn, non-technical, secrets).
+- `semantic_lookups`: Vector similarity search attempts.
+- `semantic_hits`: Valid semantic candidate reuses.
+- `semantic_misses`: Semantic searches yielding no candidate meeting similarity and margin thresholds.
+- `ambiguous_candidate_rejections`: Rejections where an alternative candidate fell within the ambiguity margin.
+- `incompatible_candidate_rejections`: Rejections due to model, temperature, or namespace mismatch.
+- `embedding_failures`: Timeout or connection failures during embedding generation.
+- `vector_store_failures`: Database errors during vector retrieval.
+- `indexing_successes`: Successfully persisted vector records.
+- `indexing_failures`: Safely caught vector indexing errors.
+
+#### 3. Upstream Provider & Savings (`ProviderAndSavingsMetrics`)
+- `provider_calls_attempted`: Inferences dispatched to the upstream provider (Groq).
+- `provider_calls_succeeded`: Completed upstream provider generations.
+- `provider_calls_failed`: Upstream failures (rate limits, auth errors, network disconnects).
+- `provider_prompt_tokens_used`, `provider_completion_tokens_used`, `provider_total_tokens_used`: Actual tokens billed by the upstream provider.
+- `prompt_tokens_saved`, `completion_tokens_saved`, `total_tokens_saved`: Cumulative tokens saved across exact hits, semantic hits, and successful coalesced followers.
+- `provider_calls_avoided`: Cumulative upstream provider calls saved without double-counting:
+  $$\text{provider\_calls\_avoided} = \text{exact\_cache\_hits} + \text{semantic\_hits} + \text{coalesced\_successes}$$
+
+#### 4. Derived Rates (`DerivedRates`)
+- $\text{overall\_cache\_hit\_rate} = \frac{\text{exact\_cache\_hits} + \text{semantic\_hits} + \text{coalesced\_successes}}{\text{total\_authenticated\_requests}}$
+- $\text{exact\_hit\_rate} = \frac{\text{exact\_cache\_hits}}{\text{exact\_cache\_lookups}}$
+- $\text{semantic\_hit\_rate} = \frac{\text{semantic\_hits}}{\text{semantic\_lookups}}$
+- $\text{coalesced\_reuse\_rate} = \frac{\text{coalesced\_successes}}{\text{coalesced\_joins}}$
+
+#### 5. Latency Distributions (`LatencyMetrics`)
+Each latency metric provides a `LatencySummary` containing `mean`, `p50`, `p90`, `p95`, `p99`, `min`, `max`, `sample_count`, and `small_sample_warning`:
+- `total_request_latency_ms`: End-to-end gateway response latency.
+- `exact_lookup_latency_ms`: In-memory or PostgreSQL exact cache lookup time.
+- `semantic_lookup_latency_ms`: Total semantic lookup time (embedding + vector search + policy check).
+- `embedding_latency_ms`: Ollama embedding request latency.
+- `vector_search_latency_ms`: PostgreSQL + pgvector query execution time.
+- `candidate_policy_latency_ms`: Policy verification time for retrieved candidates.
+- `provider_generation_latency_ms`: Upstream provider API latency.
+- `exact_cache_write_latency_ms`: Exact-cache write latency.
+- `vector_indexing_latency_ms`: Vector embedding + database upsert latency.
+- `estimated_latency_saved_ms`: Latency saved on cache hits ($\max(0, \text{original\_latency} - \text{lookup\_latency})$).
+
+### Architectural Boundaries & Limitations
+
+- **Process-Local Storage**: Metrics are stored in process memory. Restarting the gateway process resets all counters and latency buffers.
+- **Fixed Sample Capacity**: Latency buffers retain the most recent 1,000 samples per metric per namespace.
+- **Multi-Worker Clustering**: In multi-process deployments (e.g. multiple Uvicorn workers), each worker maintains independent in-memory counters. Aggregation across workers requires a distributed metrics sink (such as Prometheus or OpenTelemetry).
+- **Zero Monetary Claims**: Monetary savings calculations are deliberately excluded because token pricing varies dynamically across models and providers. Observability focuses strictly on verified token counts and latency distributions.
+
+---
 
 IntelliCache provides an offline evaluation and benchmarking harness at `gateway/scripts/evaluate_semantic_cache.py` using a curated dataset of 114 technical queries (`gateway/evaluation/dataset.json`).
 

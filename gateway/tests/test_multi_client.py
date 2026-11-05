@@ -409,13 +409,15 @@ class TestMultiClientSharingAndNamespaces(unittest.TestCase):
 
         asyncio.run(run_isolation())
 
+    def test_allowed_test_databases_env_cannot_extend_allowlist(self):
+        """Regression test: ALLOWED_TEST_DATABASES env var cannot authorize unapproved test databases."""
+        with patch.dict(os.environ, {"ALLOWED_TEST_DATABASES": "malicious_db,prod_db"}, clear=False):
+            self.assertEqual(APPROVED_TEST_DATABASES, frozenset({"intellicache_test"}))
+            self.assertNotIn("malicious_db", APPROVED_TEST_DATABASES)
+            self.assertNotIn("prod_db", APPROVED_TEST_DATABASES)
 
-APPROVED_TEST_DATABASES = {"intellicache_test"}
-_extra_allowed = os.getenv("ALLOWED_TEST_DATABASES", "")
-if _extra_allowed:
-    for _item in _extra_allowed.split(","):
-        if _item.strip():
-            APPROVED_TEST_DATABASES.add(_item.strip())
+
+APPROVED_TEST_DATABASES: frozenset = frozenset({"intellicache_test"})
 
 
 def _redact_db_url(url: str) -> str:
