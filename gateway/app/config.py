@@ -4,10 +4,14 @@ Loads settings from environment variables and .env file.
 """
 
 from pathlib import Path
+import json
+import logging
 import os
 from typing import Dict, List, Optional
 from pydantic import BaseModel, Field, model_validator
 from dotenv import load_dotenv
+
+logger = logging.getLogger("intellicache.gateway.config")
 
 # Resolve paths
 # Base directory is gateway/
@@ -58,10 +62,13 @@ class Settings(BaseModel):
         default_factory=lambda: os.getenv("ADMIN_API_TOKEN") or None
     )
     client_api_token: Optional[str] = Field(
-        default_factory=lambda: os.getenv("CLIENT_API_TOKEN") or None
+        default_factory=lambda: os.getenv("CLIENT_API_TOKEN")
     )
     client_api_tokens: Optional[str] = Field(
-        default_factory=lambda: os.getenv("CLIENT_API_TOKENS") or None
+        default_factory=lambda: os.getenv("CLIENT_API_TOKENS")
+    )
+    allow_unauthenticated_loopback: bool = Field(
+        default_factory=lambda: os.getenv("ALLOW_UNAUTHENTICATED_LOOPBACK", "false").lower() in ("true", "1", "yes")
     )
 
     # CORS Configuration
@@ -179,44 +186,89 @@ class Settings(BaseModel):
                 raise ValueError("DATABASE_URL must be configured when SEMANTIC_CACHE_ENABLED is true.")
         return self
 
+    @model_validator(mode="after")
+    def validate_client_token_config(self) -> "Settings":
+        # Eagerly validate client token configuration at startup
+        self.get_client_token_map()
+        return self
+
     def get_client_token_map(self) -> Dict[str, str]:
         """
         Returns a mapping of {token: namespace} for client authentication.
         Supports:
         - CLIENT_API_TOKENS as a JSON object: '{"tok_a": "ns_a", "tok_b": "ns_a"}'
         - CLIENT_API_TOKENS as comma-separated pairs: 'tok_a:ns_a,tok_b:ns_a'
-        - CLIENT_API_TOKEN (single string) falling back to self.cache_namespace.
+        - Fallback to legacy CLIENT_API_TOKEN only if CLIENT_API_TOKENS is absent (None).
         """
         token_map: Dict[str, str] = {}
 
-        if self.client_api_tokens:
-            raw = self.client_api_tokens.strip()
-            if raw.startswith("{") and raw.endswith("}"):
-                try:
-                    import json
-                    parsed = json.loads(raw)
-                    if isinstance(parsed, dict):
-                        for k, v in parsed.items():
-                            if k and str(k).strip():
-                                token_map[str(k).strip()] = str(v).strip() if v else self.cache_namespace
-                except Exception:
-                    pass
-            else:
-                for item in raw.split(","):
-                    item = item.strip()
-                    if not item:
-                        continue
-                    if ":" in item:
-                        token_part, ns_part = item.split(":", 1)
-                        if token_part.strip():
-                            token_map[token_part.strip()] = ns_part.strip() or self.cache_namespace
-                    else:
-                        token_map[item] = self.cache_namespace
+        if self.client_api_tokens is not None:
+            # An explicitly configured CLIENT_API_TOKENS is authoritative.
+            # When legacy CLIENT_API_TOKEN is also set, emit a non-sensitive warning.
+            if self.client_api_token is not None and self.client_api_token.strip():
+                logger.warning(
+                    "Both CLIENT_API_TOKENS and CLIENT_API_TOKEN are configured. "
+                    "CLIENT_API_TOKENS is authoritative; CLIENT_API_TOKEN is ignored."
+                )
 
-        # Backwards compatibility: single CLIENT_API_TOKEN
-        if self.client_api_token and self.client_api_token.strip():
-            tok = self.client_api_token.strip()
-            if tok not in token_map:
+            raw = self.client_api_tokens.strip()
+            if not raw:
+                raise ValueError("CLIENT_API_TOKENS cannot be empty when configured.")
+
+            if raw.startswith("{"):
+                def _detect_duplicate_pairs(pairs):
+                    seen = set()
+                    d = {}
+                    for k, v in pairs:
+                        if not isinstance(k, str) or not k.strip():
+                            raise ValueError("Token key in CLIENT_API_TOKENS JSON mapping must be a non-empty string.")
+                        k_clean = k.strip()
+                        if k_clean in seen:
+                            raise ValueError("Duplicate token key detected in CLIENT_API_TOKENS configuration.")
+                        seen.add(k_clean)
+                        if not isinstance(v, str) or not v.strip():
+                            raise ValueError("Namespace value in CLIENT_API_TOKENS JSON mapping must be a non-empty string.")
+                        d[k_clean] = v.strip()
+                    return d
+
+                try:
+                    parsed = json.loads(raw, object_pairs_hook=_detect_duplicate_pairs)
+                except json.JSONDecodeError:
+                    raise ValueError("Malformed JSON in CLIENT_API_TOKENS configuration.") from None
+
+                if not isinstance(parsed, dict):
+                    raise ValueError("CLIENT_API_TOKENS JSON configuration must be a JSON object.")
+                if not parsed:
+                    raise ValueError("CLIENT_API_TOKENS JSON mapping cannot be empty.")
+                token_map = parsed
+            elif raw.startswith("["):
+                raise ValueError("CLIENT_API_TOKENS JSON configuration must be a JSON object, not an array.")
+            else:
+                entries = raw.split(",")
+                for entry in entries:
+                    entry = entry.strip()
+                    if not entry:
+                        raise ValueError("Malformed delimiter entry in CLIENT_API_TOKENS; empty token-namespace segment detected.")
+                    if ":" not in entry:
+                        raise ValueError("Malformed delimiter entry in CLIENT_API_TOKENS; expected 'token:namespace'.")
+                    token_part, ns_part = entry.split(":", 1)
+                    tok = token_part.strip()
+                    ns = ns_part.strip()
+                    if not tok:
+                        raise ValueError("Token key in CLIENT_API_TOKENS delimiter mapping must be a non-empty string.")
+                    if not ns:
+                        raise ValueError("Namespace value in CLIENT_API_TOKENS delimiter mapping must be a non-empty string.")
+                    if tok in token_map:
+                        raise ValueError("Duplicate token key detected in CLIENT_API_TOKENS delimiter mapping.")
+                    token_map[tok] = ns
+                if not token_map:
+                    raise ValueError("CLIENT_API_TOKENS delimiter mapping cannot be empty.")
+        else:
+            # Legacy fallback: only active when CLIENT_API_TOKENS is absent (None)
+            if self.client_api_token is not None:
+                tok = self.client_api_token.strip()
+                if not tok:
+                    raise ValueError("CLIENT_API_TOKEN cannot be empty when configured.")
                 token_map[tok] = self.cache_namespace
 
         return token_map

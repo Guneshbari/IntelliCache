@@ -6,6 +6,7 @@ Delegates caching decisions and inference orchestration to IntelliCache Core.
 
 from datetime import datetime, timezone
 import hmac
+import ipaddress
 import json
 import logging
 from typing import Any, AsyncGenerator, Dict, List, Optional
@@ -170,55 +171,103 @@ def verify_admin_token(
         )
 
 
+def _is_loopback_address(host: Optional[str]) -> bool:
+    """
+    Checks if a host/IP string represents a loopback address.
+    Supports IPv4 (127.0.0.0/8), IPv6 (::1), and loopback test hosts.
+    """
+    if not host:
+        return False
+    host_clean = host.strip().lower()
+    if host_clean in ("localhost", "testclient", "testserver"):
+        return True
+    try:
+        ip = ipaddress.ip_address(host_clean)
+        return ip.is_loopback
+    except ValueError:
+        return False
+
+
 def verify_client_token(
     request: Request,
     settings: Settings = Depends(get_settings),
 ) -> str:
     """
     Dependency verifying client API token for query endpoints.
-    Enforces authentication when client tokens are configured or when bound beyond loopback.
+    Enforces authentication by default (HTTP 401).
+    When ALLOW_UNAUTHENTICATED_LOOPBACK is explicitly true, strictly verifies that
+    both the direct peer IP and actual ASGI server address are valid loopback addresses,
+    and rejects requests presenting forwarded headers.
     Returns the server-authorized cache_namespace for the authenticated client.
     """
     token_map = settings.get_client_token_map()
 
-    # 1. If any client tokens are configured, enforce strict authentication
-    if token_map:
-        token_candidate: Optional[str] = request.headers.get("X-Client-Token")
-        if not token_candidate:
-            auth_header = request.headers.get("Authorization", "")
-            if auth_header.lower().startswith("bearer "):
-                token_candidate = auth_header[7:].strip()
+    # 1. Extract token candidate from headers
+    token_candidate: Optional[str] = request.headers.get("X-Client-Token")
+    if not token_candidate:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.lower().startswith("bearer "):
+            token_candidate = auth_header[7:].strip()
 
-        if not token_candidate:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Unauthorized: Invalid or missing client API token.",
-            )
+    # 2. If token candidate is present, verify against configured token_map
+    if token_candidate:
+        if token_map:
+            matched_namespace: Optional[str] = None
+            for valid_token, ns in token_map.items():
+                if hmac.compare_digest(token_candidate, valid_token):
+                    matched_namespace = ns
+                    break
+            if matched_namespace is not None:
+                return matched_namespace
 
-        matched_namespace: Optional[str] = None
-        for valid_token, ns in token_map.items():
-            if hmac.compare_digest(token_candidate, valid_token):
-                matched_namespace = ns
-                break
-
-        if matched_namespace is None:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Unauthorized: Invalid or missing client API token.",
-            )
-
-        return matched_namespace
-
-    # 2. Central deployment security check:
-    # If bound beyond loopback without client_api_token configured, fail closed
-    if settings.host != "127.0.0.1":
+        # Invalid token candidate or token_map empty
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Unauthorized: Central deployment bound beyond loopback requires CLIENT_API_TOKEN to be configured on the gateway.",
+            detail="Unauthorized: Invalid or missing client API token.",
         )
 
-    # 3. Local development loopback fallback without configured tokens
-    return settings.cache_namespace
+    # 3. If token candidate is NOT present, check if explicit unauthenticated loopback is enabled
+    if settings.allow_unauthenticated_loopback:
+        # Check forwarded headers first: never allow bypass if forwarded headers are present
+        forwarded_headers = ("x-forwarded-for", "x-forwarded-proto", "x-forwarded-host", "forwarded")
+        for hdr in forwarded_headers:
+            if hdr in request.headers:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Unauthorized: Unauthenticated loopback access rejected when forwarded headers are present.",
+                )
+
+        # Validate direct peer IP (request.client.host)
+        client_host = request.client.host if request.client else None
+        if not _is_loopback_address(client_host):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Unauthorized: Direct connection peer is not a valid loopback address.",
+            )
+
+        # Validate actual ASGI server address (request.scope.get("server"))
+        server_info = request.scope.get("server")
+        server_host = server_info[0] if (server_info and len(server_info) > 0) else None
+        if not _is_loopback_address(server_host):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Unauthorized: Server bind address is not a valid loopback address.",
+            )
+
+        # Also verify settings.host is loopback
+        if not _is_loopback_address(settings.host):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Unauthorized: Server host setting is not a valid loopback address.",
+            )
+
+        return settings.cache_namespace
+
+    # 4. Default: Require authentication! Fail closed with HTTP 401
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Unauthorized: Invalid or missing client API token.",
+    )
 
 
 # ---------------------------------------------------------------------------

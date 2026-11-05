@@ -65,6 +65,8 @@ class TestQueryRoute(unittest.TestCase):
     """Test suite for hardened query route logic, exact caching, and single-flight coordination."""
 
     def setUp(self):
+        self.env_patcher = patch.dict(os.environ, {"ALLOW_UNAUTHENTICATED_LOOPBACK": "true"}, clear=False)
+        self.env_patcher.start()
         self.client = TestClient(app)
         reload_settings()
         self.cache = get_query_cache()
@@ -84,6 +86,8 @@ class TestQueryRoute(unittest.TestCase):
         app.dependency_overrides[get_groq_client_factory] = lambda: client_factory
 
     def tearDown(self):
+        self.env_patcher.stop()
+        reload_settings()
         app.dependency_overrides.clear()
         asyncio.run(self.cache.clear())
 
@@ -229,7 +233,7 @@ class TestQueryRoute(unittest.TestCase):
 
         # Step 2: Remove mock dependency override and simulate missing GROQ_API_KEY
         app.dependency_overrides.pop(get_groq_client_factory, None)
-        with patch.dict(os.environ, {"GROQ_API_KEY": ""}, clear=True):
+        with patch.dict(os.environ, {"GROQ_API_KEY": "", "ALLOW_UNAUTHENTICATED_LOOPBACK": "true"}, clear=True):
             reload_settings()
             resp = self.client.post("/query", json={"prompt": "Offline cache test"})
             self.assertEqual(resp.status_code, 200)

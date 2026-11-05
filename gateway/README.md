@@ -176,13 +176,16 @@ In a centralized deployment, multiple client machines communicate with a single 
 
 ### Key Architectural Principles:
 1. **Direct Database Isolation**: Clients **never** connect directly to PostgreSQL. All read, write, eviction, and single-flight operations are managed exclusively by the central IntelliCache service.
-2. **PostgreSQL Persistence & asyncpg Pooling**: Persistent exact caching is handled by `PostgresCache` using asynchronous, non-blocking `asyncpg` connection pools (`DB_POOL_MIN_SIZE` to `DB_POOL_MAX_SIZE`), with automatic lifespan cleanup on shutdown.
+2. **PostgreSQL Persistence & asyncpg Pooling**: Persistent exact caching is handled by `PostgresCache` using asynchronous, non-blocking `asyncpg` connection pools (`DB_POOL_MIN_SIZE` to `DB_POOL_MAX_SIZE`), with automatic lifespan cleanup on shutdown. Persistence tests verify data reusability across fresh database connection pools within the application lifecycle.
 3. **Database Migrations**: SQL schema migrations are versioned under `gateway/migrations/` and automatically applied at startup via `gateway/app/cache/migration.py`.
    - `001_create_cache_entries.sql`: Creates `cache_entries` with a unique constraint on `(cache_namespace, fingerprint)` for conflict-safe concurrent upserts, plus indexes for lookups, expiration sweeps, and LRU eviction.
-4. **Server-Enforced Cache Namespaces (`CACHE_NAMESPACE`)**: Cache isolation (e.g. between development, staging, or teams) is strictly enforced by the server configuration. The gateway does not allow client requests to override the namespace, preventing cache poisoning across tenants.
-5. **Client Authentication & Fail-Closed Security**:
-   - `CLIENT_API_TOKEN`: When configured, all inference queries (`/query`, `/api/v1/query`) require an authentication token via header `X-Client-Token: <token>` or `Authorization: Bearer <token>`.
-   - **Fail-Closed Beyond Loopback**: If the server binds to a non-loopback interface (such as `0.0.0.0` or a public IP) without `CLIENT_API_TOKEN` configured, the gateway refuses to serve queries (returning 401 Unauthorized) to avoid operating as an unintended open LLM relay.
+4. **Server-Enforced Cache Namespaces**: Cache isolation (e.g. between development, staging, or tenant teams) is strictly enforced by the server's authenticated token-to-namespace mapping. The gateway ignores any client payload claiming a custom namespace, preventing unauthorized cross-tenant cache access.
+5. **Multi-Client Authentication & Fail-Closed Security**:
+   - **Default Requirement**: All query endpoints (`POST /query`, `POST /api/v1/query`) require authentication by default. Missing or invalid credentials return `401 Unauthorized` without calling the LLM provider or writing to cache.
+   - **Multi-Client Configuration (`CLIENT_API_TOKENS`)**: Supports multi-tenant deployments by mapping unique client credentials to designated namespaces. Accepts either JSON objects (`{"token_a": "team_alpha", "token_b": "team_beta"}`) or delimiter-separated pairs (`token_a:team_alpha,token_b:team_beta`).
+   - **Authoritative Precedence**: When `CLIENT_API_TOKENS` is configured, it is strictly authoritative. Legacy `CLIENT_API_TOKEN` is ignored (with a non-sensitive warning emitted). An explicitly empty `CLIENT_API_TOKENS=""` fails configuration validation and never falls back.
+   - **Legacy Single-Client Fallback**: If `CLIENT_API_TOKENS` is absent, the gateway supports single-token `CLIENT_API_TOKEN`, mapping to `CACHE_NAMESPACE`.
+   - **Loopback Development Mode (`ALLOW_UNAUTHENTICATED_LOOPBACK`)**: Disabled by default (`false`). When explicitly enabled for local development, the gateway inspects both the direct TCP peer address (`request.client.host`) and the actual ASGI server bind address (`request.scope["server"]`), failing closed if either is non-loopback. Any request presenting forwarded headers (`X-Forwarded-For`, `Forwarded`) is rejected with `401 Unauthorized`. This mode must **never** be enabled behind a publicly accessible reverse proxy.
 6. **Health Diagnostics (`GET /health`)**:
    - Performs a lightweight `SELECT 1` check when the PostgreSQL backend is enabled to verify live database connectivity.
    - If PostgreSQL is unreachable, the endpoint returns HTTP 503 Service Unavailable with `database: "unhealthy"`.
@@ -206,7 +209,17 @@ PORT=8000
 DEBUG=false
 CORS_ORIGINS=*
 ADMIN_API_TOKEN=replace_with_admin_secret_token
-CLIENT_API_TOKEN=replace_with_client_secret_token
+
+# Client Authentication & Multi-Tenancy
+# Option A: Multi-Client Token Mapping (Authoritative)
+CLIENT_API_TOKENS={"client_token_a": "team_alpha", "client_token_b": "team_alpha", "client_token_c": "team_gamma"}
+# Delimiter alternative: CLIENT_API_TOKENS=client_token_a:team_alpha,client_token_b:team_alpha,client_token_c:team_gamma
+
+# Option B: Legacy Single Client Token (Used only if CLIENT_API_TOKENS is absent)
+# CLIENT_API_TOKEN=replace_with_client_secret_token
+
+# Local Development Exception (Disabled by default; requires direct loopback connection)
+ALLOW_UNAUTHENTICATED_LOOPBACK=false
 
 # Caching Configuration
 # Backend: "memory" (default for local test/dev) or "postgres" (for centralized shared cache)
@@ -236,10 +249,10 @@ EMBEDDING_TIMEOUT_SECONDS=30.0
 ```
 
 ### Security Considerations
-- **Client Authentication (`/query`)**: Protected by `CLIENT_API_TOKEN` via `X-Client-Token` or `Authorization: Bearer`. Constant-time comparison (`hmac.compare_digest`) prevents timing attacks.
-- **Fail-Closed Protection**: Binding to interfaces other than `127.0.0.1` requires `CLIENT_API_TOKEN`. Unauthenticated requests on exposed interfaces are strictly rejected.
-- **Admin Endpoint Protection (`/cache/clear`)**: Administrative operations require `ADMIN_API_TOKEN` to be set on the server. Clients must supply the token via `X-Admin-Token: <token>` or `Authorization: Bearer <token>`. Requests are validated using constant-time comparison (`hmac.compare_digest`). If unset or invalid, the endpoint responds with HTTP 403 Forbidden.
-- **Network Exposure**: By default, the gateway binds to `127.0.0.1` (localhost) rather than `0.0.0.0` to avoid unintentionally exposing endpoints to the local network or container host interfaces.
+- **Client Authentication (`POST /query` & `POST /api/v1/query`)**: Protected by `CLIENT_API_TOKENS` (or legacy `CLIENT_API_TOKEN`) via `X-Client-Token` or `Authorization: Bearer <token>`. Constant-time comparison (`hmac.compare_digest`) prevents timing side-channel attacks.
+- **Fail-Closed Protection**: Unauthenticated requests receive HTTP 401 by default. Even when `ALLOW_UNAUTHENTICATED_LOOPBACK=true` is set, external peers, Uvicorn `--host 0.0.0.0` bindings, and forwarded headers are strictly rejected.
+- **Admin Endpoint Protection (`POST /cache/clear`)**: Administrative operations require `ADMIN_API_TOKEN` to be set on the server. Clients must supply the token via `X-Admin-Token: <token>` or `Authorization: Bearer <token>`. Requests are validated using constant-time comparison (`hmac.compare_digest`). If unset or invalid, the endpoint responds with HTTP 403 Forbidden.
+- **Credential Storage & Rotation**: Real client API tokens and database passwords must **never** be committed to Git or logged in plaintext. Token rotation can be achieved by updating `CLIENT_API_TOKENS` and reloading gateway settings.
 - **Secret & Path Redaction**: Upstream error messages and logs automatically redact Groq API keys (`gsk_***`), Bearer tokens, absolute filesystem paths (`<redacted_path>`), and IP addresses (`<redacted_ip>`).
 - **Payload Size Limits**: Inbound payload character limits protect gateway memory against denial-of-service payloads.
 

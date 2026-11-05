@@ -38,10 +38,34 @@ class MockCompletion:
         )
 
 
+def _make_asgi_app_with_scope(base_app, client_host="127.0.0.1", server_host="127.0.0.1"):
+    """
+    Test helper wrapping an ASGI app to simulate specific client and server addresses
+    in request.scope, verifying ASGI-level network access control enforcement.
+    Note: ASGITransport scope tests verify ASGI middleware/route inspection logic.
+    Actual Uvicorn socket behaviour at the kernel layer binds network sockets directly.
+    """
+    async def asgi_wrapper(scope, receive, send):
+        if scope["type"] == "http":
+            scope = dict(scope)
+            if client_host is not None:
+                scope["client"] = (client_host, 12345)
+            else:
+                scope["client"] = None
+            if server_host is not None:
+                scope["server"] = (server_host, 8000)
+            else:
+                scope["server"] = None
+        await base_app(scope, receive, send)
+    return asgi_wrapper
+
+
 class TestCentralClientAuthentication(unittest.TestCase):
     """Tests client API token enforcement and fail-closed security behavior."""
 
     def setUp(self):
+        self._saved_dependency_overrides = dict(app.dependency_overrides)
+        self._saved_query_cache = get_query_cache()
         self.client = TestClient(app)
         self.cache = ExactCache()
         set_query_cache(self.cache)
@@ -54,6 +78,8 @@ class TestCentralClientAuthentication(unittest.TestCase):
 
     def tearDown(self):
         app.dependency_overrides.clear()
+        app.dependency_overrides.update(self._saved_dependency_overrides)
+        set_query_cache(self._saved_query_cache)
         reload_settings()
 
     @patch.dict(os.environ, {"CLIENT_API_TOKEN": "secret-client-token-123"}, clear=False)
@@ -90,17 +116,99 @@ class TestCentralClientAuthentication(unittest.TestCase):
         )
         self.assertEqual(resp_good_bearer.status_code, 200)
 
+    def test_default_authentication_required_on_loopback(self):
+        """When no tokens are configured and ALLOW_UNAUTHENTICATED_LOOPBACK is false (default), requests return 401."""
+        env = dict(os.environ)
+        env.pop("CLIENT_API_TOKEN", None)
+        env.pop("CLIENT_API_TOKENS", None)
+        env.pop("ALLOW_UNAUTHENTICATED_LOOPBACK", None)
+        with patch.dict(os.environ, env, clear=True):
+            reload_settings()
+            # /query fails closed
+            resp = self.client.post("/query", json={"prompt": "Hello"})
+            self.assertEqual(resp.status_code, 401)
+            self.assertIn("Unauthorized: Invalid or missing client API token", resp.text)
+
+            # /api/v1/query fails closed
+            resp_v1 = self.client.post("/api/v1/query", json={"prompt": "Hello"})
+            self.assertEqual(resp_v1.status_code, 401)
+            self.assertIn("Unauthorized: Invalid or missing client API token", resp_v1.text)
+
+            # Upstream provider was never called
+            self.assertEqual(self.mock_groq.chat.completions.create.call_count, 0)
+
+    @patch.dict(os.environ, {"ALLOW_UNAUTHENTICATED_LOOPBACK": "true"}, clear=False)
+    def test_allow_unauthenticated_loopback_valid_access(self):
+        """When ALLOW_UNAUTHENTICATED_LOOPBACK is explicitly true and connections are loopback, requests succeed."""
+        reload_settings()
+        resp = self.client.post("/query", json={"prompt": "Hello"})
+        self.assertEqual(resp.status_code, 200)
+
+        # Works on /api/v1/query as well
+        resp_v1 = self.client.post("/api/v1/query", json={"prompt": "Hello v1"})
+        self.assertEqual(resp_v1.status_code, 200)
+
+    @patch.dict(os.environ, {"ALLOW_UNAUTHENTICATED_LOOPBACK": "true"}, clear=False)
+    def test_allow_unauthenticated_loopback_rejects_forwarded_headers(self):
+        """Unauthenticated loopback access is rejected if forwarded headers are present."""
+        reload_settings()
+        # X-Forwarded-For
+        resp_xff = self.client.post(
+            "/query",
+            json={"prompt": "Hello"},
+            headers={"X-Forwarded-For": "203.0.113.1"},
+        )
+        self.assertEqual(resp_xff.status_code, 401)
+        self.assertIn("forwarded headers are present", resp_xff.text)
+
+        # Forwarded
+        resp_fwd = self.client.post(
+            "/query",
+            json={"prompt": "Hello"},
+            headers={"Forwarded": "for=203.0.113.1;proto=https"},
+        )
+        self.assertEqual(resp_fwd.status_code, 401)
+        self.assertIn("forwarded headers are present", resp_fwd.text)
+
+    @patch.dict(os.environ, {"ALLOW_UNAUTHENTICATED_LOOPBACK": "true"}, clear=False)
+    def test_allow_unauthenticated_loopback_rejects_external_peer(self):
+        """When direct client peer IP is external (non-loopback), unauthenticated access is rejected."""
+        reload_settings()
+        wrapped_app = _make_asgi_app_with_scope(app, client_host="192.168.1.100", server_host="127.0.0.1")
+        test_client = TestClient(wrapped_app)
+        resp = test_client.post("/query", json={"prompt": "Hello"})
+        self.assertEqual(resp.status_code, 401)
+        self.assertIn("Direct connection peer is not a valid loopback address", resp.text)
+
+    @patch.dict(os.environ, {"ALLOW_UNAUTHENTICATED_LOOPBACK": "true"}, clear=False)
+    def test_allow_unauthenticated_loopback_rejects_non_loopback_server(self):
+        """When ASGI server bind address is non-loopback (e.g. 0.0.0.0 or external), unauthenticated access is rejected."""
+        reload_settings()
+        # 0.0.0.0 is not a loopback address
+        wrapped_app_0 = _make_asgi_app_with_scope(app, client_host="127.0.0.1", server_host="0.0.0.0")
+        client_0 = TestClient(wrapped_app_0)
+        resp_0 = client_0.post("/query", json={"prompt": "Hello"})
+        self.assertEqual(resp_0.status_code, 401)
+        self.assertIn("Server bind address is not a valid loopback address", resp_0.text)
+
+        # 10.0.0.1 is not a loopback address
+        wrapped_app_ext = _make_asgi_app_with_scope(app, client_host="127.0.0.1", server_host="10.0.0.1")
+        client_ext = TestClient(wrapped_app_ext)
+        resp_ext = client_ext.post("/query", json={"prompt": "Hello"})
+        self.assertEqual(resp_ext.status_code, 401)
+        self.assertIn("Server bind address is not a valid loopback address", resp_ext.text)
+
     @patch.dict(os.environ, {
         "HOST": "0.0.0.0",
-        "CLIENT_API_TOKEN": "",
+        "ALLOW_UNAUTHENTICATED_LOOPBACK": "true",
     }, clear=False)
     def test_fail_closed_beyond_loopback_without_client_token(self):
-        """Central deployment binding beyond loopback fails closed if CLIENT_API_TOKEN is unset."""
+        """Central deployment binding beyond loopback fails closed if client credentials are unset."""
         reload_settings()
 
         resp = self.client.post("/query", json={"prompt": "Test beyond loopback"})
         self.assertEqual(resp.status_code, 401)
-        self.assertIn("Central deployment bound beyond loopback requires CLIENT_API_TOKEN", resp.text)
+        self.assertIn("Server host setting is not a valid loopback address", resp.text)
 
     @patch.dict(os.environ, {
         "CLIENT_API_TOKEN": "client-token-only",
@@ -125,11 +233,37 @@ class TestCentralClientAuthentication(unittest.TestCase):
         )
         self.assertEqual(query_resp.status_code, 401)
 
+    @patch.dict(os.environ, {"CLIENT_API_TOKEN": "valid-token-xyz"}, clear=False)
+    def test_api_v1_query_enforces_authentication_identically(self):
+        """POST /api/v1/query enforces authentication identically to POST /query."""
+        reload_settings()
+        # 1. Missing token on /api/v1/query -> 401
+        resp_miss = self.client.post("/api/v1/query", json={"prompt": "Hello"})
+        self.assertEqual(resp_miss.status_code, 401)
+
+        # 2. Invalid token on /api/v1/query -> 401
+        resp_bad = self.client.post(
+            "/api/v1/query",
+            json={"prompt": "Hello"},
+            headers={"X-Client-Token": "bad-token"},
+        )
+        self.assertEqual(resp_bad.status_code, 401)
+
+        # 3. Valid token on /api/v1/query -> 200
+        resp_good = self.client.post(
+            "/api/v1/query",
+            json={"prompt": "Hello"},
+            headers={"X-Client-Token": "valid-token-xyz"},
+        )
+        self.assertEqual(resp_good.status_code, 200)
+
 
 class TestMultiClientSharingAndNamespaces(unittest.TestCase):
     """Tests multi-client cache reuse and server-enforced namespace separation."""
 
     def setUp(self):
+        self._saved_dependency_overrides = dict(app.dependency_overrides)
+        self._saved_query_cache = get_query_cache()
         self.client = TestClient(app)
         self.cache = ExactCache()
         set_query_cache(self.cache)
@@ -147,6 +281,8 @@ class TestMultiClientSharingAndNamespaces(unittest.TestCase):
 
     def tearDown(self):
         app.dependency_overrides.clear()
+        app.dependency_overrides.update(self._saved_dependency_overrides)
+        set_query_cache(self._saved_query_cache)
         reload_settings()
 
     @patch.dict(os.environ, {
@@ -185,6 +321,7 @@ class TestMultiClientSharingAndNamespaces(unittest.TestCase):
         self.assertEqual(self.api_call_count, 1)  # Provider was NOT invoked again!
 
     @patch.dict(os.environ, {
+        "CLIENT_API_TOKEN": "attacker-token-123",
         "CACHE_NAMESPACE": "trusted_server_ns",
     }, clear=False)
     def test_request_body_cannot_override_server_namespace(self):
@@ -198,6 +335,7 @@ class TestMultiClientSharingAndNamespaces(unittest.TestCase):
                 "prompt": "Test prompt",
                 "namespace": "attacker_namespace",
             },
+            headers={"X-Client-Token": "attacker-token-123"},
         )
         self.assertEqual(resp.status_code, 200)
 
@@ -272,6 +410,14 @@ class TestMultiClientSharingAndNamespaces(unittest.TestCase):
         asyncio.run(run_isolation())
 
 
+APPROVED_TEST_DATABASES = {"intellicache_test"}
+_extra_allowed = os.getenv("ALLOWED_TEST_DATABASES", "")
+if _extra_allowed:
+    for _item in _extra_allowed.split(","):
+        if _item.strip():
+            APPROVED_TEST_DATABASES.add(_item.strip())
+
+
 def _redact_db_url(url: str) -> str:
     """Removes user credentials from a database URL for safe reporting."""
     try:
@@ -290,58 +436,59 @@ def _redact_db_url(url: str) -> str:
 class TestPostgresCentralStorage(unittest.IsolatedAsyncioTestCase):
     """
     Tests persistent PostgreSQL exact-cache implementation.
-    Uses TEST_DATABASE_URL environment variable if set, or defaults to local PostgreSQL.
-    Skips cleanly if default local PostgreSQL is unavailable, but fails if TEST_DATABASE_URL was explicitly provided.
+    Requires an explicitly configured TEST_DATABASE_URL and approved database name.
+    Skips cleanly when TEST_DATABASE_URL is not set.
     """
 
     async def asyncSetUp(self):
         explicit_url = os.getenv("TEST_DATABASE_URL")
-        self.is_explicit_url = explicit_url is not None
-        self.db_url = explicit_url or "postgresql://postgres@localhost:5432/intellicache_test"
+        if not explicit_url:
+            self.skipTest(
+                "TEST_DATABASE_URL environment variable is not set. "
+                "PostgreSQL integration tests require an explicitly configured TEST_DATABASE_URL."
+            )
+        self.db_url = explicit_url
         safe_url = _redact_db_url(self.db_url)
 
-        # Safety check: ensure tests only run against a database containing 'test'
+        # Safety check: enforce explicit allowlist
         from urllib.parse import urlsplit
         parsed = urlsplit(self.db_url)
         db_name = (parsed.path or "").lstrip("/")
-        if "test" not in db_name.lower():
-            raise ValueError(
-                f"Safety check failed: Refusing to run tests against database '{db_name}'. "
-                "Integration test database name must contain 'test' to prevent modifying non-test databases."
+        if db_name not in APPROVED_TEST_DATABASES:
+            self.fail(
+                f"Safety check failed: Database '{db_name}' is not in the approved test database allowlist: "
+                f"{sorted(APPROVED_TEST_DATABASES)}. Refusing to run tests against non-allowlisted database."
             )
 
         try:
             self.pool = await asyncpg.create_pool(self.db_url, min_size=1, max_size=10)
-            await run_migrations(self.pool)
-            self.store_a = PostgresCache(self.pool, max_entries=5, ttl_seconds=3600, default_namespace="test_ns_a")
-            self.store_b = PostgresCache(self.pool, max_entries=5, ttl_seconds=3600, default_namespace="test_ns_a")
-            self.store_other_ns = PostgresCache(self.pool, max_entries=5, ttl_seconds=3600, default_namespace="test_ns_b")
-            await self.store_a.clear()
-            await self.store_other_ns.clear()
         except Exception as e:
             redacted_err = str(e)
             if parsed.password and parsed.password in redacted_err:
                 redacted_err = redacted_err.replace(parsed.password, "***")
             if parsed.username and parsed.username in redacted_err:
                 redacted_err = redacted_err.replace(parsed.username, "***")
+            self.fail(
+                f"PostgreSQL integration test setup failed for explicitly configured "
+                f"TEST_DATABASE_URL ({safe_url}): {redacted_err}"
+            )
 
-            if self.is_explicit_url:
-                self.fail(
-                    f"PostgreSQL integration test setup failed for explicitly configured "
-                    f"TEST_DATABASE_URL ({safe_url}): {redacted_err}"
-                )
-            else:
-                self.skipTest(
-                    f"Default local PostgreSQL test database unavailable at {safe_url}: {redacted_err}"
-                )
+        # Register cleanup immediately
+        self.addAsyncCleanup(self.pool.close)
+        self.addAsyncCleanup(self._cleanup_stores)
 
-    async def asyncTearDown(self):
+        await run_migrations(self.pool)
+        self.store_a = PostgresCache(self.pool, max_entries=5, ttl_seconds=3600, default_namespace="test_ns_a")
+        self.store_b = PostgresCache(self.pool, max_entries=5, ttl_seconds=3600, default_namespace="test_ns_a")
+        self.store_other_ns = PostgresCache(self.pool, max_entries=5, ttl_seconds=3600, default_namespace="test_ns_b")
+        await self.store_a.clear()
+        await self.store_other_ns.clear()
+
+    async def _cleanup_stores(self):
         if hasattr(self, "store_a"):
             await self.store_a.clear()
         if hasattr(self, "store_other_ns"):
             await self.store_other_ns.clear()
-        if hasattr(self, "pool"):
-            await self.pool.close()
 
     async def test_cross_instance_cache_sharing(self):
         """Entry written by store instance A is immediately readable by store instance B."""
@@ -549,17 +696,21 @@ class TestCentralMultiClientPostgresValidation(unittest.IsolatedAsyncioTestCase)
 
     async def asyncSetUp(self):
         explicit_url = os.getenv("TEST_DATABASE_URL")
-        self.is_explicit_url = explicit_url is not None
-        self.db_url = explicit_url or "postgresql://postgres@localhost:5432/intellicache_test"
+        if not explicit_url:
+            self.skipTest(
+                "TEST_DATABASE_URL environment variable is not set. "
+                "Central multi-client integration tests require an explicitly configured TEST_DATABASE_URL."
+            )
+        self.db_url = explicit_url
         safe_url = _redact_db_url(self.db_url)
 
         from urllib.parse import urlsplit
         parsed = urlsplit(self.db_url)
         db_name = (parsed.path or "").lstrip("/")
-        if "test" not in db_name.lower():
-            raise ValueError(
-                f"Safety check failed: Refusing to run tests against database '{db_name}'. "
-                "Integration test database name must contain 'test' to prevent modifying non-test databases."
+        if db_name not in APPROVED_TEST_DATABASES:
+            self.fail(
+                f"Safety check failed: Database '{db_name}' is not in the approved test database allowlist: "
+                f"{sorted(APPROVED_TEST_DATABASES)}. Refusing to run tests against non-allowlisted database."
             )
 
         self.ns_shared = "mc_test_shared_team"
@@ -568,90 +719,97 @@ class TestCentralMultiClientPostgresValidation(unittest.IsolatedAsyncioTestCase)
         self.token_b = "client_b_token_secret_222"
         self.token_c = "client_c_token_secret_333"
 
+        # Capture initial global state for deterministic restoration
+        self._saved_dependency_overrides = dict(app.dependency_overrides)
+        self._saved_query_cache = get_query_cache()
+
         try:
             self.pool = await asyncpg.create_pool(self.db_url, min_size=1, max_size=5)
-            await run_migrations(self.pool)
-
-            # Clean test namespaces before running
-            async with self.pool.acquire() as conn:
-                await conn.execute(
-                    "DELETE FROM cache_entries WHERE cache_namespace IN ($1, $2)",
-                    self.ns_shared,
-                    self.ns_isolated,
-                )
-
-            # Configure PostgreSQL cache on gateway
-            self.pg_cache = PostgresCache(
-                pool=self.pool,
-                max_entries=100,
-                ttl_seconds=3600,
-                default_namespace=self.ns_shared,
-            )
-            set_query_cache(self.pg_cache)
-
-            # Mock Groq provider with invocation counter
-            self.provider_call_count = 0
-            self.mock_groq = AsyncMock()
-
-            def side_effect(*args, **kwargs):
-                self.provider_call_count += 1
-                return MockCompletion(f"Central Response #{self.provider_call_count}")
-
-            self.mock_groq.chat.completions.create.side_effect = side_effect
-            self.mock_groq.close = AsyncMock()
-
-            app.dependency_overrides[get_groq_client_factory] = lambda: lambda: self.mock_groq
-
-            # Configure server environment with multi-client token mapping
-            import json
-            tokens_json = json.dumps({
-                self.token_a: self.ns_shared,
-                self.token_b: self.ns_shared,
-                self.token_c: self.ns_isolated,
-            })
-            self.env_patcher = patch.dict(os.environ, {
-                "CLIENT_API_TOKENS": tokens_json,
-                "CACHE_BACKEND": "postgres",
-                "DATABASE_URL": self.db_url,
-                "CACHE_ENABLED": "true",
-            }, clear=False)
-            self.env_patcher.start()
-            reload_settings()
-
         except Exception as e:
             redacted_err = str(e)
             if parsed.password and parsed.password in redacted_err:
                 redacted_err = redacted_err.replace(parsed.password, "***")
             if parsed.username and parsed.username in redacted_err:
                 redacted_err = redacted_err.replace(parsed.username, "***")
+            self.fail(
+                f"PostgreSQL integration test setup failed for explicitly configured "
+                f"TEST_DATABASE_URL ({safe_url}): {redacted_err}"
+            )
 
-            if self.is_explicit_url:
-                self.fail(
-                    f"PostgreSQL integration test setup failed for explicitly configured "
-                    f"TEST_DATABASE_URL ({safe_url}): {redacted_err}"
-                )
-            else:
-                self.skipTest(
-                    f"Default local PostgreSQL test database unavailable at {safe_url}: {redacted_err}"
-                )
+        # Register cleanup immediately upon acquiring the pool
+        self.addAsyncCleanup(self._cleanup_database_and_pool)
+        self.addAsyncCleanup(self._restore_app_state)
 
-    async def asyncTearDown(self):
-        if hasattr(self, "env_patcher"):
-            self.env_patcher.stop()
-        app.dependency_overrides.clear()
+        await run_migrations(self.pool)
+
+        # Clean test namespaces before running
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM cache_entries WHERE cache_namespace IN ($1, $2)",
+                self.ns_shared,
+                self.ns_isolated,
+            )
+
+        # Configure PostgreSQL cache on gateway
+        self.pg_cache = PostgresCache(
+            pool=self.pool,
+            max_entries=100,
+            ttl_seconds=3600,
+            default_namespace=self.ns_shared,
+        )
+        set_query_cache(self.pg_cache)
+
+        # Mock Groq provider with invocation counter
+        self.provider_call_count = 0
+        self.mock_groq = AsyncMock()
+
+        def side_effect(*args, **kwargs):
+            self.provider_call_count += 1
+            return MockCompletion(f"Central Response #{self.provider_call_count}")
+
+        self.mock_groq.chat.completions.create.side_effect = side_effect
+        self.mock_groq.close = AsyncMock()
+
+        app.dependency_overrides[get_groq_client_factory] = lambda: lambda: self.mock_groq
+
+        # Configure server environment with multi-client token mapping
+        import json
+        tokens_json = json.dumps({
+            self.token_a: self.ns_shared,
+            self.token_b: self.ns_shared,
+            self.token_c: self.ns_isolated,
+        })
+        self.env_patcher = patch.dict(os.environ, {
+            "CLIENT_API_TOKENS": tokens_json,
+            "CACHE_BACKEND": "postgres",
+            "DATABASE_URL": self.db_url,
+            "CACHE_ENABLED": "true",
+        }, clear=False)
+        self.env_patcher.start()
         reload_settings()
 
-        if hasattr(self, "pool"):
+    async def _cleanup_database_and_pool(self):
+        if hasattr(self, "pool") and self.pool is not None:
             try:
-                async with self.pool.acquire() as conn:
-                    await conn.execute(
-                        "DELETE FROM cache_entries WHERE cache_namespace IN ($1, $2)",
-                        self.ns_shared,
-                        self.ns_isolated,
-                    )
+                if not self.pool.is_closing():
+                    async with self.pool.acquire() as conn:
+                        await conn.execute(
+                            "DELETE FROM cache_entries WHERE cache_namespace IN ($1, $2)",
+                            self.ns_shared,
+                            self.ns_isolated,
+                        )
+            finally:
                 await self.pool.close()
-            except Exception:
-                pass
+
+    async def _restore_app_state(self):
+        if hasattr(self, "env_patcher"):
+            self.env_patcher.stop()
+        if hasattr(self, "_saved_dependency_overrides"):
+            app.dependency_overrides.clear()
+            app.dependency_overrides.update(self._saved_dependency_overrides)
+        reload_settings()
+        if hasattr(self, "_saved_query_cache"):
+            set_query_cache(self._saved_query_cache)
 
     async def test_multi_client_cache_sharing_same_namespace_via_gateway(self):
         """
@@ -867,15 +1025,15 @@ class TestCentralMultiClientPostgresValidation(unittest.IsolatedAsyncioTestCase)
 
     async def test_invalid_authentication_fails_closed(self):
         """
-        Invalid or missing tokens are rejected with 401 Unauthorized, avoiding provider calls.
+        Invalid or missing tokens are rejected with 401 Unauthorized, avoiding provider calls and DB writes.
         """
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-            # 1. Missing token
+            # 1. Missing token on /query
             resp_none = await client.post("/query", json={"prompt": "test"})
             self.assertEqual(resp_none.status_code, 401)
 
-            # 2. Unknown header token
+            # 2. Unknown header token on /query
             resp_bad = await client.post(
                 "/query",
                 json={"prompt": "test"},
@@ -883,7 +1041,7 @@ class TestCentralMultiClientPostgresValidation(unittest.IsolatedAsyncioTestCase)
             )
             self.assertEqual(resp_bad.status_code, 401)
 
-            # 3. Unknown Bearer token
+            # 3. Unknown Bearer token on /query
             resp_bad_bearer = await client.post(
                 "/query",
                 json={"prompt": "test"},
@@ -891,7 +1049,27 @@ class TestCentralMultiClientPostgresValidation(unittest.IsolatedAsyncioTestCase)
             )
             self.assertEqual(resp_bad_bearer.status_code, 401)
 
+            # 4. Same authentication enforcement on /api/v1/query
+            resp_v1_none = await client.post("/api/v1/query", json={"prompt": "test"})
+            self.assertEqual(resp_v1_none.status_code, 401)
+            resp_v1_bad = await client.post(
+                "/api/v1/query",
+                json={"prompt": "test"},
+                headers={"X-Client-Token": "unauthorized_malicious_token"},
+            )
+            self.assertEqual(resp_v1_bad.status_code, 401)
+
+        # Provider calls MUST be zero
         self.assertEqual(self.provider_call_count, 0)
+
+        # Zero entries written to PostgreSQL
+        async with self.pool.acquire() as conn:
+            cnt = await conn.fetchval(
+                "SELECT COUNT(*) FROM cache_entries WHERE cache_namespace IN ($1, $2)",
+                self.ns_shared,
+                self.ns_isolated,
+            )
+            self.assertEqual(cnt, 0)
 
     async def test_request_parameter_fingerprint_consistency(self):
         """
