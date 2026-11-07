@@ -580,10 +580,13 @@ To run individual test modules:
 
 ```bash
 python -m unittest tests/test_core.py          # Core orchestration & AST boundary tests
+python -m unittest tests/test_singleflight_cancellation.py # Cancellation lifecycle, early release & follower protection
 python -m unittest tests/test_providers.py     # Groq adapter & provider factory tests
 python -m unittest tests/test_embeddings.py    # Embedding contracts, Ollama adapter, prefixes
 python -m unittest tests/test_vector_store.py  # Vector store, nearest-neighbour, cascade delete
 python -m unittest tests/test_semantic_cache.py # Semantic policy, eligibility, ambiguity, core pipeline
+python -m unittest tests/test_metrics.py       # Metrics collector math, percentiles, and schema verification
+python -m unittest tests/test_metrics_integration.py # Multi-client metrics isolation & admin aggregation
 python -m unittest tests/test_query.py         # API route & streaming tests
 python -m unittest tests/test_multi_client.py  # Multi-client auth, namespaces & PostgreSQL tests
 python -m unittest tests/test_evaluation.py    # Semantic evaluation, threshold sweeps & pgvector benchmarking

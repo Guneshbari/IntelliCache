@@ -6,14 +6,17 @@ separately from provider failures across tenant namespaces.
 """
 
 import asyncio
+import gc
+import random
 import unittest
+import warnings
 from unittest.mock import AsyncMock
 
 from app.cache.exact_cache import ExactCache
 from app.cache.interfaces import CacheEntry
 from app.core.contracts import ChatMessage, GenerationRequest, GenerationResult, UsageMetrics
 from app.core.errors import ProviderError, SingleFlightLeaderCancelledError
-from app.core.service import IntelliCacheCore
+from app.core.service import IntelliCacheCore, generate_fingerprint
 from app.core.singleflight import SingleFlightCoordinator
 from app.embeddings.contracts import EmbeddingResult, EmbeddingTask
 from app.embeddings.interfaces import EmbeddingProvider
@@ -135,6 +138,16 @@ class TestSingleFlightCancellation(unittest.IsolatedAsyncioTestCase):
             namespace="tenant_alpha",
         )
 
+    def _flight_key(self, request: GenerationRequest) -> tuple[str, str]:
+        fp = generate_fingerprint(
+            messages=request.messages,
+            model=request.model,
+            temperature=request.temperature,
+            max_tokens=request.max_tokens,
+            provider=request.provider,
+        )
+        return (request.namespace or "default", fp)
+
     async def test_leader_cancelled_during_provider_generation(self):
         """Leader is cancelled during provider inference: entry cleaned up, followers notified, no hang."""
         provider = AsyncFakeProvider()
@@ -144,9 +157,9 @@ class TestSingleFlightCancellation(unittest.IsolatedAsyncioTestCase):
         t_leader = asyncio.create_task(self.core.execute_query(self.req, provider))
         await provider.entered_event.wait()
 
-        # Follower joins leader in flight
+        # Follower joins leader in flight deterministically
         t_follower = asyncio.create_task(self.core.execute_query(self.req, provider))
-        await asyncio.sleep(0.01)
+        await self.coordinator.wait_for_waiters(self._flight_key(self.req), count=1)
 
         self.assertEqual(self.coordinator.in_flight_count(), 1)
 
@@ -198,7 +211,7 @@ class TestSingleFlightCancellation(unittest.IsolatedAsyncioTestCase):
         await embedder.entered_event.wait()
 
         t_follower = asyncio.create_task(core.execute_query(self.req, provider))
-        await asyncio.sleep(0.01)
+        await self.coordinator.wait_for_waiters(self._flight_key(self.req), count=1)
 
         self.assertEqual(self.coordinator.in_flight_count(), 1)
 
@@ -246,7 +259,7 @@ class TestSingleFlightCancellation(unittest.IsolatedAsyncioTestCase):
         await vector_store.search_entered_event.wait()
 
         t_follower = asyncio.create_task(core.execute_query(self.req, provider))
-        await asyncio.sleep(0.01)
+        await self.coordinator.wait_for_waiters(self._flight_key(self.req), count=1)
 
         self.assertEqual(self.coordinator.in_flight_count(), 1)
 
@@ -374,7 +387,7 @@ class TestSingleFlightCancellation(unittest.IsolatedAsyncioTestCase):
         await provider.entered_event.wait()
 
         t_follower = asyncio.create_task(self.core.execute_query(self.req, provider))
-        await asyncio.sleep(0.01)
+        await self.coordinator.wait_for_waiters(self._flight_key(self.req), count=1)
 
         # Cancel the follower
         t_follower.cancel()
@@ -409,7 +422,7 @@ class TestSingleFlightCancellation(unittest.IsolatedAsyncioTestCase):
         await provider.entered_event.wait()
 
         t2 = asyncio.create_task(self.core.execute_query(self.req, provider))
-        await asyncio.sleep(0.01)
+        await self.coordinator.wait_for_waiters(self._flight_key(self.req), count=1)
 
         provider.proceed_event.set()
         res1, res2 = await asyncio.gather(t1, t2)
@@ -478,7 +491,7 @@ class TestSingleFlightCancellation(unittest.IsolatedAsyncioTestCase):
         await provider.entered_event.wait()
 
         t_follower = asyncio.create_task(self.core.execute_query(self.req, provider))
-        await asyncio.sleep(0.01)
+        await self.coordinator.wait_for_waiters(self._flight_key(self.req), count=1)
 
         provider.proceed_event.set()
 
@@ -504,7 +517,7 @@ class TestSingleFlightCancellation(unittest.IsolatedAsyncioTestCase):
 
         # Follower joins in flight
         t_follower = asyncio.create_task(self.core.execute_query(self.req, provider))
-        await asyncio.sleep(0.01)
+        await self.coordinator.wait_for_waiters(self._flight_key(self.req), count=1)
 
         # Trigger repeated cancellations on leader task
         t_leader.cancel()
@@ -518,6 +531,317 @@ class TestSingleFlightCancellation(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(t_follower, timeout=1.0)
 
         self.assertEqual(self.coordinator.in_flight_count(), 0)
+
+    async def test_all_followers_cancelled_leader_completes(self):
+        """
+        Multiple followers cancel while leader is generating.
+        Leader completes normally, caches the result, request_cancellations equals the number of followers,
+        and subsequent request gets a cache hit.
+        """
+        provider = AsyncFakeProvider(response_text="Leader Victory")
+        provider.entered_event = asyncio.Event()
+        provider.proceed_event = asyncio.Event()
+
+        t_leader = asyncio.create_task(self.core.execute_query(self.req, provider))
+        await provider.entered_event.wait()
+
+        num_followers = 3
+        t_followers = [
+            asyncio.create_task(self.core.execute_query(self.req, provider))
+            for _ in range(num_followers)
+        ]
+        await self.coordinator.wait_for_waiters(self._flight_key(self.req), count=num_followers)
+
+        # Cancel all followers
+        for tf in t_followers:
+            tf.cancel()
+
+        for tf in t_followers:
+            with self.assertRaises(asyncio.CancelledError):
+                await tf
+
+        # Leader should still be running and in flight
+        self.assertEqual(self.coordinator.in_flight_count(), 1)
+
+        # Allow leader to finish
+        provider.proceed_event.set()
+        leader_res = await t_leader
+        self.assertEqual(leader_res.text, "Leader Victory")
+        self.assertFalse(leader_res.cached)
+
+        # Coordinator is clean
+        self.assertEqual(self.coordinator.in_flight_count(), 0)
+
+        # Verify metrics
+        snap = self.collector.get_namespace_snapshot("tenant_alpha")
+        self.assertEqual(snap.request_and_cache.request_cancellations, num_followers)
+        self.assertEqual(snap.provider_and_savings.provider_calls_succeeded, 1)
+        self.assertEqual(snap.provider_and_savings.provider_calls_failed, 0)
+        self.assertEqual(snap.request_and_cache.coalesced_joins, num_followers)
+
+        # Subsequent identical request gets exact cache hit
+        subsequent_res = await self.core.execute_query(self.req, provider)
+        self.assertEqual(subsequent_res.text, "Leader Victory")
+        self.assertTrue(subsequent_res.cached)
+
+    async def test_unretrieved_future_exception_no_warning(self):
+        """
+        When a leader fails with 0 waiting followers, no 'Future exception was never retrieved'
+        warning or unhandled exception is emitted.
+        """
+        provider = AsyncFakeProvider()
+        provider.entered_event = asyncio.Event()
+        provider.proceed_event = asyncio.Event()
+        provider.fail_with = RuntimeError("Simulated unhandled provider failure")
+
+        with warnings.catch_warnings(record=True) as recorded_warnings:
+            warnings.simplefilter("always")
+
+            t_leader = asyncio.create_task(self.core.execute_query(self.req, provider))
+            await provider.entered_event.wait()
+            provider.proceed_event.set()
+
+            with self.assertRaises(RuntimeError):
+                await t_leader
+
+            # Force garbage collection to trigger any __del__ warnings on abandoned futures
+            gc.collect()
+
+            self.assertEqual(self.coordinator.in_flight_count(), 0)
+            for w in recorded_warnings:
+                self.assertNotIn("Future exception was never retrieved", str(w.message))
+
+        snap = self.collector.get_namespace_snapshot("tenant_alpha")
+        self.assertEqual(snap.provider_and_savings.provider_calls_failed, 1)
+        self.assertEqual(snap.request_and_cache.request_cancellations, 0)
+
+    async def test_genuine_concurrent_cancellation_stress_test(self):
+        """
+        Randomized concurrency stress test across multiple keys and tenant namespaces
+        with concurrent cancellations. Ensures zero lingering in-flight entries and consistent metrics.
+        """
+        namespaces = ["stress_tenant_1", "stress_tenant_2", "stress_tenant_3"]
+        prompts = [
+            "What is asyncio?",
+            "Explain single-flight pattern",
+            "How does vector search work?",
+        ]
+
+        class StressProvider(LLMProvider):
+            def __init__(self):
+                self.call_count = 0
+
+            async def generate(self, request: GenerationRequest) -> GenerationResult:
+                self.call_count += 1
+                await asyncio.sleep(0.01)
+                return GenerationResult(
+                    text=f"Answer to: {request.messages[0].content}",
+                    model=request.model,
+                    usage=UsageMetrics(prompt_tokens=5, completion_tokens=10, total_tokens=15),
+                    latency_ms=10.0,
+                    cached=False,
+                    fingerprint="",
+                )
+
+            async def stream(self, request: GenerationRequest):
+                raise NotImplementedError()
+
+            async def close(self):
+                pass
+
+        stress_provider = StressProvider()
+        num_tasks = 40
+        tasks = []
+        task_info = []
+
+        for i in range(num_tasks):
+            ns = namespaces[i % len(namespaces)]
+            prompt = prompts[i % len(prompts)]
+            req = GenerationRequest(
+                model="llama-3-8b",
+                messages=[ChatMessage(role="user", content=prompt)],
+                namespace=ns,
+            )
+            t = asyncio.create_task(self.core.execute_query(req, stress_provider))
+            tasks.append(t)
+            task_info.append((t, ns))
+
+        # Cancel a subset of tasks at micro-delays
+        await asyncio.sleep(0.002)
+        to_cancel_indices = random.sample(range(num_tasks), k=15)
+        for idx in to_cancel_indices:
+            task_info[idx][0].cancel()
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Verify all in-flight entries are completely cleared
+        self.assertEqual(self.coordinator.in_flight_count(), 0)
+
+        # Count cancellations and successes
+        cancelled_count = 0
+        success_count = 0
+        for r in results:
+            if isinstance(r, asyncio.CancelledError):
+                cancelled_count += 1
+            elif isinstance(r, GenerationResult):
+                success_count += 1
+
+        # Check total metric cancellations across the three namespaces
+        total_cancellations_recorded = sum(
+            self.collector.get_namespace_snapshot(ns).request_and_cache.request_cancellations
+            for ns in namespaces
+        )
+        self.assertEqual(total_cancellations_recorded, cancelled_count)
+
+    async def test_cancellation_during_exact_cache_lookup(self):
+        """Cancellation occurring during exact cache read records request_cancellations exactly once."""
+        lookup_started = asyncio.Event()
+        allow_lookup = asyncio.Event()
+
+        orig_get = self.cache.get
+
+        async def slow_get(*args, **kwargs):
+            lookup_started.set()
+            await allow_lookup.wait()
+            return await orig_get(*args, **kwargs)
+
+        self.cache.get = slow_get
+        provider = AsyncFakeProvider()
+
+        t = asyncio.create_task(self.core.execute_query(self.req, provider))
+        await lookup_started.wait()
+
+        # Cancel while awaiting cache.get
+        t.cancel()
+
+        with self.assertRaises(asyncio.CancelledError):
+            await t
+
+        snap = self.collector.get_namespace_snapshot("tenant_alpha")
+        self.assertEqual(snap.request_and_cache.request_cancellations, 1)
+        self.assertEqual(snap.provider_and_savings.provider_calls_attempted, 0)
+        self.assertEqual(snap.provider_and_savings.provider_calls_failed, 0)
+        self.assertEqual(self.coordinator.in_flight_count(), 0)
+
+    async def test_cancellation_during_bypass_miss_recording(self):
+        """Cancellation occurring during cache.record_miss in bypass mode records cancellation exactly once."""
+        miss_started = asyncio.Event()
+        allow_miss = asyncio.Event()
+
+        orig_miss = self.cache.record_miss
+
+        async def slow_miss(*args, **kwargs):
+            miss_started.set()
+            await allow_miss.wait()
+            return await orig_miss(*args, **kwargs)
+
+        self.cache.record_miss = slow_miss
+        provider = AsyncFakeProvider()
+
+        bypass_req = GenerationRequest(
+            model="llama-3-8b",
+            messages=[ChatMessage(role="user", content="Bypass cancellation test")],
+            namespace="tenant_alpha",
+            bypass_cache=True,
+        )
+
+        t = asyncio.create_task(self.core.execute_query(bypass_req, provider))
+        await miss_started.wait()
+
+        # Cancel while awaiting cache.record_miss
+        t.cancel()
+
+        with self.assertRaises(asyncio.CancelledError):
+            await t
+
+        snap = self.collector.get_namespace_snapshot("tenant_alpha")
+        self.assertEqual(snap.request_and_cache.request_cancellations, 1)
+        self.assertEqual(snap.provider_and_savings.provider_calls_failed, 0)
+        self.assertEqual(self.coordinator.in_flight_count(), 0)
+
+    async def test_cancellation_during_streaming_cache_lookup(self):
+        """Cancellation occurring during streaming cache read records request_cancellations exactly once."""
+        lookup_started = asyncio.Event()
+        allow_lookup = asyncio.Event()
+
+        orig_get = self.cache.get
+
+        async def slow_get(*args, **kwargs):
+            lookup_started.set()
+            await allow_lookup.wait()
+            return await orig_get(*args, **kwargs)
+
+        self.cache.get = slow_get
+        provider = AsyncFakeProvider()
+
+        async def consume_stream():
+            async for _ in self.core.execute_stream(self.req, provider):
+                pass
+
+        t = asyncio.create_task(consume_stream())
+        await lookup_started.wait()
+
+        t.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await t
+
+        snap = self.collector.get_namespace_snapshot("tenant_alpha")
+        self.assertEqual(snap.request_and_cache.request_cancellations, 1)
+        self.assertEqual(snap.provider_and_savings.provider_calls_failed, 0)
+
+    async def test_flight_released_before_semantic_indexing(self):
+        """
+        Issue 3: Leader releases SingleFlight key immediately after exact cache persistence,
+        BEFORE optional/slow semantic indexing, so subsequent requests hit exact cache without waiting.
+        """
+        indexing_started = asyncio.Event()
+        allow_indexing = asyncio.Event()
+
+        class SlowSemanticCache(SemanticCacheService):
+            async def index(self, request, result):
+                indexing_started.set()
+                await allow_indexing.wait()
+
+        embedder = AsyncFakeEmbedder()
+        vector_store = AsyncFakeVectorStore()
+        policy = SemanticCachePolicy(configured_model="nomic-embed-text")
+        sem_cache = SlowSemanticCache(
+            embedding_provider=embedder,
+            vector_store=vector_store,
+            policy=policy,
+            metrics_collector=self.collector,
+        )
+
+        core = IntelliCacheCore(
+            cache=self.cache,
+            single_flight=self.coordinator,
+            cache_enabled=True,
+            semantic_cache=sem_cache,
+            metrics_collector=self.collector,
+        )
+
+        provider = AsyncFakeProvider(response_text="Released before indexing")
+
+        t_leader = asyncio.create_task(core.execute_query(self.req, provider))
+        await indexing_started.wait()
+
+        # At this point, exact cache write is done and leader is blocked in semantic_cache.index
+        # Verify single-flight key is ALREADY released!
+        flight_key = self._flight_key(self.req)
+        self.assertFalse(self.coordinator.is_in_flight(flight_key))
+        self.assertEqual(self.coordinator.in_flight_count(), 0)
+
+        # A new identical request arrives NOW while leader is still indexing:
+        # It must NOT coalesce and must hit the exact cache immediately!
+        subsequent = await core.execute_query(self.req, provider)
+        self.assertEqual(subsequent.text, "Released before indexing")
+        self.assertTrue(subsequent.cached)
+        self.assertEqual(subsequent.cache_type, "exact")
+
+        # Unblock indexing and let leader finish
+        allow_indexing.set()
+        leader_res = await t_leader
+        self.assertEqual(leader_res.text, "Released before indexing")
 
 
 if __name__ == "__main__":

@@ -63,6 +63,35 @@ class IntelliCacheCore:
     ) -> GenerationResult:
         """
         Executes a non-streaming query request using exact and semantic caching.
+        Comprehensive cancellation lifecycle guarantees exactly-once cancellation recording.
+        """
+        start_time = time.perf_counter()
+        collector = self._get_collector()
+        ns = request.namespace or "default"
+        try:
+            return await self._execute_query_impl(
+                request=request,
+                provider=provider,
+                start_time=start_time,
+                collector=collector,
+                ns=ns,
+            )
+        except asyncio.CancelledError:
+            total_latency_ms = (time.perf_counter() - start_time) * 1000.0
+            collector.record_cancellation(ns)
+            collector.record_latency(ns, "total_request_latency_ms", total_latency_ms)
+            raise
+
+    async def _execute_query_impl(
+        self,
+        request: GenerationRequest,
+        provider: LLMProvider,
+        start_time: float,
+        collector: RuntimeMetricsCollector,
+        ns: str,
+    ) -> GenerationResult:
+        """
+        Internal implementation of non-streaming query request.
         1. Generates deterministic SHA-256 fingerprint.
         2. Checks exact cache (skipped if bypass_cache=True or cache_enabled=False).
         3. If exact hit: returns cached result immediately without calling provider.
@@ -70,12 +99,8 @@ class IntelliCacheCore:
         5. If leader and semantic cache enabled: performs semantic lookup.
         6. If semantic hit: completes single-flight for followers and returns cached result.
         7. If semantic miss: calls configured LLM provider.
-        8. Writes exact-cache entry first, then indexes vector record if semantic cache enabled.
+        8. Writes exact-cache entry first, releases flight key early, then indexes vector record.
         """
-        start_time = time.perf_counter()
-        collector = self._get_collector()
-        ns = request.namespace or "default"
-
         # Consistent model identity across fingerprint and generation
         fingerprint = generate_fingerprint(
             messages=request.messages,
@@ -150,10 +175,7 @@ class IntelliCacheCore:
                 return result
             except asyncio.CancelledError:
                 prov_latency_ms = (time.perf_counter() - prov_start) * 1000.0
-                total_latency_ms = (time.perf_counter() - start_time) * 1000.0
-                collector.record_cancellation(ns)
                 collector.record_latency(ns, "provider_generation_latency_ms", prov_latency_ms)
-                collector.record_latency(ns, "total_request_latency_ms", total_latency_ms)
                 raise
             except BaseException:
                 prov_latency_ms = (time.perf_counter() - prov_start) * 1000.0
@@ -172,8 +194,8 @@ class IntelliCacheCore:
             await self.cache.record_coalesced_join()
             collector.record_coalesced_join(ns)
             try:
-                # Follower awaits leader's shielded future so follower cancellation cannot cancel leader
-                cached_entry: CacheEntry = await asyncio.shield(shared_future)
+                # Follower awaits leader's shared future safely via wait_flight (shielding without event-loop noise)
+                cached_entry: CacheEntry = await self.single_flight.wait_flight(shared_future)
                 total_latency_ms = (time.perf_counter() - start_time) * 1000.0
                 p_tok = getattr(cached_entry.usage, "prompt_tokens", 0) or 0
                 c_tok = getattr(cached_entry.usage, "completion_tokens", 0) or 0
@@ -202,10 +224,7 @@ class IntelliCacheCore:
                     cache_type=cache_type,
                 )
             except asyncio.CancelledError:
-                # Follower cancelled - leader continues unhindered
-                total_latency_ms = (time.perf_counter() - start_time) * 1000.0
-                collector.record_cancellation(ns)
-                collector.record_latency(ns, "total_request_latency_ms", total_latency_ms)
+                # Follower cancelled - leader continues unhindered; outer wrapper records cancellation
                 raise
             except SingleFlightLeaderCancelledError:
                 # Leader cancelled - follower experiences a controlled coalesced failure
@@ -265,7 +284,7 @@ class IntelliCacheCore:
                     # Complete single-flight for followers with the semantic hit entry
                     flight_completed = True
                     await self.single_flight.complete_success(
-                        flight_key, hit_entry, expected_future=shared_future
+                        flight_key, hit_entry, expected_future=shared_future, release=True
                     )
                     return GenerationResult(
                         text=semantic_hit.cached_response,
@@ -343,6 +362,10 @@ class IntelliCacheCore:
                     ns,
                     sanitize_error_message(str(write_err)),
                 )
+            finally:
+                # Early flight release: Release SingleFlight key immediately after exact-cache persistence,
+                # BEFORE optional/slow semantic indexing, so subsequent requests hit exact cache without waiting
+                await self.single_flight.release(flight_key, expected_future=shared_future)
 
             # 8. Post-generation: index in vector store if semantic cache enabled
             if self.semantic_cache is not None:
@@ -362,9 +385,6 @@ class IntelliCacheCore:
             return result
 
         except asyncio.CancelledError as exc:
-            total_latency_ms = (time.perf_counter() - start_time) * 1000.0
-            collector.record_cancellation(ns)
-            collector.record_latency(ns, "total_request_latency_ms", total_latency_ms)
             if not flight_completed:
                 flight_completed = True
                 await self.single_flight.complete_failure(
@@ -405,11 +425,39 @@ class IntelliCacheCore:
         Executes a streaming query request.
         Yields normalized StreamChunk objects.
         Caches complete successful streams upon completion.
+        Comprehensive cancellation lifecycle guarantees exactly-once cancellation recording.
         """
         start_time = time.perf_counter()
         collector = self._get_collector()
         ns = request.namespace or "default"
+        try:
+            async for chunk in self._execute_stream_impl(
+                request=request,
+                provider=provider,
+                start_time=start_time,
+                collector=collector,
+                ns=ns,
+            ):
+                yield chunk
+        except asyncio.CancelledError:
+            elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+            collector.record_cancellation(ns)
+            collector.record_latency(ns, "total_request_latency_ms", elapsed_ms)
+            raise
 
+    async def _execute_stream_impl(
+        self,
+        request: GenerationRequest,
+        provider: LLMProvider,
+        start_time: float,
+        collector: RuntimeMetricsCollector,
+        ns: str,
+    ) -> AsyncGenerator[StreamChunk, None]:
+        """
+        Internal generator implementation for streaming query request.
+        Yields normalized StreamChunk objects.
+        Caches complete successful streams upon completion.
+        """
         fingerprint = generate_fingerprint(
             messages=request.messages,
             model=request.model,
@@ -536,10 +584,7 @@ class IntelliCacheCore:
                     )
         except asyncio.CancelledError:
             prov_latency_ms = (time.perf_counter() - prov_start) * 1000.0
-            elapsed_ms = (time.perf_counter() - start_time) * 1000.0
-            collector.record_cancellation(ns)
             collector.record_latency(ns, "provider_generation_latency_ms", prov_latency_ms)
-            collector.record_latency(ns, "total_request_latency_ms", elapsed_ms)
             raise
         except ProviderAuthenticationError as exc:
             prov_latency_ms = (time.perf_counter() - prov_start) * 1000.0

@@ -413,7 +413,8 @@ class TestQueryRoute(unittest.TestCase):
                 # Start two followers
                 t_follower1 = asyncio.create_task(client.post("/query", json=payload))
                 t_follower2 = asyncio.create_task(client.post("/query", json=payload))
-                await asyncio.sleep(0.01)
+                flight_key = next(iter(self.single_flight._in_flight.keys()))
+                await self.single_flight.wait_for_waiters(flight_key, count=2)
 
                 # Verify leader is in flight
                 self.assertEqual(len(self.single_flight._in_flight), 1)
@@ -477,7 +478,8 @@ class TestQueryRoute(unittest.TestCase):
                 await leader_started.wait()
 
                 t_follower = asyncio.create_task(client.post("/query", json=payload))
-                await asyncio.sleep(0.01)
+                flight_key = next(iter(self.single_flight._in_flight.keys()))
+                await self.single_flight.wait_for_waiters(flight_key, count=1)
 
                 # Cancel follower
                 t_follower.cancel()
