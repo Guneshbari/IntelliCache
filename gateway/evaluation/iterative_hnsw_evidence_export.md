@@ -34,13 +34,13 @@ This document records the empirical validation, plan inspection, and reproducibl
 ## 3. Benchmark Results & Plan Verification
 
 | `ef_search` | `hnsw.iterative_scan` | HNSW Selected | Plan Limit Rows | Returned Rows | Exact Overlap | Recall@5 | Recall@10 | Mean Latency | Median (p50) | p95 Latency |
-|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| **10** | `off` (default) | Yes | 0.00 | 0/10 | 0/10 | 0.000 | 0.000 | 0.857 ms | 0.753 ms | 1.493 ms |
-| **10** | `strict_order` | Yes | 10.00 | 10/10 | 10/10 | 1.000 | 1.000 | 1.040 ms | 0.843 ms | 2.025 ms |
-| **20** | `off` (default) | Yes | 0.00 | 0/10 | 0/10 | 0.000 | 0.000 | 0.733 ms | 0.723 ms | 0.853 ms |
-| **20** | `strict_order` | Yes | 10.00 | 10/10 | 10/10 | 1.000 | 1.000 | 0.810 ms | 0.802 ms | 0.872 ms |
-| **40** | `off` (default) | Yes | 0.00 | 0/10 | 0/10 | 0.000 | 0.000 | 0.752 ms | 0.748 ms | 0.813 ms |
-| **40** | `strict_order` | Yes | 10.00 | 10/10 | 10/10 | 1.000 | 1.000 | 0.937 ms | 0.927 ms | 1.024 ms |
+| :---------: | :-------------------: | :-----------: | :-------------: | :-----------: | :-----------: | :------: | :-------: | :----------: | :----------: | :---------: |
+|   **10**    |    `off` (default)    |      Yes      |      0.00       |     0/10      |     0/10      |  0.000   |   0.000   |   0.857 ms   |   0.753 ms   |  1.493 ms   |
+|   **10**    |    `strict_order`     |      Yes      |      10.00      |     10/10     |     10/10     |  1.000   |   1.000   |   1.040 ms   |   0.843 ms   |  2.025 ms   |
+|   **20**    |    `off` (default)    |      Yes      |      0.00       |     0/10      |     0/10      |  0.000   |   0.000   |   0.733 ms   |   0.723 ms   |  0.853 ms   |
+|   **20**    |    `strict_order`     |      Yes      |      10.00      |     10/10     |     10/10     |  1.000   |   1.000   |   0.810 ms   |   0.802 ms   |  0.872 ms   |
+|   **40**    |    `off` (default)    |      Yes      |      0.00       |     0/10      |     0/10      |  0.000   |   0.000   |   0.752 ms   |   0.748 ms   |  0.813 ms   |
+|   **40**    |    `strict_order`     |      Yes      |      10.00      |     10/10     |     10/10     |  1.000   |   1.000   |   0.937 ms   |   0.927 ms   |  1.024 ms   |
 
 ### Key Findings
 

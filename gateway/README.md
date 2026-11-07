@@ -143,10 +143,13 @@ ProviderFactory.register("custom", CustomProvider)
 ## Correctness & Metric Guarantees
 
 ### 1. Consistent Model Identity (PRE-02)
+
 The effective model identifier (e.g. `qwen/qwen3.8-27b` or custom casing) is resolved once. The exact same canonical string is used for the SHA-256 cache fingerprint payload and the upstream LLM request, eliminating any casing or alias discrepancies between cache keys and upstream inference.
 
 ### 2. Internally Consistent Single-Flight Metrics (PRE-01)
+
 To eliminate duplicate "thundering herd" inference calls when multiple identical queries arrive simultaneously:
+
 - **Leader Election**: The first request registers as the Leader and executes the provider generation.
 - **Followers Join & Record Immediately**: Subsequent requests register as Followers and record their join immediately in `coalesced_requests`.
 - **Cancellation Isolation**: Followers await `asyncio.shield(shared_future)` so a disconnecting follower cannot abort the leader.
@@ -154,6 +157,7 @@ To eliminate duplicate "thundering herd" inference calls when multiple identical
   $$\text{total\_requests} = \text{hits} + \text{misses} + \text{coalesced\_requests}$$
 
 ### 3. Conservative Normalization & Strict Cache Bypass
+
 - **Whitespace Preserved**: CRLF and CR are normalized to LF, and outer prompt whitespace is trimmed. Internal spaces, tabs, code indentation, and blank lines are preserved intact.
 - **Strict Bypass (`bypass_cache=true`)**: Requests with `bypass_cache=true` bypass cache reads, never join single-flight groups, and never write or overwrite entries in the cache.
 
@@ -162,6 +166,7 @@ To eliminate duplicate "thundering herd" inference calls when multiple identical
 ## Lazy Client Lifecycle & Offline Cache Availability
 
 The provider client is lazily constructed only when an actual upstream inference call is required:
+
 - **Offline / Credential-Free Cache Serving**: If an identical query exists in the cache, the response is served immediately without instantiating `AsyncGroq` and without requiring `GROQ_API_KEY` to be configured.
 - **Resource Management**: When an upstream call is made (streaming or non-streaming), the HTTP client connection is explicitly closed (`await client.close()`) in a `finally` block to prevent lingering sockets.
 
@@ -181,6 +186,7 @@ In a centralized deployment, multiple client machines communicate with a single 
 ```
 
 ### Key Architectural Principles:
+
 1. **Direct Database Isolation**: Clients **never** connect directly to PostgreSQL. All read, write, eviction, and single-flight operations are managed exclusively by the central IntelliCache service.
 2. **PostgreSQL Persistence & asyncpg Pooling**: Persistent exact caching is handled by `PostgresCache` using asynchronous, non-blocking `asyncpg` connection pools (`DB_POOL_MIN_SIZE` to `DB_POOL_MAX_SIZE`), with automatic lifespan cleanup on shutdown. Persistence tests verify data reusability across fresh database connection pools within the application lifecycle.
 3. **Database Migrations**: SQL schema migrations are versioned under `gateway/migrations/` and automatically applied at startup via `gateway/app/cache/migration.py`.
@@ -255,6 +261,7 @@ EMBEDDING_TIMEOUT_SECONDS=30.0
 ```
 
 ### Security Considerations
+
 - **Client Authentication (`POST /query` & `POST /api/v1/query`)**: Protected by `CLIENT_API_TOKENS` (or legacy `CLIENT_API_TOKEN`) via `X-Client-Token` or `Authorization: Bearer <token>`. Constant-time comparison (`hmac.compare_digest`) prevents timing side-channel attacks.
 - **Fail-Closed Protection**: Unauthenticated requests receive HTTP 401 by default. Even when `ALLOW_UNAUTHENTICATED_LOOPBACK=true` is set, external peers, Uvicorn `--host 0.0.0.0` bindings, and forwarded headers are strictly rejected.
 - **Admin Endpoint Protection (`POST /cache/clear`)**: Administrative operations require `ADMIN_API_TOKEN` to be set on the server. Clients must supply the token via `X-Admin-Token: <token>` or `Authorization: Bearer <token>`. Requests are validated using constant-time comparison (`hmac.compare_digest`). If unset or invalid, the endpoint responds with HTTP 403 Forbidden.
@@ -269,6 +276,7 @@ EMBEDDING_TIMEOUT_SECONDS=30.0
 IntelliCache includes a provider-independent embedding abstraction in `gateway/app/embeddings/` designed for future semantic retrieval. The embedding layer defines the `EmbeddingProvider` interface and normalizes outputs into `EmbeddingResult` vectors while validating dimensionality and finite numeric values.
 
 ### Local Ollama Setup:
+
 1. **Install Ollama**: Follow instructions for your platform at [ollama.com](https://ollama.com).
 2. **Download Model**: Pull the recommended Nomic Embed Text model:
    ```bash
@@ -289,6 +297,7 @@ IntelliCache includes a provider-independent embedding abstraction in `gateway/a
 IntelliCache includes an optional, provider-independent vector storage layer in `gateway/app/vector_store/` backed by PostgreSQL and the `pgvector` extension.
 
 ### Configuration
+
 ```bash
 # Enable semantic vector storage (default: false)
 SEMANTIC_CACHE_ENABLED=false
@@ -298,11 +307,13 @@ VECTOR_DIMENSIONS=768
 ```
 
 ### Exact-Only Preservation
+
 - `SEMANTIC_CACHE_ENABLED=false` by default. When disabled, the gateway operates as an exact-only cache and does not require `pgvector` to be installed on PostgreSQL.
 - Vector migrations (`migrations/vector/001_create_vector_records.sql`, `migrations/vector/002_create_hnsw_index.sql`) are isolated from exact-cache migrations and are executed only when `SEMANTIC_CACHE_ENABLED=true`.
 - If `SEMANTIC_CACHE_ENABLED=true` but `pgvector` is not installed on the database server, the server fails during startup with a descriptive error.
 
 ### HNSW Approximate Nearest-Neighbour (ANN) Indexing
+
 - **Index Migration**: [`002_create_hnsw_index.sql`](file:///home/gnx/Projects/IntelliCache/gateway/migrations/vector/002_create_hnsw_index.sql) establishes an HNSW index on `vector_records(vector vector_cosine_ops)` configured with `m = 16, ef_construction = 64`.
 - **Query Execution Plan Inspection**: `PostgresVectorStore.explain_search()` executes `EXPLAIN (ANALYZE, BUFFERS)` to verify whether the query planner selected the HNSW index scan vs exact B-tree/seq scan, with sensitive embedding coordinates sanitized in summaries (`[vector(...)]`).
 - **Index Availability vs Index Usage**: Reports clearly distinguish `vector_index_available` (the HNSW index exists on disk) from `vector_index_used` (whether the query planner actually chose to use HNSW for a given query workload).
@@ -317,13 +328,16 @@ VECTOR_DIMENSIONS=768
 - **Deterministic Recall Validation**: Evaluated against 5,000+ diverse, normalized 768-dimensional float vectors generated from a fixed seed with non-degenerate cosine distance spread. Top-5 and top-10 nearest neighbours achieved Recall@5 = 1.0 and Recall@10 = 1.0 against a controlled exact nearest-neighbour baseline (`SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off;`).
 
 ### Distance & Similarity Formulas
+
 PostgreSQL `pgvector` uses the cosine distance operator `<=>`:
 $$\text{distance} = 1 - \frac{u \cdot v}{\|u\| \|v\|}$$
 Cosine similarity is computed from the distance as:
 $$\text{similarity} = 1.0 - \text{distance} \quad (\text{clamped to } [-1.0, 1.0])$$
 
 ### Re-Embedding & Migration Notice
+
 Vector dimensions are enforced at the database table level (`vector(768)`). If you change the embedding model or vector dimensions in the future:
+
 - PostgreSQL will reject vectors of different dimensions.
 - You must perform a deliberate database migration and re-embed existing cache entries.
 
@@ -334,6 +348,7 @@ Vector dimensions are enforced at the database table level (`vector(768)`). If y
 IntelliCache includes a deterministic semantic caching layer in `gateway/app/semantic_cache/`. It operates between exact cache lookups and LLM provider calls for eligible, non-streaming programming queries.
 
 ### Pipeline Execution Order
+
 1. **Exact-Cache Lookup**: Checks SHA-256 exact fingerprint. Returns immediately on hit (`cache_type="exact"`).
 2. **Eligibility Evaluation**: If exact miss, checks query against deterministic single-turn programming eligibility and sensitive credential detection.
 3. **Semantic Lookup**: Generates query embedding via `OllamaEmbeddingProvider` and searches nearest neighbours via `PostgresVectorStore`.
@@ -343,6 +358,7 @@ IntelliCache includes a deterministic semantic caching layer in `gateway/app/sem
 7. **Safe Indexing**: Writes exact-cache entry first, then indexes vector record in vector store. Indexing failures fail safely and do not fail the query.
 
 ### Configuration
+
 ```bash
 SEMANTIC_CACHE_ENABLED=false           # Disabled by default
 SEMANTIC_CACHE_MIN_SIMILARITY=0.92     # Minimum cosine similarity threshold
@@ -351,7 +367,9 @@ SEMANTIC_CACHE_TOP_K=5                 # Nearest neighbour candidates evaluated
 ```
 
 ### Observability Counters
+
 Available at `GET /cache/semantic/stats` and within `GET /cache/stats`:
+
 - `lookups`: Total semantic lookup attempts.
 - `hits`: Successful semantic cache hits.
 - `misses`: Lookups where no candidate passed similarity or compatibility checks.
@@ -421,6 +439,7 @@ IntelliCache incorporates an in-memory, thread-safe, and namespace-isolated metr
 ### Metric Categories & Contracts
 
 #### 1. Request & Cache Lifecycle (`RequestAndCacheMetrics`)
+
 - `total_authenticated_requests`: Total valid requests admitted to the gateway.
 - `exact_cache_lookups`: Exact-cache lookup attempts.
 - `exact_cache_hits`: Requests served immediately from exact cache.
@@ -434,6 +453,7 @@ IntelliCache incorporates an in-memory, thread-safe, and namespace-isolated metr
 - `streaming_requests`: Streaming inference requests (`stream=true`).
 
 #### 2. Semantic Cache Metrics (`SemanticMetrics`)
+
 - `semantic_eligibility_rejections`: Queries rejected prior to embedding (multi-turn, non-technical, secrets).
 - `semantic_lookups`: Vector similarity search attempts.
 - `semantic_hits`: Valid semantic candidate reuses.
@@ -446,6 +466,7 @@ IntelliCache incorporates an in-memory, thread-safe, and namespace-isolated metr
 - `indexing_failures`: Safely caught vector indexing errors.
 
 #### 3. Upstream Provider & Savings (`ProviderAndSavingsMetrics`)
+
 - `provider_calls_attempted`: Inferences dispatched to the upstream provider (Groq).
 - `provider_calls_succeeded`: Completed upstream provider generations.
 - `provider_calls_failed`: Upstream failures (rate limits, auth errors, network disconnects).
@@ -455,13 +476,16 @@ IntelliCache incorporates an in-memory, thread-safe, and namespace-isolated metr
   $$\text{provider\_calls\_avoided} = \text{exact\_cache\_hits} + \text{semantic\_hits} + \text{coalesced\_successes}$$
 
 #### 4. Derived Rates (`DerivedRates`)
+
 - $\text{overall\_cache\_hit\_rate} = \frac{\text{exact\_cache\_hits} + \text{semantic\_hits} + \text{coalesced\_successes}}{\text{total\_authenticated\_requests}}$
 - $\text{exact\_hit\_rate} = \frac{\text{exact\_cache\_hits}}{\text{exact\_cache\_lookups}}$
 - $\text{semantic\_hit\_rate} = \frac{\text{semantic\_hits}}{\text{semantic\_hits} + \text{semantic\_misses}}$ (over evaluated candidate outcomes)
 - $\text{coalesced\_reuse\_rate} = \frac{\text{coalesced\_successes}}{\text{coalesced\_joins}}$
 
 #### 5. Latency Distributions (`LatencyMetrics`)
+
 Each latency metric provides a `LatencySummary` containing `sample_count`, `min`, `mean`, `p50`, `p95`, `p99`, and `small_sample_warning`:
+
 - `total_request_latency_ms`: End-to-end gateway response latency.
 - `exact_lookup_latency_ms`: In-memory or PostgreSQL exact cache lookup time.
 - `semantic_lookup_latency_ms`: Total semantic lookup time (embedding + vector search + policy check).
@@ -537,6 +561,7 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 Interactive documentation:
+
 - Swagger UI: `http://localhost:8000/docs`
 - ReDoc: `http://localhost:8000/redoc`
 
@@ -552,6 +577,7 @@ cd gateway
 ```
 
 To run individual test modules:
+
 ```bash
 python -m unittest tests/test_core.py          # Core orchestration & AST boundary tests
 python -m unittest tests/test_providers.py     # Groq adapter & provider factory tests
@@ -570,6 +596,7 @@ python -m unittest tests/test_main.py          # Application integration tests
 ## Current Scope & Future Architectural Boundaries
 
 The following capabilities represent intentional architectural boundaries for future steps:
+
 - **Current Scope**: Exact-match SHA-256 caching, centralized PostgreSQL storage, in-memory LRU/TTL storage, cancellation-safe single flight for non-streaming requests, Groq LLM provider adapter, provider-independent `EmbeddingProvider` abstraction (with `OllamaEmbeddingProvider`), and provider-independent vector storage via PostgreSQL + pgvector (`PostgresVectorStore`).
 - **Semantic Cache Engine**: Semantic similarity retrieval, similarity thresholding, and cache hits will be introduced as an independent layer built on top of the vector store and embedding provider in Step 7.
 - **Conversation Manager**: Multi-turn conversation persistence will record every delivered prompt, response, and provenance trace in a persistent store.

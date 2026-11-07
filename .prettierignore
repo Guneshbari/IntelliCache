@@ -2,3 +2,9 @@ dist
 dist-firefox
 node_modules
 pnpm-lock.yaml
+releases
+.venv
+**/.venv
+**/__pycache__
+coverage
+gateway/evaluation/reports

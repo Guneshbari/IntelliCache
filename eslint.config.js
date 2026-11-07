@@ -23,6 +23,15 @@ export default tseslint.config(
     },
   },
   {
-    ignores: ['dist/**', 'dist-firefox/**', 'node_modules/**'],
+    ignores: [
+      'dist/**',
+      'dist-firefox/**',
+      'node_modules/**',
+      'gateway/**',
+      'releases/**',
+      '.venv/**',
+      '**/.venv/**',
+      'coverage/**',
+    ],
   }
 )
