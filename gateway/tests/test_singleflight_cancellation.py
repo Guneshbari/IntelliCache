@@ -990,14 +990,19 @@ class TestSingleFlightCancellation(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.coordinator.waiter_count(key), 1)
 
         delayed_follower_res = None
+        follower_started_event = asyncio.Event()
         follower_finished_event = asyncio.Event()
 
         async def run_follower_a():
             nonlocal delayed_follower_res
+            follower_started_event.set()
             delayed_follower_res = await self.coordinator.wait_flight(fut_fa, key=key)
             follower_finished_event.set()
 
         t_fa = asyncio.create_task(run_follower_a())
+        await follower_started_event.wait()
+        # Scheduler yield to guarantee Follower A enters wait_flight before Flight A completes
+        await asyncio.sleep(0)
 
         # 2. Flight A completes and releases its key
         await self.coordinator.complete_success(key, "result_a", expected_future=fut_a, release=True)
