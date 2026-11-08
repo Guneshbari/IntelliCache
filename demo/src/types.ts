@@ -178,4 +178,13 @@ export interface ChatMessage {
   timestamp: number
   responseMeta?: QueryResponse
   error?: string
+  isRetrying?: boolean
+}
+
+export interface ConversationSession {
+  id: string
+  title: string
+  createdAt: number
+  updatedAt: number
+  messages: ChatMessage[]
 }

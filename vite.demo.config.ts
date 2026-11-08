@@ -8,6 +8,7 @@ export default defineConfig({
   build: {
     outDir: resolve(import.meta.dirname, 'dist-demo'),
     emptyOutDir: true,
+    chunkSizeWarningLimit: 1200,
   },
   server: {
     port: 5174,

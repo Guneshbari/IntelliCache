@@ -35,9 +35,11 @@ flowchart TD
 ### Key Architectural Principles
 
 1. **Zero External Framework Dependencies**: Built with vanilla TypeScript, semantic HTML5, and responsive CSS bundled by Vite. No heavy UI framework (React, Vue) overhead.
-2. **Strict In-Memory Credential Hygiene**: Client API tokens are held strictly in private closures within the `GatewayApiClient` instance. They are **never** persisted to `localStorage`, `sessionStorage`, `IndexedDB`, or cookies.
-3. **Transparent Caching Diagnostics**: Responses display the exact backend diagnostic metadata (`cached`, `cache_type: "exact" | "semantic" | "none"`, `latency_ms`, `cache_hit_count`, `model`, `usage`, and shortened `fingerprint`). No fabricated cache indicators.
-4. **Namespace-Isolated Telemetry**: The UI polls `GET /metrics/me` using the authenticated client token to display namespace-level hit rates, token savings, coalesced joins, and latency distributions. Administrative metrics (`/admin/metrics`) remain isolated and unreachable to ordinary client tokens.
+2. **Strict In-Memory Credential & Session Hygiene**: Client API tokens and conversation sessions are held strictly in private closures within memory. They are **never** persisted to `localStorage`, `sessionStorage`, `IndexedDB`, or cookies.
+3. **CommonMark/GFM Markdown & Code Highlighting**: Model responses render rich Markdown (tables, headings, blockquotes, lists) and syntax-highlighted code blocks with 1-click clipboard copy, strictly sanitized through `DOMPurify` to neutralize XSS vectors.
+4. **Transparent Caching Diagnostics**: Responses display the exact backend diagnostic metadata (`cached`, `cache_type: "exact" | "semantic" | "none"`, `latency_ms`, `cache_hit_count`, `model`, `usage`, and shortened `fingerprint`). No fabricated cache indicators.
+5. **Namespace-Isolated Telemetry**: The UI displays authenticated namespace-level hit rates, token savings, coalesced joins, cache capacity, and latency distributions via `GET /metrics/me` and `GET /cache/stats`. Administrative metrics (`/admin/metrics`) remain isolated and unreachable to ordinary client tokens.
+6. **Responsive Dark Neo-Brutalist Design**: High-contrast cyberpunk brutalist aesthetics with tactile offset box-shadows, semantic cache badges (emerald exact, cyan semantic, amber provider), responsive mobile drawer navigation, collapsible metrics, and full keyboard accessibility.
 
 ---
 

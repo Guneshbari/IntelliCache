@@ -33,6 +33,7 @@
     "@crxjs/vite-plugin": "^2.7.1",
     "@eslint/js": "^10.0.1",
     "@types/chrome": "^0.2.6",
+    "@types/dompurify": "^3.2.0",
     "@types/node": "^26.2.0",
     "eslint": "^10.8.1",
     "fake-indexeddb": "^6.2.5",
@@ -44,6 +45,9 @@
     "vitest": "^4.1.10"
   },
   "dependencies": {
-    "dexie": "^4.4.5"
+    "dexie": "^4.4.5",
+    "dompurify": "^3.4.17",
+    "highlight.js": "^11.12.0",
+    "marked": "^18.1.3"
   }
 }

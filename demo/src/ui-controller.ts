@@ -1,45 +1,49 @@
 /**
  * UI Controller for the IntelliCache Demonstration Chatbot.
- * Manages DOM events, state, message rendering, cache diagnostics visualization,
- * and authenticated metrics panel updates.
+ *
+ * Coordinates:
+ * - Temporary in-memory conversation sessions (ConversationManager).
+ * - Safe Markdown parsing and code block highlighting (MarkdownRenderer).
+ * - Chat message and cache diagnostics presentation (MessageRenderer).
+ * - Connection and API credential management (SettingsController).
+ * - Namespace metrics and cache capacity telemetry (MetricsController).
  *
  * All state is kept strictly in-memory. No client tokens or conversation data
  * are written to localStorage, IndexedDB, sessionStorage, or cookies.
  */
 
 import { GatewayApiClient, GatewayApiError } from './api-client'
-import type {
-  CacheStats,
-  ChatMessage,
-  ConnectionInfo,
-  ConnectionState,
-  NamespaceMetricsSnapshot,
-  QueryRequestPayload,
-  QueryResponse,
-} from './types'
+import type { ChatMessage, ConnectionInfo, ConnectionState, QueryRequestPayload } from './types'
+import { ConversationManager } from './ui/conversation-manager'
+import { MarkdownRenderer } from './ui/markdown-renderer'
+import { MessageRenderer } from './ui/message-renderer'
+import { MetricsController } from './ui/metrics-controller'
+import { SettingsController } from './ui/settings-controller'
 
 export class DemoUIController {
   private apiClient: GatewayApiClient
-  private messages: ChatMessage[] = []
-  private conversationId: string = crypto.randomUUID()
+  private conversationManager: ConversationManager
+  private settingsController: SettingsController
+  private metricsController: MetricsController
+
   private mode: 'single-turn' | 'multi-turn' = 'single-turn'
   private isGenerating: boolean = false
-  private metricsCollapsed: boolean = false
   private connectionInfo: ConnectionInfo = {
     state: 'disconnected',
     gatewayUrl: 'http://127.0.0.1:8000',
   }
 
   // DOM Elements
-  private statusBadgeEl!: HTMLElement
-  private statusTextEl!: HTMLElement
-  private gatewayUrlInput!: HTMLInputElement
-  private clientTokenInput!: HTMLInputElement
-  private toggleTokenBtn!: HTMLButtonElement
-  private connectBtn!: HTMLButtonElement
-  private toggleMetricsBtn!: HTMLButtonElement
-  private clearChatBtn!: HTMLButtonElement
-  private mainContainerEl!: HTMLElement
+  private connectionBadgeEl!: HTMLElement
+  private connectionTextEl!: HTMLElement
+  private headerNewChatBtn!: HTMLButtonElement
+  private headerSettingsBtn!: HTMLButtonElement
+  private toggleSidebarBtn!: HTMLButtonElement
+  private closeSidebarBtn!: HTMLButtonElement
+  private sidebarEl!: HTMLElement
+  private sidebarBackdropEl!: HTMLElement
+  private sidebarNewChatBtn!: HTMLButtonElement
+  private conversationListEl!: HTMLElement
   private messagesContainerEl!: HTMLElement
   private chatTextarea!: HTMLTextAreaElement
   private sendBtn!: HTMLButtonElement
@@ -47,32 +51,56 @@ export class DemoUIController {
   private modeSingleBtn!: HTMLButtonElement
   private modeMultiBtn!: HTMLButtonElement
   private turnNoticeEl!: HTMLElement
-  private refreshMetricsBtn!: HTMLButtonElement
-  private metricsBodyEl!: HTMLElement
-  private metricsNamespaceEl!: HTMLElement
 
   constructor(apiClient: GatewayApiClient) {
     this.apiClient = apiClient
+    this.conversationManager = new ConversationManager()
+
+    this.settingsController = new SettingsController(this.apiClient, {
+      onConnectionChange: (info) => this.handleConnectionStateChange(info),
+      onClearCredentials: () => {
+        this.metricsController.renderInitialState()
+      },
+    })
+
+    this.metricsController = new MetricsController(this.apiClient)
   }
 
   public init(): void {
+    MarkdownRenderer.init()
     this.bindDomElements()
+    this.settingsController.init()
+    this.metricsController.init()
     this.attachEventListeners()
     this.updateConnectionBadge('disconnected', 'Disconnected')
     this.renderTurnNotice()
+    this.renderConversationList()
     this.renderMessages()
   }
 
+  public getConversationManager(): ConversationManager {
+    return this.conversationManager
+  }
+
+  public getSettingsController(): SettingsController {
+    return this.settingsController
+  }
+
+  public getMetricsController(): MetricsController {
+    return this.metricsController
+  }
+
   private bindDomElements(): void {
-    this.statusBadgeEl = document.getElementById('connection-badge')!
-    this.statusTextEl = document.getElementById('connection-text')!
-    this.gatewayUrlInput = document.getElementById('gateway-url') as HTMLInputElement
-    this.clientTokenInput = document.getElementById('client-token') as HTMLInputElement
-    this.toggleTokenBtn = document.getElementById('btn-toggle-token') as HTMLButtonElement
-    this.connectBtn = document.getElementById('btn-connect') as HTMLButtonElement
-    this.toggleMetricsBtn = document.getElementById('btn-toggle-metrics') as HTMLButtonElement
-    this.clearChatBtn = document.getElementById('btn-clear-chat') as HTMLButtonElement
-    this.mainContainerEl = document.getElementById('main-container')!
+    this.connectionBadgeEl = document.getElementById('connection-badge')!
+    this.connectionTextEl = document.getElementById('connection-text')!
+    this.headerNewChatBtn = document.getElementById('btn-header-new-chat') as HTMLButtonElement
+    this.headerSettingsBtn = document.getElementById('btn-header-settings') as HTMLButtonElement
+    this.toggleSidebarBtn = document.getElementById('btn-toggle-sidebar') as HTMLButtonElement
+    this.closeSidebarBtn = document.getElementById('btn-close-sidebar') as HTMLButtonElement
+    this.sidebarEl = document.getElementById('sidebar')!
+    this.sidebarBackdropEl = document.getElementById('sidebar-backdrop')!
+    this.sidebarNewChatBtn = document.getElementById('btn-sidebar-new-chat') as HTMLButtonElement
+    this.conversationListEl = document.getElementById('conversation-list')!
     this.messagesContainerEl = document.getElementById('messages-container')!
     this.chatTextarea = document.getElementById('chat-textarea') as HTMLTextAreaElement
     this.sendBtn = document.getElementById('btn-send') as HTMLButtonElement
@@ -80,131 +108,240 @@ export class DemoUIController {
     this.modeSingleBtn = document.getElementById('mode-single') as HTMLButtonElement
     this.modeMultiBtn = document.getElementById('mode-multi') as HTMLButtonElement
     this.turnNoticeEl = document.getElementById('turn-notice')!
-    this.refreshMetricsBtn = document.getElementById('btn-refresh-metrics') as HTMLButtonElement
-    this.metricsBodyEl = document.getElementById('metrics-body')!
-    this.metricsNamespaceEl = document.getElementById('metrics-namespace')!
   }
 
   private attachEventListeners(): void {
-    // Show/hide token visibility
-    this.toggleTokenBtn.addEventListener('click', () => {
-      const isPassword = this.clientTokenInput.type === 'password'
-      this.clientTokenInput.type = isPassword ? 'text' : 'password'
-      this.toggleTokenBtn.textContent = isPassword ? '🙈' : '👁️'
+    // Header actions
+    this.connectionBadgeEl?.addEventListener('click', () => {
+      this.settingsController.open()
     })
 
-    // Connect button
-    this.connectBtn.addEventListener('click', () => this.handleConnect())
-
-    // Toggle Metrics Panel
-    this.toggleMetricsBtn.addEventListener('click', () => {
-      this.metricsCollapsed = !this.metricsCollapsed
-      this.mainContainerEl.classList.toggle('metrics-collapsed', this.metricsCollapsed)
-      this.toggleMetricsBtn.textContent = this.metricsCollapsed
-        ? '📊 Show Metrics'
-        : '📊 Hide Metrics'
+    this.headerSettingsBtn?.addEventListener('click', () => {
+      this.settingsController.open()
     })
 
-    // Clear Chat
-    this.clearChatBtn.addEventListener('click', () => this.handleClearChat())
+    this.headerNewChatBtn?.addEventListener('click', () => {
+      this.handleNewChat()
+    })
+
+    // Sidebar actions
+    this.sidebarNewChatBtn?.addEventListener('click', () => {
+      this.handleNewChat()
+    })
+
+    this.toggleSidebarBtn?.addEventListener('click', () => {
+      this.toggleMobileSidebar()
+    })
+
+    this.closeSidebarBtn?.addEventListener('click', () => {
+      this.closeMobileSidebar()
+    })
+
+    this.sidebarBackdropEl?.addEventListener('click', () => {
+      this.closeMobileSidebar()
+    })
 
     // Mode Selector
-    this.modeSingleBtn.addEventListener('click', () => this.setMode('single-turn'))
-    this.modeMultiBtn.addEventListener('click', () => this.setMode('multi-turn'))
+    this.modeSingleBtn?.addEventListener('click', () => this.setMode('single-turn'))
+    this.modeMultiBtn?.addEventListener('click', () => this.setMode('multi-turn'))
 
-    // Send on click and Ctrl+Enter / Enter
-    this.sendBtn.addEventListener('click', () => this.handleSend())
-    this.chatTextarea.addEventListener('keydown', (e) => {
+    // Send on click and Enter (without Shift)
+    this.sendBtn?.addEventListener('click', () => this.handleSend())
+
+    this.chatTextarea?.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault()
         this.handleSend()
       }
     })
 
-    // Refresh metrics
-    this.refreshMetricsBtn.addEventListener('click', () => this.handleRefreshMetrics())
+    // Auto-resize textarea
+    this.chatTextarea?.addEventListener('input', () => {
+      this.autoResizeTextarea()
+    })
 
-    // Delegate clicks for sample prompt chips
-    this.messagesContainerEl.addEventListener('click', (e) => {
-      const target = (e.target as HTMLElement).closest('.prompt-chip')
-      if (target && target.textContent) {
-        this.chatTextarea.value = target.textContent.trim()
+    // Delegated clicks inside messages container
+    this.messagesContainerEl?.addEventListener('click', (e) => {
+      const target = e.target as HTMLElement
+
+      // Sample prompt chips
+      const promptChip = target.closest('.prompt-chip') as HTMLElement
+      if (promptChip) {
+        const promptText =
+          promptChip.getAttribute('data-prompt') || promptChip.textContent?.trim() || ''
+        this.chatTextarea.value = promptText
+        this.autoResizeTextarea()
         this.chatTextarea.focus()
+        return
+      }
+
+      // Retry button
+      const retryBtn = target.closest('.btn-retry') as HTMLElement
+      if (retryBtn) {
+        const retryId = retryBtn.getAttribute('data-retry-id')
+        if (retryId) {
+          this.handleRetry(retryId)
+        }
+        return
+      }
+
+      // Copy response button
+      const copyResponseBtn = target.closest('.btn-copy-response') as HTMLButtonElement
+      if (copyResponseBtn) {
+        const msgId = copyResponseBtn.getAttribute('data-msg-id')
+        if (msgId) {
+          this.handleCopyResponse(msgId, copyResponseBtn)
+        }
+        return
+      }
+
+      // Copy code block button
+      const copyCodeBtn = target.closest('.btn-copy-code') as HTMLButtonElement
+      if (copyCodeBtn) {
+        this.handleCopyCode(copyCodeBtn)
+        return
+      }
+
+      // Copy full fingerprint button
+      const copyFpBtn = target.closest('.btn-copy-fp') as HTMLButtonElement
+      if (copyFpBtn) {
+        const fp = copyFpBtn.getAttribute('data-fp') || ''
+        this.handleCopyFingerprint(fp, copyFpBtn)
+        return
+      }
+    })
+
+    // Delegated clicks inside conversation list (switching and deleting)
+    this.conversationListEl?.addEventListener('click', (e) => {
+      const target = e.target as HTMLElement
+
+      // Delete conversation button
+      const deleteBtn = target.closest('.btn-delete-conv') as HTMLElement
+      if (deleteBtn) {
+        e.stopPropagation()
+        const convId = deleteBtn.getAttribute('data-conv-id')
+        if (convId) {
+          this.handleDeleteConversation(convId)
+        }
+        return
+      }
+
+      // Switch conversation item
+      const itemEl = target.closest('.conversation-item') as HTMLElement
+      if (itemEl) {
+        const convId = itemEl.getAttribute('data-conv-id')
+        if (convId) {
+          this.handleSwitchConversation(convId)
+        }
       }
     })
   }
 
-  private updateConnectionBadge(state: ConnectionState, text: string): void {
-    this.connectionInfo.state = state
-    this.statusBadgeEl.setAttribute('data-state', state)
-    this.statusTextEl.textContent = text
+  private autoResizeTextarea(): void {
+    if (!this.chatTextarea) return
+    this.chatTextarea.style.height = 'auto'
+    const nextHeight = Math.min(this.chatTextarea.scrollHeight, 180)
+    this.chatTextarea.style.height = `${Math.max(nextHeight, 44)}px`
   }
 
-  public async handleConnect(): Promise<void> {
-    const url = this.gatewayUrlInput.value.trim()
-    const token = this.clientTokenInput.value.trim()
-
-    this.apiClient.setBaseUrl(url)
-    this.apiClient.setClientToken(token)
-
-    this.updateConnectionBadge('connecting', 'Connecting...')
-    this.connectBtn.disabled = true
-
-    try {
-      const testResult = await this.apiClient.testConnection()
-      if (!testResult.online) {
-        this.updateConnectionBadge('error', 'Gateway Offline')
-        alert(
-          `Cannot connect to IntelliCache Gateway at ${url}.\n${testResult.error || 'Connection refused or CORS blocked.'}`
-        )
-      } else if (!testResult.authenticated) {
-        this.updateConnectionBadge('unauthorized', 'Unauthorized (401)')
-        alert(
-          testResult.error ||
-            'Client token was rejected or not provided. Provide a valid token mapped in CLIENT_API_TOKENS.'
-        )
-      } else {
-        const ns = testResult.namespace || 'default'
-        this.connectionInfo.namespace = ns
-        this.updateConnectionBadge('connected', `Connected: ${ns}`)
-        this.metricsNamespaceEl.textContent = `[${ns}]`
-        await this.handleRefreshMetrics()
-      }
-    } catch (err) {
-      this.updateConnectionBadge('error', 'Connection Error')
-      const msg = err instanceof Error ? err.message : String(err)
-      alert(`Connection failed: ${msg}`)
-    } finally {
-      this.connectBtn.disabled = false
+  private toggleMobileSidebar(): void {
+    const isOpen = this.sidebarEl.classList.contains('mobile-open')
+    if (isOpen) {
+      this.closeMobileSidebar()
+    } else {
+      this.sidebarEl.classList.add('mobile-open')
+      this.sidebarBackdropEl.classList.add('mobile-open')
     }
   }
 
-  private setMode(mode: 'single-turn' | 'multi-turn'): void {
+  private closeMobileSidebar(): void {
+    this.sidebarEl?.classList.remove('mobile-open')
+    this.sidebarBackdropEl?.classList.remove('mobile-open')
+  }
+
+  public handleConnectionStateChange(info: ConnectionInfo): void {
+    this.connectionInfo = info
+    let text = 'Disconnected'
+
+    switch (info.state) {
+      case 'connecting':
+        text = 'Connecting...'
+        break
+      case 'connected':
+        text = `Connected: ${info.namespace || 'default'}`
+        this.metricsController.setNamespace(info.namespace)
+        this.metricsController.refresh().catch(() => {})
+        break
+      case 'unauthorized':
+        text = 'Unauthorized (401)'
+        break
+      case 'error':
+        text = 'Gateway Offline'
+        break
+    }
+
+    this.updateConnectionBadge(info.state, text)
+  }
+
+  public updateConnectionBadge(state: ConnectionState, text: string): void {
+    this.connectionInfo.state = state
+    this.connectionBadgeEl?.setAttribute('data-state', state)
+    if (this.connectionTextEl) {
+      this.connectionTextEl.textContent = text
+    }
+  }
+
+  public setMode(mode: 'single-turn' | 'multi-turn'): void {
     this.mode = mode
-    this.modeSingleBtn.classList.toggle('active', mode === 'single-turn')
-    this.modeMultiBtn.classList.toggle('active', mode === 'multi-turn')
+    this.modeSingleBtn?.classList.toggle('active', mode === 'single-turn')
+    this.modeMultiBtn?.classList.toggle('active', mode === 'multi-turn')
     this.renderTurnNotice()
   }
 
   private renderTurnNotice(): void {
+    if (!this.turnNoticeEl) return
     if (this.mode === 'single-turn') {
-      this.turnNoticeEl.textContent =
-        '⚡ Single-turn query mode: Eligible for exact matching and semantic response caching (technical queries).'
+      this.turnNoticeEl.innerHTML =
+        '<span class="notice-icon">⚡</span><span><strong>Single-Turn Query Mode:</strong> Eligible for deterministic exact matching and HNSW semantic response caching.</span>'
     } else {
-      this.turnNoticeEl.textContent =
-        'ℹ️ Multi-turn conversation mode: History sent via messages payload. Excluded from semantic caching by gateway policy to prevent context ambiguity.'
+      this.turnNoticeEl.innerHTML =
+        '<span class="notice-icon">ℹ️</span><span><strong>Multi-Turn Conversation Mode:</strong> Complete message history sent via <code>messages</code> payload with conversation ID. Excluded from semantic caching to prevent context ambiguity.</span>'
     }
   }
 
-  private handleClearChat(): void {
-    this.messages = []
-    this.conversationId = crypto.randomUUID()
+  public handleNewChat(): void {
+    this.conversationManager.createConversation('New Conversation')
+    this.renderConversationList()
+    this.renderMessages()
+    if (this.chatTextarea) {
+      this.chatTextarea.value = ''
+      this.autoResizeTextarea()
+      this.chatTextarea.focus()
+    }
+    this.closeMobileSidebar()
+  }
+
+  public handleSwitchConversation(id: string): void {
+    const success = this.conversationManager.setActiveConversation(id)
+    if (success) {
+      this.renderConversationList()
+      this.renderMessages()
+      this.closeMobileSidebar()
+      this.chatTextarea?.focus()
+    }
+  }
+
+  public handleDeleteConversation(id: string): void {
+    this.conversationManager.deleteConversation(id)
+    this.renderConversationList()
     this.renderMessages()
   }
 
-  private async handleSend(): Promise<void> {
+  public async handleSend(): Promise<void> {
     const text = this.chatTextarea.value.trim()
     if (!text || this.isGenerating) return
+
+    const activeConv = this.conversationManager.getActiveConversation()
 
     const userMessage: ChatMessage = {
       id: crypto.randomUUID(),
@@ -212,10 +349,14 @@ export class DemoUIController {
       content: text,
       timestamp: Date.now(),
     }
-    this.messages.push(userMessage)
+
+    this.conversationManager.addMessage(activeConv.id, userMessage)
     this.chatTextarea.value = ''
+    this.autoResizeTextarea()
+
     this.isGenerating = true
     this.sendBtn.disabled = true
+    this.renderConversationList()
     this.renderMessages()
 
     const bypass = this.bypassCheckbox.checked
@@ -224,12 +365,12 @@ export class DemoUIController {
     }
 
     if (this.mode === 'single-turn') {
-      // In single-turn mode, send prompt and omit conversation_id for semantic cache eligibility
+      // Single-turn mode sends prompt and omits conversation_id for semantic cache eligibility
       payload.prompt = text
     } else {
-      // In multi-turn mode, send messages array and conversation_id
-      payload.conversation_id = this.conversationId
-      payload.messages = this.messages
+      // Multi-turn mode sends conversation_id and valid messages history
+      payload.conversation_id = activeConv.id
+      payload.messages = activeConv.messages
         .filter((m) => !m.error)
         .map((m) => ({ role: m.role, content: m.content }))
     }
@@ -243,9 +384,10 @@ export class DemoUIController {
         timestamp: Date.now(),
         responseMeta: response,
       }
-      this.messages.push(assistantMessage)
-      // Refresh metrics silently on successful queries
-      this.handleRefreshMetrics().catch(() => {})
+      this.conversationManager.addMessage(activeConv.id, assistantMessage)
+
+      // Silently refresh metrics in background
+      this.metricsController.refresh().catch(() => {})
     } catch (err) {
       let errMsg = 'Failed to execute query.'
       if (err instanceof GatewayApiError) {
@@ -253,6 +395,7 @@ export class DemoUIController {
       } else if (err instanceof Error) {
         errMsg = err.message
       }
+
       const assistantError: ChatMessage = {
         id: crypto.randomUUID(),
         role: 'assistant',
@@ -260,341 +403,191 @@ export class DemoUIController {
         timestamp: Date.now(),
         error: errMsg,
       }
-      this.messages.push(assistantError)
+      this.conversationManager.addMessage(activeConv.id, assistantError)
     } finally {
       this.isGenerating = false
       this.sendBtn.disabled = false
+      this.renderConversationList()
+      this.renderMessages()
+      this.chatTextarea?.focus()
+    }
+  }
+
+  public async handleRetry(failedMsgId: string): Promise<void> {
+    if (this.isGenerating) return
+
+    const activeConv = this.conversationManager.getActiveConversation()
+    const messages = activeConv.messages
+
+    // Find the failed message
+    const failedIndex = messages.findIndex((m) => m.id === failedMsgId)
+    if (failedIndex === -1) return
+
+    // Find the immediately preceding user message to retry
+    let promptText = ''
+    for (let i = failedIndex - 1; i >= 0; i--) {
+      if (messages[i].role === 'user') {
+        promptText = messages[i].content
+        break
+      }
+    }
+
+    if (!promptText) return
+
+    // Remove the error message from the conversation without duplicating the user turn
+    this.conversationManager.removeMessage(activeConv.id, failedMsgId)
+
+    this.isGenerating = true
+    this.sendBtn.disabled = true
+    this.renderMessages()
+
+    const bypass = this.bypassCheckbox.checked
+    const payload: QueryRequestPayload = {
+      bypass_cache: bypass,
+    }
+
+    if (this.mode === 'single-turn') {
+      payload.prompt = promptText
+    } else {
+      payload.conversation_id = activeConv.id
+      payload.messages = activeConv.messages
+        .filter((m) => !m.error)
+        .map((m) => ({ role: m.role, content: m.content }))
+    }
+
+    try {
+      const response = await this.apiClient.sendQuery(payload)
+      const assistantMessage: ChatMessage = {
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content: response.response,
+        timestamp: Date.now(),
+        responseMeta: response,
+      }
+      this.conversationManager.addMessage(activeConv.id, assistantMessage)
+      this.metricsController.refresh().catch(() => {})
+    } catch (err) {
+      let errMsg = 'Failed to execute query.'
+      if (err instanceof GatewayApiError) {
+        errMsg = err.message
+      } else if (err instanceof Error) {
+        errMsg = err.message
+      }
+
+      const assistantError: ChatMessage = {
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content: `Error: ${errMsg}`,
+        timestamp: Date.now(),
+        error: errMsg,
+      }
+      this.conversationManager.addMessage(activeConv.id, assistantError)
+    } finally {
+      this.isGenerating = false
+      this.sendBtn.disabled = false
+      this.renderConversationList()
       this.renderMessages()
     }
   }
 
-  public async handleRefreshMetrics(): Promise<void> {
-    if (!this.apiClient.hasToken()) {
-      this.metricsBodyEl.innerHTML = `
-        <div class="metrics-notice">
-          Authenticate with a client API token to view namespace runtime metrics.
-        </div>
-      `
-      return
-    }
+  private handleCopyResponse(msgId: string, buttonEl: HTMLButtonElement): void {
+    const activeConv = this.conversationManager.getActiveConversation()
+    const msg = activeConv.messages.find((m) => m.id === msgId)
+    if (!msg) return
 
-    this.refreshMetricsBtn.disabled = true
-    try {
-      const [snapshot, cacheStats] = await Promise.all([
-        this.apiClient.fetchNamespaceMetrics(),
-        this.apiClient.fetchCacheStats().catch(() => null),
-      ])
-      this.renderMetrics(snapshot, cacheStats)
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err)
-      this.metricsBodyEl.innerHTML = `
-        <div class="error-callout" style="font-size: 0.78rem;">
-          Failed to fetch metrics: ${this.escapeHtml(errMsg)}
-        </div>
-      `
-    } finally {
-      this.refreshMetricsBtn.disabled = false
-    }
+    navigator.clipboard
+      .writeText(msg.content)
+      .then(() => {
+        const originalText = buttonEl.innerHTML
+        buttonEl.innerHTML = '✓ Copied!'
+        buttonEl.classList.add('copied')
+        setTimeout(() => {
+          buttonEl.innerHTML = originalText
+          buttonEl.classList.remove('copied')
+        }, 2000)
+      })
+      .catch(() => {})
   }
 
-  private renderMetrics(m: NamespaceMetricsSnapshot, cacheStats: CacheStats | null): void {
-    const rc = m.request_and_cache
-    const ps = m.provider_and_savings
-    const sm = m.semantic
-    const dr = m.derived_rates
-    const lat = m.latencies
+  private handleCopyCode(buttonEl: HTMLButtonElement): void {
+    const codeWrapper = buttonEl.closest('.code-block-wrapper')
+    const codeEl = codeWrapper?.querySelector('code')
+    if (!codeEl) return
 
-    const formatRate = (rate: number): string => `${(rate * 100).toFixed(1)}%`
-    const formatMs = (val: number | null | undefined): string =>
-      val !== null && val !== undefined ? `${val.toFixed(1)} ms` : '—'
-
-    this.metricsBodyEl.innerHTML = `
-      ${
-        cacheStats
-          ? `
-      <div class="metric-panel">
-        <div class="panel-title">Cache Capacity & Backend</div>
-        <div class="metric-row">
-          <span class="metric-row-label">Storage Backend:</span>
-          <span class="metric-row-value highlight">${this.escapeHtml(cacheStats.backend.toUpperCase())}</span>
-        </div>
-        <div class="metric-row">
-          <span class="metric-row-label">Entries (Active / Max):</span>
-          <span class="metric-row-value">${cacheStats.total_entries} / ${cacheStats.max_entries}</span>
-        </div>
-        <div class="metric-row">
-          <span class="metric-row-label">TTL Duration:</span>
-          <span class="metric-row-value">${cacheStats.ttl_seconds}s</span>
-        </div>
-        <div class="metric-row">
-          <span class="metric-row-label">Cache Operational:</span>
-          <span class="metric-row-value ${cacheStats.enabled ? 'green' : 'amber'}">${cacheStats.enabled ? 'Enabled' : 'Disabled'}</span>
-        </div>
-      </div>
-      `
-          : ''
-      }
-      <div class="metric-panel">
-        <div class="panel-title">Cache Outcomes</div>
-        <div class="metric-row">
-          <span class="metric-row-label">Exact Cache Hits:</span>
-          <span class="metric-row-value green">${rc.exact_cache_hits}</span>
-        </div>
-        <div class="metric-row">
-          <span class="metric-row-label">Exact Hit Rate:</span>
-          <span class="metric-row-value green">${formatRate(dr.exact_hit_rate)}</span>
-        </div>
-        <div class="metric-row">
-          <span class="metric-row-label">Semantic Cache Hits:</span>
-          <span class="metric-row-value blue">${rc.semantic_hits}</span>
-        </div>
-        <div class="metric-row">
-          <span class="metric-row-label">Semantic Hit Rate:</span>
-          <span class="metric-row-value blue">${formatRate(dr.semantic_hit_rate)}</span>
-        </div>
-        <div class="metric-row">
-          <span class="metric-row-label">Overall Cache Hit Rate:</span>
-          <span class="metric-row-value highlight">${formatRate(dr.overall_cache_hit_rate)}</span>
-        </div>
-        <div class="metric-row">
-          <span class="metric-row-label">Exact Cache Misses:</span>
-          <span class="metric-row-value">${rc.exact_cache_misses}</span>
-        </div>
-      </div>
-
-      <div class="metric-panel">
-        <div class="panel-title">Provider & Concurrency</div>
-        <div class="metric-row">
-          <span class="metric-row-label">Provider Calls (OK / Total):</span>
-          <span class="metric-row-value amber">${ps.provider_calls_succeeded} / ${ps.provider_calls_attempted}</span>
-        </div>
-        <div class="metric-row">
-          <span class="metric-row-label">SingleFlight Coalesced:</span>
-          <span class="metric-row-value blue">${rc.coalesced_joins}</span>
-        </div>
-        <div class="metric-row">
-          <span class="metric-row-label">Cache Bypass Requests:</span>
-          <span class="metric-row-value">${rc.cache_bypass_requests}</span>
-        </div>
-        <div class="metric-row">
-          <span class="metric-row-label">Total Requests:</span>
-          <span class="metric-row-value">${rc.total_authenticated_requests}</span>
-        </div>
-      </div>
-
-      <div class="metric-panel">
-        <div class="panel-title">Token Savings</div>
-        <div class="metric-row">
-          <span class="metric-row-label">Total Tokens Saved:</span>
-          <span class="metric-row-value green">${ps.total_tokens_saved.toLocaleString()}</span>
-        </div>
-        <div class="metric-row">
-          <span class="metric-row-label">Prompt Tokens Saved:</span>
-          <span class="metric-row-value">${ps.prompt_tokens_saved.toLocaleString()}</span>
-        </div>
-        <div class="metric-row">
-          <span class="metric-row-label">Completion Tokens Saved:</span>
-          <span class="metric-row-value">${ps.completion_tokens_saved.toLocaleString()}</span>
-        </div>
-        <div class="metric-row">
-          <span class="metric-row-label">Provider Tokens Used:</span>
-          <span class="metric-row-value amber">${ps.provider_total_tokens_used.toLocaleString()}</span>
-        </div>
-      </div>
-
-      <div class="metric-panel">
-        <div class="panel-title">Latency Diagnostics</div>
-        <div class="metric-row">
-          <span class="metric-row-label">Total Latency (Mean):</span>
-          <span class="metric-row-value">${formatMs(lat.total_request_latency_ms?.mean)}</span>
-        </div>
-        <div class="metric-row">
-          <span class="metric-row-label">Exact Lookup (Mean):</span>
-          <span class="metric-row-value green">${formatMs(lat.exact_lookup_latency_ms?.mean)}</span>
-        </div>
-        <div class="metric-row">
-          <span class="metric-row-label">Semantic Lookup (Mean):</span>
-          <span class="metric-row-value blue">${formatMs(lat.semantic_lookup_latency_ms?.mean)}</span>
-        </div>
-        <div class="metric-row">
-          <span class="metric-row-label">Provider Gen (Mean):</span>
-          <span class="metric-row-value amber">${formatMs(lat.provider_generation_latency_ms?.mean)}</span>
-        </div>
-      </div>
-
-      <div class="metric-panel">
-        <div class="panel-title">Semantic Diagnostics</div>
-        <div class="metric-row">
-          <span class="metric-row-label">Eligibility Rejections:</span>
-          <span class="metric-row-value">${sm.semantic_eligibility_rejections}</span>
-        </div>
-        <div class="metric-row">
-          <span class="metric-row-label">Ambiguous Rejections:</span>
-          <span class="metric-row-value">${sm.ambiguous_candidate_rejections}</span>
-        </div>
-        <div class="metric-row">
-          <span class="metric-row-label">Indexing Successes:</span>
-          <span class="metric-row-value green">${sm.indexing_successes}</span>
-        </div>
-      </div>
-
-      <div class="metrics-notice">
-        Displaying namespace-isolated telemetry from <code>GET /metrics/me</code> for <strong>${this.escapeHtml(m.namespace)}</strong>. System administrator telemetry (<code>/admin/metrics</code>) is strictly restricted to administrator tokens.
-      </div>
-    `
+    const codeText = codeEl.textContent || ''
+    navigator.clipboard
+      .writeText(codeText)
+      .then(() => {
+        const originalText = buttonEl.textContent
+        buttonEl.textContent = 'Copied!'
+        buttonEl.classList.add('copied')
+        setTimeout(() => {
+          buttonEl.textContent = originalText
+          buttonEl.classList.remove('copied')
+        }, 2000)
+      })
+      .catch(() => {})
   }
 
-  private renderMessages(): void {
-    if (this.messages.length === 0) {
-      this.messagesContainerEl.innerHTML = `
-        <div class="empty-state">
-          <h2 class="empty-title">IntelliCache Demonstration Gateway</h2>
-          <p class="empty-desc">
-            Interact with the FastAPI gateway to observe real-time Exact Cache Hits, Semantic Similarity Reuse, and Upstream Provider Generations.
-          </p>
+  private handleCopyFingerprint(fp: string, buttonEl: HTMLButtonElement): void {
+    if (!fp) return
+    navigator.clipboard
+      .writeText(fp)
+      .then(() => {
+        const originalText = buttonEl.textContent
+        buttonEl.textContent = 'Copied!'
+        buttonEl.classList.add('copied')
+        setTimeout(() => {
+          buttonEl.textContent = originalText
+          buttonEl.classList.remove('copied')
+        }, 2000)
+      })
+      .catch(() => {})
+  }
 
-          <div class="sample-prompts-section">
-            <div class="sample-prompts-label">Quick Demonstration Prompts</div>
-            <div class="sample-group">
-              <div class="sample-group-title">1. Exact Cache Hit Test (submit query, then submit identical query)</div>
-              <div class="prompt-chips">
-                <button type="button" class="prompt-chip">Explain Python asyncio event loop and tasks</button>
-                <button type="button" class="prompt-chip">What is the difference between let, const, and var in JavaScript?</button>
-              </div>
-            </div>
+  private renderConversationList(): void {
+    if (!this.conversationListEl) return
+    const conversations = this.conversationManager.getConversations()
+    const activeId = this.conversationManager.getActiveConversationId()
 
-            <div class="sample-group">
-              <div class="sample-group-title">2. Semantic Cache Hit Test (requires SEMANTIC_CACHE_ENABLED=true)</div>
-              <div class="prompt-chips">
-                <button type="button" class="prompt-chip">Describe how tasks and the event loop work in Python asyncio</button>
-                <button type="button" class="prompt-chip">How do let, const, and var differ in JavaScript?</button>
-                <button type="button" class="prompt-chip">How does PostgreSQL pgvector perform vector similarity searches?</button>
-              </div>
-            </div>
-          </div>
+    if (conversations.length === 0) {
+      this.conversationListEl.innerHTML = `
+        <div class="sidebar-empty">
+          <span>No conversations yet.</span>
         </div>
       `
       return
     }
 
     let html = ''
-    for (const msg of this.messages) {
-      const isUser = msg.role === 'user'
-      const timeStr = new Date(msg.timestamp).toLocaleTimeString([], {
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-      })
+    for (const conv of conversations) {
+      const isActive = conv.id === activeId
+      const activeClass = isActive ? 'active' : ''
+      const safeTitle = MarkdownRenderer.escapeHtml(conv.title)
 
-      if (isUser) {
-        html += `
-          <div class="message-row user">
-            <div class="message-header">
-              <span>You</span>
-              <span>${timeStr}</span>
-            </div>
-            <div class="message-bubble">${this.escapeHtml(msg.content)}</div>
-          </div>
-        `
-      } else if (msg.error) {
-        html += `
-          <div class="message-row assistant">
-            <div class="message-header">
-              <span>Assistant</span>
-              <span>${timeStr}</span>
-            </div>
-            <div class="error-callout">${this.escapeHtml(msg.content)}</div>
-          </div>
-        `
-      } else {
-        const meta = msg.responseMeta
-        html += `
-          <div class="message-row assistant">
-            <div class="message-header">
-              <span>IntelliCache Assistant (${this.escapeHtml(meta?.model || 'gateway')})</span>
-              <span>${timeStr}</span>
-            </div>
-            <div class="message-bubble">${this.escapeHtml(msg.content)}</div>
-            ${meta ? this.renderCacheCard(meta) : ''}
-          </div>
-        `
-      }
-    }
-
-    if (this.isGenerating) {
       html += `
-        <div class="message-row assistant">
-          <div class="message-header">
-            <span>IntelliCache Assistant</span>
-            <span>processing...</span>
+        <div class="conversation-item ${activeClass}" data-conv-id="${conv.id}" role="button" tabindex="0">
+          <div class="conv-item-left">
+            <span class="conv-icon">💬</span>
+            <span class="conv-title" title="${safeTitle}">${safeTitle}</span>
           </div>
-          <div class="message-bubble" style="display: flex; align-items: center; gap: 0.5rem; color: var(--text-muted);">
-            <div class="spinner"></div> Executing query on gateway...
-          </div>
+          <button class="btn-delete-conv" type="button" data-conv-id="${conv.id}" title="Delete conversation" aria-label="Delete conversation">
+            ×
+          </button>
         </div>
       `
     }
 
+    this.conversationListEl.innerHTML = html
+  }
+
+  private renderMessages(): void {
+    if (!this.messagesContainerEl) return
+    const activeConv = this.conversationManager.getActiveConversation()
+    const html = MessageRenderer.renderMessages(activeConv.messages, this.isGenerating)
     this.messagesContainerEl.innerHTML = html
+
+    // Auto scroll to bottom
     this.messagesContainerEl.scrollTop = this.messagesContainerEl.scrollHeight
-  }
-
-  private renderCacheCard(meta: QueryResponse): string {
-    let badgeClass = 'provider'
-    let badgeText = '🌐 Upstream Provider Generation'
-
-    if (meta.cached && meta.cache_type === 'exact') {
-      badgeClass = 'exact'
-      badgeText = '⚡ Exact Cache Hit'
-    } else if (meta.cached && meta.cache_type === 'semantic') {
-      badgeClass = 'semantic'
-      badgeText = '🧠 Semantic Cache Hit'
-    }
-
-    const latencyClass = meta.cached ? 'fast' : 'standard'
-    const shortFp = meta.fingerprint ? `${meta.fingerprint.slice(0, 16)}...` : 'n/a'
-    const totalTokens = meta.usage?.total_tokens ?? 0
-    const promptTokens = meta.usage?.prompt_tokens ?? 0
-    const compTokens = meta.usage?.completion_tokens ?? 0
-
-    return `
-      <div class="cache-card">
-        <div class="cache-card-header">
-          <span class="cache-badge ${badgeClass}">${badgeText}</span>
-          <span class="cache-latency ${latencyClass}">${meta.latency_ms.toFixed(1)} ms</span>
-        </div>
-        <div class="cache-stats-grid">
-          <div class="stat-item">
-            <span class="stat-label">Model</span>
-            <span class="stat-value" title="${this.escapeHtml(meta.model)}">${this.escapeHtml(meta.model)}</span>
-          </div>
-          <div class="stat-item">
-            <span class="stat-label">Hit Count</span>
-            <span class="stat-value highlight">${meta.cache_hit_count}</span>
-          </div>
-          <div class="stat-item">
-            <span class="stat-label">Total Tokens</span>
-            <span class="stat-value">${totalTokens}</span>
-          </div>
-          <div class="stat-item">
-            <span class="stat-label">Prompt / Comp</span>
-            <span class="stat-value">${promptTokens} / ${compTokens}</span>
-          </div>
-          <div class="stat-item" style="grid-column: 1 / -1;">
-            <span class="stat-label">Fingerprint (SHA-256)</span>
-            <span class="fingerprint-text" title="${this.escapeHtml(meta.fingerprint)}">${this.escapeHtml(shortFp)}</span>
-          </div>
-        </div>
-      </div>
-    `
-  }
-
-  private escapeHtml(str: string): string {
-    return (str || '')
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;')
   }
 }

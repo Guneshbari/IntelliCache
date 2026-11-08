@@ -4,6 +4,7 @@
 
 import { GatewayApiClient } from './api-client'
 import { DemoUIController } from './ui-controller'
+import 'highlight.js/styles/github-dark.css'
 import './styles.css'
 
 document.addEventListener('DOMContentLoaded', () => {
