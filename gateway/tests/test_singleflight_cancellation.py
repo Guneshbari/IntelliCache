@@ -843,6 +843,135 @@ class TestSingleFlightCancellation(unittest.IsolatedAsyncioTestCase):
         leader_res = await t_leader
         self.assertEqual(leader_res.text, "Released before indexing")
 
+    async def test_cache_write_failure_retains_flight_until_semantic_indexing_finishes(self):
+        """
+        Step 11.2.2: When exact-cache persistence fails, SingleFlight key MUST be retained
+        while semantic indexing is in flight. A concurrent identical request joins the existing flight
+        and receives the generated answer without triggering duplicate upstream provider generation.
+        """
+        indexing_started = asyncio.Event()
+        allow_indexing = asyncio.Event()
+
+        class SlowSemanticCache(SemanticCacheService):
+            async def index(self, request, result):
+                indexing_started.set()
+                await allow_indexing.wait()
+
+        # Rig cache.set to fail with an exception
+        async def failing_set(*args, **kwargs):
+            raise RuntimeError("Simulated exact cache write failure")
+
+        self.cache.set = failing_set
+
+        embedder = AsyncFakeEmbedder()
+        vector_store = AsyncFakeVectorStore()
+        policy = SemanticCachePolicy(configured_model="nomic-embed-text")
+        sem_cache = SlowSemanticCache(
+            embedding_provider=embedder,
+            vector_store=vector_store,
+            policy=policy,
+            metrics_collector=self.collector,
+        )
+
+        core = IntelliCacheCore(
+            cache=self.cache,
+            single_flight=self.coordinator,
+            cache_enabled=True,
+            semantic_cache=sem_cache,
+            metrics_collector=self.collector,
+        )
+
+        provider = AsyncFakeProvider(response_text="Single Generation For Both")
+
+        # Request A starts as leader
+        t_req_a = asyncio.create_task(core.execute_query(self.req, provider))
+        await indexing_started.wait()
+
+        # At this point:
+        # 1. Provider generation completed for Request A.
+        # 2. Exact-cache write failed.
+        # 3. Request A is blocked in semantic_cache.index.
+        # 4. SingleFlight key MUST STILL BE REGISTERED in flight!
+        flight_key = self._flight_key(self.req)
+        self.assertTrue(self.coordinator.is_in_flight(flight_key))
+        self.assertEqual(self.coordinator.in_flight_count(), 1)
+
+        # Request B sends an identical query NOW while Request A is indexing:
+        # Exact cache lookup misses because persistence failed.
+        # But SingleFlight key is retained, so Request B joins the existing flight!
+        t_req_b = asyncio.create_task(core.execute_query(self.req, provider))
+
+        # Request B immediately resolves via the completed shared future without waiting for semantic indexing!
+        res_b = await asyncio.wait_for(t_req_b, timeout=1.0)
+        self.assertEqual(res_b.text, "Single Generation For Both")
+        self.assertTrue(res_b.cached)
+
+        # Verify NO duplicate provider call was made!
+        self.assertEqual(provider.call_count, 1)
+
+        # Unblock Request A's semantic indexing
+        allow_indexing.set()
+        res_a = await t_req_a
+        self.assertEqual(res_a.text, "Single Generation For Both")
+
+        # Now SingleFlight key is completely released
+        self.assertFalse(self.coordinator.is_in_flight(flight_key))
+        self.assertEqual(self.coordinator.in_flight_count(), 0)
+
+        # Verify metrics
+        snap = self.collector.get_namespace_snapshot("tenant_alpha")
+        self.assertEqual(snap.provider_and_savings.provider_calls_succeeded, 1)
+        self.assertEqual(snap.request_and_cache.coalesced_joins, 1)
+        self.assertEqual(snap.request_and_cache.coalesced_successes, 1)
+        self.assertEqual(snap.request_and_cache.cache_write_failures, 1)
+
+    async def test_waiter_count_semantics_active_vs_registered(self):
+        """
+        Verifies that waiter_count() accurately reflects currently active/waiting followers,
+        decrementing when followers cancel, succeed, or fail, while registered_waiter_count()
+        tracks the cumulative registrations for the flight.
+        """
+        provider = AsyncFakeProvider(response_text="Waiter Semantics Verification")
+        provider.entered_event = asyncio.Event()
+        provider.proceed_event = asyncio.Event()
+
+        t_leader = asyncio.create_task(self.core.execute_query(self.req, provider))
+        await provider.entered_event.wait()
+
+        flight_key = self._flight_key(self.req)
+        self.assertEqual(self.coordinator.waiter_count(flight_key), 0)
+        self.assertEqual(self.coordinator.registered_waiter_count(flight_key), 0)
+
+        # Follower 1 joins
+        t_f1 = asyncio.create_task(self.core.execute_query(self.req, provider))
+        await self.coordinator.wait_for_waiters(flight_key, count=1)
+        self.assertEqual(self.coordinator.waiter_count(flight_key), 1)
+        self.assertEqual(self.coordinator.registered_waiter_count(flight_key), 1)
+
+        # Follower 2 joins
+        t_f2 = asyncio.create_task(self.core.execute_query(self.req, provider))
+        await self.coordinator.wait_for_waiters(flight_key, count=2)
+        self.assertEqual(self.coordinator.waiter_count(flight_key), 2)
+        self.assertEqual(self.coordinator.registered_waiter_count(flight_key), 2)
+
+        # Follower 1 cancels
+        t_f1.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await t_f1
+
+        # Active waiter count must decrement to 1, while registered remains 2
+        self.assertEqual(self.coordinator.waiter_count(flight_key), 1)
+        self.assertEqual(self.coordinator.registered_waiter_count(flight_key), 2)
+
+        # Allow leader to finish
+        provider.proceed_event.set()
+        await t_leader
+        await t_f2
+
+        # Flight released -> all cleared
+        self.assertEqual(self.coordinator.waiter_count(flight_key), 0)
+        self.assertEqual(self.coordinator.registered_waiter_count(flight_key), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

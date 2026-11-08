@@ -21,7 +21,8 @@ class SingleFlightCoordinator:
 
     def __init__(self) -> None:
         self._in_flight: Dict[FlightKey, asyncio.Future[Any]] = {}
-        self._waiter_counts: Dict[FlightKey, int] = {}
+        self._total_waiters: Dict[FlightKey, int] = {}
+        self._active_waiters: Dict[FlightKey, int] = {}
         self._waiter_events: Dict[FlightKey, list[Tuple[int, asyncio.Event]]] = {}
 
     async def register_or_wait(self, key: FlightKey) -> Tuple[bool, asyncio.Future[Any]]:
@@ -31,17 +32,20 @@ class SingleFlightCoordinator:
         Returns (is_leader, future).
         """
         if key in self._in_flight:
-            count = self._waiter_counts.get(key, 0) + 1
-            self._waiter_counts[key] = count
+            t_count = self._total_waiters.get(key, 0) + 1
+            self._total_waiters[key] = t_count
+            a_count = self._active_waiters.get(key, 0) + 1
+            self._active_waiters[key] = a_count
             for target_count, event in self._waiter_events.get(key, []):
-                if count >= target_count and not event.is_set():
+                if t_count >= target_count and not event.is_set():
                     event.set()
             return False, self._in_flight[key]
 
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[Any] = loop.create_future()
         self._in_flight[key] = fut
-        self._waiter_counts[key] = 0
+        self._total_waiters[key] = 0
+        self._active_waiters[key] = 0
         return True, fut
 
     async def complete_success(
@@ -61,7 +65,8 @@ class SingleFlightCoordinator:
         fut = self._in_flight.get(key)
         if release and fut is not None and (expected_future is None or fut is expected_future):
             self._in_flight.pop(key, None)
-            self._waiter_counts.pop(key, None)
+            self._total_waiters.pop(key, None)
+            self._active_waiters.pop(key, None)
             self._waiter_events.pop(key, None)
         target = fut if (fut is not None and (expected_future is None or fut is expected_future)) else expected_future
         if target is not None and not target.done():
@@ -79,7 +84,8 @@ class SingleFlightCoordinator:
         fut = self._in_flight.get(key)
         if fut is not None and (expected_future is None or fut is expected_future):
             self._in_flight.pop(key, None)
-            self._waiter_counts.pop(key, None)
+            self._total_waiters.pop(key, None)
+            self._active_waiters.pop(key, None)
             self._waiter_events.pop(key, None)
 
     async def complete_failure(
@@ -100,7 +106,8 @@ class SingleFlightCoordinator:
         fut = self._in_flight.get(key)
         if fut is not None and (expected_future is None or fut is expected_future):
             self._in_flight.pop(key, None)
-            self._waiter_counts.pop(key, None)
+            self._total_waiters.pop(key, None)
+            self._active_waiters.pop(key, None)
             self._waiter_events.pop(key, None)
         target = fut if (fut is not None and (expected_future is None or fut is expected_future)) else expected_future
         if target is not None and not target.done():
@@ -122,10 +129,14 @@ class SingleFlightCoordinator:
         """Returns True if the given flight key is currently registered in flight."""
         return key in self._in_flight
 
-    @staticmethod
-    async def wait_flight(shared_future: asyncio.Future[Any]) -> Any:
+    async def wait_flight(
+        self,
+        shared_future: asyncio.Future[Any],
+        key: Optional[FlightKey] = None,
+    ) -> Any:
         """
         Safely awaits a SingleFlight leader's shared future for a follower task.
+        Decrements active waiter count on completion, cancellation, or error.
         Unlike standard asyncio.shield(), if the follower task is cancelled, this does NOT
         log 'exception in shielded future' to the loop exception handler if the leader
         subsequently completes with an exception or cancellation.
@@ -149,11 +160,23 @@ class SingleFlightCoordinator:
                 follower_fut.set_result(f.result())
 
         shared_future.add_done_callback(_on_leader_done)
-        return await follower_fut
+        try:
+            return await follower_fut
+        finally:
+            if key is not None and hasattr(self, "_active_waiters") and key in self._active_waiters:
+                self._active_waiters[key] = max(0, self._active_waiters[key] - 1)
 
     def waiter_count(self, key: FlightKey) -> int:
-        """Returns the number of followers currently waiting for this flight key."""
-        return self._waiter_counts.get(key, 0)
+        """Returns the number of followers currently actively waiting for this flight key."""
+        return self._active_waiters.get(key, 0)
+
+    def active_waiter_count(self, key: FlightKey) -> int:
+        """Returns the number of followers currently actively waiting for this flight key."""
+        return self._active_waiters.get(key, 0)
+
+    def registered_waiter_count(self, key: FlightKey) -> int:
+        """Returns the cumulative number of followers that have registered for this flight key."""
+        return self._total_waiters.get(key, 0)
 
     async def wait_for_waiters(
         self,
@@ -165,7 +188,7 @@ class SingleFlightCoordinator:
         Deterministically awaits until at least `count` followers have registered for `key`.
         Avoids non-deterministic asyncio.sleep() in concurrent tests and production hooks.
         """
-        if self._waiter_counts.get(key, 0) >= count:
+        if self._total_waiters.get(key, 0) >= count:
             return
         event = asyncio.Event()
         self._waiter_events.setdefault(key, []).append((count, event))

@@ -195,7 +195,9 @@ class IntelliCacheCore:
             collector.record_coalesced_join(ns)
             try:
                 # Follower awaits leader's shared future safely via wait_flight (shielding without event-loop noise)
-                cached_entry: CacheEntry = await self.single_flight.wait_flight(shared_future)
+                cached_entry: CacheEntry = await self.single_flight.wait_flight(
+                    shared_future, key=flight_key
+                )
                 total_latency_ms = (time.perf_counter() - start_time) * 1000.0
                 p_tok = getattr(cached_entry.usage, "prompt_tokens", 0) or 0
                 c_tok = getattr(cached_entry.usage, "completion_tokens", 0) or 0
@@ -347,10 +349,12 @@ class IntelliCacheCore:
 
             # 7. Write exact-cache entry
             write_start = time.perf_counter()
+            cache_write_succeeded = False
             try:
                 await self.cache.set(fingerprint, entry, namespace=ns)
                 write_latency_ms = (time.perf_counter() - write_start) * 1000.0
                 collector.record_latency(ns, "exact_cache_write_latency_ms", write_latency_ms)
+                cache_write_succeeded = True
             except asyncio.CancelledError:
                 raise
             except Exception as write_err:
@@ -363,9 +367,10 @@ class IntelliCacheCore:
                     sanitize_error_message(str(write_err)),
                 )
             finally:
-                # Early flight release: Release SingleFlight key immediately after exact-cache persistence,
-                # BEFORE optional/slow semantic indexing, so subsequent requests hit exact cache without waiting
-                await self.single_flight.release(flight_key, expected_future=shared_future)
+                if cache_write_succeeded:
+                    # Early flight release: If exact-cache persistence succeeded, release SingleFlight key immediately,
+                    # BEFORE optional/slow semantic indexing, so subsequent requests hit exact cache without waiting
+                    await self.single_flight.release(flight_key, expected_future=shared_future)
 
             # 8. Post-generation: index in vector store if semantic cache enabled
             if self.semantic_cache is not None:
@@ -379,6 +384,11 @@ class IntelliCacheCore:
                         ns,
                         sanitize_error_message(str(idx_err)),
                     )
+                finally:
+                    # If exact-cache write failed, retain flight key during semantic indexing so concurrent identical
+                    # requests join the completed in-flight leader rather than triggering duplicate upstream generation.
+                    if not cache_write_succeeded:
+                        await self.single_flight.release(flight_key, expected_future=shared_future)
 
             total_latency_ms = (time.perf_counter() - start_time) * 1000.0
             collector.record_latency(ns, "total_request_latency_ms", total_latency_ms)
