@@ -972,6 +972,59 @@ class TestSingleFlightCancellation(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.coordinator.waiter_count(flight_key), 0)
         self.assertEqual(self.coordinator.registered_waiter_count(flight_key), 0)
 
+    async def test_waiter_count_race_across_flight_generations(self):
+        """
+        Step 11.2.2 follow-up: When an old flight is released and a new flight with the same key
+        registers a follower, an old follower resuming its wait_flight() finally block must NOT
+        decrement the new flight's active waiter count.
+        """
+        key = self._flight_key(self.req)
+
+        # 1. Flight A registers as leader
+        is_leader_a, fut_a = await self.coordinator.register_or_wait(key)
+        self.assertTrue(is_leader_a)
+
+        # Follower A registers
+        is_leader_fa, fut_fa = await self.coordinator.register_or_wait(key)
+        self.assertFalse(is_leader_fa)
+        self.assertEqual(self.coordinator.waiter_count(key), 1)
+
+        delayed_follower_res = None
+        follower_finished_event = asyncio.Event()
+
+        async def run_follower_a():
+            nonlocal delayed_follower_res
+            delayed_follower_res = await self.coordinator.wait_flight(fut_fa, key=key)
+            follower_finished_event.set()
+
+        t_fa = asyncio.create_task(run_follower_a())
+
+        # 2. Flight A completes and releases its key
+        await self.coordinator.complete_success(key, "result_a", expected_future=fut_a, release=True)
+        self.assertEqual(self.coordinator.waiter_count(key), 0)
+
+        # 3. New Flight B immediately registers with the SAME key!
+        is_leader_b, fut_b = await self.coordinator.register_or_wait(key)
+        self.assertTrue(is_leader_b)
+        self.assertIsNot(fut_b, fut_a)
+
+        # Follower B joins Flight B
+        is_leader_fb, fut_fb = await self.coordinator.register_or_wait(key)
+        self.assertFalse(is_leader_fb)
+        self.assertEqual(self.coordinator.waiter_count(key), 1)
+
+        # 4. Follower A resumes and completes its wait_flight() finally block
+        await follower_finished_event.wait()
+        await t_fa
+        self.assertEqual(delayed_follower_res, "result_a")
+
+        # Flight B active waiter count must remain 1 (not decremented by Flight A's follower!)
+        self.assertEqual(self.coordinator.waiter_count(key), 1)
+
+        # Clean up Flight B
+        await self.coordinator.complete_success(key, "result_b", expected_future=fut_b, release=True)
+        self.assertEqual(self.coordinator.waiter_count(key), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

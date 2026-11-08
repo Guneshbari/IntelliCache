@@ -163,7 +163,13 @@ class SingleFlightCoordinator:
         try:
             return await follower_fut
         finally:
-            if key is not None and hasattr(self, "_active_waiters") and key in self._active_waiters:
+            if (
+                key is not None
+                and hasattr(self, "_in_flight")
+                and self._in_flight.get(key) is shared_future
+                and hasattr(self, "_active_waiters")
+                and key in self._active_waiters
+            ):
                 self._active_waiters[key] = max(0, self._active_waiters[key] - 1)
 
     def waiter_count(self, key: FlightKey) -> int:
