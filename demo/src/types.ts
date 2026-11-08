@@ -134,13 +134,19 @@ export interface NamespaceMetricsSnapshot {
 }
 
 export interface CacheStats {
-  backend: string
-  namespace: string
-  enabled: boolean
-  entries: number
+  total_entries: number
   max_entries: number
+  hits: number
+  misses: number
+  coalesced_requests: number
+  total_requests: number
+  hit_rate: number
+  total_tokens_saved: number
+  total_latency_saved_ms: number
   ttl_seconds: number
-  semantic?: Record<string, unknown> | null
+  enabled: boolean
+  backend: string
+  semantic?: Record<string, number> | null
 }
 
 export interface RootStatusResponse {

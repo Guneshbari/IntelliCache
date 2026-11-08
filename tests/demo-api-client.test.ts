@@ -38,13 +38,16 @@ describe('GatewayApiClient (Demo Chatbot)', () => {
   })
 
   describe('Security & Privacy: In-Memory Token Management', () => {
-    it('manages client token strictly in memory without persistent storage side-effects', () => {
+    it('manages client token strictly in memory with private runtime field protection', () => {
       expect(client.hasToken()).toBe(false)
-      expect(client.getClientToken()).toBeNull()
 
       client.setClientToken('tenant-secret-token-xyz')
       expect(client.hasToken()).toBe(true)
-      expect(client.getClientToken()).toBe('tenant-secret-token-xyz')
+
+      // Verified: Property is a true JavaScript runtime private field (#clientToken)
+      // and is not exposed as a public property or getter on the instance
+      expect((client as unknown as Record<string, unknown>)['clientToken']).toBeUndefined()
+      expect((client as unknown as Record<string, unknown>)['#clientToken']).toBeUndefined()
 
       // Critical Security Requirement: Ensure token is never written to browser storage
       expect(localStorage.getItem('token')).toBeNull()
@@ -55,13 +58,11 @@ describe('GatewayApiClient (Demo Chatbot)', () => {
 
       client.clearToken()
       expect(client.hasToken()).toBe(false)
-      expect(client.getClientToken()).toBeNull()
     })
 
     it('ignores empty whitespace-only tokens', () => {
       client.setClientToken('   ')
       expect(client.hasToken()).toBe(false)
-      expect(client.getClientToken()).toBeNull()
     })
   })
 
@@ -556,16 +557,26 @@ describe('GatewayApiClient (Demo Chatbot)', () => {
   })
 
   describe('Cache Statistics Retrieval (GET /cache/stats)', () => {
-    it('retrieves and parses cache stats payload', async () => {
+    it('retrieves and parses actual backend cache stats payload', async () => {
       client.setClientToken('tenant-alpha-token')
 
       const mockStats: CacheStats = {
-        backend: 'postgres',
-        namespace: 'tenant_alpha',
-        enabled: true,
-        entries: 42,
+        total_entries: 42,
         max_entries: 1000,
+        hits: 15,
+        misses: 5,
+        coalesced_requests: 3,
+        total_requests: 20,
+        hit_rate: 0.75,
+        total_tokens_saved: 540,
+        total_latency_saved_ms: 12500.5,
         ttl_seconds: 3600,
+        enabled: true,
+        backend: 'postgres',
+        semantic: {
+          lookups: 5,
+          hits: 2,
+        },
       }
 
       vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
@@ -577,8 +588,14 @@ describe('GatewayApiClient (Demo Chatbot)', () => {
 
       const stats = await client.fetchCacheStats()
       expect(stats.backend).toBe('postgres')
-      expect(stats.entries).toBe(42)
+      expect(stats.total_entries).toBe(42)
+      expect(stats.max_entries).toBe(1000)
+      expect(stats.hits).toBe(15)
+      expect(stats.misses).toBe(5)
+      expect(stats.hit_rate).toBe(0.75)
+      expect(stats.total_tokens_saved).toBe(540)
       expect(stats.enabled).toBe(true)
+      expect(stats.semantic?.hits).toBe(2)
     })
   })
 })

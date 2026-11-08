@@ -9,6 +9,7 @@
 
 import { GatewayApiClient, GatewayApiError } from './api-client'
 import type {
+  CacheStats,
   ChatMessage,
   ConnectionInfo,
   ConnectionState,
@@ -279,8 +280,11 @@ export class DemoUIController {
 
     this.refreshMetricsBtn.disabled = true
     try {
-      const snapshot = await this.apiClient.fetchNamespaceMetrics()
-      this.renderMetrics(snapshot)
+      const [snapshot, cacheStats] = await Promise.all([
+        this.apiClient.fetchNamespaceMetrics(),
+        this.apiClient.fetchCacheStats().catch(() => null),
+      ])
+      this.renderMetrics(snapshot, cacheStats)
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err)
       this.metricsBodyEl.innerHTML = `
@@ -293,7 +297,7 @@ export class DemoUIController {
     }
   }
 
-  private renderMetrics(m: NamespaceMetricsSnapshot): void {
+  private renderMetrics(m: NamespaceMetricsSnapshot, cacheStats: CacheStats | null): void {
     const rc = m.request_and_cache
     const ps = m.provider_and_savings
     const sm = m.semantic
@@ -305,6 +309,31 @@ export class DemoUIController {
       val !== null && val !== undefined ? `${val.toFixed(1)} ms` : '—'
 
     this.metricsBodyEl.innerHTML = `
+      ${
+        cacheStats
+          ? `
+      <div class="metric-panel">
+        <div class="panel-title">Cache Capacity & Backend</div>
+        <div class="metric-row">
+          <span class="metric-row-label">Storage Backend:</span>
+          <span class="metric-row-value highlight">${this.escapeHtml(cacheStats.backend.toUpperCase())}</span>
+        </div>
+        <div class="metric-row">
+          <span class="metric-row-label">Entries (Active / Max):</span>
+          <span class="metric-row-value">${cacheStats.total_entries} / ${cacheStats.max_entries}</span>
+        </div>
+        <div class="metric-row">
+          <span class="metric-row-label">TTL Duration:</span>
+          <span class="metric-row-value">${cacheStats.ttl_seconds}s</span>
+        </div>
+        <div class="metric-row">
+          <span class="metric-row-label">Cache Operational:</span>
+          <span class="metric-row-value ${cacheStats.enabled ? 'green' : 'amber'}">${cacheStats.enabled ? 'Enabled' : 'Disabled'}</span>
+        </div>
+      </div>
+      `
+          : ''
+      }
       <div class="metric-panel">
         <div class="panel-title">Cache Outcomes</div>
         <div class="metric-row">

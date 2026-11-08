@@ -48,8 +48,9 @@ export interface ConnectionTestResult {
 
 export class GatewayApiClient {
   private baseUrl: string
-  // Strictly memory-only token storage. Never written to disk, window.localStorage, or IndexedDB.
-  private clientToken: string | null = null
+  // Strictly memory-only token storage with ECMAScript runtime private field isolation (#clientToken).
+  // Never written to disk, window.localStorage, IndexedDB, or exposed via public getters.
+  #clientToken: string | null = null
 
   constructor(initialBaseUrl: string = 'http://127.0.0.1:8000') {
     this.baseUrl = this.normalizeUrl(initialBaseUrl)
@@ -65,19 +66,15 @@ export class GatewayApiClient {
 
   public setClientToken(token: string | null): void {
     const trimmed = token?.trim()
-    this.clientToken = trimmed && trimmed.length > 0 ? trimmed : null
-  }
-
-  public getClientToken(): string | null {
-    return this.clientToken
+    this.#clientToken = trimmed && trimmed.length > 0 ? trimmed : null
   }
 
   public hasToken(): boolean {
-    return this.clientToken !== null && this.clientToken.length > 0
+    return this.#clientToken !== null && this.#clientToken.length > 0
   }
 
   public clearToken(): void {
-    this.clientToken = null
+    this.#clientToken = null
   }
 
   private normalizeUrl(url: string): string {
@@ -94,8 +91,8 @@ export class GatewayApiClient {
       'Content-Type': 'application/json',
     }
 
-    if (includeAuth && this.clientToken) {
-      headers['X-Client-Token'] = this.clientToken
+    if (includeAuth && this.#clientToken) {
+      headers['X-Client-Token'] = this.#clientToken
     }
 
     return headers
@@ -198,7 +195,7 @@ export class GatewayApiClient {
     }
 
     // Gateway is online. If token is provided, verify client token against /metrics/me
-    if (!this.clientToken) {
+    if (!this.#clientToken) {
       return {
         online: true,
         authenticated: false,

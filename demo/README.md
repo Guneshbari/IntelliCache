@@ -52,7 +52,10 @@ cd gateway
 # Configure environment variables (or create gateway/.env)
 export GROQ_API_KEY="your-groq-api-key"              # or mock key for testing
 export CLIENT_API_TOKENS='{"demo-token": "default", "tenant-alpha": "tenant_alpha"}'
-export CORS_ORIGINS="http://localhost:5174,http://127.0.0.1:5174,*"
+# Use explicit demo origins (recommended for authenticated sessions with credentials):
+export CORS_ORIGINS="http://localhost:5174,http://127.0.0.1:5174"
+# Or universal wildcard for uncredentialed development:
+# export CORS_ORIGINS="*"
 export CACHE_BACKEND="memory"                        # or "postgres" with DATABASE_URL
 export SEMANTIC_CACHE_ENABLED="false"                # or "true" with pgvector and Ollama
 
@@ -117,14 +120,17 @@ pnpm demo:preview
 3. Click **Send (↵)**.
    - **First Turn (Cache Miss)**: Upstream provider generation executes.
    - Badge displays `🌐 Upstream Provider Generation` (amber/gray).
-   - Latency will typically be **800 ms - 2,500 ms**.
+   - Latency reflects live LLM generation (typically ~800 ms - 2,500 ms depending on model and network).
    - Note the generated SHA-256 fingerprint (e.g. `a3f9c2...`).
 4. Click **Send (↵)** again with the identical text.
    - **Second Turn (Exact Cache Hit)**: Gateway matches exact canonical hash.
    - Badge displays `⚡ Exact Cache Hit` (emerald green).
-   - Latency drops to **~2 ms - 15 ms** (>98% latency reduction).
+   - Latency drops significantly (typically ~2 ms - 15 ms, representing a >98% latency reduction).
    - Hit count increments to `1` (or higher).
    - Token usage indicates cached savings.
+
+> [!NOTE]
+> **Performance Observations Notice**: The latency ranges cited above are empirical observations from local development benchmarks. Real-world latency varies based on server hardware, database I/O, network proximity, vector store index size, and upstream LLM provider load. Automated test suites use mocked gateway responses and do not enforce universal latency guarantees.
 
 ### B. Demonstrating Semantic Similarity Cache Hits
 
@@ -142,7 +148,7 @@ _(Requires `CACHE_BACKEND=postgres`, `SEMANTIC_CACHE_ENABLED=true`, and running 
 3. **Outcome (Semantic Reuse)**:
    - Gateway vector search identifies the candidate within cosine distance `< 0.08` (similarity `> 0.92`).
    - Badge displays `🧠 Semantic Cache Hit` (vibrant cyan).
-   - Latency drops to **~20 ms - 60 ms** (embedding lookup time) compared to multiple seconds of LLM generation.
+   - Latency reflects the embedding and vector retrieval time (typically ~20 ms - 60 ms on local hardware) compared to seconds of generative inference.
    - Telemetry increments `semantic_hits` in the Namespace Telemetry panel.
 
 ### C. Demonstrating Cache Bypass
@@ -168,9 +174,17 @@ IntelliCache implements process-local SingleFlight consolidation using Python `a
 - Multi-turn conversation requests (where `messages` count > 1 or `conversation_id` is supplied) are **explicitly excluded from semantic caching** to avoid contextual ambiguity and hallucinations resulting from missing conversational history.
 - Exact-match caching remains fully active for multi-turn requests if the exact message sequence and conversation context match.
 
-### 3. Cross-Origin Resource Sharing (CORS) Configuration
+### 3. On-Demand Metrics Refresh Model
 
-When running the gateway and demo on different ports (e.g. gateway on `8000` and demo on `5174`):
+The demonstration interface operates on an **on-demand telemetry model**:
 
-- Ensure `CORS_ORIGINS` in `gateway/.env` includes `http://localhost:5174,http://127.0.0.1:5174` or `*`.
-- When `CORS_ORIGINS=*`, the gateway permits non-credentialed client token requests via `X-Client-Token`.
+- Metrics are queried when the user explicitly clicks the **"Refresh"** button.
+- Metrics are also automatically refreshed after each successful query execution.
+- There is deliberately no continuous background polling loop, avoiding unnecessary load on the gateway.
+
+### 4. Cross-Origin Resource Sharing (CORS) Configuration
+
+When running the gateway and demo on different origins (e.g. gateway on `http://127.0.0.1:8000` and demo on `http://localhost:5174`):
+
+- Set `CORS_ORIGINS="http://localhost:5174,http://127.0.0.1:5174"` in `gateway/.env` to enable explicit origin permissions with credential support.
+- Alternatively, set `CORS_ORIGINS="*"` for universal open access (disabling credentials per CORS specification). Avoid mixing explicit origin lists with wildcard characters.

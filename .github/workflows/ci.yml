@@ -47,6 +47,9 @@ jobs:
       - name: Run TypeScript typecheck
         run: pnpm typecheck
 
+      - name: Build demonstration chatbot application
+        run: pnpm demo:build
+
   collector-tests-and-build:
     name: Extension Tests & Distribution Builds
     needs: frontend-quality
