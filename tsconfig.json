@@ -17,5 +17,13 @@
     "noFallthroughCasesInSwitch": true,
     "types": ["chrome", "node"]
   },
-  "include": ["src", "manifest.config.ts", "vite.config.ts", "vitest.config.ts", "tests"]
+  "include": [
+    "src",
+    "demo",
+    "manifest.config.ts",
+    "vite.config.ts",
+    "vite.demo.config.ts",
+    "vitest.config.ts",
+    "tests"
+  ]
 }

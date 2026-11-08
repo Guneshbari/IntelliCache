@@ -1,6 +1,7 @@
 node_modules
 dist
 dist-firefox
+dist-demo
 .DS_Store
 *.log
 coverage

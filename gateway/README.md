@@ -596,11 +596,33 @@ python -m unittest tests/test_main.py          # Application integration tests
 
 ---
 
-## Current Scope & Future Architectural Boundaries
+## Demonstration Chatbot & End-to-End Integration (Step 12)
 
-The following capabilities represent intentional architectural boundaries for future steps:
+IntelliCache includes a lightweight, standalone web-based demonstration chatbot under [`demo/`](file:///home/gnx/Projects/IntelliCache/demo/) that connects exclusively to the gateway's REST API (`POST /query`, `GET /metrics/me`, `GET /cache/stats`).
 
-- **Current Scope**: Exact-match SHA-256 caching, centralized PostgreSQL storage, in-memory LRU/TTL storage, cancellation-safe single flight for non-streaming requests, Groq LLM provider adapter, provider-independent `EmbeddingProvider` abstraction (with `OllamaEmbeddingProvider`), and provider-independent vector storage via PostgreSQL + pgvector (`PostgresVectorStore`).
-- **Semantic Cache Engine**: Semantic similarity retrieval, similarity thresholding, and cache hits will be introduced as an independent layer built on top of the vector store and embedding provider in Step 7.
-- **Conversation Manager**: Multi-turn conversation persistence will record every delivered prompt, response, and provenance trace in a persistent store.
-- **Demonstration Chatbot**: The web UI chatbot will consume the stable public REST API (`POST /query`).
+### Features:
+
+- **Zero Heavy Framework Dependencies**: Written in vanilla TypeScript and semantic HTML/CSS, bundled independently with Vite.
+- **In-Memory Credential Security**: Client API tokens are retained strictly in memory closures and never persisted to browser storage (`localStorage`, `sessionStorage`, `IndexedDB`) or cookies.
+- **Live Cache Diagnostics**: Every assistant response is paired with a real-time Cache & Performance Card distinguishing exact cache hits (`⚡ EXACT CACHE HIT`), semantic hits (`🧠 SEMANTIC CACHE HIT`), and provider generations (`🌐 UPSTREAM PROVIDER GENERATION`), along with latency in milliseconds, token counts, and shortened SHA-256 fingerprints.
+- **Namespace Telemetry Panel**: A collapsible metrics panel fetching real-time tenant telemetry from `GET /metrics/me`.
+
+### Starting the Demo:
+
+```bash
+# In repository root
+pnpm demo:dev
+```
+
+Access the demonstration client at `http://localhost:5174`. See [`demo/README.md`](file:///home/gnx/Projects/IntelliCache/demo/README.md) for full verification workflows and instructions.
+
+---
+
+## Current Scope & Architectural Boundaries
+
+The following capabilities represent the current implementation state:
+
+- **Current Scope**: Exact-match SHA-256 caching, centralized PostgreSQL storage, in-memory LRU/TTL storage, cancellation-safe SingleFlight coalescing for non-streaming requests, Groq LLM provider adapter, Ollama embedding provider, PostgreSQL + pgvector vector storage (`PostgresVectorStore`), semantic response caching service with deterministic eligibility policy, namespace-isolated runtime metrics collection, and standalone web demonstration chatbot (`demo/`).
+- **SingleFlight Boundary**: Request coalescing is strictly process-local (within a single Python asyncio event loop and process).
+- **Multi-Turn Semantic Policy**: Semantic caching explicitly evaluates independent single-turn technical queries (`messages` count = 1, role = 'user', no `conversation_id`). Multi-turn conversations are excluded from semantic caching by design to prevent contextual hallucination.
+- **Persistent Conversation Store**: Persistent conversation provenance and long-term history tracking across sessions will be explored in future extensions.

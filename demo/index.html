@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>IntelliCache — Gateway Demonstration Chatbot</title>
+    <link rel="icon" type="image/png" href="/icons/icon-32.png" />
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <!-- App Header -->
+    <header class="app-header">
+      <div class="brand-section">
+        <div class="brand-logo">⚡</div>
+        <div class="brand-title">
+          IntelliCache
+          <span class="brand-badge">Gateway Demo</span>
+        </div>
+      </div>
+
+      <div class="header-actions">
+        <div id="connection-badge" class="connection-badge" data-state="disconnected">
+          <span class="connection-dot"></span>
+          <span id="connection-text">Disconnected</span>
+        </div>
+        <button
+          id="btn-toggle-metrics"
+          class="btn-icon"
+          type="button"
+          title="Toggle authenticated runtime metrics panel"
+        >
+          📊 Hide Metrics
+        </button>
+        <button
+          id="btn-clear-chat"
+          class="btn-icon"
+          type="button"
+          title="Clear message history and start a new conversation"
+        >
+          🗑️ Clear Chat
+        </button>
+      </div>
+    </header>
+
+    <!-- Connection & Auth Configuration Bar -->
+    <section class="config-bar" aria-label="Connection Settings">
+      <form class="config-form" id="config-form" onsubmit="return false">
+        <div class="form-group" style="flex: 2 1 240px">
+          <label class="form-label" for="gateway-url">Gateway REST API URL</label>
+          <input
+            id="gateway-url"
+            class="form-input"
+            type="text"
+            value="http://127.0.0.1:8000"
+            placeholder="http://127.0.0.1:8000"
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </div>
+
+        <div class="form-group" style="flex: 3 1 300px">
+          <label class="form-label" for="client-token">Client API Token (In-Memory Only)</label>
+          <div class="input-wrapper">
+            <input
+              id="client-token"
+              class="form-input"
+              type="password"
+              placeholder="e.g. test-client-token or your tenant token"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <button
+              id="btn-toggle-token"
+              class="btn-toggle-token"
+              type="button"
+              title="Toggle token visibility"
+            >
+              👁️
+            </button>
+          </div>
+        </div>
+
+        <div class="form-group small">
+          <button id="btn-connect" class="btn-primary" type="button">🔌 Connect / Test</button>
+        </div>
+      </form>
+      <div class="security-note">
+        🔒 Security Assurance: Client API tokens are retained in memory only for this session. They
+        are never written to disk, localStorage, sessionStorage, IndexedDB, or cookies.
+      </div>
+    </section>
+
+    <!-- Main Workspace Container -->
+    <main id="main-container" class="main-container">
+      <!-- Chat & Cache Visibility Section -->
+      <section class="chat-section" aria-label="Chat and Cache Performance">
+        <div id="messages-container" class="messages-container" role="log" aria-live="polite">
+          <!-- Rendered dynamically by DemoUIController -->
+        </div>
+
+        <div class="chat-input-bar">
+          <div class="input-options-row">
+            <div class="mode-selector" role="group" aria-label="Query Mode">
+              <button id="mode-single" class="mode-btn active" type="button">
+                Single-Turn (Semantic Eligible)
+              </button>
+              <button id="mode-multi" class="mode-btn" type="button">
+                Multi-Turn (Conversation)
+              </button>
+            </div>
+
+            <label class="checkbox-label" for="bypass-cache-checkbox">
+              <input id="bypass-cache-checkbox" type="checkbox" />
+              <span>Bypass Cache (Force Upstream Call)</span>
+            </label>
+          </div>
+
+          <div id="turn-notice" class="turn-notice">
+            <!-- Dynamic notice based on mode -->
+          </div>
+
+          <div class="input-main-row">
+            <textarea
+              id="chat-textarea"
+              class="chat-textarea"
+              placeholder="Enter your programming or technical question... (Press Enter to send, Shift+Enter for newline)"
+              rows="2"
+            ></textarea>
+            <button id="btn-send" class="btn-send" type="button">
+              <span>Send</span>
+              <span>↵</span>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Authenticated Namespace Metrics Panel -->
+      <aside class="metrics-section" aria-label="Authenticated Runtime Metrics">
+        <div class="metrics-header">
+          <div class="metrics-title">
+            <span>Namespace Telemetry</span>
+            <span
+              id="metrics-namespace"
+              style="font-family: var(--font-mono); font-size: 0.8rem; color: var(--accent-cyan)"
+              >[—]</span
+            >
+          </div>
+          <button
+            id="btn-refresh-metrics"
+            class="btn-icon"
+            type="button"
+            title="Fetch latest namespace metrics from /metrics/me"
+          >
+            🔄 Refresh
+          </button>
+        </div>
+
+        <div id="metrics-body" class="metrics-body">
+          <div class="metrics-notice">
+            Connect with a client API token to inspect real-time namespace cache statistics, token
+            savings, and latency distributions.
+          </div>
+        </div>
+      </aside>
+    </main>
+
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>
