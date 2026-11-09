@@ -166,4 +166,41 @@ describe('ConversationManager (In-Memory Session Model)', () => {
     expect(sessionStorage.length).toBe(0)
     expect(document.cookie).toBe('')
   })
+
+  it('hydrates and updates conversations from server summaries', () => {
+    manager.setConversationsFromServer([
+      {
+        id: 'srv-1',
+        title: 'Server Conversation 1',
+        cache_namespace: 'test_ns',
+        created_at: '2026-11-10T00:00:00Z',
+        updated_at: '2026-11-10T00:05:00Z',
+        last_message_at: '2026-11-10T00:05:00Z',
+      },
+      {
+        id: 'srv-2',
+        title: 'Server Conversation 2',
+        cache_namespace: 'test_ns',
+        created_at: '2026-11-10T00:10:00Z',
+        updated_at: '2026-11-10T00:15:00Z',
+        last_message_at: '2026-11-10T00:15:00Z',
+      },
+    ])
+
+    expect(manager.hasConversation('srv-1')).toBe(true)
+    expect(manager.hasConversation('srv-2')).toBe(true)
+
+    manager.setConversationMessages('srv-1', [
+      { id: 'm-1', role: 'user', content: 'Turn 1 user', timestamp: 1000 },
+      { id: 'm-2', role: 'assistant', content: 'Turn 1 assistant', timestamp: 2000 },
+    ])
+
+    expect(manager.getMessages('srv-1').length).toBe(2)
+    expect(manager.getMessages('srv-1')[0].content).toBe('Turn 1 user')
+    expect(manager.getMessages('srv-1')[1].content).toBe('Turn 1 assistant')
+
+    // Confirm storage remains empty
+    expect(localStorage.length).toBe(0)
+    expect(sessionStorage.length).toBe(0)
+  })
 })

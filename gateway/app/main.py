@@ -185,6 +185,9 @@ def create_app() -> FastAPI:
     app.include_router(query_router, prefix="/query", tags=["Query"])
     app.include_router(query_router, prefix="/api/v1/query", tags=["Query (v1)"])
 
+    from app.api.conversations import router as conversations_router
+    app.include_router(conversations_router)
+
     @app.get("/", summary="Gateway Root Status")
     async def root_status(current_settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
         """Root status endpoint returning service info and endpoints."""
@@ -201,6 +204,7 @@ def create_app() -> FastAPI:
             "endpoints": {
                 "query": "POST /query",
                 "query_v1": "POST /api/v1/query",
+                "conversations": "GET/POST /conversations",
                 "health": "GET /health",
                 "cache_stats": "GET /cache/stats",
                 "cache_clear": "POST /cache/clear",

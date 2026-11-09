@@ -40,6 +40,7 @@ flowchart TD
 4. **Transparent Caching Diagnostics**: Responses display the exact backend diagnostic metadata (`cached`, `cache_type: "exact" | "semantic" | "none"`, `latency_ms`, `cache_hit_count`, `model`, `usage`, and shortened `fingerprint`). No fabricated cache indicators.
 5. **Namespace-Isolated Telemetry**: The UI displays authenticated namespace-level hit rates, token savings, coalesced joins, cache capacity, and latency distributions via `GET /metrics/me` and `GET /cache/stats`. Administrative metrics (`/admin/metrics`) remain isolated and unreachable to ordinary client tokens.
 6. **Responsive Dark Neo-Brutalist Design**: High-contrast cyberpunk brutalist aesthetics with tactile offset box-shadows, semantic cache badges (emerald exact, cyan semantic, amber provider), responsive mobile drawer navigation, collapsible metrics, and full keyboard accessibility.
+7. **Server-Managed Persistent Conversations**: In multi-turn mode, conversation sessions and turns persist centrally in PostgreSQL. On connection, the client loads user conversations via `GET /conversations` and loads messages on demand via `GET /conversations/{id}/messages`. Multi-turn queries submit `conversation_id`, `prompt`, and a client-generated `Idempotency-Key` without sending raw historical messages arrays, relying on the gateway's bounded Context Builder while maintaining strictly memory-only token storage.
 
 ---
 

@@ -6,7 +6,7 @@
  * window.localStorage, window.sessionStorage, IndexedDB, or cookies.
  */
 
-import type { ChatMessage, ConversationSession } from '../types'
+import type { ChatMessage, ConversationSession, ConversationSummary } from '../types'
 
 export class ConversationManager {
   private sessions: Map<string, ConversationSession> = new Map()
@@ -86,6 +86,44 @@ export class ConversationManager {
     this.sessions.clear()
     const fresh = this.createConversation()
     this.activeId = fresh.id
+  }
+
+  public hasConversation(id: string): boolean {
+    return this.sessions.has(id)
+  }
+
+  public setConversationsFromServer(conversations: ConversationSummary[]): void {
+    if (!conversations || conversations.length === 0) return
+
+    for (const c of conversations) {
+      const existing = this.sessions.get(c.id)
+      const updatedAt = new Date(c.updated_at || c.created_at).getTime()
+      const createdAt = new Date(c.created_at).getTime()
+      if (existing) {
+        existing.title = c.title || existing.title
+        existing.updatedAt = updatedAt
+      } else {
+        this.sessions.set(c.id, {
+          id: c.id,
+          title: c.title || 'New Conversation',
+          createdAt: Number.isFinite(createdAt) ? createdAt : Date.now(),
+          updatedAt: Number.isFinite(updatedAt) ? updatedAt : Date.now(),
+          messages: [],
+        })
+      }
+    }
+
+    if (!this.sessions.has(this.activeId) && conversations.length > 0) {
+      this.activeId = conversations[0].id
+    }
+  }
+
+  public setConversationMessages(id: string, messages: ChatMessage[]): void {
+    const session = this.sessions.get(id)
+    if (session) {
+      session.messages = [...messages]
+      session.updatedAt = Date.now()
+    }
   }
 
   public addMessage(convId: string, message: ChatMessage): void {

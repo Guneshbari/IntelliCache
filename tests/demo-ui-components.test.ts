@@ -465,7 +465,7 @@ describe('DemoUIController (End-to-End Coordination & Request Payloads)', () => 
     expect(payload.messages).toBeUndefined()
   })
 
-  it('constructs multi-turn payload with messages array and active conversation_id', async () => {
+  it('constructs multi-turn payload with prompt and active conversation_id without transmitting messages array', async () => {
     const sendSpy = vi.spyOn(apiClient, 'sendQuery').mockResolvedValueOnce({
       response: 'Multi turn answer',
       cached: false,
@@ -488,9 +488,11 @@ describe('DemoUIController (End-to-End Coordination & Request Payloads)', () => 
     expect(sendSpy).toHaveBeenCalledTimes(1)
     const payload = sendSpy.mock.calls[0][0]
     expect(payload.conversation_id).toBe(activeConvId)
-    expect(payload.messages).toBeDefined()
-    expect(payload.messages?.length).toBe(1)
-    expect(payload.messages?.[0].content).toBe('Explain state machines in TypeScript')
+    expect(payload.prompt).toBe('Explain state machines in TypeScript')
+    expect(payload.messages).toBeUndefined()
+    const idempotencyKey = sendSpy.mock.calls[0][1]
+    expect(idempotencyKey).toBeDefined()
+    expect(typeof idempotencyKey).toBe('string')
   })
 
   it('retries a failed query without duplicating the preceding user turn in conversation history', async () => {

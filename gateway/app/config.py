@@ -124,6 +124,20 @@ class Settings(BaseModel):
         default_factory=lambda: int(os.getenv("MAX_MESSAGE_CHARS", "131072"))
     )
 
+    # Persistent Conversation & Context Builder Configuration
+    conversation_identity_secret: str = Field(
+        default_factory=lambda: os.getenv(
+            "CONVERSATION_IDENTITY_SECRET",
+            "intellicache-default-identity-secret-change-in-production",
+        ).strip()
+    )
+    conversation_max_context_messages: int = Field(
+        default_factory=lambda: int(os.getenv("CONVERSATION_MAX_CONTEXT_MESSAGES", "50"))
+    )
+    conversation_max_context_chars: int = Field(
+        default_factory=lambda: int(os.getenv("CONVERSATION_MAX_CONTEXT_CHARS", "65536"))
+    )
+
     # Embedding Configuration
     embedding_provider: str = Field(
         default_factory=lambda: os.getenv("EMBEDDING_PROVIDER", "ollama").lower().strip()
@@ -190,6 +204,18 @@ class Settings(BaseModel):
     def validate_client_token_config(self) -> "Settings":
         # Eagerly validate client token configuration at startup
         self.get_client_token_map()
+        return self
+
+    @model_validator(mode="after")
+    def validate_conversation_config(self) -> "Settings":
+        if self.conversation_max_context_messages <= 0:
+            raise ValueError("CONVERSATION_MAX_CONTEXT_MESSAGES must be positive.")
+        if self.conversation_max_context_chars <= 0:
+            raise ValueError("CONVERSATION_MAX_CONTEXT_CHARS must be positive.")
+        if self.conversation_identity_secret is not None:
+            cleaned = self.conversation_identity_secret.strip()
+            if len(cleaned) < 16:
+                raise ValueError("CONVERSATION_IDENTITY_SECRET must be at least 16 characters long.")
         return self
 
     def get_client_token_map(self) -> Dict[str, str]:

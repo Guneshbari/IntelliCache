@@ -178,6 +178,24 @@ export class MessageRenderer {
                   <span class="diag-label">Prompt / Completion:</span>
                   <span class="diag-value">${promptTokens} / ${compTokens}</span>
                 </div>
+                ${
+                  meta.context_status
+                    ? `
+                <div class="diag-item">
+                  <span class="diag-label">Context Status:</span>
+                  <span class="diag-value highlight-accent">${MarkdownRenderer.escapeHtml(meta.context_status)}</span>
+                </div>`
+                    : ''
+                }
+                ${
+                  meta.turn_id
+                    ? `
+                <div class="diag-item">
+                  <span class="diag-label">Turn ID:</span>
+                  <span class="diag-value" title="${MarkdownRenderer.escapeHtml(meta.turn_id)}">${MarkdownRenderer.escapeHtml(meta.turn_id.slice(0, 8))}...</span>
+                </div>`
+                    : ''
+                }
                 <div class="diag-item diag-full">
                   <span class="diag-label">SHA-256 Fingerprint:</span>
                   <div class="fingerprint-row">

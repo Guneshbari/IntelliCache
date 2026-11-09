@@ -1,0 +1,533 @@
+"""
+Integration and unit tests for persistent conversation management, identity isolation,
+bounded context construction, and conversational query execution in IntelliCache Gateway.
+"""
+
+import asyncio
+from datetime import datetime, timezone
+import json
+import os
+import unittest
+from unittest.mock import AsyncMock, patch
+from urllib.parse import urlsplit
+
+import asyncpg
+from fastapi.testclient import TestClient
+import httpx
+
+from app.cache.migration import run_migrations
+from app.config import Settings, get_settings, reload_settings
+from app.context.builder import ContextBuilder
+from app.context.contracts import ContextStatus
+from app.context.policy import ContextPolicy
+from app.conversations.identity import (
+    AuthenticatedClient,
+    _is_loopback_address,
+    derive_principal_id,
+    verify_conversation_client,
+)
+from app.conversations.models import ConversationRecord
+from app.conversations.repository import (
+    ActiveTurnConflictError,
+    ConversationNotFoundError,
+    PostgresConversationRepository,
+)
+from app.conversations.service import ConversationService
+from app.core.contracts import ChatMessage
+from app.main import app
+from app.routes.query import (
+    get_groq_client_factory,
+    get_query_cache,
+    set_query_cache,
+)
+
+APPROVED_TEST_DATABASES: frozenset = frozenset({"intellicache_test"})
+
+
+class MockChoice:
+    def __init__(self, content: str):
+        self.message = type("Msg", (), {"content": content})
+
+
+class MockUsage:
+    def __init__(self, prompt_tokens: int = 10, completion_tokens: int = 20, total_tokens: int = 30):
+        self.prompt_tokens = prompt_tokens
+        self.completion_tokens = completion_tokens
+        self.total_tokens = total_tokens
+
+
+class MockCompletion:
+    def __init__(self, content: str = "Test response from Groq"):
+        self.choices = [MockChoice(content)]
+        self.usage = MockUsage()
+
+
+class TestConversationIdentity(unittest.TestCase):
+    """Unit tests for principal derivation and client authentication."""
+
+    def test_derive_principal_id_determinism(self):
+        token = "secret-client-token-123"
+        secret = "system-identity-secret-456"
+        p1 = derive_principal_id(token, secret)
+        p2 = derive_principal_id(token, secret)
+        self.assertEqual(p1, p2)
+        self.assertEqual(len(p1), 64)  # SHA-256 hex digest length
+
+    def test_derive_principal_id_different_tokens(self):
+        secret = "system-identity-secret"
+        p1 = derive_principal_id("token-alpha", secret)
+        p2 = derive_principal_id("token-beta", secret)
+        self.assertNotEqual(p1, p2)
+
+    def test_derive_principal_id_different_secrets(self):
+        token = "token-alpha"
+        p1 = derive_principal_id(token, "secret-one-123456789")
+        p2 = derive_principal_id(token, "secret-two-123456789")
+        self.assertNotEqual(p1, p2)
+
+    def test_derive_principal_id_invalid_inputs(self):
+        with self.assertRaises(ValueError):
+            derive_principal_id("", "secret")
+        with self.assertRaises(ValueError):
+            derive_principal_id("   ", "secret")
+        with self.assertRaises(ValueError):
+            derive_principal_id("token", "")
+        with self.assertRaises(ValueError):
+            derive_principal_id("token", "   ")
+
+    def test_is_loopback_address(self):
+        self.assertTrue(_is_loopback_address("127.0.0.1"))
+        self.assertTrue(_is_loopback_address("127.0.1.1"))
+        self.assertTrue(_is_loopback_address("::1"))
+        self.assertTrue(_is_loopback_address("::ffff:127.0.0.1"))
+        self.assertTrue(_is_loopback_address("localhost"))
+
+        self.assertFalse(_is_loopback_address("192.168.1.100"))
+        self.assertFalse(_is_loopback_address("10.0.0.1"))
+        self.assertFalse(_is_loopback_address("172.16.0.1"))
+        self.assertFalse(_is_loopback_address("8.8.8.8"))
+        self.assertFalse(_is_loopback_address(""))
+        self.assertFalse(_is_loopback_address("unknown-host"))
+
+
+class TestConversationsFallbackWithoutDB(unittest.TestCase):
+    """Tests ensuring graceful degradation when PostgreSQL is not configured."""
+
+    def setUp(self):
+        self.token = "valid-test-fallback-token-123"
+        tokens_json = json.dumps({self.token: "default"})
+        self.env_patcher = patch.dict(
+            os.environ,
+            {
+                "CLIENT_API_TOKENS": tokens_json,
+                "CONVERSATION_IDENTITY_SECRET": "fallback-test-secret-12345678",
+            },
+            clear=False,
+        )
+        self.env_patcher.start()
+        reload_settings()
+
+        self.client = TestClient(app)
+        self._saved_pool = getattr(app.state, "db_pool", None)
+        app.state.db_pool = None
+
+    def tearDown(self):
+        self.env_patcher.stop()
+        reload_settings()
+        app.state.db_pool = self._saved_pool
+
+    def test_conversations_endpoint_returns_503_without_db(self):
+        resp = self.client.get("/conversations", headers={"X-Client-Token": self.token})
+        self.assertEqual(resp.status_code, 503)
+        data = resp.json()
+        self.assertIn("detail", data)
+        self.assertIn("requires a PostgreSQL backend", data["detail"])
+
+    def test_query_with_conversation_id_missing_idempotency_key_returns_400(self):
+        resp = self.client.post(
+            "/query",
+            json={"prompt": "Hello", "conversation_id": "conv_123"},
+            headers={"X-Client-Token": self.token},
+        )
+        self.assertEqual(resp.status_code, 400)
+        data = resp.json()
+        self.assertIn("Idempotency-Key header is required", data["detail"])
+
+    def test_query_with_conversation_id_returns_503_without_db(self):
+        resp = self.client.post(
+            "/query",
+            json={"prompt": "Hello", "conversation_id": "conv_123"},
+            headers={
+                "X-Client-Token": self.token,
+                "Idempotency-Key": "test-key-123",
+            },
+        )
+        self.assertEqual(resp.status_code, 503)
+        data = resp.json()
+        self.assertIn("requires a PostgreSQL backend", data["detail"])
+
+
+class TestPostgresConversationsIntegration(unittest.IsolatedAsyncioTestCase):
+    """Integration tests with live PostgreSQL database."""
+
+    async def asyncSetUp(self):
+        explicit_url = os.getenv("TEST_DATABASE_URL")
+        if not explicit_url:
+            self.skipTest("TEST_DATABASE_URL environment variable is not set.")
+
+        self.db_url = explicit_url
+        parsed = urlsplit(self.db_url)
+        db_name = (parsed.path or "").lstrip("/")
+        if db_name not in APPROVED_TEST_DATABASES:
+            self.fail(
+                f"Safety check failed: Database '{db_name}' is not in the approved test database allowlist: "
+                f"{sorted(APPROVED_TEST_DATABASES)}."
+            )
+
+        self.token_a = "token_conv_user_alpha"
+        self.token_b = "token_conv_user_beta"
+        self.ns = "conv_test_ns"
+
+        # Capture app state
+        self._saved_dependency_overrides = dict(app.dependency_overrides)
+        self._saved_query_cache = get_query_cache()
+        self._saved_db_pool = getattr(app.state, "db_pool", None)
+
+        self.pool = await asyncpg.create_pool(self.db_url, min_size=1, max_size=5)
+        self.addAsyncCleanup(self._cleanup_database_and_pool)
+        self.addAsyncCleanup(self._restore_app_state)
+
+        await run_migrations(self.pool)
+
+        # Clean existing test data
+        async with self.pool.acquire() as conn:
+            await conn.execute("DELETE FROM conversation_messages")
+            await conn.execute("DELETE FROM conversation_turns")
+            await conn.execute("DELETE FROM conversations")
+            await conn.execute("DELETE FROM cache_entries WHERE cache_namespace = $1", self.ns)
+
+        # Set up repository and service
+        self.repo = PostgresConversationRepository(self.pool)
+        self.service = ConversationService(self.repo)
+        app.state.db_pool = self.pool
+
+        # Mock Groq provider
+        self.provider_call_count = 0
+        self.last_provider_messages = []
+        self.mock_groq = AsyncMock()
+
+        def side_effect(*args, **kwargs):
+            self.provider_call_count += 1
+            if "messages" in kwargs:
+                self.last_provider_messages = kwargs["messages"]
+            return MockCompletion(f"Assistant Response #{self.provider_call_count}")
+
+        self.mock_groq.chat.completions.create.side_effect = side_effect
+        self.mock_groq.close = AsyncMock()
+        app.dependency_overrides[get_groq_client_factory] = lambda: lambda: self.mock_groq
+
+        # Configure environment
+        tokens_json = json.dumps({
+            self.token_a: self.ns,
+            self.token_b: self.ns,
+        })
+        self.env_patcher = patch.dict(os.environ, {
+            "CLIENT_API_TOKENS": tokens_json,
+            "CACHE_BACKEND": "postgres",
+            "DATABASE_URL": self.db_url,
+            "CACHE_ENABLED": "true",
+            "CONVERSATION_IDENTITY_SECRET": "test-conv-secret-key-999",
+            "CONVERSATION_MAX_CONTEXT_MESSAGES": "50",
+            "CONVERSATION_MAX_CONTEXT_CHARS": "65536",
+        }, clear=False)
+        self.env_patcher.start()
+        reload_settings()
+
+    async def _cleanup_database_and_pool(self):
+        if hasattr(self, "pool") and self.pool is not None:
+            try:
+                if not self.pool.is_closing():
+                    async with self.pool.acquire() as conn:
+                        await conn.execute("DELETE FROM conversation_messages")
+                        await conn.execute("DELETE FROM conversation_turns")
+                        await conn.execute("DELETE FROM conversations")
+                        await conn.execute("DELETE FROM cache_entries WHERE cache_namespace = $1", self.ns)
+            finally:
+                await self.pool.close()
+
+    async def _restore_app_state(self):
+        if hasattr(self, "env_patcher"):
+            self.env_patcher.stop()
+        if hasattr(self, "_saved_dependency_overrides"):
+            app.dependency_overrides.clear()
+            app.dependency_overrides.update(self._saved_dependency_overrides)
+        reload_settings()
+        if hasattr(self, "_saved_query_cache"):
+            set_query_cache(self._saved_query_cache)
+        app.state.db_pool = self._saved_db_pool
+
+    async def test_conversation_crud_and_isolation(self):
+        """Test conversation creation, listing, detail retrieval, and isolation between clients."""
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client_a, \
+                   httpx.AsyncClient(transport=transport, base_url="http://testserver") as client_b:
+
+            # 1. Client A creates a conversation
+            create_resp = await client_a.post(
+                "/conversations",
+                json={"title": "Client A Chat"},
+                headers={"X-Client-Token": self.token_a},
+            )
+            self.assertEqual(create_resp.status_code, 201)
+            conv_data = create_resp.json()
+            conv_id = conv_data["id"]
+            self.assertEqual(conv_data["title"], "Client A Chat")
+            self.assertEqual(conv_data["cache_namespace"], self.ns)
+
+            # 2. Client A lists conversations -> sees the created conversation
+            list_resp_a = await client_a.get(
+                "/conversations",
+                headers={"X-Client-Token": self.token_a},
+            )
+            self.assertEqual(list_resp_a.status_code, 200)
+            list_data_a = list_resp_a.json()
+            self.assertEqual(list_data_a["total"], 1)
+            self.assertEqual(list_data_a["conversations"][0]["id"], conv_id)
+
+            # 3. Client B (same namespace, different token -> different principal) lists conversations
+            list_resp_b = await client_b.get(
+                "/conversations",
+                headers={"X-Client-Token": self.token_b},
+            )
+            self.assertEqual(list_resp_b.status_code, 200)
+            list_data_b = list_resp_b.json()
+            self.assertEqual(list_data_b["total"], 0)
+            self.assertEqual(len(list_data_b["conversations"]), 0)
+
+            # 4. Client B attempts to fetch Client A's conversation -> 404
+            get_resp_b = await client_b.get(
+                f"/conversations/{conv_id}",
+                headers={"X-Client-Token": self.token_b},
+            )
+            self.assertEqual(get_resp_b.status_code, 404)
+
+            # 5. Client B attempts to delete Client A's conversation -> 404
+            del_resp_b = await client_b.delete(
+                f"/conversations/{conv_id}",
+                headers={"X-Client-Token": self.token_b},
+            )
+            self.assertEqual(del_resp_b.status_code, 404)
+
+            # 6. Client A deletes conversation -> 200 OK
+            del_resp_a = await client_a.delete(
+                f"/conversations/{conv_id}",
+                headers={"X-Client-Token": self.token_a},
+            )
+            self.assertEqual(del_resp_a.status_code, 200)
+            self.assertTrue(del_resp_a.json()["deleted"])
+
+            # 7. Verification: it's gone
+            get_resp_a = await client_a.get(
+                f"/conversations/{conv_id}",
+                headers={"X-Client-Token": self.token_a},
+            )
+            self.assertEqual(get_resp_a.status_code, 404)
+
+    async def test_server_managed_query_multi_turn_and_idempotency(self):
+        """Test multi-turn conversational query flow and idempotent replay."""
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            # Create conversation
+            c_resp = await client.post(
+                "/conversations",
+                json={"title": "Multi Turn Conversation"},
+                headers={"X-Client-Token": self.token_a},
+            )
+            conv_id = c_resp.json()["id"]
+
+            # Turn 1
+            resp1 = await client.post(
+                "/query",
+                json={"prompt": "Turn 1 question", "conversation_id": conv_id},
+                headers={
+                    "X-Client-Token": self.token_a,
+                    "Idempotency-Key": "idemp-turn-1",
+                },
+            )
+            self.assertEqual(resp1.status_code, 200)
+            data1 = resp1.json()
+            self.assertEqual(data1["response"], "Assistant Response #1")
+            self.assertFalse(data1["cached"])
+            self.assertEqual(data1["cache_type"], "none")
+            self.assertEqual(data1["context_status"], "complete")
+            self.assertIsNotNone(data1["turn_id"])
+            turn1_id = data1["turn_id"]
+
+            # Verify messages in conversation
+            msgs_resp1 = await client.get(
+                f"/conversations/{conv_id}/messages",
+                headers={"X-Client-Token": self.token_a},
+            )
+            self.assertEqual(msgs_resp1.status_code, 200)
+            msgs1 = msgs_resp1.json()["messages"]
+            self.assertEqual(len(msgs1), 2)
+            self.assertEqual(msgs1[0]["role"], "user")
+            self.assertEqual(msgs1[0]["content"], "Turn 1 question")
+            self.assertEqual(msgs1[1]["role"], "assistant")
+            self.assertEqual(msgs1[1]["content"], "Assistant Response #1")
+
+            # Turn 1 Idempotent Replay (same Idempotency-Key)
+            resp1_replay = await client.post(
+                "/query",
+                json={"prompt": "Turn 1 question", "conversation_id": conv_id},
+                headers={
+                    "X-Client-Token": self.token_a,
+                    "Idempotency-Key": "idemp-turn-1",
+                },
+            )
+            self.assertEqual(resp1_replay.status_code, 200)
+            data1_replay = resp1_replay.json()
+            self.assertEqual(data1_replay["response"], "Assistant Response #1")
+            self.assertTrue(data1_replay["cached"])
+            self.assertEqual(data1_replay["cache_type"], "exact")
+            self.assertEqual(data1_replay["fingerprint"], "idempotent_replay")
+            self.assertEqual(data1_replay["turn_id"], turn1_id)
+            # Upstream provider was NOT called again
+            self.assertEqual(self.provider_call_count, 1)
+
+            # Turn 2
+            resp2 = await client.post(
+                "/query",
+                json={"prompt": "Turn 2 question", "conversation_id": conv_id},
+                headers={
+                    "X-Client-Token": self.token_a,
+                    "Idempotency-Key": "idemp-turn-2",
+                },
+            )
+            self.assertEqual(resp2.status_code, 200)
+            data2 = resp2.json()
+            self.assertEqual(data2["response"], "Assistant Response #2")
+            self.assertEqual(self.provider_call_count, 2)
+
+            # Verify provider received the reconstructed multi-turn history:
+            # [user 1, assistant 1, user 2]
+            self.assertEqual(len(self.last_provider_messages), 3)
+            self.assertEqual(self.last_provider_messages[0]["role"], "user")
+            self.assertEqual(self.last_provider_messages[0]["content"], "Turn 1 question")
+            self.assertEqual(self.last_provider_messages[1]["role"], "assistant")
+            self.assertEqual(self.last_provider_messages[1]["content"], "Assistant Response #1")
+            self.assertEqual(self.last_provider_messages[2]["role"], "user")
+            self.assertEqual(self.last_provider_messages[2]["content"], "Turn 2 question")
+
+            # Verify total messages stored is 4 (2 turns * 2 messages)
+            msgs_resp2 = await client.get(
+                f"/conversations/{conv_id}/messages",
+                headers={"X-Client-Token": self.token_a},
+            )
+            self.assertEqual(msgs_resp2.status_code, 200)
+            msgs2 = msgs_resp2.json()["messages"]
+            self.assertEqual(len(msgs2), 4)
+
+    async def test_concurrent_active_turn_conflict_409(self):
+        """Test that attempting two active turns on the same conversation returns 409 Conflict."""
+        # Create conversation directly in repo
+        principal = derive_principal_id(self.token_a, "test-conv-secret-key-999")
+        conv = await self.repo.create_conversation(None, self.ns, principal, "Conflict Test")
+
+        # Manually begin a turn so it's in 'pending' state
+        await self.repo.begin_turn(conv.id, principal, "key-first", "First prompt")
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            resp = await client.post(
+                "/query",
+                json={"prompt": "Second concurrent prompt", "conversation_id": conv.id},
+                headers={
+                    "X-Client-Token": self.token_a,
+                    "Idempotency-Key": "key-second",
+                },
+            )
+            self.assertEqual(resp.status_code, 409)
+            data = resp.json()
+            self.assertIn("detail", data)
+            self.assertIn("turn is currently in progress", data["detail"])
+
+    async def test_context_budget_compacted_bypasses_cache(self):
+        """Test that when ContextBuilder truncates messages, status is COMPACTED and exact cache is bypassed."""
+        # Set max context messages to 2 (only last turn fits)
+        settings = get_settings()
+        old_max_msgs = settings.conversation_max_context_messages
+        settings.conversation_max_context_messages = 2
+
+        try:
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                c_resp = await client.post(
+                    "/conversations",
+                    json={"title": "Compaction Test"},
+                    headers={"X-Client-Token": self.token_a},
+                )
+                conv_id = c_resp.json()["id"]
+
+                # Turn 1
+                await client.post(
+                    "/query",
+                    json={"prompt": "Question 1", "conversation_id": conv_id},
+                    headers={"X-Client-Token": self.token_a, "Idempotency-Key": "t1"},
+                )
+
+                # Turn 2
+                await client.post(
+                    "/query",
+                    json={"prompt": "Question 2", "conversation_id": conv_id},
+                    headers={"X-Client-Token": self.token_a, "Idempotency-Key": "t2"},
+                )
+
+                # Turn 3 -> History has 4 messages, limit is 2 -> Compaction occurs!
+                resp3 = await client.post(
+                    "/query",
+                    json={"prompt": "Question 3", "conversation_id": conv_id},
+                    headers={"X-Client-Token": self.token_a, "Idempotency-Key": "t3"},
+                )
+                self.assertEqual(resp3.status_code, 200)
+                data3 = resp3.json()
+                self.assertEqual(data3["context_status"], "compacted")
+                # When compacted, cache is bypassed
+                self.assertFalse(data3["cached"])
+                self.assertEqual(data3["cache_type"], "none")
+        finally:
+            settings.conversation_max_context_messages = old_max_msgs
+
+    async def test_prompt_exceeding_max_context_chars_413(self):
+        """Test that sending a prompt exceeding CONVERSATION_MAX_CONTEXT_CHARS returns 413."""
+        settings = get_settings()
+        old_max_chars = settings.conversation_max_context_chars
+        settings.conversation_max_context_chars = 100
+
+        try:
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                c_resp = await client.post(
+                    "/conversations",
+                    headers={"X-Client-Token": self.token_a},
+                )
+                conv_id = c_resp.json()["id"]
+
+                long_prompt = "A" * 150
+                resp = await client.post(
+                    "/query",
+                    json={"prompt": long_prompt, "conversation_id": conv_id},
+                    headers={
+                        "X-Client-Token": self.token_a,
+                        "Idempotency-Key": "idemp-too-large",
+                    },
+                )
+                self.assertEqual(resp.status_code, 413)
+                data = resp.json()
+                self.assertIn("exceed maximum context character budget", data["detail"])
+        finally:
+            settings.conversation_max_context_chars = old_max_chars
+
+
+if __name__ == "__main__":
+    unittest.main()

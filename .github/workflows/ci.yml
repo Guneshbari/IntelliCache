@@ -177,7 +177,7 @@ jobs:
         env:
           TEST_DATABASE_URL: 'postgresql://postgres:postgres@localhost:5432/intellicache_test'
         run: |
-          python -m unittest tests.test_multi_client tests.test_vector_store tests.test_semantic_cache
+          python -m unittest tests.test_multi_client tests.test_vector_store tests.test_semantic_cache tests.test_conversations
 
       - name: Run Full Gateway Regression Suite with Live PostgreSQL
         working-directory: gateway

@@ -13,7 +13,19 @@ gateway/
 ├── app/
 │   ├── api/                  # HTTP route handling, request/response conversion, dependency wiring
 │   │   ├── __init__.py
+│   │   ├── conversations.py  # /conversations CRUD and turn messages endpoints
 │   │   └── routes.py         # /query endpoints, client auth, SSE streaming formatter, error mappers
+│   ├── context/              # Bounded conversation context window reconstruction and budgeting
+│   │   ├── __init__.py
+│   │   ├── builder.py        # ContextBuilder (turns pairing, char/message bounds, state classification)
+│   │   ├── contracts.py      # ContextStatus (complete, compacted, incomplete) and ContextBuildResult
+│   │   └── policy.py         # ContextPolicy configuration and defaults
+│   ├── conversations/        # Persistent conversation models, HMAC principal derivation, and repository
+│   │   ├── __init__.py
+│   │   ├── identity.py       # HMAC-SHA256 client principal derivation and auth dependencies
+│   │   ├── models.py         # Conversation, turn, and message records and Pydantic schemas
+│   │   ├── repository.py     # PostgresConversationRepository (turn atomicity, row locks, idempotency)
+│   │   └── service.py        # ConversationService
 │   ├── core/                 # Provider-independent caching & orchestration core (Zero FastAPI/Groq imports)
 │   │   ├── __init__.py
 │   │   ├── contracts.py      # Normalized generation requests, results, stream chunks, usage metrics
@@ -63,11 +75,14 @@ gateway/
 │   └── main.py               # FastAPI application factory, lifespan, CORS, and health/admin routes
 ├── migrations/               # SQL migration scripts
 │   ├── 001_create_cache_entries.sql
+│   ├── 002_create_conversations.sql # Persistent conversation, turn, and message schema
 │   └── vector/               # Vector store migrations (applied only when SEMANTIC_CACHE_ENABLED=true)
 │       ├── 001_create_vector_records.sql
 │       └── 002_create_hnsw_index.sql
 ├── tests/
 │   ├── test_core.py          # Core orchestration tests using pure FakeProvider & AST import boundary tests
+│   ├── test_context_builder.py # ContextBuilder budgeting, truncation, and status tests
+│   ├── test_conversations.py # Persistent conversation CRUD, isolation, idempotency, and concurrency tests
 │   ├── test_providers.py     # Groq adapter, client closure, and ProviderFactory tests
 │   ├── test_embeddings.py    # Embedding contracts, Ollama adapter, prefixes, error tests
 │   ├── test_vector_store.py  # Vector storage contracts, pgvector nearest-neighbour, cascade delete
@@ -553,6 +568,39 @@ python scripts/evaluate_semantic_cache.py \
 
 ---
 
+## Persistent Conversation Management & Bounded Context Window (Stage 1)
+
+IntelliCache provides server-managed persistent conversations stored centrally in PostgreSQL, bounded context window reconstruction, client identity isolation, and deterministic turn orchestration:
+
+### Architecture & Data Model
+
+1. **Centralized PostgreSQL Storage**:
+   - `conversations`: Stores conversation metadata, title, `cache_namespace`, and `owner_principal_id`.
+   - `conversation_turns`: Manages turns with status (`pending`, `completed`, `failed`, `cancelled`), `idempotency_key`, error codes, and completion timestamps. A partial unique index `uq_conversation_active_turn ON conversation_turns (conversation_id) WHERE status = 'pending'` enforces at the database level that exactly one active turn can be in progress per conversation. Concurrent requests receive `409 Conflict`.
+   - `conversation_messages`: Stores chronological user and assistant messages with sequential numbering (`sequence_number`), role, content, and generation metadata.
+2. **Client Identity Isolation**:
+   - Client tokens are mapped to cryptographic principal IDs via `HMAC-SHA256(token, CONVERSATION_IDENTITY_SECRET)`.
+   - Tokens are never persisted to database tables. Clients cannot view, manipulate, or delete conversations belonging to different principals, even within the same shared namespace.
+3. **Bounded Context Window (`ContextBuilder`)**:
+   - Formulates the inference context from chronological completed turns up to `CONVERSATION_MAX_CONTEXT_MESSAGES` (default 50) and `CONVERSATION_MAX_CONTEXT_CHARS` (default 65536).
+   - Preserves complete user-assistant turn pairs and original chronological order.
+   - Categorizes context state explicitly:
+     - `complete`: Entire conversation history fits within configured budgets. Exact-match caching is enabled.
+     - `compacted`: Older turns were trimmed to fit within message or character limits. Cache reads and writes are bypassed (`effective_bypass_cache = true`) to prevent corrupting exact cache with truncated contexts.
+     - `incomplete`: Truncation occurred in non-turn-pair fashion or single turn exceeded budget. Cache is bypassed.
+   - If the current query and system prompt alone exceed the character budget, the gateway rejects the request immediately with `HTTP 413 Content Too Large`.
+4. **Idempotency Replay**:
+   - Repeating a request with the same `Idempotency-Key` on a completed turn returns the existing stored assistant response with `cached = true`, `cache_type = "exact"`, and `fingerprint = "idempotent_replay"` without calling the upstream provider.
+5. **REST API Endpoints**:
+   - `POST /conversations`: Create conversation (`title`, optional `id`).
+   - `GET /conversations`: List caller's conversations with pagination (`limit`, `offset`, `total`).
+   - `GET /conversations/{id}`: Retrieve conversation metadata.
+   - `GET /conversations/{id}/messages`: Retrieve messages in chronological order.
+   - `DELETE /conversations/{id}`: Delete conversation, cascading to all turns and messages.
+   - `POST /query`: When `conversation_id` is passed, runs in server-managed mode, automatically persisting the user turn, reconstructing context, orchestrating generation, and recording the assistant message.
+
+---
+
 ## Running the Server
 
 ```bash
@@ -622,7 +670,7 @@ Access the demonstration client at `http://localhost:5174`. See [`demo/README.md
 
 The following capabilities represent the current implementation state:
 
-- **Current Scope**: Exact-match SHA-256 caching, centralized PostgreSQL storage, in-memory LRU/TTL storage, cancellation-safe SingleFlight coalescing for non-streaming requests, Groq LLM provider adapter, Ollama embedding provider, PostgreSQL + pgvector vector storage (`PostgresVectorStore`), semantic response caching service with deterministic eligibility policy, namespace-isolated runtime metrics collection, and standalone web demonstration chatbot (`demo/`).
+- **Current Scope**: Exact-match SHA-256 caching, centralized PostgreSQL storage, in-memory LRU/TTL storage, cancellation-safe SingleFlight coalescing for non-streaming requests, Groq LLM provider adapter, Ollama embedding provider, PostgreSQL + pgvector vector storage (`PostgresVectorStore`), semantic response caching service with deterministic eligibility policy, namespace-isolated runtime metrics collection, server-managed persistent conversation storage and bounded context building, and standalone web demonstration chatbot (`demo/`).
 - **SingleFlight Boundary**: Request coalescing is strictly process-local (within a single Python asyncio event loop and process).
-- **Multi-Turn Semantic Policy**: Semantic caching explicitly evaluates independent single-turn technical queries (`messages` count = 1, role = 'user', no `conversation_id`). Multi-turn conversations are excluded from semantic caching by design to prevent contextual hallucination.
-- **Persistent Conversation Store**: Persistent conversation provenance and long-term history tracking across sessions will be explored in future extensions.
+- **Multi-Turn Semantic Policy**: Semantic caching explicitly evaluates independent single-turn technical queries (`messages` count = 1, role = 'user', no `conversation_id`). Multi-turn conversations and requests with `conversation_id` are excluded from semantic caching by design to prevent contextual ambiguity.
+- **Persistent Conversation Store**: Persistent conversation management, bounded context windows, HMAC principal isolation, and concurrency safety are fully implemented and integrated across the gateway and demo client.

@@ -598,4 +598,159 @@ describe('GatewayApiClient (Demo Chatbot)', () => {
       expect(stats.semantic?.hits).toBe(2)
     })
   })
+
+  describe('Persistent Conversation Management API', () => {
+    it('attaches Idempotency-Key header when sending query with conversation_id', async () => {
+      client.setClientToken('tenant-alpha-token')
+
+      const mockResponse: QueryResponse = {
+        response: 'Server managed response',
+        cached: false,
+        model: 'llama-3.3-70b-versatile',
+        latency_ms: 100.0,
+        usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 },
+        cache_hit_count: 0,
+        conversation_id: 'conv-uuid-1',
+        turn_id: 'turn-uuid-1',
+        context_status: 'complete',
+        fingerprint: 'sha256_mock_fp',
+        created_at: new Date().toISOString(),
+        cache_type: 'none',
+      }
+
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response(JSON.stringify(mockResponse), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      )
+
+      await client.sendQuery(
+        { prompt: 'Hello in conversation', conversation_id: 'conv-uuid-1' },
+        'explicit-idempotency-key'
+      )
+
+      expect(fetchSpy).toHaveBeenCalledTimes(1)
+      const [, init] = fetchSpy.mock.calls[0]
+      const headers = init?.headers as Record<string, string>
+      expect(headers['Idempotency-Key']).toBe('explicit-idempotency-key')
+      expect(headers['X-Client-Token']).toBe('tenant-alpha-token')
+    })
+
+    it('lists conversations via GET /conversations', async () => {
+      client.setClientToken('tenant-alpha-token')
+
+      const mockList = {
+        conversations: [
+          {
+            id: 'c-1',
+            title: 'Chat 1',
+            cache_namespace: 'tenant_alpha',
+            created_at: '2026-11-10T00:00:00Z',
+            updated_at: '2026-11-10T00:01:00Z',
+            last_message_at: '2026-11-10T00:01:00Z',
+          },
+        ],
+        total: 1,
+      }
+
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response(JSON.stringify(mockList), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      )
+
+      const result = await client.listConversations(20, 0)
+      expect(fetchSpy).toHaveBeenCalledWith(
+        'http://127.0.0.1:8000/conversations?limit=20&offset=0',
+        expect.objectContaining({ method: 'GET' })
+      )
+      expect(result.total).toBe(1)
+      expect(result.conversations[0].id).toBe('c-1')
+    })
+
+    it('creates a conversation via POST /conversations', async () => {
+      client.setClientToken('tenant-alpha-token')
+
+      const mockCreated = {
+        id: 'c-new',
+        title: 'New Chat Title',
+        cache_namespace: 'tenant_alpha',
+        created_at: '2026-11-10T00:00:00Z',
+        updated_at: '2026-11-10T00:00:00Z',
+        last_message_at: '2026-11-10T00:00:00Z',
+      }
+
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response(JSON.stringify(mockCreated), {
+          status: 201,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      )
+
+      const result = await client.createConversation('New Chat Title')
+      expect(fetchSpy).toHaveBeenCalledWith(
+        'http://127.0.0.1:8000/conversations',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ title: 'New Chat Title' }),
+        })
+      )
+      expect(result.id).toBe('c-new')
+    })
+
+    it('fetches messages via GET /conversations/{id}/messages', async () => {
+      client.setClientToken('tenant-alpha-token')
+
+      const mockMessages = {
+        conversation_id: 'c-1',
+        messages: [
+          {
+            id: 'm-1',
+            conversation_id: 'c-1',
+            turn_id: 't-1',
+            sequence_number: 1,
+            role: 'user',
+            content: 'Hello',
+            created_at: '2026-11-10T00:00:00Z',
+          },
+        ],
+        total: 1,
+      }
+
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response(JSON.stringify(mockMessages), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      )
+
+      const result = await client.getConversationMessages('c-1')
+      expect(fetchSpy).toHaveBeenCalledWith(
+        'http://127.0.0.1:8000/conversations/c-1/messages?limit=100&offset=0',
+        expect.objectContaining({ method: 'GET' })
+      )
+      expect(result.messages.length).toBe(1)
+      expect(result.messages[0].content).toBe('Hello')
+    })
+
+    it('deletes conversation via DELETE /conversations/{id}', async () => {
+      client.setClientToken('tenant-alpha-token')
+
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response(JSON.stringify({ status: 'ok', deleted: true, conversation_id: 'c-1' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      )
+
+      const success = await client.deleteConversation('c-1')
+      expect(fetchSpy).toHaveBeenCalledWith(
+        'http://127.0.0.1:8000/conversations/c-1',
+        expect.objectContaining({ method: 'DELETE' })
+      )
+      expect(success).toBe(true)
+    })
+  })
 })

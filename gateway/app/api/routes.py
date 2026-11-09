@@ -4,6 +4,7 @@ Handles HTTP request parsing, payload validation, SSE formatting, and error mapp
 Delegates caching decisions and inference orchestration to IntelliCache Core.
 """
 
+import asyncio
 from datetime import datetime, timezone
 import hmac
 import ipaddress
@@ -18,6 +19,14 @@ from pydantic import BaseModel, Field, model_validator
 from ..cache.exact_cache import ExactCache, QueryCache
 from ..cache.interfaces import BaseCache, CacheEntry, CacheStats
 from ..config import Settings, get_settings
+from ..context.builder import ContextBuilder
+from ..context.contracts import ContextStatus
+from ..context.policy import ContextPolicy
+from ..conversations.identity import AuthenticatedClient, verify_conversation_client
+from ..conversations.repository import (
+    ActiveTurnConflictError,
+    ConversationNotFoundError,
+)
 from ..core.contracts import (
     ChatMessage,
     GenerationRequest,
@@ -145,6 +154,8 @@ class QueryResponse(BaseModel):
     usage: UsageMetrics = Field(default_factory=UsageMetrics)
     cache_hit_count: int = 0
     conversation_id: Optional[str] = None
+    turn_id: Optional[str] = None
+    context_status: Optional[str] = None
     fingerprint: str
     created_at: str
     cache_type: str = "none"
@@ -439,16 +450,20 @@ def get_llm_provider(
 @router.post("/", response_model=QueryResponse, include_in_schema=False, dependencies=[Depends(verify_client_token)])
 async def execute_query(
     request: QueryRequest,
+    raw_request: Request,
     settings: Settings = Depends(get_settings),
     core: IntelliCacheCore = Depends(get_core_service),
     provider: LLMProvider = Depends(get_llm_provider),
-    client_namespace: str = Depends(verify_client_token),
+    client: AuthenticatedClient = Depends(verify_conversation_client),
 ) -> Any:
     """
     Execute a natural language query against the configured LLM provider
     or return a cached exact response.
-    Supports conservative exact matching, single-flight consolidation, and streaming.
+    Supports conservative exact matching, single-flight consolidation, streaming,
+    and server-managed persistent conversation turns.
     """
+    client_namespace = client.namespace
+
     # PRE-02: Resolve effective model once consistently
     effective_model = (request.model or settings.groq_model).strip()
     effective_temperature = (
@@ -458,12 +473,106 @@ async def execute_query(
         request.max_tokens if request.max_tokens is not None else settings.default_max_tokens
     )
 
-    canonical_messages = build_canonical_messages(
-        prompt=request.prompt,
-        query=request.query,
-        messages=request.messages,
-        system_prompt=request.system_prompt,
+    is_server_managed = bool(
+        request.conversation_id
+        and not request.messages
+        and (request.prompt or request.query)
     )
+
+    conv_service = None
+    turn_record = None
+    effective_context_status: Optional[str] = None
+    effective_bypass_cache = request.bypass_cache
+
+    if is_server_managed:
+        from .conversations import get_conversation_service
+
+        idempotency_key = raw_request.headers.get("Idempotency-Key") or raw_request.headers.get(
+            "X-Idempotency-Key"
+        )
+        if not idempotency_key or not idempotency_key.strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Idempotency-Key header is required for server-managed conversation turns.",
+            )
+        idempotency_key = idempotency_key.strip()
+
+        conv_service = get_conversation_service(raw_request)
+        user_query_text = (request.prompt or request.query or "").strip()
+
+        try:
+            turn_record, existing_msg, is_replay = await conv_service.begin_turn(
+                conversation_id=request.conversation_id,
+                owner_principal_id=client.principal_id,
+                idempotency_key=idempotency_key,
+                user_content=user_query_text,
+            )
+        except ConversationNotFoundError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Conversation '{request.conversation_id}' was not found or is not accessible.",
+            )
+        except ActiveTurnConflictError as err:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(err),
+            )
+
+        if is_replay:
+            return QueryResponse(
+                response=existing_msg.content if existing_msg else "",
+                cached=True,
+                model=effective_model,
+                latency_ms=0.0,
+                usage=UsageMetrics(),
+                cache_hit_count=1,
+                conversation_id=request.conversation_id,
+                turn_id=turn_record.id,
+                context_status="complete",
+                fingerprint="idempotent_replay",
+                created_at=existing_msg.created_at.isoformat()
+                if existing_msg
+                else datetime.now(timezone.utc).isoformat(),
+                cache_type="exact",
+            )
+
+        try:
+            history = await conv_service.get_completed_history(
+                request.conversation_id,
+                client.principal_id,
+            )
+            context_policy = ContextPolicy(
+                max_context_messages=settings.conversation_max_context_messages,
+                max_context_chars=settings.conversation_max_context_chars,
+            )
+            builder = ContextBuilder(context_policy)
+            context_result = builder.build_context(
+                current_query=user_query_text,
+                history=history,
+                system_prompt=request.system_prompt,
+            )
+            canonical_messages = context_result.messages
+            effective_context_status = context_result.status.value
+
+            # Exact and semantic cache bypass when context is compacted or incomplete
+            if context_result.status != ContextStatus.COMPLETE:
+                effective_bypass_cache = True
+        except ValueError as val_err:
+            await conv_service.fail_turn(turn_record.id, error_code="PAYLOAD_TOO_LARGE")
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail=str(val_err),
+            )
+        except Exception as err:
+            await conv_service.fail_turn(turn_record.id, error_code="CONTEXT_BUILD_FAILED")
+            raise
+    else:
+        canonical_messages = build_canonical_messages(
+            prompt=request.prompt,
+            query=request.query,
+            messages=request.messages,
+            system_prompt=request.system_prompt,
+        )
 
     # Server-derived trusted namespace (clients cannot override via request body)
     gen_request = GenerationRequest(
@@ -474,23 +583,31 @@ async def execute_query(
         provider=settings.llm_provider,
         namespace=client_namespace,
         stream=request.stream,
-        bypass_cache=request.bypass_cache,
+        bypass_cache=effective_bypass_cache,
         conversation_id=request.conversation_id,
+        metadata={
+            "turn_id": turn_record.id if turn_record else None,
+            "context_status": effective_context_status,
+        },
     )
 
     collector = get_metrics_collector()
     collector.record_request(
         client_namespace,
         stream=request.stream,
-        bypass=request.bypass_cache or not settings.cache_enabled,
+        bypass=effective_bypass_cache or not settings.cache_enabled,
     )
 
     # 1. Streaming Query Execution
     if request.stream:
         async def sse_event_stream() -> AsyncGenerator[str, None]:
+            accumulated_text: List[str] = []
+            completed_cleanly = False
             try:
                 async for chunk in core.execute_stream(gen_request, provider):
                     if chunk.error is not None:
+                        if conv_service and turn_record:
+                            await conv_service.fail_turn(turn_record.id, error_code="STREAM_ERROR")
                         err_payload = {
                             "error": chunk.error,
                             "status_code": chunk.status_code or 500,
@@ -498,6 +615,8 @@ async def execute_query(
                         }
                         yield f"data: {json.dumps(err_payload)}\n\n"
                     elif not chunk.done:
+                        if chunk.delta:
+                            accumulated_text.append(chunk.delta)
                         chunk_payload = {
                             "delta": chunk.delta,
                             "done": False,
@@ -507,6 +626,20 @@ async def execute_query(
                         }
                         yield f"data: {json.dumps(chunk_payload)}\n\n"
                     else:
+                        completed_cleanly = True
+                        if conv_service and turn_record:
+                            final_stream_text = "".join(accumulated_text)
+                            await conv_service.complete_turn(
+                                turn_id=turn_record.id,
+                                assistant_content=final_stream_text,
+                                metadata={
+                                    "model": chunk.model or effective_model,
+                                    "fingerprint": chunk.fingerprint,
+                                    "cache_type": chunk.cache_type,
+                                    "context_status": effective_context_status,
+                                },
+                            )
+
                         final_payload = {
                             "delta": "",
                             "done": True,
@@ -514,12 +647,27 @@ async def execute_query(
                             "cache_type": chunk.cache_type,
                             "latency_ms": chunk.latency_ms or 0.0,
                             "model": chunk.model or effective_model,
-                            "usage": chunk.usage.to_dict() if chunk.usage else {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                            "usage": chunk.usage.to_dict()
+                            if chunk.usage
+                            else {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
                             "fingerprint": chunk.fingerprint,
+                            "conversation_id": request.conversation_id,
+                            "turn_id": turn_record.id if turn_record else None,
+                            "context_status": effective_context_status,
                         }
                         yield f"data: {json.dumps(final_payload)}\n\n"
                         yield "data: [DONE]\n\n"
+            except asyncio.CancelledError:
+                if conv_service and turn_record:
+                    await conv_service.cancel_turn(turn_record.id)
+                raise
+            except Exception as e:
+                if conv_service and turn_record and not completed_cleanly:
+                    await conv_service.fail_turn(turn_record.id, error_code=type(e).__name__)
+                raise
             finally:
+                if conv_service and turn_record and not completed_cleanly:
+                    await conv_service.cancel_turn(turn_record.id)
                 await provider.close()
 
         return StreamingResponse(sse_event_stream(), media_type="text/event-stream")
@@ -527,6 +675,17 @@ async def execute_query(
     # 2. Non-Streaming Query Execution
     try:
         result: GenerationResult = await core.execute_query(gen_request, provider)
+        if conv_service and turn_record:
+            await conv_service.complete_turn(
+                turn_id=turn_record.id,
+                assistant_content=result.text,
+                metadata={
+                    "model": result.model,
+                    "fingerprint": result.fingerprint,
+                    "cache_type": result.cache_type,
+                    "context_status": effective_context_status,
+                },
+            )
         return QueryResponse(
             response=result.text,
             cached=result.cached,
@@ -535,49 +694,71 @@ async def execute_query(
             usage=result.usage,
             cache_hit_count=result.cache_hit_count,
             conversation_id=request.conversation_id,
+            turn_id=turn_record.id if turn_record else None,
+            context_status=effective_context_status,
             fingerprint=result.fingerprint,
             created_at=result.created_at,
             cache_type=result.cache_type,
         )
+    except asyncio.CancelledError:
+        if conv_service and turn_record:
+            await conv_service.cancel_turn(turn_record.id)
+        raise
     except ProviderAuthenticationError as err:
+        if conv_service and turn_record:
+            await conv_service.fail_turn(turn_record.id, error_code="PROVIDER_AUTH_ERROR")
         logger.error("Provider authentication failed for [%s]: %s", err.message[:12], err.message)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"Provider Authentication Failed: {err.message}",
         )
     except ProviderRateLimitError as err:
+        if conv_service and turn_record:
+            await conv_service.fail_turn(turn_record.id, error_code="PROVIDER_RATE_LIMIT")
         logger.warning("Provider rate limit reached: %s", err.message)
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail=f"Provider Rate Limit Exceeded: {err.message}",
         )
     except ProviderConnectionError as err:
+        if conv_service and turn_record:
+            await conv_service.fail_turn(turn_record.id, error_code="PROVIDER_CONNECTION_ERROR")
         logger.error("Provider connection failed: %s", err.message)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"Provider API Connection Failed: {err.message}",
         )
     except ProviderUpstreamError as err:
+        if conv_service and turn_record:
+            await conv_service.fail_turn(turn_record.id, error_code="PROVIDER_UPSTREAM_ERROR")
         logger.error("Provider upstream error (%s): %s", err.status_code, err.message)
         raise HTTPException(
             status_code=err.status_code,
             detail=f"Provider Upstream Error ({err.status_code}): {err.message}",
         )
     except ProviderConfigurationError as err:
+        if conv_service and turn_record:
+            await conv_service.fail_turn(turn_record.id, error_code="PROVIDER_CONFIG_ERROR")
         logger.error("Provider configuration error: %s", err.message)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=err.message,
         )
     except SingleFlightLeaderCancelledError as err:
+        if conv_service and turn_record:
+            await conv_service.fail_turn(turn_record.id, error_code="LEADER_CANCELLED")
         logger.warning("SingleFlight leader query was cancelled: %s", err.message)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Upstream leader request was cancelled. Please retry.",
         )
     except HTTPException:
+        if conv_service and turn_record:
+            await conv_service.fail_turn(turn_record.id, error_code="HTTP_EXCEPTION")
         raise
     except Exception as err:
+        if conv_service and turn_record:
+            await conv_service.fail_turn(turn_record.id, error_code=type(err).__name__)
         sanitized = sanitize_error_message(str(err))
         logger.error("Unexpected error during query execution: %s", sanitized)
         raise HTTPException(

@@ -271,6 +271,7 @@ export class DemoUIController {
         text = `Connected: ${info.namespace || 'default'}`
         this.metricsController.setNamespace(info.namespace)
         this.metricsController.refresh().catch(() => {})
+        this.syncConversationsFromServer().catch(() => {})
         break
       case 'unauthorized':
         text = 'Unauthorized (401)'
@@ -305,7 +306,42 @@ export class DemoUIController {
         '<span class="notice-icon">⚡</span><span><strong>Single-Turn Query Mode:</strong> Eligible for deterministic exact matching and HNSW semantic response caching.</span>'
     } else {
       this.turnNoticeEl.innerHTML =
-        '<span class="notice-icon">ℹ️</span><span><strong>Multi-Turn Conversation Mode:</strong> Complete message history sent via <code>messages</code> payload with conversation ID. Excluded from semantic caching to prevent context ambiguity.</span>'
+        '<span class="notice-icon">ℹ️</span><span><strong>Multi-Turn Conversation Mode:</strong> Server-managed conversation history in PostgreSQL with bounded context window. Excluded from semantic caching to prevent context ambiguity.</span>'
+    }
+  }
+
+  public async syncConversationsFromServer(): Promise<void> {
+    if (!this.apiClient.hasToken()) return
+    try {
+      const resp = await this.apiClient.listConversations(50, 0)
+      if (resp && Array.isArray(resp.conversations) && resp.conversations.length > 0) {
+        this.conversationManager.setConversationsFromServer(resp.conversations)
+        await this.loadMessagesForActiveConversation()
+        this.renderConversationList()
+        this.renderMessages()
+      }
+    } catch {
+      // Non-blocking fallback when PostgreSQL is not configured
+    }
+  }
+
+  public async loadMessagesForActiveConversation(): Promise<void> {
+    const activeConv = this.conversationManager.getActiveConversation()
+    if (!activeConv || !this.apiClient.hasToken()) return
+
+    try {
+      const resp = await this.apiClient.getConversationMessages(activeConv.id, 100, 0)
+      if (resp && Array.isArray(resp.messages) && resp.messages.length > 0) {
+        const chatMessages: ChatMessage[] = resp.messages.map((m) => ({
+          id: m.id,
+          role: m.role,
+          content: m.content,
+          timestamp: new Date(m.created_at).getTime() || Date.now(),
+        }))
+        this.conversationManager.setConversationMessages(activeConv.id, chatMessages)
+      }
+    } catch {
+      // Non-blocking fallback
     }
   }
 
@@ -321,9 +357,12 @@ export class DemoUIController {
     this.closeMobileSidebar()
   }
 
-  public handleSwitchConversation(id: string): void {
+  public async handleSwitchConversation(id: string): Promise<void> {
     const success = this.conversationManager.setActiveConversation(id)
     if (success) {
+      if (this.apiClient.hasToken()) {
+        await this.loadMessagesForActiveConversation()
+      }
       this.renderConversationList()
       this.renderMessages()
       this.closeMobileSidebar()
@@ -333,6 +372,9 @@ export class DemoUIController {
 
   public handleDeleteConversation(id: string): void {
     this.conversationManager.deleteConversation(id)
+    if (this.apiClient.hasToken()) {
+      this.apiClient.deleteConversation(id).catch(() => {})
+    }
     this.renderConversationList()
     this.renderMessages()
   }
@@ -368,15 +410,14 @@ export class DemoUIController {
       // Single-turn mode sends prompt and omits conversation_id for semantic cache eligibility
       payload.prompt = text
     } else {
-      // Multi-turn mode sends conversation_id and valid messages history
+      // Multi-turn mode sends conversation_id and prompt; conversation history is reconstructed server-side
       payload.conversation_id = activeConv.id
-      payload.messages = activeConv.messages
-        .filter((m) => !m.error)
-        .map((m) => ({ role: m.role, content: m.content }))
+      payload.prompt = text
     }
 
     try {
-      const response = await this.apiClient.sendQuery(payload)
+      const idempotencyKey = crypto.randomUUID()
+      const response = await this.apiClient.sendQuery(payload, idempotencyKey)
       const assistantMessage: ChatMessage = {
         id: crypto.randomUUID(),
         role: 'assistant',
@@ -450,13 +491,12 @@ export class DemoUIController {
       payload.prompt = promptText
     } else {
       payload.conversation_id = activeConv.id
-      payload.messages = activeConv.messages
-        .filter((m) => !m.error)
-        .map((m) => ({ role: m.role, content: m.content }))
+      payload.prompt = promptText
     }
 
     try {
-      const response = await this.apiClient.sendQuery(payload)
+      const idempotencyKey = crypto.randomUUID()
+      const response = await this.apiClient.sendQuery(payload, idempotencyKey)
       const assistantMessage: ChatMessage = {
         id: crypto.randomUUID(),
         role: 'assistant',

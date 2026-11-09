@@ -36,9 +36,42 @@ export interface QueryResponse {
   usage: UsageMetrics
   cache_hit_count: number
   conversation_id?: string | null
+  turn_id?: string | null
+  context_status?: 'complete' | 'compacted' | 'incomplete' | string | null
   fingerprint: string
   created_at: string
   cache_type: 'exact' | 'semantic' | 'none' | string
+}
+
+export interface ConversationSummary {
+  id: string
+  title: string
+  cache_namespace: string
+  created_at: string
+  updated_at: string
+  last_message_at: string
+}
+
+export interface ConversationListResponse {
+  conversations: ConversationSummary[]
+  total: number
+}
+
+export interface ConversationMessageItem {
+  id: string
+  conversation_id: string
+  turn_id: string
+  sequence_number: number
+  role: 'user' | 'assistant'
+  content: string
+  created_at: string
+  metadata?: Record<string, unknown> | null
+}
+
+export interface ConversationMessagesResponse {
+  conversation_id: string
+  messages: ConversationMessageItem[]
+  total: number
 }
 
 export interface LatencySummary {

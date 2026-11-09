@@ -7,6 +7,9 @@
 
 import type {
   CacheStats,
+  ConversationListResponse,
+  ConversationMessagesResponse,
+  ConversationSummary,
   NamespaceMetricsSnapshot,
   QueryRequestPayload,
   QueryResponse,
@@ -234,17 +237,121 @@ export class GatewayApiClient {
 
   /**
    * Sends a query request to POST /query on the IntelliCache Gateway.
-   * Handles single-turn (prompt) and multi-turn (messages) payloads.
+   * Handles single-turn (prompt) and server-managed multi-turn (conversation_id + prompt) payloads.
+   * Attaches Idempotency-Key header when idempotencyKey is supplied or when conversation_id is active.
    */
-  public async sendQuery(payload: QueryRequestPayload): Promise<QueryResponse> {
+  public async sendQuery(
+    payload: QueryRequestPayload,
+    idempotencyKey?: string
+  ): Promise<QueryResponse> {
     const endpoint = '/query'
     try {
+      const headers = this.buildHeaders(true)
+      const effectiveKey =
+        idempotencyKey || (payload.conversation_id ? crypto.randomUUID() : undefined)
+      if (effectiveKey) {
+        headers['Idempotency-Key'] = effectiveKey
+      }
+
       const res = await fetch(`${this.baseUrl}${endpoint}`, {
         method: 'POST',
-        headers: this.buildHeaders(true),
+        headers,
         body: JSON.stringify(payload),
       })
       return await this.parseResponse<QueryResponse>(res, endpoint)
+    } catch (err) {
+      return await this.handleFetchError(err, endpoint)
+    }
+  }
+
+  /**
+   * Lists conversations owned by the authenticated client via GET /conversations.
+   */
+  public async listConversations(
+    limit: number = 50,
+    offset: number = 0
+  ): Promise<ConversationListResponse> {
+    const endpoint = `/conversations?limit=${encodeURIComponent(limit)}&offset=${encodeURIComponent(offset)}`
+    try {
+      const res = await fetch(`${this.baseUrl}${endpoint}`, {
+        method: 'GET',
+        headers: this.buildHeaders(true),
+      })
+      return await this.parseResponse<ConversationListResponse>(res, endpoint)
+    } catch (err) {
+      return await this.handleFetchError(err, endpoint)
+    }
+  }
+
+  /**
+   * Creates a new persistent conversation via POST /conversations.
+   */
+  public async createConversation(title?: string, id?: string): Promise<ConversationSummary> {
+    const endpoint = '/conversations'
+    try {
+      const body: Record<string, string> = {}
+      if (title) body.title = title
+      if (id) body.id = id
+
+      const res = await fetch(`${this.baseUrl}${endpoint}`, {
+        method: 'POST',
+        headers: this.buildHeaders(true),
+        body: JSON.stringify(body),
+      })
+      return await this.parseResponse<ConversationSummary>(res, endpoint)
+    } catch (err) {
+      return await this.handleFetchError(err, endpoint)
+    }
+  }
+
+  /**
+   * Retrieves conversation metadata via GET /conversations/{id}.
+   */
+  public async getConversation(id: string): Promise<ConversationSummary> {
+    const endpoint = `/conversations/${encodeURIComponent(id)}`
+    try {
+      const res = await fetch(`${this.baseUrl}${endpoint}`, {
+        method: 'GET',
+        headers: this.buildHeaders(true),
+      })
+      return await this.parseResponse<ConversationSummary>(res, endpoint)
+    } catch (err) {
+      return await this.handleFetchError(err, endpoint)
+    }
+  }
+
+  /**
+   * Retrieves messages for a conversation in chronological order via GET /conversations/{id}/messages.
+   */
+  public async getConversationMessages(
+    id: string,
+    limit: number = 100,
+    offset: number = 0
+  ): Promise<ConversationMessagesResponse> {
+    const endpoint = `/conversations/${encodeURIComponent(id)}/messages?limit=${encodeURIComponent(limit)}&offset=${encodeURIComponent(offset)}`
+    try {
+      const res = await fetch(`${this.baseUrl}${endpoint}`, {
+        method: 'GET',
+        headers: this.buildHeaders(true),
+      })
+      return await this.parseResponse<ConversationMessagesResponse>(res, endpoint)
+    } catch (err) {
+      return await this.handleFetchError(err, endpoint)
+    }
+  }
+
+  /**
+   * Deletes a conversation and its turns and messages via DELETE /conversations/{id}.
+   */
+  public async deleteConversation(id: string): Promise<boolean> {
+    const endpoint = `/conversations/${encodeURIComponent(id)}`
+    try {
+      const res = await fetch(`${this.baseUrl}${endpoint}`, {
+        method: 'DELETE',
+        headers: this.buildHeaders(true),
+      })
+      await this.parseResponse<Record<string, unknown>>(res, endpoint)
+      return true
     } catch (err) {
       return await this.handleFetchError(err, endpoint)
     }
