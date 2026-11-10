@@ -10,7 +10,7 @@ import hmac
 import ipaddress
 import json
 import logging
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from typing import Any, AsyncGenerator, Callable, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
