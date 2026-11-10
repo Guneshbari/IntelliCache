@@ -235,6 +235,29 @@ class TestTurnLeaseHeartbeat(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(heartbeat.lease_lost)
 
+    async def test_heartbeat_cancels_in_progress_generation_on_lease_lost(self):
+        conv_service = AsyncMock()
+        conv_service.renew_turn_lease.return_value = False
+        cancelled = False
+
+        def cancel_cb():
+            nonlocal cancelled
+            cancelled = True
+
+        heartbeat = TurnLeaseHeartbeat(
+            conv_service=conv_service,
+            turn_id="turn_hb_lost_cb",
+            lease_seconds=30,
+            interval=0.02,
+            cancel_callback=cancel_cb,
+        )
+        heartbeat.start()
+        await asyncio.sleep(0.06)
+        await heartbeat.stop()
+
+        self.assertTrue(heartbeat.lease_lost)
+        self.assertTrue(cancelled)
+
 
 class TestConversationsFallbackWithoutDB(unittest.TestCase):
     """Tests ensuring graceful degradation when PostgreSQL is not configured."""
@@ -344,11 +367,26 @@ class TestPostgresConversationsIntegration(unittest.IsolatedAsyncioTestCase):
         self.last_provider_messages = []
         self.mock_groq = AsyncMock()
 
+        async def mock_async_stream(content: str):
+            words = content.split(" ")
+            for i, word in enumerate(words):
+                sep = " " if i < len(words) - 1 else ""
+                yield type("MockChunk", (), {
+                    "choices": [
+                        type("MockChoice", (), {
+                            "delta": type("MockDelta", (), {"content": word + sep})
+                        })
+                    ]
+                })
+
         def side_effect(*args, **kwargs):
             self.provider_call_count += 1
             if "messages" in kwargs:
                 self.last_provider_messages = kwargs["messages"]
-            return MockCompletion(f"Assistant Response #{self.provider_call_count}")
+            resp_content = f"Assistant Response #{self.provider_call_count}"
+            if kwargs.get("stream"):
+                return mock_async_stream(resp_content)
+            return MockCompletion(resp_content)
 
         self.mock_groq.chat.completions.create.side_effect = side_effect
         self.mock_groq.close = AsyncMock()
@@ -889,6 +927,316 @@ class TestPostgresConversationsIntegration(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(history[2].role, "user")
             self.assertEqual(history[2].content, "Unique Failed Turn Test Q3")
             self.assertEqual(history[3].role, "assistant")
+
+    async def test_streaming_idempotent_replay_returns_sse_events(self):
+        """Verifies that an idempotent replay with stream=True returns a valid SSE event stream."""
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            c_resp = await client.post(
+                "/conversations",
+                headers={"X-Client-Token": self.token_a},
+            )
+            conv_id = c_resp.json()["id"]
+
+            # First turn: normal streaming generation
+            resp1 = await client.post(
+                "/query",
+                json={
+                    "prompt": "Streaming replay test question",
+                    "conversation_id": conv_id,
+                    "stream": True,
+                },
+                headers={"X-Client-Token": self.token_a, "Idempotency-Key": "stream-replay-key"},
+            )
+            self.assertEqual(resp1.status_code, 200)
+            self.assertIn("text/event-stream", resp1.headers.get("content-type", ""))
+            self.assertEqual(self.provider_call_count, 1)
+
+            # Replay with stream=True and same Idempotency-Key
+            resp_replay = await client.post(
+                "/query",
+                json={
+                    "prompt": "Streaming replay test question",
+                    "conversation_id": conv_id,
+                    "stream": True,
+                },
+                headers={"X-Client-Token": self.token_a, "Idempotency-Key": "stream-replay-key"},
+            )
+            self.assertEqual(resp_replay.status_code, 200)
+            self.assertIn("text/event-stream", resp_replay.headers.get("content-type", ""))
+
+            # Parse SSE lines
+            lines = [line.strip() for line in resp_replay.text.strip().split("\n") if line.strip()]
+            self.assertTrue(any(line == "data: [DONE]" for line in lines))
+
+            data_events = []
+            for line in lines:
+                if line.startswith("data: ") and line != "data: [DONE]":
+                    data_events.append(json.loads(line[6:]))
+
+            self.assertGreaterEqual(len(data_events), 2)
+            # Delta event
+            delta_event = data_events[0]
+            self.assertEqual(delta_event["delta"], "Assistant Response #1")
+            self.assertFalse(delta_event["done"])
+            self.assertEqual(delta_event["fingerprint"], "idempotent_replay")
+
+            # Final done event
+            final_event = data_events[1]
+            self.assertTrue(final_event["done"])
+            self.assertTrue(final_event.get("idempotent_replay"))
+            self.assertEqual(final_event["fingerprint"], "idempotent_replay")
+            self.assertFalse(final_event["cached"])
+            self.assertEqual(final_event["cache_type"], "none")
+
+            # Upstream provider call count MUST remain unchanged
+            self.assertEqual(self.provider_call_count, 1)
+
+    async def test_renew_turn_lease_fails_when_expired_or_token_mismatch(self):
+        """Verifies that renew_turn_lease strictly rejects token mismatches and already expired leases."""
+        principal = derive_principal_id(self.token_a, "test-conv-secret-key-999")
+        conv = await self.repo.create_conversation(None, self.ns, principal, "Lease Renew Test")
+
+        turn, _, _ = await self.repo.begin_turn(
+            conversation_id=conv.id,
+            owner_principal_id=principal,
+            idempotency_key="renew-key-1",
+            user_content="Prompt for lease test",
+            request_hash="hash-renew-1",
+        )
+        self.assertIsNotNone(turn.lease_token)
+
+        # 1. Renewal with mismatched lease_token must return False
+        renew_bad_token = await self.repo.renew_turn_lease(
+            turn.id,
+            additional_seconds=60,
+            lease_token="wrong-token-abc",
+        )
+        self.assertFalse(renew_bad_token)
+
+        # 2. Renewal after lease has already expired must return False (prevents resurrecting expired leases)
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE conversation_turns SET lease_expires_at = NOW() - INTERVAL '10 seconds' WHERE id = $1",
+                turn.id,
+            )
+
+        renew_expired = await self.repo.renew_turn_lease(
+            turn.id,
+            additional_seconds=60,
+            lease_token=turn.lease_token,
+        )
+        self.assertFalse(renew_expired)
+
+        # 3. Valid renewal on active turn with correct token succeeds
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE conversation_turns SET lease_expires_at = NOW() + INTERVAL '60 seconds' WHERE id = $1",
+                turn.id,
+            )
+
+        renew_valid = await self.repo.renew_turn_lease(
+            turn.id,
+            additional_seconds=120,
+            lease_token=turn.lease_token,
+        )
+        self.assertTrue(renew_valid)
+
+    async def test_complete_turn_fails_when_lease_expired_or_token_mismatch(self):
+        """Verifies that complete_turn enforces lease_token match and lease validity."""
+        principal = derive_principal_id(self.token_a, "test-conv-secret-key-999")
+        conv1 = await self.repo.create_conversation(None, self.ns, principal, "Complete Guard Test 1")
+        conv2 = await self.repo.create_conversation(None, self.ns, principal, "Complete Guard Test 2")
+        conv3 = await self.repo.create_conversation(None, self.ns, principal, "Complete Guard Test 3")
+
+        # Turn 1: Token mismatch
+        turn1, _, _ = await self.repo.begin_turn(
+            conversation_id=conv1.id,
+            owner_principal_id=principal,
+            idempotency_key="complete-key-1",
+            user_content="Prompt 1",
+            request_hash="hash-c-1",
+        )
+        with self.assertRaises(ActiveTurnConflictError) as ctx1:
+            await self.repo.complete_turn(
+                turn_id=turn1.id,
+                assistant_content="Response 1",
+                lease_token="mismatched-token",
+            )
+        self.assertIn("mismatch", str(ctx1.exception).lower())
+
+        # Turn 2: Expired lease
+        turn2, _, _ = await self.repo.begin_turn(
+            conversation_id=conv2.id,
+            owner_principal_id=principal,
+            idempotency_key="complete-key-2",
+            user_content="Prompt 2",
+            request_hash="hash-c-2",
+        )
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE conversation_turns SET lease_expires_at = NOW() - INTERVAL '5 seconds' WHERE id = $1",
+                turn2.id,
+            )
+        with self.assertRaises(ActiveTurnConflictError) as ctx2:
+            await self.repo.complete_turn(
+                turn_id=turn2.id,
+                assistant_content="Response 2",
+                lease_token=turn2.lease_token,
+            )
+        self.assertIn("expired", str(ctx2.exception).lower())
+
+        # Turn 3: Valid completion
+        turn3, _, _ = await self.repo.begin_turn(
+            conversation_id=conv3.id,
+            owner_principal_id=principal,
+            idempotency_key="complete-key-3",
+            user_content="Prompt 3",
+            request_hash="hash-c-3",
+        )
+        completed = await self.repo.complete_turn(
+            turn_id=turn3.id,
+            assistant_content="Response 3",
+            lease_token=turn3.lease_token,
+        )
+        self.assertEqual(completed.role, "assistant")
+        self.assertEqual(completed.content, "Response 3")
+
+    async def test_retry_preserves_message_ledger_sequence_integrity(self):
+        """
+        Tests the crucial retry lifecycle:
+        successful A -> failed B -> successful C -> retry B -> new D.
+        Verifies:
+        1. All 9 messages exist in conversation_messages with contiguous sequence numbers (1..9).
+        2. Old failed turn B is archived without deleting historical messages.
+        3. History validation recognizes context as complete.
+        4. Idempotent replay of retried B returns cached/recorded response.
+        """
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            c_resp = await client.post("/conversations", headers={"X-Client-Token": self.token_a})
+            conv_id = c_resp.json()["id"]
+            principal = derive_principal_id(self.token_a, "test-conv-secret-key-999")
+
+            # 1. Turn A: Succeeds (user seq 1, assistant seq 2)
+            resp_a = await client.post(
+                "/query",
+                json={"prompt": "Turn A question", "conversation_id": conv_id},
+                headers={"X-Client-Token": self.token_a, "Idempotency-Key": "flow-key-A"},
+            )
+            self.assertEqual(resp_a.status_code, 200)
+            self.assertEqual(self.provider_call_count, 1)
+
+            # 2. Turn B: Begins (user seq 3), but fails
+            turn_b, _, _ = await self.repo.begin_turn(
+                conversation_id=conv_id,
+                owner_principal_id=principal,
+                idempotency_key="flow-key-B",
+                user_content="Turn B question",
+                request_hash=compute_turn_request_hash(
+                    prompt="Turn B question",
+                    model=get_settings().groq_model,
+                    temperature=0.7,
+                    provider=get_settings().llm_provider,
+                ),
+                request_options={"bypass_cache": False},
+            )
+            await self.repo.fail_turn(turn_b.id, "SIMULATED_UPSTREAM_ERROR", lease_token=turn_b.lease_token)
+
+            # 3. Turn C: Succeeds (user seq 4, assistant seq 5)
+            resp_c = await client.post(
+                "/query",
+                json={"prompt": "Turn C question", "conversation_id": conv_id},
+                headers={"X-Client-Token": self.token_a, "Idempotency-Key": "flow-key-C"},
+            )
+            self.assertEqual(resp_c.status_code, 200)
+            self.assertEqual(self.provider_call_count, 2)
+
+            # 4. Retry B: Submits same idempotency key and prompt (user seq 6, assistant seq 7)
+            resp_retry_b = await client.post(
+                "/query",
+                json={"prompt": "Turn B question", "conversation_id": conv_id},
+                headers={"X-Client-Token": self.token_a, "Idempotency-Key": "flow-key-B"},
+            )
+            self.assertEqual(resp_retry_b.status_code, 200)
+            data_retry_b = resp_retry_b.json()
+            self.assertEqual(data_retry_b["response"], "Assistant Response #3")
+            self.assertFalse(data_retry_b.get("idempotent_replay", False))
+            self.assertEqual(self.provider_call_count, 3)
+
+            # 5. Turn D: Succeeds (user seq 8, assistant seq 9)
+            resp_d = await client.post(
+                "/query",
+                json={"prompt": "Turn D question", "conversation_id": conv_id},
+                headers={"X-Client-Token": self.token_a, "Idempotency-Key": "flow-key-D"},
+            )
+            self.assertEqual(resp_d.status_code, 200)
+            data_d = resp_d.json()
+            self.assertEqual(data_d["context_status"], "complete")
+            self.assertEqual(self.provider_call_count, 4)
+
+            # 6. Verify entire message ledger sequence continuity (1, 2, 3, 4, 5, 6, 7, 8, 9)
+            all_msgs, total = await self.repo.get_conversation_messages(conv_id, principal, limit=50)
+            self.assertEqual(total, 9)
+            self.assertEqual(len(all_msgs), 9)
+            sequence_numbers = [m.sequence_number for m in all_msgs]
+            self.assertEqual(sequence_numbers, [1, 2, 3, 4, 5, 6, 7, 8, 9])
+
+            # Verify Turn B's original user message remains in ledger at sequence 3
+            self.assertEqual(all_msgs[2].sequence_number, 3)
+            self.assertEqual(all_msgs[2].role, "user")
+            self.assertEqual(all_msgs[2].content, "Turn B question")
+            self.assertEqual(all_msgs[2].turn_id, turn_b.id)
+
+            # 7. Verify validated history excludes orphan failed turn message and includes completed pairs
+            history, is_incomplete = await self.repo.get_validated_completed_history(conv_id, principal)
+            self.assertFalse(is_incomplete)
+            self.assertEqual(len(history), 8)  # 4 completed turns * 2 messages
+            self.assertEqual([h.role for h in history], ["user", "assistant"] * 4)
+
+            # 8. Verify idempotent replay of Retried Turn B returns Assistant Response #3
+            resp_replay_b = await client.post(
+                "/query",
+                json={"prompt": "Turn B question", "conversation_id": conv_id},
+                headers={"X-Client-Token": self.token_a, "Idempotency-Key": "flow-key-B"},
+            )
+            self.assertEqual(resp_replay_b.status_code, 200)
+            data_replay_b = resp_replay_b.json()
+            self.assertEqual(data_replay_b["response"], "Assistant Response #3")
+            self.assertTrue(data_replay_b.get("idempotent_replay"))
+            # Provider call count MUST still be 4
+            self.assertEqual(self.provider_call_count, 4)
+
+    async def test_query_generation_aborted_when_lease_lost(self):
+        """
+        Verifies that when a turn loses its lease mid-generation,
+        the generation task is cancelled immediately and the query returns HTTP 409 Conflict.
+        """
+        async def slow_completion(*args, **kwargs):
+            await asyncio.sleep(2.0)
+            return MockCompletion("Slow Response")
+
+        self.mock_groq.chat.completions.create.side_effect = slow_completion
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            c_resp = await client.post("/conversations", headers={"X-Client-Token": self.token_a})
+            conv_id = c_resp.json()["id"]
+
+            original_init = TurnLeaseHeartbeat.__init__
+
+            def fast_heartbeat_init(hb_self, conv_service, turn_id, lease_token=None, lease_seconds=120, interval=None, cancel_callback=None):
+                original_init(hb_self, conv_service, turn_id, lease_token, lease_seconds, interval=0.02, cancel_callback=cancel_callback)
+
+            with patch.object(TurnLeaseHeartbeat, "__init__", fast_heartbeat_init), \
+                 patch.object(ConversationService, "renew_turn_lease", AsyncMock(return_value=False)):
+                resp = await client.post(
+                    "/query",
+                    json={"prompt": "Slow generation query", "conversation_id": conv_id},
+                    headers={"X-Client-Token": self.token_a, "Idempotency-Key": "slow-lease-lost-key"},
+                )
+                self.assertEqual(resp.status_code, 409)
+                self.assertIn("lost its lease", resp.json()["detail"])
 
 
 if __name__ == "__main__":

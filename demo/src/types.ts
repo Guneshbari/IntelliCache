@@ -214,6 +214,12 @@ export interface ChatMessage {
   error?: string
   isRetrying?: boolean
   idempotencyKey?: string
+  originalOptions?: {
+    bypass_cache?: boolean
+    model?: string
+    temperature?: number
+    system_prompt?: string
+  }
 }
 
 export interface ConversationSession {

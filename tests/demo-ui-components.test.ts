@@ -695,4 +695,82 @@ describe('DemoUIController (End-to-End Coordination & Request Payloads)', () => 
       'server-replacement-conv'
     )
   })
+
+  it('restores idempotencyKey and originalOptions on loadMessagesForActiveConversation after refresh', async () => {
+    uiController.updateConnectionBadge('connected', 'Connected: default')
+    apiClient.setClientToken('test_token')
+
+    const activeConv = uiController.getConversationManager().getActiveConversation()
+    vi.spyOn(apiClient, 'getConversationMessages').mockResolvedValueOnce({
+      conversation_id: activeConv.id,
+      messages: [
+        {
+          id: 'msg-restored-1',
+          conversation_id: activeConv.id,
+          turn_id: 'turn-restored-1',
+          sequence_number: 1,
+          role: 'user',
+          content: 'Restored prompt after browser refresh',
+          created_at: new Date().toISOString(),
+          metadata: {
+            idempotency_key: 'idemp-restored-key-999',
+            options: {
+              bypass_cache: true,
+            },
+          },
+        },
+      ],
+      total: 1,
+    })
+
+    await uiController.loadMessagesForActiveConversation()
+
+    const restoredMsg = uiController.getConversationManager().getActiveConversation().messages[0]
+    expect(restoredMsg).toBeDefined()
+    expect(restoredMsg.idempotencyKey).toBe('idemp-restored-key-999')
+    expect(restoredMsg.originalOptions?.bypass_cache).toBe(true)
+  })
+
+  it('handleRetry preserves original bypass_cache option even if checkbox was changed', async () => {
+    uiController.updateConnectionBadge('connected', 'Connected: default')
+    apiClient.setClientToken('test_token')
+
+    const promptText = 'Prompt with original bypass false'
+    const sendSpy = vi.spyOn(apiClient, 'sendQuery')
+
+    // 1. Initial send with bypass = false fails
+    const bypassCheckbox = document.getElementById('bypass-cache-checkbox') as HTMLInputElement
+    bypassCheckbox.checked = false
+
+    sendSpy.mockRejectedValueOnce(new Error('Provider timeout'))
+    const textarea = document.getElementById('chat-textarea') as HTMLTextAreaElement
+    textarea.value = promptText
+    await uiController.handleSend()
+
+    const activeConv = uiController.getConversationManager().getActiveConversation()
+    const failedMsgId = activeConv.messages[1].id
+
+    // User subsequently toggles checkbox to true
+    bypassCheckbox.checked = true
+
+    // 2. Retry succeeds and must preserve bypass_cache = false from originalOptions
+    sendSpy.mockClear()
+    sendSpy.mockResolvedValueOnce({
+      response: 'Retried successfully',
+      cached: false,
+      model: 'test-model',
+      latency_ms: 50,
+      usage: { prompt_tokens: 5, completion_tokens: 5, total_tokens: 10 },
+      cache_hit_count: 0,
+      fingerprint: 'fp_retry_preserved',
+      created_at: new Date().toISOString(),
+      cache_type: 'none',
+    })
+
+    await uiController.handleRetry(failedMsgId)
+
+    expect(sendSpy).toHaveBeenCalledTimes(1)
+    const payload = sendSpy.mock.calls[0][0]
+    expect(payload.bypass_cache).toBe(false)
+  })
 })

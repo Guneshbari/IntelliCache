@@ -456,21 +456,26 @@ class TurnLeaseHeartbeat:
     """
     Heartbeat manager that periodically extends the lease of an active conversation turn.
     Guarantees active long-running LLM inferences do not lose their lease to concurrent turns.
-    If the lease cannot be renewed (turn was lost, cancelled, or recovered), flags lease_lost.
+    If the lease cannot be renewed (turn was lost, cancelled, recovered, or expired),
+    flags lease_lost and triggers immediate generation cancellation.
     """
 
     def __init__(
         self,
         conv_service: Any,
         turn_id: str,
+        lease_token: Optional[str] = None,
         lease_seconds: int = 120,
         interval: Optional[float] = None,
+        cancel_callback: Optional[Callable[[], None]] = None,
     ):
         self.conv_service = conv_service
         self.turn_id = turn_id
+        self.lease_token = lease_token
         self.lease_seconds = lease_seconds
         # Interval is at most lease_seconds / 3, bounded between 1s and 30s (unless explicitly overridden)
         self.interval = interval if interval is not None else max(1.0, min(30.0, float(lease_seconds) / 3.0))
+        self.cancel_callback = cancel_callback
         self._task: Optional[asyncio.Task] = None
         self._stop_event = asyncio.Event()
         self.lease_lost = False
@@ -489,17 +494,30 @@ class TurnLeaseHeartbeat:
             try:
                 renewed = await self.conv_service.renew_turn_lease(
                     self.turn_id,
+                    lease_token=self.lease_token,
                     additional_seconds=self.lease_seconds,
                 )
                 if not renewed:
                     logger.warning(
-                        "Turn '%s' lease renewal failed: turn is no longer pending or was recovered.",
+                        "Turn '%s' lease renewal failed: turn expired, status changed, or lease token mismatch.",
                         self.turn_id,
                     )
                     self.lease_lost = True
+                    if self.cancel_callback:
+                        try:
+                            self.cancel_callback()
+                        except Exception:
+                            pass
                     break
             except Exception as err:
                 logger.warning("Turn '%s' lease heartbeat exception: %s", self.turn_id, err)
+                self.lease_lost = True
+                if self.cancel_callback:
+                    try:
+                        self.cancel_callback()
+                    except Exception:
+                        pass
+                break
 
     def start(self) -> None:
         if self.conv_service and self.turn_id:
@@ -582,6 +600,14 @@ async def execute_query(
             bypass_cache=request.bypass_cache,
         )
 
+        request_options = {
+            "bypass_cache": request.bypass_cache,
+            "model": request.model,
+            "temperature": request.temperature,
+            "system_prompt": request.system_prompt,
+            "stream": request.stream,
+        }
+
         try:
             turn_record, existing_msg, is_replay = await conv_service.begin_turn(
                 conversation_id=request.conversation_id,
@@ -590,6 +616,7 @@ async def execute_query(
                 user_content=user_query_text,
                 request_hash=request_hash,
                 lease_duration_seconds=settings.conversation_turn_lease_seconds,
+                request_options=request_options,
             )
         except ConversationNotFoundError:
             raise HTTPException(
@@ -603,6 +630,44 @@ async def execute_query(
             )
 
         if is_replay:
+            if request.stream:
+                async def replay_sse_stream() -> AsyncGenerator[str, None]:
+                    resp_text = existing_msg.content if existing_msg else ""
+                    chunk_payload = {
+                        "delta": resp_text,
+                        "done": False,
+                        "cached": False,
+                        "cache_type": "none",
+                        "fingerprint": "idempotent_replay",
+                    }
+                    yield f"data: {json.dumps(chunk_payload)}\n\n"
+                    final_payload = {
+                        "delta": "",
+                        "done": True,
+                        "cached": False,
+                        "cache_type": "none",
+                        "latency_ms": 0.0,
+                        "model": effective_model,
+                        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                        "fingerprint": "idempotent_replay",
+                        "conversation_id": request.conversation_id,
+                        "turn_id": turn_record.id,
+                        "context_status": "complete",
+                        "idempotent_replay": True,
+                    }
+                    yield f"data: {json.dumps(final_payload)}\n\n"
+                    yield "data: [DONE]\n\n"
+
+                return StreamingResponse(
+                    replay_sse_stream(),
+                    media_type="text/event-stream",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                        "X-Accel-Buffering": "no",
+                    },
+                )
+
             return QueryResponse(
                 response=existing_msg.content if existing_msg else "",
                 cached=False,
@@ -692,6 +757,7 @@ async def execute_query(
                 heartbeat = TurnLeaseHeartbeat(
                     conv_service,
                     turn_record.id,
+                    lease_token=turn_record.lease_token,
                     lease_seconds=settings.conversation_turn_lease_seconds,
                 )
                 heartbeat.start()
@@ -705,7 +771,11 @@ async def execute_query(
 
                     if chunk.error is not None:
                         if conv_service and turn_record:
-                            await conv_service.fail_turn(turn_record.id, error_code="STREAM_ERROR")
+                            await conv_service.fail_turn(
+                                turn_record.id,
+                                error_code="STREAM_ERROR",
+                                lease_token=turn_record.lease_token,
+                            )
                         err_payload = {
                             "error": chunk.error,
                             "status_code": chunk.status_code or 500,
@@ -730,6 +800,7 @@ async def execute_query(
                             await conv_service.complete_turn(
                                 turn_id=turn_record.id,
                                 assistant_content=final_stream_text,
+                                lease_token=turn_record.lease_token,
                                 metadata={
                                     "model": chunk.model or effective_model,
                                     "fingerprint": chunk.fingerprint,
@@ -757,33 +828,42 @@ async def execute_query(
                         yield "data: [DONE]\n\n"
             except asyncio.CancelledError:
                 if conv_service and turn_record:
-                    await conv_service.cancel_turn(turn_record.id)
+                    await conv_service.cancel_turn(turn_record.id, lease_token=turn_record.lease_token)
                 raise
             except Exception as e:
                 if conv_service and turn_record and not completed_cleanly:
-                    await conv_service.fail_turn(turn_record.id, error_code=type(e).__name__)
+                    await conv_service.fail_turn(
+                        turn_record.id,
+                        error_code=type(e).__name__,
+                        lease_token=turn_record.lease_token,
+                    )
                 raise
             finally:
                 if heartbeat:
                     await heartbeat.stop()
                 if conv_service and turn_record and not completed_cleanly:
-                    await conv_service.cancel_turn(turn_record.id)
+                    await conv_service.cancel_turn(turn_record.id, lease_token=turn_record.lease_token)
                 await provider.close()
 
         return StreamingResponse(sse_event_stream(), media_type="text/event-stream")
 
     # 2. Non-Streaming Query Execution
+    gen_task = asyncio.create_task(core.execute_query(gen_request, provider))
     heartbeat = None
     if conv_service and turn_record:
         heartbeat = TurnLeaseHeartbeat(
             conv_service,
             turn_record.id,
+            lease_token=turn_record.lease_token,
             lease_seconds=settings.conversation_turn_lease_seconds,
+            cancel_callback=gen_task.cancel,
         )
         heartbeat.start()
 
+    completed_cleanly = False
     try:
-        result: GenerationResult = await core.execute_query(gen_request, provider)
+        result: GenerationResult = await gen_task
+        completed_cleanly = True
         if heartbeat and heartbeat.lease_lost:
             raise ActiveTurnConflictError(f"Turn '{turn_record.id}' lost its lease during generation.")
 
@@ -791,6 +871,7 @@ async def execute_query(
             await conv_service.complete_turn(
                 turn_id=turn_record.id,
                 assistant_content=result.text,
+                lease_token=turn_record.lease_token,
                 metadata={
                     "model": result.model,
                     "fingerprint": result.fingerprint,
@@ -813,12 +894,27 @@ async def execute_query(
             cache_type=result.cache_type,
         )
     except asyncio.CancelledError:
-        if conv_service and turn_record:
-            await conv_service.cancel_turn(turn_record.id)
+        if heartbeat and heartbeat.lease_lost:
+            if conv_service and turn_record:
+                await conv_service.fail_turn(
+                    turn_record.id,
+                    error_code="LEASE_LOST_CONFLICT",
+                    lease_token=turn_record.lease_token,
+                )
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Turn '{turn_record.id}' lost its lease during generation.",
+            )
+        if conv_service and turn_record and not completed_cleanly:
+            await conv_service.cancel_turn(turn_record.id, lease_token=turn_record.lease_token)
         raise
     except ActiveTurnConflictError as err:
         if conv_service and turn_record:
-            await conv_service.fail_turn(turn_record.id, error_code="LEASE_LOST_CONFLICT")
+            await conv_service.fail_turn(
+                turn_record.id,
+                error_code="LEASE_LOST_CONFLICT",
+                lease_token=turn_record.lease_token,
+            )
         logger.warning("Active turn conflict during generation: %s", err)
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -826,7 +922,11 @@ async def execute_query(
         )
     except ProviderAuthenticationError as err:
         if conv_service and turn_record:
-            await conv_service.fail_turn(turn_record.id, error_code="PROVIDER_AUTH_ERROR")
+            await conv_service.fail_turn(
+                turn_record.id,
+                error_code="PROVIDER_AUTH_ERROR",
+                lease_token=turn_record.lease_token,
+            )
         logger.error("Provider authentication failed for [%s]: %s", err.message[:12], err.message)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -834,7 +934,11 @@ async def execute_query(
         )
     except ProviderRateLimitError as err:
         if conv_service and turn_record:
-            await conv_service.fail_turn(turn_record.id, error_code="PROVIDER_RATE_LIMIT")
+            await conv_service.fail_turn(
+                turn_record.id,
+                error_code="PROVIDER_RATE_LIMIT",
+                lease_token=turn_record.lease_token,
+            )
         logger.warning("Provider rate limit reached: %s", err.message)
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -842,7 +946,11 @@ async def execute_query(
         )
     except ProviderConnectionError as err:
         if conv_service and turn_record:
-            await conv_service.fail_turn(turn_record.id, error_code="PROVIDER_CONNECTION_ERROR")
+            await conv_service.fail_turn(
+                turn_record.id,
+                error_code="PROVIDER_CONNECTION_ERROR",
+                lease_token=turn_record.lease_token,
+            )
         logger.error("Provider connection failed: %s", err.message)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -850,7 +958,11 @@ async def execute_query(
         )
     except ProviderUpstreamError as err:
         if conv_service and turn_record:
-            await conv_service.fail_turn(turn_record.id, error_code="PROVIDER_UPSTREAM_ERROR")
+            await conv_service.fail_turn(
+                turn_record.id,
+                error_code="PROVIDER_UPSTREAM_ERROR",
+                lease_token=turn_record.lease_token,
+            )
         logger.error("Provider upstream error (%s): %s", err.status_code, err.message)
         raise HTTPException(
             status_code=err.status_code,
@@ -858,7 +970,11 @@ async def execute_query(
         )
     except ProviderConfigurationError as err:
         if conv_service and turn_record:
-            await conv_service.fail_turn(turn_record.id, error_code="PROVIDER_CONFIG_ERROR")
+            await conv_service.fail_turn(
+                turn_record.id,
+                error_code="PROVIDER_CONFIG_ERROR",
+                lease_token=turn_record.lease_token,
+            )
         logger.error("Provider configuration error: %s", err.message)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -866,7 +982,11 @@ async def execute_query(
         )
     except SingleFlightLeaderCancelledError as err:
         if conv_service and turn_record:
-            await conv_service.fail_turn(turn_record.id, error_code="LEADER_CANCELLED")
+            await conv_service.fail_turn(
+                turn_record.id,
+                error_code="LEADER_CANCELLED",
+                lease_token=turn_record.lease_token,
+            )
         logger.warning("SingleFlight leader query was cancelled: %s", err.message)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -874,11 +994,19 @@ async def execute_query(
         )
     except HTTPException:
         if conv_service and turn_record:
-            await conv_service.fail_turn(turn_record.id, error_code="HTTP_EXCEPTION")
+            await conv_service.fail_turn(
+                turn_record.id,
+                error_code="HTTP_EXCEPTION",
+                lease_token=turn_record.lease_token,
+            )
         raise
     except Exception as err:
         if conv_service and turn_record:
-            await conv_service.fail_turn(turn_record.id, error_code=type(err).__name__)
+            await conv_service.fail_turn(
+                turn_record.id,
+                error_code=type(err).__name__,
+                lease_token=turn_record.lease_token,
+            )
         sanitized = sanitize_error_message(str(err))
         logger.error("Unexpected error during query execution: %s", sanitized)
         raise HTTPException(

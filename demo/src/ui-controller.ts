@@ -343,12 +343,17 @@ export class DemoUIController {
     try {
       const resp = await this.apiClient.getConversationMessages(activeConv.id, 100, 0)
       if (resp && Array.isArray(resp.messages) && resp.messages.length > 0) {
-        const chatMessages: ChatMessage[] = resp.messages.map((m) => ({
-          id: m.id,
-          role: m.role,
-          content: m.content,
-          timestamp: new Date(m.created_at).getTime() || Date.now(),
-        }))
+        const chatMessages: ChatMessage[] = resp.messages.map((m) => {
+          const meta = (m.metadata || {}) as Record<string, unknown>
+          return {
+            id: m.id,
+            role: m.role,
+            content: m.content,
+            timestamp: new Date(m.created_at).getTime() || Date.now(),
+            idempotencyKey: (meta.idempotency_key as string) || undefined,
+            originalOptions: (meta.options as ChatMessage['originalOptions']) || undefined,
+          }
+        })
         this.conversationManager.setConversationMessages(activeConv.id, chatMessages)
       }
     } catch {
@@ -445,6 +450,7 @@ export class DemoUIController {
 
     const activeConv = this.conversationManager.getActiveConversation()
     const idempotencyKey = crypto.randomUUID()
+    const bypass = this.bypassCheckbox.checked
 
     const userMessage: ChatMessage = {
       id: crypto.randomUUID(),
@@ -452,6 +458,9 @@ export class DemoUIController {
       content: text,
       timestamp: Date.now(),
       idempotencyKey,
+      originalOptions: {
+        bypass_cache: bypass,
+      },
     }
 
     this.conversationManager.addMessage(activeConv.id, userMessage)
@@ -463,7 +472,6 @@ export class DemoUIController {
     this.renderConversationList()
     this.renderMessages()
 
-    const bypass = this.bypassCheckbox.checked
     const payload: QueryRequestPayload = {
       bypass_cache: bypass,
     }
@@ -542,13 +550,15 @@ export class DemoUIController {
     const failedIndex = messages.findIndex((m) => m.id === failedMsgId)
     if (failedIndex === -1) return
 
-    // Find the immediately preceding user message to retry and its original idempotency key
+    // Find the immediately preceding user message to retry, its original idempotency key, and original options
     let promptText = ''
     let retryIdempotencyKey: string | undefined
+    let originalOptions: ChatMessage['originalOptions'] | undefined
     for (let i = failedIndex - 1; i >= 0; i--) {
       if (messages[i].role === 'user') {
         promptText = messages[i].content
         retryIdempotencyKey = messages[i].idempotencyKey
+        originalOptions = messages[i].originalOptions
         break
       }
     }
@@ -562,7 +572,10 @@ export class DemoUIController {
     this.sendBtn.disabled = true
     this.renderMessages()
 
-    const bypass = this.bypassCheckbox.checked
+    const bypass =
+      originalOptions?.bypass_cache !== undefined
+        ? originalOptions.bypass_cache
+        : this.bypassCheckbox.checked
     const payload: QueryRequestPayload = {
       bypass_cache: bypass,
     }

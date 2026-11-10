@@ -32,6 +32,7 @@ class ConversationTurnRecord:
     error_code: Optional[str] = None
     request_hash: Optional[str] = None
     lease_expires_at: Optional[datetime] = None
+    lease_token: Optional[str] = None
 
 
 @dataclass

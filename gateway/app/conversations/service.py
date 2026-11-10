@@ -138,6 +138,7 @@ class ConversationService:
         user_content: str,
         request_hash: Optional[str] = None,
         lease_duration_seconds: int = 120,
+        request_options: Optional[Dict[str, Any]] = None,
     ) -> Tuple[ConversationTurnRecord, Optional[ConversationMessageRecord], bool]:
         return await self.repo.begin_turn(
             conversation_id=conversation_id,
@@ -146,28 +147,56 @@ class ConversationService:
             user_content=user_content,
             request_hash=request_hash,
             lease_duration_seconds=lease_duration_seconds,
+            request_options=request_options,
         )
 
-    async def renew_turn_lease(self, turn_id: str, additional_seconds: int = 120) -> bool:
-        return await self.repo.renew_turn_lease(turn_id, additional_seconds=additional_seconds)
+    async def renew_turn_lease(
+        self,
+        turn_id: str,
+        lease_token: Optional[str] = None,
+        additional_seconds: int = 120,
+    ) -> bool:
+        return await self.repo.renew_turn_lease(
+            turn_id,
+            lease_token=lease_token,
+            additional_seconds=additional_seconds,
+        )
 
     async def complete_turn(
         self,
         turn_id: str,
         assistant_content: str,
+        lease_token: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> ConversationMessageRecord:
         return await self.repo.complete_turn(
             turn_id=turn_id,
             assistant_content=assistant_content,
+            lease_token=lease_token,
             metadata=metadata,
         )
 
-    async def fail_turn(self, turn_id: str, error_code: str = "GENERATION_FAILED") -> None:
-        await self.repo.fail_turn(turn_id, error_code=error_code)
+    async def fail_turn(
+        self,
+        turn_id: str,
+        error_code: str = "GENERATION_FAILED",
+        lease_token: Optional[str] = None,
+    ) -> None:
+        await self.repo.fail_turn(
+            turn_id,
+            error_code=error_code,
+            lease_token=lease_token,
+        )
 
-    async def cancel_turn(self, turn_id: str) -> None:
-        await self.repo.cancel_turn(turn_id)
+    async def cancel_turn(
+        self,
+        turn_id: str,
+        lease_token: Optional[str] = None,
+    ) -> None:
+        await self.repo.cancel_turn(
+            turn_id,
+            lease_token=lease_token,
+        )
 
     @staticmethod
     def _to_response(r: ConversationRecord) -> ConversationResponse:
