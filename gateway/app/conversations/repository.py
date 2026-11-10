@@ -172,11 +172,13 @@ class PostgresConversationRepository:
             raise ConversationNotFoundError(f"Conversation '{conversation_id}' not found.")
 
         list_query = """
-            SELECT id, conversation_id, turn_id, sequence_number, role,
-                   content, created_at, metadata
-            FROM conversation_messages
-            WHERE conversation_id = $1
-            ORDER BY sequence_number ASC
+            SELECT m.id, m.conversation_id, m.turn_id, m.sequence_number, m.role,
+                   m.content, m.created_at, m.metadata,
+                   t.status AS turn_status, t.error_code AS turn_error_code
+            FROM conversation_messages m
+            LEFT JOIN conversation_turns t ON m.turn_id = t.id
+            WHERE m.conversation_id = $1
+            ORDER BY m.sequence_number ASC
             LIMIT $2 OFFSET $3
         """
         count_query = "SELECT COUNT(*) FROM conversation_messages WHERE conversation_id = $1"
@@ -195,6 +197,8 @@ class PostgresConversationRepository:
                     content=r["content"],
                     created_at=r["created_at"],
                     metadata=json.loads(r["metadata"]) if isinstance(r["metadata"], str) else (r["metadata"] or {}),
+                    turn_status=r["turn_status"],
+                    turn_error_code=r["turn_error_code"],
                 )
                 for r in rows
             ]
@@ -522,14 +526,17 @@ class PostgresConversationRepository:
         self,
         turn_id: str,
         assistant_content: str,
-        lease_token: Optional[str] = None,
+        lease_token: str,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> ConversationMessageRecord:
         """
         Marks an active turn completed and persists the assistant response atomically.
-        Guards against completing turns that are no longer in pending status, have expired leases,
-        or have lost lease ownership to a newer attempt.
+        Guards strictly against completing turns that are no longer in pending status, have expired leases,
+        or have lost lease ownership to a newer attempt. Requires a valid lease_token.
         """
+        if not lease_token or not lease_token.strip():
+            raise ValueError("A valid non-empty lease_token is required to complete a turn.")
+
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 turn_row = await conn.fetchrow(
@@ -544,12 +551,12 @@ class PostgresConversationRepository:
                         f"Cannot complete turn '{turn_id}': status is '{turn_row['status']}', expected 'pending'."
                     )
 
-                if lease_token is not None and turn_row["lease_token"] != lease_token:
+                if turn_row["lease_token"] != lease_token:
                     raise ActiveTurnConflictError(
                         f"Cannot complete turn '{turn_id}': lease token mismatch (attempt was fenced out)."
                     )
 
-                if turn_row["lease_expires_at"] is not None and turn_row["lease_expires_at"] <= datetime.now(timezone.utc):
+                if turn_row["lease_expires_at"] is None or turn_row["lease_expires_at"] <= datetime.now(timezone.utc):
                     raise ActiveTurnConflictError(
                         f"Cannot complete turn '{turn_id}': lease has expired."
                     )
@@ -580,8 +587,8 @@ class PostgresConversationRepository:
                     "UPDATE conversation_turns "
                     "SET status = 'completed', completed_at = NOW(), error_code = NULL, lease_expires_at = NULL, lease_token = NULL "
                     "WHERE id = $1 AND status = 'pending' "
-                    "  AND ($2::varchar IS NULL OR lease_token = $2) "
-                    "  AND (lease_expires_at IS NULL OR lease_expires_at > NOW())",
+                    "  AND lease_token = $2 "
+                    "  AND lease_expires_at > NOW()",
                     turn_id,
                     lease_token,
                 )
@@ -604,58 +611,70 @@ class PostgresConversationRepository:
                     content=msg_row["content"],
                     created_at=msg_row["created_at"],
                     metadata=metadata or {},
+                    turn_status="completed",
                 )
 
     async def fail_turn(
         self,
         turn_id: str,
         error_code: str = "GENERATION_FAILED",
-        lease_token: Optional[str] = None,
-    ) -> None:
-        """Marks an active turn as failed and releases the active turn lock."""
+        lease_token: str = "",
+    ) -> bool:
+        """Marks an active turn as failed and releases the active turn lock. Requires matching lease_token."""
+        if not lease_token or not lease_token.strip():
+            raise ValueError("A valid non-empty lease_token is required to fail a turn.")
+
         async with self.pool.acquire() as conn:
-            await conn.execute(
+            res = await conn.execute(
                 "UPDATE conversation_turns "
                 "SET status = 'failed', completed_at = NOW(), error_code = $2, lease_expires_at = NULL, lease_token = NULL "
                 "WHERE id = $1 AND status = 'pending' "
-                "  AND ($3::varchar IS NULL OR lease_token = $3)",
+                "  AND lease_token = $3",
                 turn_id,
                 error_code[:64],
                 lease_token,
             )
+            return "UPDATE 1" in res
 
     async def cancel_turn(
         self,
         turn_id: str,
-        lease_token: Optional[str] = None,
-    ) -> None:
-        """Marks an active turn as cancelled and releases the active turn lock."""
+        lease_token: str = "",
+    ) -> bool:
+        """Marks an active turn as cancelled and releases the active turn lock. Requires matching lease_token."""
+        if not lease_token or not lease_token.strip():
+            raise ValueError("A valid non-empty lease_token is required to cancel a turn.")
+
         async with self.pool.acquire() as conn:
-            await conn.execute(
+            res = await conn.execute(
                 "UPDATE conversation_turns "
                 "SET status = 'cancelled', completed_at = NOW(), lease_expires_at = NULL, lease_token = NULL "
                 "WHERE id = $1 AND status = 'pending' "
-                "  AND ($2::varchar IS NULL OR lease_token = $2)",
+                "  AND lease_token = $2",
                 turn_id,
                 lease_token,
             )
+            return "UPDATE 1" in res
 
     async def renew_turn_lease(
         self,
         turn_id: str,
-        lease_token: Optional[str] = None,
+        lease_token: str = "",
         additional_seconds: int = 120,
     ) -> bool:
         """
         Extends the lease expiration of an active pending turn.
         Guarantees that an already expired lease cannot be extended and requires lease_token match.
         """
+        if not lease_token or not lease_token.strip():
+            return False
+
         async with self.pool.acquire() as conn:
             res = await conn.execute(
                 "UPDATE conversation_turns "
                 "SET lease_expires_at = NOW() + ($2 * INTERVAL '1 second') "
                 "WHERE id = $1 AND status = 'pending' "
-                "  AND ($3::varchar IS NULL OR lease_token = $3) "
+                "  AND lease_token = $3 "
                 "  AND lease_expires_at > NOW()",
                 turn_id,
                 additional_seconds,

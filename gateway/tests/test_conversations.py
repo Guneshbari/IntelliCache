@@ -863,13 +863,14 @@ class TestPostgresConversationsIntegration(unittest.IsolatedAsyncioTestCase):
         )
 
         # Transition the turn to failed (simulating lease timeout recovery or abort)
-        await self.repo.fail_turn(turn.id, "LEASE_TIMEOUT_RECOVERED")
+        await self.repo.fail_turn(turn.id, "LEASE_TIMEOUT_RECOVERED", lease_token=turn.lease_token)
 
         # Now attempting to complete the turn should be rejected by the status guard
         with self.assertRaises(ActiveTurnConflictError) as ctx:
             await self.repo.complete_turn(
                 turn_id=turn.id,
                 assistant_content="Late response arrived after recovery",
+                lease_token=turn.lease_token,
             )
         self.assertIn("expected 'pending'", str(ctx.exception))
 
@@ -903,7 +904,7 @@ class TestPostgresConversationsIntegration(unittest.IsolatedAsyncioTestCase):
                 user_content="Turn 2 question that fails",
                 request_hash="hash-turn-2",
             )
-            await self.repo.fail_turn(turn2.id, "PROVIDER_OVERLOADED")
+            await self.repo.fail_turn(turn2.id, "PROVIDER_OVERLOADED", lease_token=turn2.lease_token)
 
             # Turn 3: Completes successfully (seq 4 user, seq 5 assistant)
             resp3 = await client.post(
@@ -1237,6 +1238,152 @@ class TestPostgresConversationsIntegration(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertEqual(resp.status_code, 409)
                 self.assertIn("lost its lease", resp.json()["detail"])
+
+    async def test_streaming_generation_aborted_immediately_when_lease_lost(self):
+        """
+        Verifies that when a streaming provider blocks indefinitely, lease loss detected by the heartbeat
+        immediately cancels the stream generation task without waiting for another provider chunk.
+        """
+        async def hanging_stream(content: str):
+            # Yield first chunk
+            yield type("MockChunk", (), {
+                "choices": [
+                    type("MockChoice", (), {
+                        "delta": type("MockDelta", (), {"content": "First partial chunk "})
+                    })
+                ]
+            })
+            # Then hang indefinitely awaiting next chunk
+            await asyncio.sleep(60.0)
+            yield type("MockChunk", (), {
+                "choices": [
+                    type("MockChoice", (), {
+                        "delta": type("MockDelta", (), {"content": "Late chunk that must never arrive "})
+                    })
+                ]
+            })
+
+        self.mock_groq.chat.completions.create.side_effect = lambda *args, **kwargs: hanging_stream("test")
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            c_resp = await client.post("/conversations", headers={"X-Client-Token": self.token_a})
+            conv_id = c_resp.json()["id"]
+
+            original_init = TurnLeaseHeartbeat.__init__
+
+            def fast_heartbeat_init(hb_self, conv_service, turn_id, lease_token=None, lease_seconds=120, interval=None, cancel_callback=None):
+                original_init(hb_self, conv_service, turn_id, lease_token, lease_seconds, interval=0.02, cancel_callback=cancel_callback)
+
+            with patch.object(TurnLeaseHeartbeat, "__init__", fast_heartbeat_init), \
+                 patch.object(ConversationService, "renew_turn_lease", AsyncMock(return_value=False)):
+                # Must abort promptly and not hang waiting 60s
+                resp = await asyncio.wait_for(
+                    client.post(
+                        "/query",
+                        json={"prompt": "Hanging stream query", "conversation_id": conv_id, "stream": True},
+                        headers={"X-Client-Token": self.token_a, "Idempotency-Key": "hanging-stream-key"},
+                    ),
+                    timeout=5.0,
+                )
+                self.assertEqual(resp.status_code, 200)
+                self.assertIn("text/event-stream", resp.headers.get("content-type", ""))
+                self.assertIn("lost its lease", resp.text)
+                self.assertIn('"status_code": 409', resp.text)
+
+                # Verify turn record in DB is marked as failed with LEASE_LOST_CONFLICT
+                async with self.pool.acquire() as conn:
+                    turn_row = await conn.fetchrow(
+                        "SELECT status, error_code FROM conversation_turns WHERE conversation_id = $1 AND idempotency_key = 'hanging-stream-key'",
+                        conv_id,
+                    )
+                    self.assertIsNotNone(turn_row)
+                    self.assertEqual(turn_row["status"], "failed")
+                    self.assertEqual(turn_row["error_code"], "LEASE_LOST_CONFLICT")
+
+    async def test_lease_token_is_mandatory_for_turn_mutations(self):
+        """Verifies that complete_turn, fail_turn, cancel_turn and renew_turn_lease strictly require a valid lease_token."""
+        principal = derive_principal_id(self.token_a, "test-conv-secret-key-999")
+        conv = await self.repo.create_conversation(None, self.ns, principal, "Mandatory Token Test")
+
+        turn, _, _ = await self.repo.begin_turn(
+            conversation_id=conv.id,
+            owner_principal_id=principal,
+            idempotency_key="mandatory-key-1",
+            user_content="Prompt for mandatory token test",
+            request_hash="hash-mandatory-1",
+        )
+        self.assertIsNotNone(turn.lease_token)
+
+        # 1. complete_turn requires non-empty lease_token
+        with self.assertRaises(ValueError):
+            await self.repo.complete_turn(turn.id, "Assistant response", lease_token="")
+        with self.assertRaises(ValueError):
+            await self.repo.complete_turn(turn.id, "Assistant response", lease_token=None)  # type: ignore
+
+        # 2. fail_turn requires non-empty lease_token
+        with self.assertRaises(ValueError):
+            await self.repo.fail_turn(turn.id, error_code="ERR", lease_token="")
+        with self.assertRaises(ValueError):
+            await self.repo.fail_turn(turn.id, error_code="ERR", lease_token=None)  # type: ignore
+
+        # 3. cancel_turn requires non-empty lease_token
+        with self.assertRaises(ValueError):
+            await self.repo.cancel_turn(turn.id, lease_token="")
+        with self.assertRaises(ValueError):
+            await self.repo.cancel_turn(turn.id, lease_token=None)  # type: ignore
+
+        # 4. renew_turn_lease returns False when lease_token is empty or None
+        self.assertFalse(await self.repo.renew_turn_lease(turn.id, lease_token=""))
+        self.assertFalse(await self.repo.renew_turn_lease(turn.id, lease_token=None))  # type: ignore
+
+    async def test_conversation_messages_include_turn_status_and_error_code(self):
+        """Verifies that GET /conversations/{id}/messages returns turn_status and turn_error_code."""
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            c_resp = await client.post("/conversations", headers={"X-Client-Token": self.token_a})
+            conv_id = c_resp.json()["id"]
+            principal = derive_principal_id(self.token_a, "test-conv-secret-key-999")
+
+            # Completed Turn
+            resp1 = await client.post(
+                "/query",
+                json={"prompt": "Completed prompt", "conversation_id": conv_id},
+                headers={"X-Client-Token": self.token_a, "Idempotency-Key": "status-test-key-1"},
+            )
+            self.assertEqual(resp1.status_code, 200)
+
+            # Failed Turn
+            turn2, _, _ = await self.repo.begin_turn(
+                conversation_id=conv_id,
+                owner_principal_id=principal,
+                idempotency_key="status-test-key-2",
+                user_content="Failed prompt",
+                request_hash="hash-status-2",
+            )
+            await self.repo.fail_turn(turn2.id, "UPSTREAM_RATE_LIMIT", lease_token=turn2.lease_token)
+
+            # Fetch messages via API
+            msgs_resp = await client.get(
+                f"/conversations/{conv_id}/messages",
+                headers={"X-Client-Token": self.token_a},
+            )
+            self.assertEqual(msgs_resp.status_code, 200)
+            data = msgs_resp.json()
+            self.assertEqual(data["total"], 3)
+            messages = data["messages"]
+
+            # Turn 1: user message
+            self.assertEqual(messages[0]["turn_status"], "completed")
+            self.assertIsNone(messages[0]["turn_error_code"])
+
+            # Turn 1: assistant message
+            self.assertEqual(messages[1]["turn_status"], "completed")
+            self.assertIsNone(messages[1]["turn_error_code"])
+
+            # Turn 2: user message from failed turn
+            self.assertEqual(messages[2]["turn_status"], "failed")
+            self.assertEqual(messages[2]["turn_error_code"], "UPSTREAM_RATE_LIMIT")
 
 
 if __name__ == "__main__":

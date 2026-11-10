@@ -106,6 +106,8 @@ class ConversationService:
                     content=m.content,
                     created_at=m.created_at.isoformat(),
                     metadata=m.metadata,
+                    turn_status=m.turn_status,
+                    turn_error_code=m.turn_error_code,
                 )
                 for m in records
             ],
@@ -153,7 +155,7 @@ class ConversationService:
     async def renew_turn_lease(
         self,
         turn_id: str,
-        lease_token: Optional[str] = None,
+        lease_token: str,
         additional_seconds: int = 120,
     ) -> bool:
         return await self.repo.renew_turn_lease(
@@ -166,7 +168,7 @@ class ConversationService:
         self,
         turn_id: str,
         assistant_content: str,
-        lease_token: Optional[str] = None,
+        lease_token: str,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> ConversationMessageRecord:
         return await self.repo.complete_turn(
@@ -179,10 +181,10 @@ class ConversationService:
     async def fail_turn(
         self,
         turn_id: str,
+        lease_token: str,
         error_code: str = "GENERATION_FAILED",
-        lease_token: Optional[str] = None,
-    ) -> None:
-        await self.repo.fail_turn(
+    ) -> bool:
+        return await self.repo.fail_turn(
             turn_id,
             error_code=error_code,
             lease_token=lease_token,
@@ -191,9 +193,9 @@ class ConversationService:
     async def cancel_turn(
         self,
         turn_id: str,
-        lease_token: Optional[str] = None,
-    ) -> None:
-        await self.repo.cancel_turn(
+        lease_token: str,
+    ) -> bool:
+        return await self.repo.cancel_turn(
             turn_id,
             lease_token=lease_token,
         )

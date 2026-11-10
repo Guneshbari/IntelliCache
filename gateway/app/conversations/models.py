@@ -46,6 +46,8 @@ class ConversationMessageRecord:
     content: str
     created_at: datetime
     metadata: Dict[str, Any] = field(default_factory=dict)
+    turn_status: Optional[str] = None
+    turn_error_code: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -84,6 +86,8 @@ class ConversationMessageResponse(BaseModel):
     content: str
     created_at: str
     metadata: Dict[str, Any] = Field(default_factory=dict)
+    turn_status: Optional[str] = None
+    turn_error_code: Optional[str] = None
 
 
 class ConversationMessagesListResponse(BaseModel):

@@ -343,17 +343,82 @@ export class DemoUIController {
     try {
       const resp = await this.apiClient.getConversationMessages(activeConv.id, 100, 0)
       if (resp && Array.isArray(resp.messages) && resp.messages.length > 0) {
-        const chatMessages: ChatMessage[] = resp.messages.map((m) => {
-          const meta = (m.metadata || {}) as Record<string, unknown>
-          return {
-            id: m.id,
-            role: m.role,
-            content: m.content,
-            timestamp: new Date(m.created_at).getTime() || Date.now(),
-            idempotencyKey: (meta.idempotency_key as string) || undefined,
-            originalOptions: (meta.options as ChatMessage['originalOptions']) || undefined,
+        const chatMessages: ChatMessage[] = []
+        const rawMsgs = resp.messages
+
+        // Collect all completed turn IDs
+        const completedTurnIds = new Set<string>()
+        for (const m of rawMsgs) {
+          if (m.turn_status === 'completed' && m.turn_id) {
+            completedTurnIds.add(m.turn_id)
           }
-        })
+        }
+
+        for (let i = 0; i < rawMsgs.length; i++) {
+          const m = rawMsgs[i]
+          const meta = (m.metadata || {}) as Record<string, unknown>
+          const isFailed = m.turn_status === 'failed' || m.turn_status === 'cancelled'
+          const isUser = m.role === 'user'
+
+          if (isUser && isFailed) {
+            const isCompletedTurn = completedTurnIds.has(m.turn_id)
+            const userMsg: ChatMessage = {
+              id: m.id,
+              role: 'user',
+              content: m.content,
+              timestamp: new Date(m.created_at).getTime() || Date.now(),
+              idempotencyKey: (meta.idempotency_key as string) || undefined,
+              originalOptions: (meta.options as ChatMessage['originalOptions']) || undefined,
+              turnId: m.turn_id,
+              turnStatus: m.turn_status || undefined,
+              turnErrorCode: m.turn_error_code || undefined,
+              isFailedAttempt: true,
+            }
+            chatMessages.push(userMsg)
+
+            // Check if there is an assistant reply following this message
+            const nextMsg = rawMsgs[i + 1]
+            const hasDirectAssistantReply =
+              nextMsg && nextMsg.role === 'assistant' && nextMsg.turn_id === m.turn_id
+
+            // Check if any later user turn in rawMsgs retried this prompt successfully
+            let subsequentlyRetried = false
+            for (let j = i + 1; j < rawMsgs.length; j++) {
+              if (rawMsgs[j].role === 'user' && rawMsgs[j].content === m.content) {
+                subsequentlyRetried = true
+                break
+              }
+            }
+
+            if (!hasDirectAssistantReply && !isCompletedTurn && !subsequentlyRetried) {
+              const errReason = m.turn_error_code || 'Generation failed or lease expired'
+              const assistantError: ChatMessage = {
+                id: `err-${m.id}`,
+                role: 'assistant',
+                content: `Error: Generation did not complete (${errReason}).`,
+                error: `Generation did not complete (${errReason}).`,
+                timestamp: (new Date(m.created_at).getTime() || Date.now()) + 500,
+                turnId: m.turn_id,
+                turnStatus: m.turn_status || undefined,
+                turnErrorCode: m.turn_error_code || undefined,
+              }
+              chatMessages.push(assistantError)
+            }
+          } else {
+            const chatMsg: ChatMessage = {
+              id: m.id,
+              role: m.role,
+              content: m.content,
+              timestamp: new Date(m.created_at).getTime() || Date.now(),
+              idempotencyKey: (meta.idempotency_key as string) || undefined,
+              originalOptions: (meta.options as ChatMessage['originalOptions']) || undefined,
+              turnId: m.turn_id,
+              turnStatus: m.turn_status || undefined,
+              turnErrorCode: m.turn_error_code || undefined,
+            }
+            chatMessages.push(chatMsg)
+          }
+        }
         this.conversationManager.setConversationMessages(activeConv.id, chatMessages)
       }
     } catch {

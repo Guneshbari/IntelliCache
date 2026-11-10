@@ -88,11 +88,17 @@ export class MessageRenderer {
     const timeStr = this.formatTime(msg.timestamp)
     // Strictly escape user content to ensure it is always rendered as plain text
     const escapedContent = MarkdownRenderer.escapeHtml(msg.content)
+    const attemptBadge = msg.isFailedAttempt
+      ? '<span class="author-badge attempt-badge" title="This generation attempt did not complete">Failed Attempt</span>'
+      : ''
 
     return `
-      <div class="message-row user" id="msg-${msg.id}">
+      <div class="message-row user ${msg.isFailedAttempt ? 'user-failed-attempt' : ''}" id="msg-${msg.id}">
         <div class="message-header">
-          <span class="author-badge user-badge">You</span>
+          <div class="author-info">
+            <span class="author-badge user-badge">You</span>
+            ${attemptBadge}
+          </div>
           <span class="message-timestamp">${timeStr}</span>
         </div>
         <div class="message-bubble user-bubble">${escapedContent}</div>

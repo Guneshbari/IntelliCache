@@ -773,4 +773,54 @@ describe('DemoUIController (End-to-End Coordination & Request Payloads)', () => 
     const payload = sendSpy.mock.calls[0][0]
     expect(payload.bypass_cache).toBe(false)
   })
+
+  it('restores failed turn as a retryable error message with failed attempt badge after refresh', async () => {
+    uiController.updateConnectionBadge('connected', 'Connected: default')
+    apiClient.setClientToken('test_token')
+
+    const activeConv = uiController.getConversationManager().getActiveConversation()
+    vi.spyOn(apiClient, 'getConversationMessages').mockResolvedValueOnce({
+      conversation_id: activeConv.id,
+      messages: [
+        {
+          id: 'msg-failed-user-1',
+          conversation_id: activeConv.id,
+          turn_id: 'turn-failed-1',
+          sequence_number: 1,
+          role: 'user',
+          content: 'Failed prompt before refresh',
+          created_at: new Date().toISOString(),
+          turn_status: 'failed',
+          turn_error_code: 'PROVIDER_TIMEOUT',
+          metadata: {
+            idempotency_key: 'idemp-failed-key-123',
+            options: { bypass_cache: false },
+          },
+        },
+      ],
+      total: 1,
+    })
+
+    await uiController.loadMessagesForActiveConversation()
+
+    const messages = uiController.getConversationManager().getActiveConversation().messages
+    expect(messages.length).toBe(2)
+
+    // User message has isFailedAttempt = true
+    const userMsg = messages[0]
+    expect(userMsg.role).toBe('user')
+    expect(userMsg.isFailedAttempt).toBe(true)
+    expect(userMsg.turnStatus).toBe('failed')
+    expect(userMsg.idempotencyKey).toBe('idemp-failed-key-123')
+
+    // Assistant error message was synthesized with retry button
+    const errorMsg = messages[1]
+    expect(errorMsg.role).toBe('assistant')
+    expect(errorMsg.error).toContain('PROVIDER_TIMEOUT')
+
+    uiController['renderMessages']()
+    const container = document.getElementById('messages-container')!
+    expect(container.innerHTML).toContain('Failed Attempt')
+    expect(container.innerHTML).toContain('Retry Query')
+  })
 })

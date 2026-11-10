@@ -67,6 +67,8 @@ export interface ConversationMessageItem {
   content: string
   created_at: string
   metadata?: Record<string, unknown> | null
+  turn_status?: string | null
+  turn_error_code?: string | null
 }
 
 export interface ConversationMessagesResponse {
@@ -214,6 +216,10 @@ export interface ChatMessage {
   error?: string
   isRetrying?: boolean
   idempotencyKey?: string
+  turnId?: string
+  turnStatus?: string
+  turnErrorCode?: string
+  isFailedAttempt?: boolean
   originalOptions?: {
     bypass_cache?: boolean
     model?: string

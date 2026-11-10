@@ -638,6 +638,26 @@ body {
   letter-spacing: 0.02em;
 }
 
+.author-info {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.attempt-badge {
+  font-size: 0.65rem;
+  padding: 0.05rem 0.35rem;
+  border-radius: var(--radius-xs);
+  background: rgba(239, 68, 68, 0.12);
+  color: #ef4444;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.user-failed-attempt .user-bubble {
+  border-left: 2px solid rgba(239, 68, 68, 0.5);
+  opacity: 0.9;
+}
+
 .user-badge {
   color: var(--accent-cyan);
 }

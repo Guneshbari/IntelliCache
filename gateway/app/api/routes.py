@@ -709,13 +709,21 @@ async def execute_query(
             if context_result.status != ContextStatus.COMPLETE:
                 effective_bypass_cache = True
         except ValueError as val_err:
-            await conv_service.fail_turn(turn_record.id, error_code="PAYLOAD_TOO_LARGE")
+            await conv_service.fail_turn(
+                turn_record.id,
+                error_code="PAYLOAD_TOO_LARGE",
+                lease_token=turn_record.lease_token,
+            )
             raise HTTPException(
                 status_code=status.HTTP_413_CONTENT_TOO_LARGE,
                 detail=str(val_err),
             )
         except Exception as err:
-            await conv_service.fail_turn(turn_record.id, error_code="CONTEXT_BUILD_FAILED")
+            await conv_service.fail_turn(
+                turn_record.id,
+                error_code="CONTEXT_BUILD_FAILED",
+                lease_token=turn_record.lease_token,
+            )
             raise
     else:
         canonical_messages = build_canonical_messages(
@@ -752,6 +760,24 @@ async def execute_query(
     # 1. Streaming Query Execution
     if request.stream:
         async def sse_event_stream() -> AsyncGenerator[str, None]:
+            accumulated_text: List[str] = []
+            completed_cleanly = False
+            queue: asyncio.Queue[Any] = asyncio.Queue()
+            _STREAM_DONE = object()
+
+            async def stream_producer() -> None:
+                try:
+                    async for chunk in core.execute_stream(gen_request, provider):
+                        await queue.put(chunk)
+                    await queue.put(_STREAM_DONE)
+                except asyncio.CancelledError:
+                    await queue.put(asyncio.CancelledError())
+                    raise
+                except Exception as exc:
+                    await queue.put(exc)
+
+            stream_task = asyncio.create_task(stream_producer())
+
             heartbeat = None
             if conv_service and turn_record:
                 heartbeat = TurnLeaseHeartbeat(
@@ -759,16 +785,36 @@ async def execute_query(
                     turn_record.id,
                     lease_token=turn_record.lease_token,
                     lease_seconds=settings.conversation_turn_lease_seconds,
+                    cancel_callback=stream_task.cancel,
                 )
                 heartbeat.start()
 
-            accumulated_text: List[str] = []
-            completed_cleanly = False
             try:
-                async for chunk in core.execute_stream(gen_request, provider):
-                    if heartbeat and heartbeat.lease_lost:
-                        raise ActiveTurnConflictError(f"Turn '{turn_record.id}' lost its lease during generation.")
+                while True:
+                    item = await queue.get()
 
+                    if item is _STREAM_DONE:
+                        break
+
+                    if isinstance(item, asyncio.CancelledError) or (heartbeat and heartbeat.lease_lost):
+                        if conv_service and turn_record:
+                            await conv_service.fail_turn(
+                                turn_record.id,
+                                error_code="LEASE_LOST_CONFLICT",
+                                lease_token=turn_record.lease_token,
+                            )
+                        err_payload = {
+                            "error": f"Turn '{turn_record.id if turn_record else ''}' lost its lease during generation.",
+                            "status_code": 409,
+                            "done": True,
+                        }
+                        yield f"data: {json.dumps(err_payload)}\n\n"
+                        return
+
+                    if isinstance(item, Exception):
+                        raise item
+
+                    chunk = item
                     if chunk.error is not None:
                         if conv_service and turn_record:
                             await conv_service.fail_turn(
@@ -828,7 +874,16 @@ async def execute_query(
                         yield "data: [DONE]\n\n"
             except asyncio.CancelledError:
                 if conv_service and turn_record:
-                    await conv_service.cancel_turn(turn_record.id, lease_token=turn_record.lease_token)
+                    if heartbeat and heartbeat.lease_lost:
+                        await conv_service.fail_turn(
+                            turn_record.id,
+                            error_code="LEASE_LOST_CONFLICT",
+                            lease_token=turn_record.lease_token,
+                        )
+                    else:
+                        await conv_service.cancel_turn(turn_record.id, lease_token=turn_record.lease_token)
+                raise
+            except ActiveTurnConflictError:
                 raise
             except Exception as e:
                 if conv_service and turn_record and not completed_cleanly:
@@ -841,8 +896,21 @@ async def execute_query(
             finally:
                 if heartbeat:
                     await heartbeat.stop()
+                if not stream_task.done():
+                    stream_task.cancel()
+                    try:
+                        await stream_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
                 if conv_service and turn_record and not completed_cleanly:
-                    await conv_service.cancel_turn(turn_record.id, lease_token=turn_record.lease_token)
+                    if heartbeat and heartbeat.lease_lost:
+                        await conv_service.fail_turn(
+                            turn_record.id,
+                            error_code="LEASE_LOST_CONFLICT",
+                            lease_token=turn_record.lease_token,
+                        )
+                    else:
+                        await conv_service.cancel_turn(turn_record.id, lease_token=turn_record.lease_token)
                 await provider.close()
 
         return StreamingResponse(sse_event_stream(), media_type="text/event-stream")
@@ -1014,4 +1082,6 @@ async def execute_query(
             detail=f"Internal Gateway Error: {sanitized}",
         )
     finally:
+        if heartbeat:
+            await heartbeat.stop()
         await provider.close()
