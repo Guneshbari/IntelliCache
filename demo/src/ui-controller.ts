@@ -342,12 +342,16 @@ export class DemoUIController {
     }
   }
 
-  public async loadMessagesForActiveConversation(): Promise<void> {
-    const activeConv = this.conversationManager.getActiveConversation()
-    if (!activeConv || !this.apiClient.hasToken()) return
+  public async loadMessagesForConversation(conversationId?: string): Promise<void> {
+    const activeId = this.conversationManager.getActiveConversationId()
+    const targetId = conversationId || activeId
+    if (!targetId || !this.apiClient.hasToken()) return
+
+    const targetConv = this.conversationManager.getConversation(targetId)
+    if (!targetConv) return
 
     try {
-      const resp = await this.apiClient.getConversationMessages(activeConv.id, 100, 0)
+      const resp = await this.apiClient.getConversationMessages(targetId, 100, 0)
       if (resp && Array.isArray(resp.messages) && resp.messages.length > 0) {
         const chatMessages: ChatMessage[] = []
         const rawMsgs = resp.messages
@@ -424,14 +428,17 @@ export class DemoUIController {
             }
             if (m.role === 'assistant') {
               // Preserve existing responseMeta if available locally, or reconstruct from message metadata
-              const existingMatch = activeConv.messages.find(
-                (ex) =>
+              const existingMatch = targetConv.messages.find(
+                (ex: ChatMessage) =>
                   (ex.turnId && ex.turnId === m.turn_id && ex.role === 'assistant') ||
                   ex.id === m.id
               )
               if (existingMatch?.responseMeta) {
                 chatMsg.responseMeta = existingMatch.responseMeta
-              } else if (meta && (meta.model || meta.cache_type || meta.fingerprint)) {
+              } else if (
+                meta &&
+                (meta.model || meta.cache_type || meta.fingerprint || meta.cached !== undefined)
+              ) {
                 chatMsg.responseMeta = {
                   response: m.content,
                   cached: (meta.cached as boolean) ?? false,
@@ -439,11 +446,11 @@ export class DemoUIController {
                   model: (meta.model as string) ?? '',
                   latency_ms: (meta.latency_ms as number) ?? 0,
                   fingerprint: (meta.fingerprint as string) ?? '',
-                  conversation_id: activeConv.id,
+                  conversation_id: targetId,
                   turn_id: m.turn_id,
                   context_status: (meta.context_status as QueryResponse['context_status']) ?? null,
                   created_at: m.created_at,
-                  cache_hit_count: 0,
+                  cache_hit_count: (meta.cache_hit_count as number) ?? 0,
                   usage: (meta.usage as QueryResponse['usage']) ?? {
                     prompt_tokens: 0,
                     completion_tokens: 0,
@@ -455,11 +462,15 @@ export class DemoUIController {
             chatMessages.push(chatMsg)
           }
         }
-        this.conversationManager.setConversationMessages(activeConv.id, chatMessages)
+        this.conversationManager.setConversationMessages(targetId, chatMessages)
       }
     } catch {
       // Non-blocking fallback
     }
+  }
+
+  public async loadMessagesForActiveConversation(): Promise<void> {
+    return this.loadMessagesForConversation()
   }
 
   public async handleNewChat(): Promise<void> {
@@ -636,8 +647,10 @@ export class DemoUIController {
       this.isGenerating = false
       this.sendBtn.disabled = false
       this.renderConversationList()
-      this.renderMessages()
-      this.chatTextarea?.focus()
+      if (this.conversationManager.getActiveConversationId() === activeConv.id) {
+        this.renderMessages()
+        this.chatTextarea?.focus()
+      }
     }
   }
 
@@ -645,6 +658,7 @@ export class DemoUIController {
     if (this.isGenerating) return
 
     const activeConv = this.conversationManager.getActiveConversation()
+    const targetConvId = activeConv.id
     const messages = activeConv.messages
 
     // Find the failed message
@@ -667,7 +681,7 @@ export class DemoUIController {
     if (!promptText) return
 
     // Remove the error message from the conversation without duplicating the user turn
-    this.conversationManager.removeMessage(activeConv.id, failedMsgId)
+    this.conversationManager.removeMessage(targetConvId, failedMsgId)
 
     this.isGenerating = true
     this.sendBtn.disabled = true
@@ -684,7 +698,7 @@ export class DemoUIController {
     if (this.mode === 'single-turn') {
       payload.prompt = promptText
     } else {
-      payload.conversation_id = activeConv.id
+      payload.conversation_id = targetConvId
       payload.prompt = promptText
     }
 
@@ -698,13 +712,13 @@ export class DemoUIController {
         this.connectionInfo.state === 'connected' &&
         this.apiClient.hasToken()
       ) {
-        // Reconcile from server so that the persisted attempt history matches exactly
-        await this.loadMessagesForActiveConversation()
-        const currentConv = this.conversationManager.getActiveConversation()
-        const lastMsg = currentConv.messages[currentConv.messages.length - 1]
+        // Reconcile the exact conversation that initiated the retry
+        await this.loadMessagesForConversation(targetConvId)
+        const targetConversation = this.conversationManager.getConversation(targetConvId)
+        const lastMsg = targetConversation?.messages[targetConversation.messages.length - 1]
         if (lastMsg && lastMsg.role === 'assistant') {
           lastMsg.responseMeta = response
-        } else {
+        } else if (targetConversation) {
           const assistantMessage: ChatMessage = {
             id: crypto.randomUUID(),
             role: 'assistant',
@@ -712,7 +726,7 @@ export class DemoUIController {
             timestamp: Date.now(),
             responseMeta: response,
           }
-          this.conversationManager.addMessage(activeConv.id, assistantMessage)
+          this.conversationManager.addMessage(targetConvId, assistantMessage)
         }
       } else {
         const assistantMessage: ChatMessage = {
@@ -722,7 +736,7 @@ export class DemoUIController {
           timestamp: Date.now(),
           responseMeta: response,
         }
-        this.conversationManager.addMessage(activeConv.id, assistantMessage)
+        this.conversationManager.addMessage(targetConvId, assistantMessage)
       }
       this.metricsController.refresh().catch(() => {})
     } catch (err) {
@@ -740,12 +754,15 @@ export class DemoUIController {
         timestamp: Date.now(),
         error: errMsg,
       }
-      this.conversationManager.addMessage(activeConv.id, assistantError)
+      this.conversationManager.addMessage(targetConvId, assistantError)
     } finally {
       this.isGenerating = false
       this.sendBtn.disabled = false
       this.renderConversationList()
-      this.renderMessages()
+      if (this.conversationManager.getActiveConversationId() === targetConvId) {
+        this.renderMessages()
+        this.chatTextarea?.focus()
+      }
     }
   }
 

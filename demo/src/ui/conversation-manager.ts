@@ -63,6 +63,10 @@ export class ConversationManager {
     return session
   }
 
+  public getConversation(id: string): ConversationSession | undefined {
+    return this.sessions.get(id)
+  }
+
   public getActiveConversationId(): string {
     return this.activeId
   }

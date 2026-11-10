@@ -873,6 +873,10 @@ async def execute_query(
                                         "model": chunk.model or effective_model,
                                         "fingerprint": chunk.fingerprint,
                                         "cache_type": chunk.cache_type,
+                                        "cached": chunk.cached,
+                                        "latency_ms": chunk.latency_ms or 0.0,
+                                        "cache_hit_count": getattr(chunk, "cache_hit_count", 0),
+                                        "usage": chunk.usage.to_dict() if chunk.usage else None,
                                         "context_status": effective_context_status,
                                     },
                                 )
@@ -1002,6 +1006,10 @@ async def execute_query(
                     "model": result.model,
                     "fingerprint": result.fingerprint,
                     "cache_type": result.cache_type,
+                    "cached": result.cached,
+                    "latency_ms": result.latency_ms,
+                    "cache_hit_count": result.cache_hit_count,
+                    "usage": result.usage.to_dict() if result.usage else None,
                     "context_status": effective_context_status,
                 },
             )

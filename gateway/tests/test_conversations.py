@@ -1457,6 +1457,110 @@ class TestPostgresConversationsIntegration(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(next_resp.status_code, 200)
             self.assertEqual(next_resp.json()["response"], "Unblocked response")
 
+    async def test_turn_completion_persists_full_cache_diagnostics_in_metadata(self):
+        """Verifies that both streaming and non-streaming completion persist cached, latency_ms, cache_hit_count, and usage in message metadata."""
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            c_resp = await client.post("/conversations", headers={"X-Client-Token": self.token_a})
+            conv_id = c_resp.json()["id"]
+
+            # 1. Non-streaming completion
+            resp1 = await client.post(
+                "/query",
+                json={"prompt": "Diagnostics prompt 1", "conversation_id": conv_id},
+                headers={"X-Client-Token": self.token_a, "Idempotency-Key": "diag-key-1"},
+            )
+            self.assertEqual(resp1.status_code, 200)
+
+            # 2. Streaming completion
+            resp2 = await client.post(
+                "/query",
+                json={"prompt": "Diagnostics prompt 2", "conversation_id": conv_id, "stream": True},
+                headers={"X-Client-Token": self.token_a, "Idempotency-Key": "diag-key-2"},
+            )
+            self.assertEqual(resp2.status_code, 200)
+
+            # Fetch messages and inspect metadata
+            msgs_resp = await client.get(
+                f"/conversations/{conv_id}/messages",
+                headers={"X-Client-Token": self.token_a},
+            )
+            self.assertEqual(msgs_resp.status_code, 200)
+            messages = msgs_resp.json()["messages"]
+
+            # Turn 1 assistant message
+            turn1_assistant = messages[1]
+            meta1 = turn1_assistant.get("metadata") or {}
+            self.assertIn("cached", meta1)
+            self.assertIn("latency_ms", meta1)
+            self.assertIn("cache_hit_count", meta1)
+            self.assertIn("usage", meta1)
+            self.assertIsInstance(meta1["usage"], dict)
+
+            # Turn 2 assistant message (streaming)
+            turn2_assistant = messages[3]
+            meta2 = turn2_assistant.get("metadata") or {}
+            self.assertIn("cached", meta2)
+            self.assertIn("latency_ms", meta2)
+            self.assertIn("cache_hit_count", meta2)
+
+    async def test_streaming_saturated_queue_cancellation_and_termination(self):
+        """
+        Verifies that when a bounded queue is filled to capacity and producer is cancelled,
+        the non-blocking cancellation sentinel allows the producer to exit immediately
+        without deadlock, and the consumer receives the termination signal cleanly.
+        """
+        queue = asyncio.Queue(maxsize=5)
+        producer_cancelled = asyncio.Event()
+        producer_exited_cleanly = asyncio.Event()
+
+        async def saturated_producer():
+            try:
+                for i in range(10):
+                    await queue.put(f"chunk-{i}")
+            except asyncio.CancelledError:
+                producer_cancelled.set()
+                try:
+                    queue.put_nowait(asyncio.CancelledError())
+                except asyncio.QueueFull:
+                    try:
+                        queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        pass
+                    try:
+                        queue.put_nowait(asyncio.CancelledError())
+                    except asyncio.QueueFull:
+                        pass
+                producer_exited_cleanly.set()
+                raise
+
+        producer_task = asyncio.create_task(saturated_producer())
+        # Wait a moment for queue to fill to capacity (5 items)
+        await asyncio.sleep(0.02)
+        self.assertTrue(queue.full())
+
+        # Now cancel the producer while suspended awaiting queue.put()
+        producer_task.cancel()
+
+        # Producer must exit promptly without hanging (timeout guards against deadlock)
+        await asyncio.wait_for(producer_exited_cleanly.wait(), timeout=1.0)
+        self.assertTrue(producer_cancelled.is_set())
+        with self.assertRaises(asyncio.CancelledError):
+            await producer_task
+
+        # Consumer drains queue and receives CancelledError sentinel
+        items = []
+        found_cancellation_sentinel = False
+        while not queue.empty():
+            item = queue.get_nowait()
+            if isinstance(item, asyncio.CancelledError):
+                found_cancellation_sentinel = True
+                break
+            items.append(item)
+
+        self.assertTrue(found_cancellation_sentinel)
+        self.assertEqual(len(items), 4)  # 5 minus 1 evicted for sentinel
+
 
 if __name__ == "__main__":
     unittest.main()

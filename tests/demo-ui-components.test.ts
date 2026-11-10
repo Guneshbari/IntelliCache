@@ -974,4 +974,195 @@ describe('DemoUIController (End-to-End Coordination & Request Payloads)', () => 
     )
     expect(reloadedHtml).toBe(liveHtmlAfterRetry)
   })
+
+  it('prevents race condition when switching conversation during retry', async () => {
+    uiController.updateConnectionBadge('connected', 'Connected: default')
+    apiClient.setClientToken('test_token')
+    uiController.setMode('multi-turn')
+
+    const manager = uiController.getConversationManager()
+    const convA = manager.getActiveConversation()
+    const convAId = convA.id
+
+    // Create Conversation B
+    const convB = manager.createConversation('Conversation B')
+    const convBId = convB.id
+
+    // Switch back to Conversation A
+    manager.setActiveConversation(convAId)
+
+    // Setup failed turn in Conversation A
+    const failedMessagesA: ConversationMessageItem[] = [
+      {
+        id: 'msg-user-a',
+        conversation_id: convAId,
+        turn_id: 'turn-a-1',
+        sequence_number: 1,
+        role: 'user',
+        content: 'Question for Conversation A',
+        created_at: new Date(Date.now() - 60000).toISOString(),
+        turn_status: 'failed',
+        turn_error_code: 'PROVIDER_ERROR',
+        metadata: { idempotency_key: 'idemp-a' },
+      },
+    ]
+
+    vi.spyOn(apiClient, 'getConversationMessages').mockImplementation(async (id: string) => {
+      if (id === convAId) {
+        return {
+          conversation_id: convAId,
+          messages: failedMessagesA,
+          total: 1,
+        }
+      }
+      return { conversation_id: id, messages: [], total: 0 }
+    })
+
+    await uiController.loadMessagesForActiveConversation()
+    const initialMessagesA = convA.messages
+    expect(initialMessagesA.length).toBe(2) // failed user + assistant error card
+    const errorCardId = initialMessagesA[1].id
+
+    // Setup sendQuery mock that switches to Conversation B while in-flight!
+    vi.spyOn(apiClient, 'sendQuery').mockImplementation(async () => {
+      // Simulate user switching to Conversation B while query is in flight
+      manager.setActiveConversation(convBId)
+      return {
+        response: 'Answer for Conversation A',
+        cached: false,
+        model: 'test-model',
+        latency_ms: 100,
+        usage: { prompt_tokens: 5, completion_tokens: 5, total_tokens: 10 },
+        cache_hit_count: 0,
+        fingerprint: 'fp_a',
+        created_at: new Date().toISOString(),
+        cache_type: 'none',
+      }
+    })
+
+    // After retry completes, getConversationMessages for convA returns the completed turn
+    vi.spyOn(apiClient, 'getConversationMessages').mockImplementation(async (id: string) => {
+      if (id === convAId) {
+        return {
+          conversation_id: convAId,
+          messages: [
+            failedMessagesA[0],
+            {
+              id: 'msg-user-a-retry',
+              conversation_id: convAId,
+              turn_id: 'turn-a-2',
+              sequence_number: 2,
+              role: 'user',
+              content: 'Question for Conversation A',
+              created_at: new Date().toISOString(),
+              turn_status: 'completed',
+              metadata: { idempotency_key: 'idemp-a' },
+            },
+            {
+              id: 'msg-assistant-a-2',
+              conversation_id: convAId,
+              turn_id: 'turn-a-2',
+              sequence_number: 3,
+              role: 'assistant',
+              content: 'Answer for Conversation A',
+              created_at: new Date().toISOString(),
+              turn_status: 'completed',
+              metadata: { model: 'test-model', cached: false },
+            },
+          ],
+          total: 3,
+        }
+      }
+      return { conversation_id: id, messages: [], total: 0 }
+    })
+
+    // Execute retry from Conversation A (which switches active conversation to convB mid-flight)
+    await uiController.handleRetry(errorCardId)
+
+    // Verify Conversation B was NOT polluted
+    expect(manager.getActiveConversationId()).toBe(convBId)
+    const messagesB = manager.getConversation(convBId)!.messages
+    expect(messagesB.length).toBe(0) // Conversation B remains clean
+
+    // Verify Conversation A received the reconciled messages
+    const messagesA = manager.getConversation(convAId)!.messages
+    expect(messagesA.length).toBe(3)
+    expect(messagesA[0].isFailedAttempt).toBe(true)
+    expect(messagesA[1].content).toBe('Question for Conversation A')
+    expect(messagesA[2].content).toBe('Answer for Conversation A')
+  })
+
+  it('preserves full cache diagnostics (cached, cache_type, latency, usage) after reloading conversation', async () => {
+    uiController.updateConnectionBadge('connected', 'Connected: default')
+    apiClient.setClientToken('test_token')
+    uiController.setMode('multi-turn')
+
+    const activeConv = uiController.getConversationManager().getActiveConversation()
+    const convId = activeConv.id
+
+    const serverMessages: ConversationMessageItem[] = [
+      {
+        id: 'msg-user-sem-1',
+        conversation_id: convId,
+        turn_id: 'turn-sem-1',
+        sequence_number: 1,
+        role: 'user',
+        content: 'Tell me about distributed caching',
+        created_at: new Date(Date.now() - 10000).toISOString(),
+        turn_status: 'completed',
+        turn_error_code: null,
+      },
+      {
+        id: 'msg-assistant-sem-1',
+        conversation_id: convId,
+        turn_id: 'turn-sem-1',
+        sequence_number: 2,
+        role: 'assistant',
+        content: 'Distributed caching partitions cached values across cluster nodes.',
+        created_at: new Date(Date.now() - 9000).toISOString(),
+        turn_status: 'completed',
+        turn_error_code: null,
+        metadata: {
+          cached: true,
+          cache_type: 'semantic',
+          latency_ms: 18.5,
+          cache_hit_count: 2,
+          model: 'llama-3.3-70b-versatile',
+          fingerprint: 'fp_semantic_dist_cache',
+          context_status: 'complete',
+          usage: { prompt_tokens: 25, completion_tokens: 35, total_tokens: 60 },
+        },
+      },
+    ]
+
+    vi.spyOn(apiClient, 'getConversationMessages').mockResolvedValueOnce({
+      conversation_id: convId,
+      messages: serverMessages,
+      total: 2,
+    })
+
+    await uiController.loadMessagesForActiveConversation()
+
+    const messages = activeConv.messages
+    expect(messages.length).toBe(2)
+
+    const assistantMsg = messages[1]
+    expect(assistantMsg.role).toBe('assistant')
+    expect(assistantMsg.responseMeta).toBeDefined()
+
+    const meta = assistantMsg.responseMeta!
+    // Crucial: Must be preserved as an actual semantic cache hit, not defaulted to false / 0!
+    expect(meta.cached).toBe(true)
+    expect(meta.cache_type).toBe('semantic')
+    expect(meta.latency_ms).toBe(18.5)
+    expect(meta.cache_hit_count).toBe(2)
+    expect(meta.model).toBe('llama-3.3-70b-versatile')
+    expect(meta.fingerprint).toBe('fp_semantic_dist_cache')
+    expect(meta.context_status).toBe('complete')
+    expect(meta.usage).toEqual({
+      prompt_tokens: 25,
+      completion_tokens: 35,
+      total_tokens: 60,
+    })
+  })
 })
