@@ -203,4 +203,34 @@ describe('ConversationManager (In-Memory Session Model)', () => {
     expect(localStorage.length).toBe(0)
     expect(sessionStorage.length).toBe(0)
   })
+
+  it('replaces local conversations cleanly without leaving initial placeholder session', () => {
+    expect(manager.getConversations().length).toBe(1)
+    const initialId = manager.getActiveConversationId()
+
+    manager.replaceConversationsFromServer([
+      {
+        id: 'srv-clean-1',
+        title: 'Server Clean 1',
+        cache_namespace: 'test_ns',
+        created_at: '2026-11-10T00:00:00Z',
+        updated_at: '2026-11-10T00:05:00Z',
+        last_message_at: '2026-11-10T00:05:00Z',
+      },
+    ])
+
+    const convs = manager.getConversations()
+    expect(convs.length).toBe(1)
+    expect(convs[0].id).toBe('srv-clean-1')
+    expect(manager.hasConversation(initialId)).toBe(false)
+    expect(manager.getActiveConversationId()).toBe('srv-clean-1')
+  })
+
+  it('deleteConversation with autoCreatePlaceholder=false does not create a fallback conversation', () => {
+    const active = manager.getActiveConversation()
+    const deleted = manager.deleteConversation(active.id, false)
+    expect(deleted).toBe(true)
+    expect(manager.getConversations().length).toBe(0)
+    expect(manager.getActiveConversationId()).toBe('')
+  })
 })

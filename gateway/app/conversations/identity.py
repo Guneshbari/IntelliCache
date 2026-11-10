@@ -24,20 +24,31 @@ def compute_turn_request_hash(
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
     stream: bool = False,
+    provider: Optional[str] = None,
+    bypass_cache: bool = False,
 ) -> str:
     """
     Computes a deterministic SHA-256 hash of all generation-affecting parameters for a turn.
     Used to bind idempotency keys to their specific request payload.
+    Preserves prompt and system prompt formatting/indentation, normalizing only line endings
+    (converting \\r\\n and \\r to \\n) and stripping outer whitespace.
     """
-    norm_prompt = " ".join(prompt.split()).strip()
-    norm_sys = " ".join((system_prompt or "").split()).strip()
+    def _normalize_content(text: Optional[str]) -> str:
+        if not text:
+            return ""
+        return text.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+    norm_prompt = _normalize_content(prompt)
+    norm_sys = _normalize_content(system_prompt)
     canonical = {
         "prompt": norm_prompt,
         "system_prompt": norm_sys,
         "model": (model or "").strip().lower(),
-        "temperature": round(float(temperature if temperature is not None else 0.0), 4),
-        "max_tokens": int(max_tokens if max_tokens is not None else 0),
+        "provider": (provider or "").strip().lower(),
+        "temperature": float(temperature) if temperature is not None else None,
+        "max_tokens": int(max_tokens) if max_tokens is not None else None,
         "stream": bool(stream),
+        "bypass_cache": bool(bypass_cache),
     }
     encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()

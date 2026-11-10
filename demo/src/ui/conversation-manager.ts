@@ -75,7 +75,7 @@ export class ConversationManager {
     return false
   }
 
-  public deleteConversation(id: string): boolean {
+  public deleteConversation(id: string, autoCreatePlaceholder: boolean = true): boolean {
     if (!this.sessions.has(id)) {
       return false
     }
@@ -83,14 +83,16 @@ export class ConversationManager {
     this.sessions.delete(id)
 
     // If the active conversation was deleted, switch to the most recently updated,
-    // or create a new clean conversation if none remain.
+    // or create a new clean conversation if none remain and autoCreatePlaceholder is true.
     if (this.activeId === id) {
       const remaining = this.getConversations()
       if (remaining.length > 0) {
         this.activeId = remaining[0].id
-      } else {
+      } else if (autoCreatePlaceholder) {
         const fresh = this.createConversation()
         this.activeId = fresh.id
+      } else {
+        this.activeId = ''
       }
     }
     return true
@@ -106,30 +108,34 @@ export class ConversationManager {
     return this.sessions.has(id)
   }
 
-  public setConversationsFromServer(conversations: ConversationSummary[]): void {
-    if (!conversations || conversations.length === 0) return
+  public replaceConversationsFromServer(conversations: ConversationSummary[]): void {
+    const oldSessions = this.sessions
+    this.sessions = new Map()
 
     for (const c of conversations) {
-      const existing = this.sessions.get(c.id)
+      const existing = oldSessions.get(c.id)
       const updatedAt = new Date(c.updated_at || c.created_at).getTime()
       const createdAt = new Date(c.created_at).getTime()
-      if (existing) {
-        existing.title = c.title || existing.title
-        existing.updatedAt = updatedAt
-      } else {
-        this.sessions.set(c.id, {
-          id: c.id,
-          title: c.title || 'New Conversation',
-          createdAt: Number.isFinite(createdAt) ? createdAt : Date.now(),
-          updatedAt: Number.isFinite(updatedAt) ? updatedAt : Date.now(),
-          messages: [],
-        })
-      }
+      this.sessions.set(c.id, {
+        id: c.id,
+        title: c.title || 'New Conversation',
+        createdAt: Number.isFinite(createdAt) ? createdAt : Date.now(),
+        updatedAt: Number.isFinite(updatedAt) ? updatedAt : Date.now(),
+        messages: existing ? existing.messages : [],
+      })
     }
 
-    if (!this.sessions.has(this.activeId) && conversations.length > 0) {
-      this.activeId = conversations[0].id
+    if (conversations.length > 0) {
+      if (!this.sessions.has(this.activeId)) {
+        this.activeId = conversations[0].id
+      }
+    } else {
+      this.activeId = ''
     }
+  }
+
+  public setConversationsFromServer(conversations: ConversationSummary[]): void {
+    this.replaceConversationsFromServer(conversations)
   }
 
   public setConversationMessages(id: string, messages: ChatMessage[]): void {

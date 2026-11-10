@@ -611,4 +611,88 @@ describe('DemoUIController (End-to-End Coordination & Request Payloads)', () => 
       'server-initial-conv-456'
     )
   })
+
+  it('reuses the preceding turn idempotency key on handleRetry', async () => {
+    uiController.updateConnectionBadge('connected', 'Connected: default')
+    apiClient.setClientToken('test_token')
+
+    const promptText = 'Prompt with fixed idempotency key'
+    const sendSpy = vi.spyOn(apiClient, 'sendQuery')
+
+    // 1. Initial send fails
+    sendSpy.mockRejectedValueOnce(new Error('Gateway timeout'))
+    const textarea = document.getElementById('chat-textarea') as HTMLTextAreaElement
+    textarea.value = promptText
+    await uiController.handleSend()
+
+    expect(sendSpy).toHaveBeenCalledTimes(1)
+    const initialKey = sendSpy.mock.calls[0][1]
+    expect(initialKey).toBeDefined()
+    expect(typeof initialKey).toBe('string')
+
+    // Check message store
+    const activeConv = uiController.getConversationManager().getActiveConversation()
+    expect(activeConv.messages[0].idempotencyKey).toBe(initialKey)
+    const failedMsgId = activeConv.messages[1].id
+
+    // 2. Retry succeeds and reuses the exact same idempotencyKey
+    sendSpy.mockClear()
+    sendSpy.mockResolvedValueOnce({
+      response: 'Retried successfully',
+      cached: false,
+      model: 'test-model',
+      latency_ms: 100,
+      usage: { prompt_tokens: 5, completion_tokens: 10, total_tokens: 15 },
+      cache_hit_count: 0,
+      fingerprint: 'fp_retry_key',
+      created_at: new Date().toISOString(),
+      cache_type: 'none',
+    })
+
+    await uiController.handleRetry(failedMsgId)
+
+    expect(sendSpy).toHaveBeenCalledTimes(1)
+    const retryKey = sendSpy.mock.calls[0][1]
+    expect(retryKey).toBe(initialKey)
+  })
+
+  it('awaits server deletion and prevents local deletion if server deletion fails', async () => {
+    uiController.updateConnectionBadge('connected', 'Connected: default')
+    apiClient.setClientToken('test_token')
+
+    const activeConv = uiController.getConversationManager().getActiveConversation()
+    const deleteSpy = vi
+      .spyOn(apiClient, 'deleteConversation')
+      .mockRejectedValueOnce(new Error('Network error'))
+
+    await uiController.handleDeleteConversation(activeConv.id)
+
+    expect(deleteSpy).toHaveBeenCalledWith(activeConv.id)
+    // Conversation should still exist locally because server deletion failed
+    expect(uiController.getConversationManager().hasConversation(activeConv.id)).toBe(true)
+  })
+
+  it('creates replacement on server when the last conversation is deleted', async () => {
+    uiController.updateConnectionBadge('connected', 'Connected: default')
+    apiClient.setClientToken('test_token')
+
+    const activeConv = uiController.getConversationManager().getActiveConversation()
+    const deleteSpy = vi.spyOn(apiClient, 'deleteConversation').mockResolvedValueOnce(true)
+    const createSpy = vi.spyOn(apiClient, 'createConversation').mockResolvedValueOnce({
+      id: 'server-replacement-conv',
+      title: 'New Conversation',
+      cache_namespace: 'default',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      last_message_at: new Date().toISOString(),
+    })
+
+    await uiController.handleDeleteConversation(activeConv.id)
+
+    expect(deleteSpy).toHaveBeenCalledWith(activeConv.id)
+    expect(createSpy).toHaveBeenCalledWith('New Conversation')
+    expect(uiController.getConversationManager().getActiveConversationId()).toBe(
+      'server-replacement-conv'
+    )
+  })
 })

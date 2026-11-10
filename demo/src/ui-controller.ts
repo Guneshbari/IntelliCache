@@ -316,16 +316,13 @@ export class DemoUIController {
       const resp = await this.apiClient.listConversations(50, 0)
       if (resp && Array.isArray(resp.conversations)) {
         if (resp.conversations.length > 0) {
-          this.conversationManager.setConversationsFromServer(resp.conversations)
+          this.conversationManager.replaceConversationsFromServer(resp.conversations)
           await this.loadMessagesForActiveConversation()
         } else {
           try {
             const created = await this.apiClient.createConversation('New Conversation')
             if (created && created.id) {
-              this.conversationManager.createConversationWithId(
-                created.id,
-                created.title || 'New Conversation'
-              )
+              this.conversationManager.replaceConversationsFromServer([created])
             }
           } catch {
             // Non-blocking fallback
@@ -407,11 +404,21 @@ export class DemoUIController {
   }
 
   public async handleDeleteConversation(id: string): Promise<void> {
-    this.conversationManager.deleteConversation(id)
-    if (this.apiClient.hasToken()) {
-      this.apiClient.deleteConversation(id).catch(() => {})
-      const remaining = this.conversationManager.getConversations()
-      if (remaining.length === 0) {
+    if (this.connectionInfo.state === 'connected' && this.apiClient.hasToken()) {
+      try {
+        await this.apiClient.deleteConversation(id)
+      } catch (err) {
+        console.error('Failed to delete conversation on server:', err)
+        return
+      }
+    }
+
+    // Server deletion succeeded or offline: remove local session without auto-creating placeholder
+    this.conversationManager.deleteConversation(id, false)
+    const remaining = this.conversationManager.getConversations()
+
+    if (remaining.length === 0) {
+      if (this.connectionInfo.state === 'connected' && this.apiClient.hasToken()) {
         try {
           const created = await this.apiClient.createConversation('New Conversation')
           if (created && created.id) {
@@ -421,10 +428,13 @@ export class DemoUIController {
             )
           }
         } catch {
-          // Non-blocking fallback
+          this.conversationManager.createConversation('New Conversation')
         }
+      } else {
+        this.conversationManager.createConversation('New Conversation')
       }
     }
+
     this.renderConversationList()
     this.renderMessages()
   }
@@ -434,12 +444,14 @@ export class DemoUIController {
     if (!text || this.isGenerating) return
 
     const activeConv = this.conversationManager.getActiveConversation()
+    const idempotencyKey = crypto.randomUUID()
 
     const userMessage: ChatMessage = {
       id: crypto.randomUUID(),
       role: 'user',
       content: text,
       timestamp: Date.now(),
+      idempotencyKey,
     }
 
     this.conversationManager.addMessage(activeConv.id, userMessage)
@@ -483,7 +495,6 @@ export class DemoUIController {
     }
 
     try {
-      const idempotencyKey = crypto.randomUUID()
       const response = await this.apiClient.sendQuery(payload, idempotencyKey)
       const assistantMessage: ChatMessage = {
         id: crypto.randomUUID(),
@@ -531,11 +542,13 @@ export class DemoUIController {
     const failedIndex = messages.findIndex((m) => m.id === failedMsgId)
     if (failedIndex === -1) return
 
-    // Find the immediately preceding user message to retry
+    // Find the immediately preceding user message to retry and its original idempotency key
     let promptText = ''
+    let retryIdempotencyKey: string | undefined
     for (let i = failedIndex - 1; i >= 0; i--) {
       if (messages[i].role === 'user') {
         promptText = messages[i].content
+        retryIdempotencyKey = messages[i].idempotencyKey
         break
       }
     }
@@ -562,7 +575,8 @@ export class DemoUIController {
     }
 
     try {
-      const idempotencyKey = crypto.randomUUID()
+      // Reuse the preceding turn's idempotency key so server deduplicates / recovers cleanly
+      const idempotencyKey = retryIdempotencyKey || crypto.randomUUID()
       const response = await this.apiClient.sendQuery(payload, idempotencyKey)
       const assistantMessage: ChatMessage = {
         id: crypto.randomUUID(),

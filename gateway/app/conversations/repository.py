@@ -207,60 +207,81 @@ class PostgresConversationRepository:
     ) -> Tuple[List[ChatMessage], bool]:
         """
         Retrieves all messages belonging to completed turns in chronological order,
-        verifying message sequence continuity and turn pair completeness.
+        verifying message sequence continuity across all persisted messages and completed
+        turn pair completeness and strict adjacency.
         Returns: (messages, is_history_incomplete)
         """
+        # Query ALL persisted messages for this conversation across all turn statuses
         query = """
-            SELECT m.sequence_number, m.turn_id, m.role, m.content
+            SELECT m.sequence_number, m.turn_id, m.role, m.content, t.status AS turn_status
             FROM conversation_messages m
             JOIN conversation_turns t ON m.turn_id = t.id
             JOIN conversations c ON m.conversation_id = c.id
             WHERE m.conversation_id = $1
               AND c.owner_principal_id = $2
-              AND t.status = 'completed'
             ORDER BY m.sequence_number ASC
         """
         async with self.pool.acquire() as conn:
-            rows = await conn.fetch(query, conversation_id, owner_principal_id)
+            all_rows = await conn.fetch(query, conversation_id, owner_principal_id)
 
-        if not rows:
+        if not all_rows:
             return [], False
 
-        is_incomplete = False
-
-        # 1. Contiguous sequence validation: 1, 2, 3...
+        # 1. Contiguous sequence validation across ALL persisted messages (1, 2, 3...)
         expected_seq = 1
-        for r in rows:
+        for r in all_rows:
             if r["sequence_number"] != expected_seq:
                 logger.warning(
-                    "Conversation '%s' sequence continuity gap: expected %d, got %d",
+                    "Conversation '%s' sequence continuity gap in message ledger: expected %d, got %d",
                     conversation_id,
                     expected_seq,
                     r["sequence_number"],
                 )
-                is_incomplete = True
-                break
+                return [], True
             expected_seq += 1
 
-        # 2. Complete turn validation: strictly pairs of user followed by assistant per turn_id
-        if not is_incomplete:
-            turns_dict: Dict[str, List[Dict[str, Any]]] = {}
-            for r in rows:
-                turns_dict.setdefault(r["turn_id"], []).append(r)
+        # 2. Complete turn validation: for each completed turn, enforce strictly adjacent pairs (user, assistant)
+        completed_turns_dict: Dict[str, List[Dict[str, Any]]] = {}
+        for r in all_rows:
+            if r["turn_status"] == "completed":
+                completed_turns_dict.setdefault(r["turn_id"], []).append(r)
 
-            for tid, t_msgs in turns_dict.items():
-                if len(t_msgs) != 2 or t_msgs[0]["role"] != "user" or t_msgs[1]["role"] != "assistant":
-                    logger.warning(
-                        "Conversation '%s' malformed turn '%s': messages=%s",
-                        conversation_id,
-                        tid,
-                        [(m["sequence_number"], m["role"]) for m in t_msgs],
-                    )
-                    is_incomplete = True
-                    break
+        for tid, t_msgs in completed_turns_dict.items():
+            if len(t_msgs) != 2:
+                logger.warning(
+                    "Conversation '%s' completed turn '%s' has %d messages, expected 2",
+                    conversation_id,
+                    tid,
+                    len(t_msgs),
+                )
+                return [], True
+            u_msg, a_msg = t_msgs[0], t_msgs[1]
+            if u_msg["role"] != "user" or a_msg["role"] != "assistant":
+                logger.warning(
+                    "Conversation '%s' completed turn '%s' malformed roles: user=%s, assistant=%s",
+                    conversation_id,
+                    tid,
+                    u_msg["role"],
+                    a_msg["role"],
+                )
+                return [], True
+            if a_msg["sequence_number"] != u_msg["sequence_number"] + 1:
+                logger.warning(
+                    "Conversation '%s' completed turn '%s' non-adjacent sequences: user=%d, assistant=%d",
+                    conversation_id,
+                    tid,
+                    u_msg["sequence_number"],
+                    a_msg["sequence_number"],
+                )
+                return [], True
 
-        chat_messages = [ChatMessage(role=r["role"], content=r["content"]) for r in rows]
-        return chat_messages, is_incomplete
+        # 3. Construct LLM context messages exclusively from completed turns in chronological order
+        chat_messages = [
+            ChatMessage(role=r["role"], content=r["content"])
+            for r in all_rows
+            if r["turn_status"] == "completed"
+        ]
+        return chat_messages, False
 
     async def get_completed_history(
         self,
@@ -319,9 +340,12 @@ class PostgresConversationRepository:
 
                 if existing_turn:
                     # Enforce request fingerprint binding on idempotency key reuse
+                    if existing_turn["request_hash"] is None:
+                        raise IdempotencyConflictError(
+                            f"Idempotency key '{idempotency_key}' refers to an unverified legacy turn without request hash."
+                        )
                     if (
                         request_hash
-                        and existing_turn["request_hash"]
                         and existing_turn["request_hash"] != request_hash
                     ):
                         raise IdempotencyConflictError(
@@ -486,6 +510,7 @@ class PostgresConversationRepository:
     ) -> ConversationMessageRecord:
         """
         Marks an active turn completed and persists the assistant response atomically.
+        Guards against completing turns that are no longer in pending status (e.g. lease expired or recovered).
         """
         async with self.pool.acquire() as conn:
             async with conn.transaction():
@@ -495,6 +520,11 @@ class PostgresConversationRepository:
                 )
                 if not turn_row:
                     raise ConversationNotFoundError(f"Turn '{turn_id}' not found.")
+
+                if turn_row["status"] != "pending":
+                    raise ActiveTurnConflictError(
+                        f"Cannot complete turn '{turn_id}': status is '{turn_row['status']}', expected 'pending'."
+                    )
 
                 conv_id = turn_row["conversation_id"]
 
@@ -518,11 +548,14 @@ class PostgresConversationRepository:
                     meta_json,
                 )
 
-                await conn.execute(
+                res = await conn.execute(
                     "UPDATE conversation_turns SET status = 'completed', completed_at = NOW(), error_code = NULL, lease_expires_at = NULL "
-                    "WHERE id = $1",
+                    "WHERE id = $1 AND status = 'pending'",
                     turn_id,
                 )
+                if "UPDATE 1" not in res:
+                    raise ActiveTurnConflictError(f"Turn '{turn_id}' was not in pending status during completion.")
+
                 await conn.execute(
                     "UPDATE conversations SET updated_at = NOW(), last_message_at = NOW() WHERE id = $1",
                     conv_id,
@@ -543,7 +576,8 @@ class PostgresConversationRepository:
         """Marks an active turn as failed and releases the active turn lock."""
         async with self.pool.acquire() as conn:
             await conn.execute(
-                "UPDATE conversation_turns SET status = 'failed', completed_at = NOW(), error_code = $2, lease_expires_at = NULL WHERE id = $1",
+                "UPDATE conversation_turns SET status = 'failed', completed_at = NOW(), error_code = $2, lease_expires_at = NULL "
+                "WHERE id = $1 AND status = 'pending'",
                 turn_id,
                 error_code[:64],
             )
@@ -552,7 +586,8 @@ class PostgresConversationRepository:
         """Marks an active turn as cancelled and releases the active turn lock."""
         async with self.pool.acquire() as conn:
             await conn.execute(
-                "UPDATE conversation_turns SET status = 'cancelled', completed_at = NOW(), lease_expires_at = NULL WHERE id = $1",
+                "UPDATE conversation_turns SET status = 'cancelled', completed_at = NOW(), lease_expires_at = NULL "
+                "WHERE id = $1 AND status = 'pending'",
                 turn_id,
             )
 

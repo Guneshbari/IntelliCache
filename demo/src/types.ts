@@ -213,6 +213,7 @@ export interface ChatMessage {
   responseMeta?: QueryResponse
   error?: string
   isRetrying?: boolean
+  idempotencyKey?: string
 }
 
 export interface ConversationSession {

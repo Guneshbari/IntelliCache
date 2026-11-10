@@ -452,6 +452,70 @@ def get_llm_provider(
 # API Route Handlers
 # ---------------------------------------------------------------------------
 
+class TurnLeaseHeartbeat:
+    """
+    Heartbeat manager that periodically extends the lease of an active conversation turn.
+    Guarantees active long-running LLM inferences do not lose their lease to concurrent turns.
+    If the lease cannot be renewed (turn was lost, cancelled, or recovered), flags lease_lost.
+    """
+
+    def __init__(
+        self,
+        conv_service: Any,
+        turn_id: str,
+        lease_seconds: int = 120,
+        interval: Optional[float] = None,
+    ):
+        self.conv_service = conv_service
+        self.turn_id = turn_id
+        self.lease_seconds = lease_seconds
+        # Interval is at most lease_seconds / 3, bounded between 1s and 30s (unless explicitly overridden)
+        self.interval = interval if interval is not None else max(1.0, min(30.0, float(lease_seconds) / 3.0))
+        self._task: Optional[asyncio.Task] = None
+        self._stop_event = asyncio.Event()
+        self.lease_lost = False
+
+    async def _heartbeat_loop(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=self.interval)
+                break
+            except asyncio.TimeoutError:
+                pass
+
+            if self._stop_event.is_set():
+                break
+
+            try:
+                renewed = await self.conv_service.renew_turn_lease(
+                    self.turn_id,
+                    additional_seconds=self.lease_seconds,
+                )
+                if not renewed:
+                    logger.warning(
+                        "Turn '%s' lease renewal failed: turn is no longer pending or was recovered.",
+                        self.turn_id,
+                    )
+                    self.lease_lost = True
+                    break
+            except Exception as err:
+                logger.warning("Turn '%s' lease heartbeat exception: %s", self.turn_id, err)
+
+    def start(self) -> None:
+        if self.conv_service and self.turn_id:
+            self._task = asyncio.create_task(self._heartbeat_loop())
+
+    async def stop(self) -> None:
+        self._stop_event.set()
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            self._task = None
+
+
 @router.post("", response_model=QueryResponse, summary="Execute or reuse cached LLM query", dependencies=[Depends(verify_client_token)])
 @router.post("/", response_model=QueryResponse, include_in_schema=False, dependencies=[Depends(verify_client_token)])
 async def execute_query(
@@ -514,6 +578,8 @@ async def execute_query(
             temperature=effective_temperature,
             max_tokens=effective_max_tokens,
             stream=request.stream,
+            provider=settings.llm_provider,
+            bypass_cache=request.bypass_cache,
         )
 
         try:
@@ -621,10 +687,22 @@ async def execute_query(
     # 1. Streaming Query Execution
     if request.stream:
         async def sse_event_stream() -> AsyncGenerator[str, None]:
+            heartbeat = None
+            if conv_service and turn_record:
+                heartbeat = TurnLeaseHeartbeat(
+                    conv_service,
+                    turn_record.id,
+                    lease_seconds=settings.conversation_turn_lease_seconds,
+                )
+                heartbeat.start()
+
             accumulated_text: List[str] = []
             completed_cleanly = False
             try:
                 async for chunk in core.execute_stream(gen_request, provider):
+                    if heartbeat and heartbeat.lease_lost:
+                        raise ActiveTurnConflictError(f"Turn '{turn_record.id}' lost its lease during generation.")
+
                     if chunk.error is not None:
                         if conv_service and turn_record:
                             await conv_service.fail_turn(turn_record.id, error_code="STREAM_ERROR")
@@ -686,6 +764,8 @@ async def execute_query(
                     await conv_service.fail_turn(turn_record.id, error_code=type(e).__name__)
                 raise
             finally:
+                if heartbeat:
+                    await heartbeat.stop()
                 if conv_service and turn_record and not completed_cleanly:
                     await conv_service.cancel_turn(turn_record.id)
                 await provider.close()
@@ -693,8 +773,20 @@ async def execute_query(
         return StreamingResponse(sse_event_stream(), media_type="text/event-stream")
 
     # 2. Non-Streaming Query Execution
+    heartbeat = None
+    if conv_service and turn_record:
+        heartbeat = TurnLeaseHeartbeat(
+            conv_service,
+            turn_record.id,
+            lease_seconds=settings.conversation_turn_lease_seconds,
+        )
+        heartbeat.start()
+
     try:
         result: GenerationResult = await core.execute_query(gen_request, provider)
+        if heartbeat and heartbeat.lease_lost:
+            raise ActiveTurnConflictError(f"Turn '{turn_record.id}' lost its lease during generation.")
+
         if conv_service and turn_record:
             await conv_service.complete_turn(
                 turn_id=turn_record.id,
@@ -724,6 +816,14 @@ async def execute_query(
         if conv_service and turn_record:
             await conv_service.cancel_turn(turn_record.id)
         raise
+    except ActiveTurnConflictError as err:
+        if conv_service and turn_record:
+            await conv_service.fail_turn(turn_record.id, error_code="LEASE_LOST_CONFLICT")
+        logger.warning("Active turn conflict during generation: %s", err)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(err),
+        )
     except ProviderAuthenticationError as err:
         if conv_service and turn_record:
             await conv_service.fail_turn(turn_record.id, error_code="PROVIDER_AUTH_ERROR")

@@ -23,6 +23,7 @@ from app.context.policy import ContextPolicy
 from app.conversations.identity import (
     AuthenticatedClient,
     _is_loopback_address,
+    compute_turn_request_hash,
     derive_principal_id,
     verify_conversation_client,
 )
@@ -30,11 +31,13 @@ from app.conversations.models import ConversationRecord
 from app.conversations.repository import (
     ActiveTurnConflictError,
     ConversationNotFoundError,
+    IdempotencyConflictError,
     PostgresConversationRepository,
 )
 from app.conversations.service import ConversationService
 from app.core.contracts import ChatMessage
 from app.main import app
+from app.api.routes import TurnLeaseHeartbeat
 from app.routes.query import (
     get_groq_client_factory,
     get_query_cache,
@@ -156,6 +159,82 @@ class TestConversationIdentity(unittest.TestCase):
             finally:
                 reload_settings()
 
+    def test_compute_turn_request_hash_conservative_whitespace(self):
+        """Verifies conservative whitespace handling preserves multiline indentation and structure."""
+        p1 = "def solve():\n    x = 10\n    return x"
+        p2 = "def solve():\n  x = 10\n  return x"
+        p3 = "def solve(): x = 10; return x"
+        p4 = "  def solve():\n    x = 10\n    return x  \n\n"
+        p5 = "def solve():\r\n    x = 10\r\n    return x"
+
+        h1 = compute_turn_request_hash(prompt=p1, model="m1", temperature=0.7)
+        h2 = compute_turn_request_hash(prompt=p2, model="m1", temperature=0.7)
+        h3 = compute_turn_request_hash(prompt=p3, model="m1", temperature=0.7)
+        h4 = compute_turn_request_hash(prompt=p4, model="m1", temperature=0.7)
+        h5 = compute_turn_request_hash(prompt=p5, model="m1", temperature=0.7)
+
+        # Trimming outer whitespace preserves identical core hash
+        self.assertEqual(h1, h4)
+        # Windows CRLF normalizes to Unix LF
+        self.assertEqual(h1, h5)
+        # Internal indentation difference is preserved and changes hash
+        self.assertNotEqual(h1, h2)
+        # Inlined/collapsed structure changes hash
+        self.assertNotEqual(h1, h3)
+
+    def test_compute_turn_request_hash_float_precision(self):
+        """Verifies no lossy rounding on temperature."""
+        h1 = compute_turn_request_hash(prompt="prompt", model="m1", temperature=0.70001)
+        h2 = compute_turn_request_hash(prompt="prompt", model="m1", temperature=0.70002)
+        self.assertNotEqual(h1, h2)
+
+    def test_compute_turn_request_hash_provider_and_bypass_cache(self):
+        """Verifies provider and bypass_cache are bound to request hash."""
+        h_groq = compute_turn_request_hash(prompt="prompt", model="m1", temperature=0.7, provider="groq", bypass_cache=False)
+        h_ollama = compute_turn_request_hash(prompt="prompt", model="m1", temperature=0.7, provider="ollama", bypass_cache=False)
+        h_bypass = compute_turn_request_hash(prompt="prompt", model="m1", temperature=0.7, provider="groq", bypass_cache=True)
+
+        self.assertNotEqual(h_groq, h_ollama)
+        self.assertNotEqual(h_groq, h_bypass)
+
+
+class TestTurnLeaseHeartbeat(unittest.IsolatedAsyncioTestCase):
+    """Unit tests for TurnLeaseHeartbeat lifecycle and lease loss detection."""
+
+    async def test_heartbeat_periodically_renews_lease(self):
+        conv_service = AsyncMock()
+        conv_service.renew_turn_lease.return_value = True
+
+        heartbeat = TurnLeaseHeartbeat(
+            conv_service=conv_service,
+            turn_id="turn_hb_1",
+            lease_seconds=30,
+            interval=0.03,
+        )
+        heartbeat.start()
+        await asyncio.sleep(0.08)
+        await heartbeat.stop()
+
+        self.assertGreaterEqual(conv_service.renew_turn_lease.call_count, 2)
+        self.assertFalse(heartbeat.lease_lost)
+
+    async def test_heartbeat_detects_lost_lease(self):
+        conv_service = AsyncMock()
+        # Returns False simulating turn recovered or cancelled
+        conv_service.renew_turn_lease.return_value = False
+
+        heartbeat = TurnLeaseHeartbeat(
+            conv_service=conv_service,
+            turn_id="turn_hb_lost",
+            lease_seconds=30,
+            interval=0.02,
+        )
+        heartbeat.start()
+        await asyncio.sleep(0.06)
+        await heartbeat.stop()
+
+        self.assertTrue(heartbeat.lease_lost)
+
 
 class TestConversationsFallbackWithoutDB(unittest.TestCase):
     """Tests ensuring graceful degradation when PostgreSQL is not configured."""
@@ -254,9 +333,11 @@ class TestPostgresConversationsIntegration(unittest.IsolatedAsyncioTestCase):
             await conn.execute("DELETE FROM cache_entries WHERE cache_namespace = $1", self.ns)
 
         # Set up repository and service
+        from app.cache.postgres_cache import PostgresCache
         self.repo = PostgresConversationRepository(self.pool)
         self.service = ConversationService(self.repo)
         app.state.db_pool = self.pool
+        set_query_cache(PostgresCache(self.pool))
 
         # Mock Groq provider
         self.provider_call_count = 0
@@ -702,6 +783,112 @@ class TestPostgresConversationsIntegration(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(data["context_status"], "incomplete")
             self.assertFalse(data["cached"])
             self.assertEqual(data["cache_type"], "none")
+
+    async def test_legacy_null_request_hash_rejected_on_replay(self):
+        """Verifies that idempotency key replay against legacy turns with request_hash=NULL raises conflict."""
+        principal = derive_principal_id(self.token_a, "test-conv-secret-key-999")
+        conv = await self.repo.create_conversation(None, self.ns, principal, "Legacy Test")
+
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO conversation_turns (
+                    id, conversation_id, idempotency_key, request_hash, status, created_at, completed_at
+                ) VALUES (
+                    'legacy-turn-1', $1, 'legacy-key-1', NULL, 'completed', NOW(), NOW()
+                )
+                """,
+                conv.id,
+            )
+
+        with self.assertRaises(IdempotencyConflictError) as ctx:
+            await self.repo.begin_turn(
+                conversation_id=conv.id,
+                owner_principal_id=principal,
+                idempotency_key="legacy-key-1",
+                user_content="Any prompt",
+                request_hash="new-hash-value",
+            )
+        self.assertIn("unverified legacy turn", str(ctx.exception))
+
+    async def test_complete_turn_guarded_against_non_pending(self):
+        """Verifies that complete_turn raises ActiveTurnConflictError if the turn is no longer pending."""
+        principal = derive_principal_id(self.token_a, "test-conv-secret-key-999")
+        conv = await self.repo.create_conversation(None, self.ns, principal, "Guarded Completion")
+
+        turn, _, _ = await self.repo.begin_turn(
+            conversation_id=conv.id,
+            owner_principal_id=principal,
+            idempotency_key="guard-key-1",
+            user_content="Prompt 1",
+            request_hash="hash-1",
+        )
+
+        # Transition the turn to failed (simulating lease timeout recovery or abort)
+        await self.repo.fail_turn(turn.id, "LEASE_TIMEOUT_RECOVERED")
+
+        # Now attempting to complete the turn should be rejected by the status guard
+        with self.assertRaises(ActiveTurnConflictError) as ctx:
+            await self.repo.complete_turn(
+                turn_id=turn.id,
+                assistant_content="Late response arrived after recovery",
+            )
+        self.assertIn("expected 'pending'", str(ctx.exception))
+
+    async def test_failed_turn_in_history_does_not_break_subsequent_history_and_context(self):
+        """
+        Verifies that legitimate failed turns with persisted user messages do not break
+        history sequence validation or cause subsequent turns to be marked incomplete.
+        """
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            c_resp = await client.post(
+                "/conversations",
+                headers={"X-Client-Token": self.token_a},
+            )
+            conv_id = c_resp.json()["id"]
+
+            # Turn 1: Completes successfully (seq 1 user, seq 2 assistant)
+            resp1 = await client.post(
+                "/query",
+                json={"prompt": "Unique Failed Turn Test Q1", "conversation_id": conv_id},
+                headers={"X-Client-Token": self.token_a, "Idempotency-Key": "turn-fail-flow-1"},
+            )
+            self.assertEqual(resp1.status_code, 200)
+
+            # Turn 2: Fails during generation (user message seq 3 created, but turn fails)
+            principal = derive_principal_id(self.token_a, "test-conv-secret-key-999")
+            turn2, _, _ = await self.repo.begin_turn(
+                conversation_id=conv_id,
+                owner_principal_id=principal,
+                idempotency_key="turn-fail-flow-2-fail",
+                user_content="Turn 2 question that fails",
+                request_hash="hash-turn-2",
+            )
+            await self.repo.fail_turn(turn2.id, "PROVIDER_OVERLOADED")
+
+            # Turn 3: Completes successfully (seq 4 user, seq 5 assistant)
+            resp3 = await client.post(
+                "/query",
+                json={"prompt": "Unique Failed Turn Test Q3", "conversation_id": conv_id},
+                headers={"X-Client-Token": self.token_a, "Idempotency-Key": "turn-fail-flow-3"},
+            )
+            self.assertEqual(resp3.status_code, 200)
+            data3 = resp3.json()
+            # Context must be complete despite the failed turn in the ledger
+            self.assertEqual(data3["context_status"], "complete")
+
+            # Validate history via repository
+            history, is_incomplete = await self.repo.get_validated_completed_history(conv_id, principal)
+            self.assertFalse(is_incomplete)
+            # Should have exactly 4 messages (Turn 1 user/assistant, Turn 3 user/assistant)
+            self.assertEqual(len(history), 4)
+            self.assertEqual(history[0].role, "user")
+            self.assertEqual(history[0].content, "Unique Failed Turn Test Q1")
+            self.assertEqual(history[1].role, "assistant")
+            self.assertEqual(history[2].role, "user")
+            self.assertEqual(history[2].content, "Unique Failed Turn Test Q3")
+            self.assertEqual(history[3].role, "assistant")
 
 
 if __name__ == "__main__":
