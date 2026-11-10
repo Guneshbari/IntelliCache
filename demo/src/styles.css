@@ -970,6 +970,12 @@ body {
   border-color: rgba(168, 85, 247, 0.35);
 }
 
+.cache-badge.unknown {
+  background: rgba(148, 163, 184, 0.15);
+  color: var(--text-muted);
+  border-color: rgba(148, 163, 184, 0.35);
+}
+
 .cache-latency-pill {
   font-family: var(--font-mono);
   font-size: 0.72rem;

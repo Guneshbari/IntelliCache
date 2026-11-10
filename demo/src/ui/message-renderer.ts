@@ -139,7 +139,11 @@ export class MessageRenderer {
     let badgeLabel = '🌐 Upstream Provider Generation'
     let latencyClass = 'latency-standard'
 
-    if (meta.idempotent_replay) {
+    if (meta.cached === null || meta.cached === undefined) {
+      badgeClass = 'unknown'
+      badgeLabel = 'ℹ️ Diagnostic History Unavailable'
+      latencyClass = 'latency-standard'
+    } else if (meta.idempotent_replay) {
       badgeClass = 'replay'
       badgeLabel = '🔁 Idempotent Replay'
       latencyClass = 'latency-fast'
@@ -154,11 +158,17 @@ export class MessageRenderer {
     }
 
     const shortFp = meta.fingerprint ? `${meta.fingerprint.slice(0, 16)}...` : 'n/a'
-    const totalTokens = meta.usage?.total_tokens ?? 0
-    const promptTokens = meta.usage?.prompt_tokens ?? 0
-    const compTokens = meta.usage?.completion_tokens ?? 0
+    const totalTokens = meta.usage?.total_tokens ?? '—'
+    const promptTokens = meta.usage?.prompt_tokens ?? '—'
+    const compTokens = meta.usage?.completion_tokens ?? '—'
     const formattedLatency =
-      meta.latency_ms !== undefined ? `${meta.latency_ms.toFixed(1)} ms` : '—'
+      meta.latency_ms !== undefined && meta.latency_ms !== null
+        ? `${meta.latency_ms.toFixed(1)} ms`
+        : '—'
+    const formattedHitCount =
+      meta.cache_hit_count !== undefined && meta.cache_hit_count !== null
+        ? String(meta.cache_hit_count)
+        : '—'
 
     return `
       <div class="cache-diagnostics-container">
@@ -178,7 +188,7 @@ export class MessageRenderer {
                 </div>
                 <div class="diag-item">
                   <span class="diag-label">Cache Hit Count:</span>
-                  <span class="diag-value highlight-accent">${meta.cache_hit_count}</span>
+                  <span class="diag-value highlight-accent">${formattedHitCount}</span>
                 </div>
                 <div class="diag-item">
                   <span class="diag-label">Total Tokens:</span>

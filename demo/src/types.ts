@@ -30,11 +30,11 @@ export interface UsageMetrics {
 
 export interface QueryResponse {
   response: string
-  cached: boolean
+  cached?: boolean | null
   model: string
-  latency_ms: number
-  usage: UsageMetrics
-  cache_hit_count: number
+  latency_ms?: number | null
+  usage?: UsageMetrics | null
+  cache_hit_count?: number | null
   conversation_id?: string | null
   turn_id?: string | null
   context_status?: 'complete' | 'compacted' | 'incomplete' | string | null

@@ -37,7 +37,7 @@ from app.conversations.repository import (
 from app.conversations.service import ConversationService
 from app.core.contracts import ChatMessage
 from app.main import app
-from app.api.routes import TurnLeaseHeartbeat
+from app.api.routes import TurnLeaseHeartbeat, enqueue_queue_terminal_signal
 from app.routes.query import (
     get_groq_client_factory,
     get_query_cache,
@@ -257,6 +257,31 @@ class TestTurnLeaseHeartbeat(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(heartbeat.lease_lost)
         self.assertTrue(cancelled)
+
+
+class TestStreamingQueueHelpers(unittest.TestCase):
+    """Unit tests for non-blocking queue eviction and terminal signaling."""
+
+    def test_enqueue_queue_terminal_signal_on_saturated_queue(self):
+        queue: asyncio.Queue = asyncio.Queue(maxsize=2)
+        queue.put_nowait("chunk-1")
+        queue.put_nowait("chunk-2")
+        self.assertTrue(queue.full())
+
+        sentinel = asyncio.CancelledError()
+        enqueue_queue_terminal_signal(queue, sentinel)
+        self.assertTrue(queue.full())
+        # Evicted oldest chunk-1, kept chunk-2, delivered sentinel
+        self.assertEqual(queue.get_nowait(), "chunk-2")
+        self.assertIs(queue.get_nowait(), sentinel)
+
+    def test_enqueue_queue_terminal_signal_on_unfilled_queue(self):
+        queue: asyncio.Queue = asyncio.Queue(maxsize=3)
+        queue.put_nowait("chunk-1")
+        exc = RuntimeError("stream failure")
+        enqueue_queue_terminal_signal(queue, exc)
+        self.assertEqual(queue.get_nowait(), "chunk-1")
+        self.assertIs(queue.get_nowait(), exc)
 
 
 class TestConversationsFallbackWithoutDB(unittest.TestCase):
@@ -1520,17 +1545,7 @@ class TestPostgresConversationsIntegration(unittest.IsolatedAsyncioTestCase):
                     await queue.put(f"chunk-{i}")
             except asyncio.CancelledError:
                 producer_cancelled.set()
-                try:
-                    queue.put_nowait(asyncio.CancelledError())
-                except asyncio.QueueFull:
-                    try:
-                        queue.get_nowait()
-                    except asyncio.QueueEmpty:
-                        pass
-                    try:
-                        queue.put_nowait(asyncio.CancelledError())
-                    except asyncio.QueueFull:
-                        pass
+                enqueue_queue_terminal_signal(queue, asyncio.CancelledError())
                 producer_exited_cleanly.set()
                 raise
 
@@ -1560,6 +1575,108 @@ class TestPostgresConversationsIntegration(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(found_cancellation_sentinel)
         self.assertEqual(len(items), 4)  # 5 minus 1 evicted for sentinel
+
+    async def test_streaming_cache_hit_increments_and_persists_hit_count(self):
+        """
+        Verifies that repeated streaming queries hitting exact cache:
+        1. Correctly set cache_hit_count in the SSE terminal event payload.
+        2. Increment cache_hit_count across sequential hits (1, 2, ...).
+        3. Persist the accurate cache_hit_count and cached=True in conversation message metadata.
+        """
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            prompt = "Streaming cache hit increment and persistence verification"
+
+            # 1. First execution: Turn 1 in Conversation 1 (Cache Miss -> Upstream Provider)
+            c1_resp = await client.post("/conversations", headers={"X-Client-Token": self.token_a})
+            conv1_id = c1_resp.json()["id"]
+
+            resp1 = await client.post(
+                "/query",
+                json={
+                    "prompt": prompt,
+                    "conversation_id": conv1_id,
+                    "stream": True,
+                },
+                headers={"X-Client-Token": self.token_a, "Idempotency-Key": "stream-hit-key-turn-1"},
+            )
+            self.assertEqual(resp1.status_code, 200)
+            self.assertEqual(self.provider_call_count, 1)
+
+            lines1 = [line.strip() for line in resp1.text.strip().split("\n") if line.strip()]
+            data1 = [json.loads(line[6:]) for line in lines1 if line.startswith("data: ") and line != "data: [DONE]"]
+            final1 = data1[-1]
+            self.assertTrue(final1["done"])
+            self.assertFalse(final1["cached"])
+            self.assertEqual(final1.get("cache_hit_count", 0), 0)
+
+            # 2. Second execution: Turn 1 in Conversation 2 with identical prompt (Exact Streaming Cache Hit #1)
+            c2_resp = await client.post("/conversations", headers={"X-Client-Token": self.token_a})
+            conv2_id = c2_resp.json()["id"]
+
+            resp2 = await client.post(
+                "/query",
+                json={
+                    "prompt": prompt,
+                    "conversation_id": conv2_id,
+                    "stream": True,
+                },
+                headers={"X-Client-Token": self.token_a, "Idempotency-Key": "stream-hit-key-turn-2"},
+            )
+            self.assertEqual(resp2.status_code, 200)
+            self.assertEqual(self.provider_call_count, 1)  # Provider not called
+
+            lines2 = [line.strip() for line in resp2.text.strip().split("\n") if line.strip()]
+            data2 = [json.loads(line[6:]) for line in lines2 if line.startswith("data: ") and line != "data: [DONE]"]
+            final2 = data2[-1]
+            self.assertTrue(final2["done"])
+            self.assertTrue(final2["cached"])
+            self.assertEqual(final2["cache_type"], "exact")
+            self.assertEqual(final2["cache_hit_count"], 1)
+
+            # Verify PostgreSQL message persistence for Conversation 2
+            m2_resp = await client.get(f"/conversations/{conv2_id}/messages", headers={"X-Client-Token": self.token_a})
+            self.assertEqual(m2_resp.status_code, 200)
+            messages2 = m2_resp.json()["messages"]
+            self.assertEqual(len(messages2), 2)
+            assistant2_meta = messages2[1].get("metadata") or {}
+            self.assertTrue(assistant2_meta.get("cached"))
+            self.assertEqual(assistant2_meta.get("cache_type"), "exact")
+            self.assertEqual(assistant2_meta.get("cache_hit_count"), 1)
+
+            # 3. Third execution: Turn 1 in Conversation 3 with identical prompt (Exact Streaming Cache Hit #2)
+            c3_resp = await client.post("/conversations", headers={"X-Client-Token": self.token_a})
+            conv3_id = c3_resp.json()["id"]
+
+            resp3 = await client.post(
+                "/query",
+                json={
+                    "prompt": prompt,
+                    "conversation_id": conv3_id,
+                    "stream": True,
+                },
+                headers={"X-Client-Token": self.token_a, "Idempotency-Key": "stream-hit-key-turn-3"},
+            )
+            self.assertEqual(resp3.status_code, 200)
+            self.assertEqual(self.provider_call_count, 1)  # Provider still not called
+
+            lines3 = [line.strip() for line in resp3.text.strip().split("\n") if line.strip()]
+            data3 = [json.loads(line[6:]) for line in lines3 if line.startswith("data: ") and line != "data: [DONE]"]
+            final3 = data3[-1]
+            self.assertTrue(final3["done"])
+            self.assertTrue(final3["cached"])
+            self.assertEqual(final3["cache_type"], "exact")
+            self.assertEqual(final3["cache_hit_count"], 2)
+
+            # Verify PostgreSQL message persistence for Conversation 3
+            m3_resp = await client.get(f"/conversations/{conv3_id}/messages", headers={"X-Client-Token": self.token_a})
+            self.assertEqual(m3_resp.status_code, 200)
+            messages3 = m3_resp.json()["messages"]
+            self.assertEqual(len(messages3), 2)
+            assistant3_meta = messages3[1].get("metadata") or {}
+            self.assertTrue(assistant3_meta.get("cached"))
+            self.assertEqual(assistant3_meta.get("cache_type"), "exact")
+            self.assertEqual(assistant3_meta.get("cache_hit_count"), 2)
 
 
 if __name__ == "__main__":

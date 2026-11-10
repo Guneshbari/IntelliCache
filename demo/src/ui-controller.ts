@@ -435,27 +435,21 @@ export class DemoUIController {
               )
               if (existingMatch?.responseMeta) {
                 chatMsg.responseMeta = existingMatch.responseMeta
-              } else if (
-                meta &&
-                (meta.model || meta.cache_type || meta.fingerprint || meta.cached !== undefined)
-              ) {
+              } else {
                 chatMsg.responseMeta = {
                   response: m.content,
-                  cached: (meta.cached as boolean) ?? false,
-                  cache_type: (meta.cache_type as QueryResponse['cache_type']) ?? 'none',
-                  model: (meta.model as string) ?? '',
-                  latency_ms: (meta.latency_ms as number) ?? 0,
-                  fingerprint: (meta.fingerprint as string) ?? '',
+                  cached: typeof meta?.cached === 'boolean' ? meta.cached : null,
+                  cache_type: (meta?.cache_type as QueryResponse['cache_type']) ?? 'none',
+                  model: (meta?.model as string) ?? '',
+                  latency_ms: typeof meta?.latency_ms === 'number' ? meta.latency_ms : null,
+                  fingerprint: (meta?.fingerprint as string) ?? '',
                   conversation_id: targetId,
                   turn_id: m.turn_id,
-                  context_status: (meta.context_status as QueryResponse['context_status']) ?? null,
+                  context_status: (meta?.context_status as QueryResponse['context_status']) ?? null,
                   created_at: m.created_at,
-                  cache_hit_count: (meta.cache_hit_count as number) ?? 0,
-                  usage: (meta.usage as QueryResponse['usage']) ?? {
-                    prompt_tokens: 0,
-                    completion_tokens: 0,
-                    total_tokens: 0,
-                  },
+                  cache_hit_count:
+                    typeof meta?.cache_hit_count === 'number' ? meta.cache_hit_count : null,
+                  usage: meta?.usage ? (meta.usage as QueryResponse['usage']) : null,
                 }
               }
             }
@@ -647,10 +641,8 @@ export class DemoUIController {
       this.isGenerating = false
       this.sendBtn.disabled = false
       this.renderConversationList()
-      if (this.conversationManager.getActiveConversationId() === activeConv.id) {
-        this.renderMessages()
-        this.chatTextarea?.focus()
-      }
+      this.renderMessages()
+      this.chatTextarea?.focus()
     }
   }
 
@@ -759,10 +751,8 @@ export class DemoUIController {
       this.isGenerating = false
       this.sendBtn.disabled = false
       this.renderConversationList()
-      if (this.conversationManager.getActiveConversationId() === targetConvId) {
-        this.renderMessages()
-        this.chatTextarea?.focus()
-      }
+      this.renderMessages()
+      this.chatTextarea?.focus()
     }
   }
 

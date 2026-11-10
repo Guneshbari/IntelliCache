@@ -175,6 +175,36 @@ describe('MessageRenderer (UI Presentation & Diagnostics)', () => {
     expect(html).toContain('cache-badge replay')
   })
 
+  it('renders unknown diagnostic badge and dashes for omitted historical diagnostics', () => {
+    const historicalMeta: QueryResponse = {
+      response: 'Historical restored response without diagnostic metadata.',
+      cached: null,
+      cache_type: 'none',
+      model: '',
+      latency_ms: null,
+      usage: null,
+      cache_hit_count: null,
+      fingerprint: '',
+      created_at: new Date().toISOString(),
+    }
+
+    const assistantMsg: ChatMessage = {
+      id: 'a-hist-1',
+      role: 'assistant',
+      content: 'Historical restored response without diagnostic metadata.',
+      timestamp: Date.now(),
+      responseMeta: historicalMeta,
+    }
+
+    const html = MessageRenderer.renderMessages([assistantMsg], false)
+    expect(html).toContain('cache-badge unknown')
+    expect(html).toContain('ℹ️ Diagnostic History Unavailable')
+    expect(html).toContain('<span class="cache-latency-pill latency-standard">—</span>')
+    expect(html).toContain('<span class="diag-value highlight-accent">—</span>')
+    expect(html).toContain('<span class="diag-value">—</span>')
+    expect(html).toContain('<span class="diag-value">— / —</span>')
+  })
+
   it('renders assistant message with upstream provider generation badge', () => {
     const mockMeta: QueryResponse = {
       response: 'Fresh upstream provider completion.',
@@ -1164,5 +1194,196 @@ describe('DemoUIController (End-to-End Coordination & Request Payloads)', () => 
       completion_tokens: 35,
       total_tokens: 60,
     })
+  })
+
+  it('reconstructs historical messages with omitted metadata as null diagnostics instead of fabricated zeros', async () => {
+    uiController.updateConnectionBadge('connected', 'Connected: default')
+    apiClient.setClientToken('test_token')
+    uiController.setMode('multi-turn')
+
+    const activeConv = uiController.getConversationManager().getActiveConversation()
+    const convId = activeConv.id
+
+    const serverMessages: ConversationMessageItem[] = [
+      {
+        id: 'msg-user-hist-1',
+        conversation_id: convId,
+        turn_id: 'turn-hist-1',
+        sequence_number: 1,
+        role: 'user',
+        content: 'Historical prompt without metadata',
+        created_at: new Date(Date.now() - 50000).toISOString(),
+        turn_status: 'completed',
+        turn_error_code: null,
+      },
+      {
+        id: 'msg-assistant-hist-1',
+        conversation_id: convId,
+        turn_id: 'turn-hist-1',
+        sequence_number: 2,
+        role: 'assistant',
+        content: 'Historical response with omitted diagnostics',
+        created_at: new Date(Date.now() - 45000).toISOString(),
+        turn_status: 'completed',
+        turn_error_code: null,
+      },
+    ]
+
+    vi.spyOn(apiClient, 'getConversationMessages').mockResolvedValueOnce({
+      conversation_id: convId,
+      messages: serverMessages,
+      total: 2,
+    })
+
+    await uiController.loadMessagesForActiveConversation()
+
+    const messages = activeConv.messages
+    expect(messages.length).toBe(2)
+
+    const assistantMsg = messages[1]
+    expect(assistantMsg.role).toBe('assistant')
+    expect(assistantMsg.responseMeta).toBeDefined()
+
+    const meta = assistantMsg.responseMeta!
+    // Diagnostics must be null, not fabricated as false or 0
+    expect(meta.cached).toBeNull()
+    expect(meta.latency_ms).toBeNull()
+    expect(meta.cache_hit_count).toBeNull()
+    expect(meta.usage).toBeNull()
+
+    uiController['renderMessages']()
+    const container = document.getElementById('messages-container')!
+    expect(container.innerHTML).toContain('ℹ️ Diagnostic History Unavailable')
+    expect(container.innerHTML).toContain('cache-badge unknown')
+    expect(container.innerHTML).not.toContain('0 hits')
+    expect(container.innerHTML).not.toContain('0.0 ms')
+  })
+
+  it('clears generating indicator from switched conversation when in-flight retry completes', async () => {
+    uiController.updateConnectionBadge('connected', 'Connected: default')
+    apiClient.setClientToken('test_token')
+    uiController.setMode('multi-turn')
+
+    const cm = uiController.getConversationManager()
+    const convA = cm.getActiveConversation()
+    const convB = cm.createConversation('Conversation B')
+
+    // Switch back to Conv A
+    cm.setActiveConversation(convA.id)
+
+    // Add user message and failed assistant message to Conv A
+    const userMsg: ChatMessage = {
+      id: 'u-conv-a',
+      role: 'user',
+      content: 'Question in Conv A',
+      timestamp: Date.now(),
+      idempotencyKey: 'idemp-a',
+      originalOptions: { bypass_cache: false },
+    }
+    const failedMsg: ChatMessage = {
+      id: 'f-conv-a',
+      role: 'assistant',
+      content: 'Error: timeout',
+      timestamp: Date.now(),
+      error: 'timeout',
+    }
+    cm.addMessage(convA.id, userMsg)
+    cm.addMessage(convA.id, failedMsg)
+
+    let resolveRetry!: (val: QueryResponse) => void
+    const retryPromise = new Promise<QueryResponse>((res) => {
+      resolveRetry = res
+    })
+    vi.spyOn(apiClient, 'sendQuery').mockReturnValueOnce(retryPromise)
+    vi.spyOn(apiClient, 'getConversationMessages').mockResolvedValue({
+      conversation_id: convA.id,
+      messages: [],
+      total: 0,
+    })
+
+    // Start retry in Conv A (unawaited)
+    const retryExecution = uiController.handleRetry(failedMsg.id)
+
+    // While retry is generating in Conv A, user switches to Conv B
+    await uiController.handleSwitchConversation(convB.id)
+
+    // Verify Conv B is the active conversation
+    expect(cm.getActiveConversationId()).toBe(convB.id)
+    const container = document.getElementById('messages-container')!
+    expect(container.querySelector('#msg-loading')).not.toBeNull()
+
+    // Now resolve the retry in Conv A
+    resolveRetry({
+      response: 'Resolved response for A',
+      cached: false,
+      model: 'test-model',
+      latency_ms: 100,
+      usage: { prompt_tokens: 5, completion_tokens: 5, total_tokens: 10 },
+      cache_hit_count: 0,
+      fingerprint: 'fp-a',
+      created_at: new Date().toISOString(),
+      cache_type: 'none',
+    })
+
+    await retryExecution
+
+    // Verify Conv B view has NO stuck generating spinner
+    expect(container.querySelector('#msg-loading')).toBeNull()
+  })
+
+  it('clears generating indicator from switched conversation when in-flight send completes', async () => {
+    uiController.updateConnectionBadge('connected', 'Connected: default')
+    apiClient.setClientToken('test_token')
+    uiController.setMode('multi-turn')
+
+    const cm = uiController.getConversationManager()
+    const convA = cm.getActiveConversation()
+    const convB = cm.createConversation('Conversation B')
+
+    cm.setActiveConversation(convA.id)
+
+    let resolveSend!: (val: QueryResponse) => void
+    const sendPromise = new Promise<QueryResponse>((res) => {
+      resolveSend = res
+    })
+    vi.spyOn(apiClient, 'sendQuery').mockReturnValueOnce(sendPromise)
+    vi.spyOn(apiClient, 'getConversation').mockResolvedValueOnce({
+      id: convA.id,
+      title: 'Conversation A',
+      cache_namespace: 'default',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      last_message_at: new Date().toISOString(),
+    })
+
+    const textarea = document.getElementById('chat-textarea') as HTMLTextAreaElement
+    textarea.value = 'Send in Conv A'
+
+    // Start send in Conv A (unawaited)
+    const sendExecution = uiController.handleSend()
+
+    // While generation is in flight, switch to Conv B
+    await uiController.handleSwitchConversation(convB.id)
+    expect(cm.getActiveConversationId()).toBe(convB.id)
+    const container = document.getElementById('messages-container')!
+    expect(container.querySelector('#msg-loading')).not.toBeNull()
+
+    // Resolve send in Conv A
+    resolveSend({
+      response: 'Resolved send for A',
+      cached: false,
+      model: 'test-model',
+      latency_ms: 80,
+      usage: { prompt_tokens: 5, completion_tokens: 5, total_tokens: 10 },
+      cache_hit_count: 0,
+      fingerprint: 'fp-send-a',
+      created_at: new Date().toISOString(),
+      cache_type: 'none',
+    })
+
+    await sendExecution
+
+    // Conv B view must have cleared the generating indicator
+    expect(container.querySelector('#msg-loading')).toBeNull()
   })
 })

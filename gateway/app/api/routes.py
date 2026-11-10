@@ -534,6 +534,24 @@ class TurnLeaseHeartbeat:
             self._task = None
 
 
+def enqueue_queue_terminal_signal(queue: asyncio.Queue[Any], item: Any) -> None:
+    """
+    Non-blockingly delivers a terminal signal (cancellation or exception) to a bounded queue.
+    If the queue is full, evicts one pending item to prevent producer deadlocks.
+    """
+    try:
+        queue.put_nowait(item)
+    except asyncio.QueueFull:
+        try:
+            queue.get_nowait()
+        except asyncio.QueueEmpty:
+            pass
+        try:
+            queue.put_nowait(item)
+        except asyncio.QueueFull:
+            pass
+
+
 @router.post("", response_model=QueryResponse, summary="Execute or reuse cached LLM query", dependencies=[Depends(verify_client_token)])
 @router.post("/", response_model=QueryResponse, include_in_schema=False, dependencies=[Depends(verify_client_token)])
 async def execute_query(
@@ -772,30 +790,10 @@ async def execute_query(
                         await queue.put(chunk)
                     await queue.put(_STREAM_DONE)
                 except asyncio.CancelledError:
-                    try:
-                        queue.put_nowait(asyncio.CancelledError())
-                    except asyncio.QueueFull:
-                        try:
-                            queue.get_nowait()
-                        except asyncio.QueueEmpty:
-                            pass
-                        try:
-                            queue.put_nowait(asyncio.CancelledError())
-                        except asyncio.QueueFull:
-                            pass
+                    enqueue_queue_terminal_signal(queue, asyncio.CancelledError())
                     raise
                 except Exception as exc:
-                    try:
-                        queue.put_nowait(exc)
-                    except asyncio.QueueFull:
-                        try:
-                            queue.get_nowait()
-                        except asyncio.QueueEmpty:
-                            pass
-                        try:
-                            queue.put_nowait(exc)
-                        except asyncio.QueueFull:
-                            pass
+                    enqueue_queue_terminal_signal(queue, exc)
 
             stream_task = asyncio.create_task(stream_producer())
 
@@ -908,6 +906,7 @@ async def execute_query(
                             "done": True,
                             "cached": chunk.cached,
                             "cache_type": chunk.cache_type,
+                            "cache_hit_count": chunk.cache_hit_count,
                             "latency_ms": chunk.latency_ms or 0.0,
                             "model": chunk.model or effective_model,
                             "usage": chunk.usage.to_dict()

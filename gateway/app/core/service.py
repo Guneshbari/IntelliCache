@@ -511,6 +511,7 @@ class IntelliCacheCore:
                     delta="",
                     done=True,
                     cached=True,
+                    cache_hit_count=cached_entry.hit_count,
                     cache_type="exact",
                     fingerprint=fingerprint,
                     model=cached_entry.model,

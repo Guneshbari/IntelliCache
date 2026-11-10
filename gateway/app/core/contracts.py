@@ -75,6 +75,7 @@ class StreamChunk:
     delta: str = ""
     done: bool = False
     cached: bool = False
+    cache_hit_count: int = 0
     fingerprint: str = ""
     model: Optional[str] = None
     usage: Optional[UsageMetrics] = None
@@ -93,6 +94,7 @@ class StreamChunk:
             "fingerprint": self.fingerprint,
         }
         if self.done:
+            data["cache_hit_count"] = self.cache_hit_count
             if self.model is not None:
                 data["model"] = self.model
             if self.latency_ms is not None:
