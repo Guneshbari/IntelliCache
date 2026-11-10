@@ -762,7 +762,8 @@ async def execute_query(
         async def sse_event_stream() -> AsyncGenerator[str, None]:
             accumulated_text: List[str] = []
             completed_cleanly = False
-            queue: asyncio.Queue[Any] = asyncio.Queue()
+            turn_conflict_handled = False
+            queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=128)
             _STREAM_DONE = object()
 
             async def stream_producer() -> None:
@@ -771,10 +772,30 @@ async def execute_query(
                         await queue.put(chunk)
                     await queue.put(_STREAM_DONE)
                 except asyncio.CancelledError:
-                    await queue.put(asyncio.CancelledError())
+                    try:
+                        queue.put_nowait(asyncio.CancelledError())
+                    except asyncio.QueueFull:
+                        try:
+                            queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            pass
+                        try:
+                            queue.put_nowait(asyncio.CancelledError())
+                        except asyncio.QueueFull:
+                            pass
                     raise
                 except Exception as exc:
-                    await queue.put(exc)
+                    try:
+                        queue.put_nowait(exc)
+                    except asyncio.QueueFull:
+                        try:
+                            queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            pass
+                        try:
+                            queue.put_nowait(exc)
+                        except asyncio.QueueFull:
+                            pass
 
             stream_task = asyncio.create_task(stream_producer())
 
@@ -798,6 +819,7 @@ async def execute_query(
 
                     if isinstance(item, asyncio.CancelledError) or (heartbeat and heartbeat.lease_lost):
                         if conv_service and turn_record:
+                            turn_conflict_handled = True
                             await conv_service.fail_turn(
                                 turn_record.id,
                                 error_code="LEASE_LOST_CONFLICT",
@@ -840,20 +862,42 @@ async def execute_query(
                         }
                         yield f"data: {json.dumps(chunk_payload)}\n\n"
                     else:
-                        completed_cleanly = True
                         if conv_service and turn_record:
                             final_stream_text = "".join(accumulated_text)
-                            await conv_service.complete_turn(
-                                turn_id=turn_record.id,
-                                assistant_content=final_stream_text,
-                                lease_token=turn_record.lease_token,
-                                metadata={
-                                    "model": chunk.model or effective_model,
-                                    "fingerprint": chunk.fingerprint,
-                                    "cache_type": chunk.cache_type,
-                                    "context_status": effective_context_status,
-                                },
-                            )
+                            try:
+                                await conv_service.complete_turn(
+                                    turn_id=turn_record.id,
+                                    assistant_content=final_stream_text,
+                                    lease_token=turn_record.lease_token,
+                                    metadata={
+                                        "model": chunk.model or effective_model,
+                                        "fingerprint": chunk.fingerprint,
+                                        "cache_type": chunk.cache_type,
+                                        "context_status": effective_context_status,
+                                    },
+                                )
+                                completed_cleanly = True
+                            except ActiveTurnConflictError as conf_err:
+                                logger.warning(
+                                    "Turn '%s' completion conflict: lease expired or ownership lost: %s",
+                                    turn_record.id,
+                                    conf_err,
+                                )
+                                turn_conflict_handled = True
+                                await conv_service.fail_turn(
+                                    turn_record.id,
+                                    error_code="LEASE_LOST_CONFLICT",
+                                    lease_token=turn_record.lease_token,
+                                )
+                                err_payload = {
+                                    "error": f"Turn '{turn_record.id}' failed to complete due to lease conflict.",
+                                    "status_code": 409,
+                                    "done": True,
+                                }
+                                yield f"data: {json.dumps(err_payload)}\n\n"
+                                return
+                        else:
+                            completed_cleanly = True
 
                         final_payload = {
                             "delta": "",
@@ -875,6 +919,7 @@ async def execute_query(
             except asyncio.CancelledError:
                 if conv_service and turn_record:
                     if heartbeat and heartbeat.lease_lost:
+                        turn_conflict_handled = True
                         await conv_service.fail_turn(
                             turn_record.id,
                             error_code="LEASE_LOST_CONFLICT",
@@ -883,8 +928,21 @@ async def execute_query(
                     else:
                         await conv_service.cancel_turn(turn_record.id, lease_token=turn_record.lease_token)
                 raise
-            except ActiveTurnConflictError:
-                raise
+            except ActiveTurnConflictError as act_err:
+                if conv_service and turn_record and not completed_cleanly:
+                    turn_conflict_handled = True
+                    await conv_service.fail_turn(
+                        turn_record.id,
+                        error_code="LEASE_LOST_CONFLICT",
+                        lease_token=turn_record.lease_token,
+                    )
+                err_payload = {
+                    "error": str(act_err),
+                    "status_code": 409,
+                    "done": True,
+                }
+                yield f"data: {json.dumps(err_payload)}\n\n"
+                return
             except Exception as e:
                 if conv_service and turn_record and not completed_cleanly:
                     await conv_service.fail_turn(
@@ -903,14 +961,15 @@ async def execute_query(
                     except (asyncio.CancelledError, Exception):
                         pass
                 if conv_service and turn_record and not completed_cleanly:
-                    if heartbeat and heartbeat.lease_lost:
-                        await conv_service.fail_turn(
-                            turn_record.id,
-                            error_code="LEASE_LOST_CONFLICT",
-                            lease_token=turn_record.lease_token,
-                        )
-                    else:
-                        await conv_service.cancel_turn(turn_record.id, lease_token=turn_record.lease_token)
+                    if not turn_conflict_handled:
+                        if heartbeat and heartbeat.lease_lost:
+                            await conv_service.fail_turn(
+                                turn_record.id,
+                                error_code="LEASE_LOST_CONFLICT",
+                                lease_token=turn_record.lease_token,
+                            )
+                        else:
+                            await conv_service.cancel_turn(turn_record.id, lease_token=turn_record.lease_token)
                 await provider.close()
 
         return StreamingResponse(sse_event_stream(), media_type="text/event-stream")
@@ -931,7 +990,6 @@ async def execute_query(
     completed_cleanly = False
     try:
         result: GenerationResult = await gen_task
-        completed_cleanly = True
         if heartbeat and heartbeat.lease_lost:
             raise ActiveTurnConflictError(f"Turn '{turn_record.id}' lost its lease during generation.")
 
@@ -947,6 +1005,7 @@ async def execute_query(
                     "context_status": effective_context_status,
                 },
             )
+        completed_cleanly = True
         return QueryResponse(
             response=result.text,
             cached=result.cached,

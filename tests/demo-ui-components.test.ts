@@ -4,6 +4,7 @@ import { GatewayApiClient } from '../demo/src/api-client'
 import type {
   CacheStats,
   ChatMessage,
+  ConversationMessageItem,
   NamespaceMetricsSnapshot,
   QueryResponse,
 } from '../demo/src/types'
@@ -822,5 +823,155 @@ describe('DemoUIController (End-to-End Coordination & Request Payloads)', () => 
     const container = document.getElementById('messages-container')!
     expect(container.innerHTML).toContain('Failed Attempt')
     expect(container.innerHTML).toContain('Retry Query')
+  })
+
+  it('ensures visible conversation immediately after successful retry matches conversation after refresh', async () => {
+    uiController.updateConnectionBadge('connected', 'Connected: default')
+    apiClient.setClientToken('test_token')
+    uiController.setMode('multi-turn')
+
+    const activeConv = uiController.getConversationManager().getActiveConversation()
+    const convId = activeConv.id
+
+    // Initial state: A failed turn in the conversation
+    const initialServerMessages: ConversationMessageItem[] = [
+      {
+        id: 'msg-user-attempt-1',
+        conversation_id: convId,
+        turn_id: 'turn-1',
+        sequence_number: 1,
+        role: 'user',
+        content: 'Tell me about quantum computing',
+        created_at: new Date(Date.now() - 60000).toISOString(),
+        turn_status: 'failed',
+        turn_error_code: 'PROVIDER_TIMEOUT',
+        metadata: {
+          idempotency_key: 'idemp-attempt-1',
+          options: { bypass_cache: false },
+        },
+      },
+    ]
+
+    vi.spyOn(apiClient, 'getConversationMessages').mockResolvedValueOnce({
+      conversation_id: convId,
+      messages: initialServerMessages,
+      total: 1,
+    })
+
+    // Hydrate initially
+    await uiController.loadMessagesForActiveConversation()
+    const initialMessages = activeConv.messages
+    expect(initialMessages.length).toBe(2) // 1 failed user message + 1 synthetic error card
+    expect(initialMessages[0].isFailedAttempt).toBe(true)
+    expect(initialMessages[1].error).toBeDefined()
+
+    const errorCardId = initialMessages[1].id
+
+    // Setup server messages after retry:
+    // Original failed user turn (status: failed)
+    // Retried user turn (status: completed)
+    // Completed assistant turn (status: completed)
+    const afterRetryServerMessages: ConversationMessageItem[] = [
+      initialServerMessages[0],
+      {
+        id: 'msg-user-attempt-2',
+        conversation_id: convId,
+        turn_id: 'turn-2',
+        sequence_number: 2,
+        role: 'user',
+        content: 'Tell me about quantum computing',
+        created_at: new Date(Date.now() - 30000).toISOString(),
+        turn_status: 'completed',
+        turn_error_code: null,
+        metadata: {
+          idempotency_key: 'idemp-attempt-1',
+          options: { bypass_cache: false },
+        },
+      },
+      {
+        id: 'msg-assistant-turn-2',
+        conversation_id: convId,
+        turn_id: 'turn-2',
+        sequence_number: 3,
+        role: 'assistant',
+        content: 'Quantum computing uses qubits.',
+        created_at: new Date(Date.now() - 25000).toISOString(),
+        turn_status: 'completed',
+        turn_error_code: null,
+        metadata: {
+          cached: false,
+          cache_type: 'none',
+          model: 'test-model',
+          fingerprint: 'fp_retry_quantum',
+        },
+      },
+    ]
+
+    vi.spyOn(apiClient, 'sendQuery').mockResolvedValueOnce({
+      response: 'Quantum computing uses qubits.',
+      cached: false,
+      model: 'test-model',
+      latency_ms: 120,
+      usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 },
+      cache_hit_count: 0,
+      fingerprint: 'fp_retry_quantum',
+      created_at: new Date().toISOString(),
+      cache_type: 'none',
+    })
+
+    // When handleRetry calls loadMessagesForActiveConversation, it fetches afterRetryServerMessages
+    vi.spyOn(apiClient, 'getConversationMessages').mockResolvedValueOnce({
+      conversation_id: convId,
+      messages: afterRetryServerMessages,
+      total: 3,
+    })
+
+    // Execute retry
+    await uiController.handleRetry(errorCardId)
+
+    // Render immediately after retry
+    uiController['renderMessages']()
+    const container = document.getElementById('messages-container')!
+    const liveHtmlAfterRetry = container.innerHTML
+    const liveMessagesAfterRetry = [...activeConv.messages]
+
+    // Verify immediate state:
+    // 3 messages: failed attempt user, retried user, assistant response
+    expect(liveMessagesAfterRetry.length).toBe(3)
+    expect(liveMessagesAfterRetry[0].isFailedAttempt).toBe(true)
+    expect(liveMessagesAfterRetry[0].id).toBe('msg-user-attempt-1')
+    expect(liveMessagesAfterRetry[1].role).toBe('user')
+    expect(liveMessagesAfterRetry[1].id).toBe('msg-user-attempt-2')
+    expect(liveMessagesAfterRetry[2].role).toBe('assistant')
+    expect(liveMessagesAfterRetry[2].content).toBe('Quantum computing uses qubits.')
+    expect(liveHtmlAfterRetry).toContain('Failed Attempt')
+
+    // Now simulate refresh / reload:
+    vi.spyOn(apiClient, 'getConversationMessages').mockResolvedValueOnce({
+      conversation_id: convId,
+      messages: afterRetryServerMessages,
+      total: 3,
+    })
+    await uiController.loadMessagesForActiveConversation()
+    uiController['renderMessages']()
+    const reloadedHtml = container.innerHTML
+    const reloadedMessages = [...activeConv.messages]
+
+    // Verify that live state after retry matches reloaded state after refresh
+    expect(reloadedMessages.length).toBe(liveMessagesAfterRetry.length)
+    expect(
+      reloadedMessages.map((m) => ({
+        role: m.role,
+        content: m.content,
+        isFailed: m.isFailedAttempt,
+      }))
+    ).toEqual(
+      liveMessagesAfterRetry.map((m) => ({
+        role: m.role,
+        content: m.content,
+        isFailed: m.isFailedAttempt,
+      }))
+    )
+    expect(reloadedHtml).toBe(liveHtmlAfterRetry)
   })
 })

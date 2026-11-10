@@ -1385,6 +1385,78 @@ class TestPostgresConversationsIntegration(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(messages[2]["turn_status"], "failed")
             self.assertEqual(messages[2]["turn_error_code"], "UPSTREAM_RATE_LIMIT")
 
+    async def test_streaming_complete_turn_lease_conflict_emits_409_and_fails_turn(self):
+        """
+        Verifies that if a streaming turn loses its lease or expires immediately before complete_turn,
+        the stream handler catches ActiveTurnConflictError, emits an SSE 409 conflict payload,
+        marks the turn as failed with LEASE_LOST_CONFLICT, and frees the conversation for future turns.
+        """
+        async def multi_chunk_stream(content: str):
+            yield type("MockChunk", (), {
+                "choices": [
+                    type("MockChoice", (), {
+                        "delta": type("MockDelta", (), {"content": "Hello "})
+                    })
+                ]
+            })
+            yield type("MockChunk", (), {
+                "choices": [
+                    type("MockChoice", (), {
+                        "delta": type("MockDelta", (), {"content": "world!"})
+                    })
+                ]
+            })
+
+        self.mock_groq.chat.completions.create.side_effect = lambda *args, **kwargs: multi_chunk_stream("test")
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            c_resp = await client.post("/conversations", headers={"X-Client-Token": self.token_a})
+            conv_id = c_resp.json()["id"]
+
+            real_complete_turn = ConversationService.complete_turn
+
+            async def expiring_complete_turn(svc_self, turn_id, assistant_content, lease_token, metadata=None):
+                # Force lease expiry directly in PostgreSQL right before complete_turn executes
+                async with self.pool.acquire() as conn:
+                    await conn.execute(
+                        "UPDATE conversation_turns SET lease_expires_at = NOW() - INTERVAL '10 seconds' WHERE id = $1",
+                        turn_id,
+                    )
+                return await real_complete_turn(svc_self, turn_id, assistant_content, lease_token, metadata)
+
+            with patch.object(ConversationService, "complete_turn", expiring_complete_turn):
+                resp = await client.post(
+                    "/query",
+                    json={"prompt": "Streaming query expiring before complete", "conversation_id": conv_id, "stream": True},
+                    headers={"X-Client-Token": self.token_a, "Idempotency-Key": "expire-before-complete-key"},
+                )
+                self.assertEqual(resp.status_code, 200)
+                self.assertIn("text/event-stream", resp.headers.get("content-type", ""))
+                self.assertIn('"status_code": 409', resp.text)
+                self.assertIn("failed to complete due to lease conflict", resp.text)
+
+                # Verify turn record in DB is marked as failed with LEASE_LOST_CONFLICT
+                async with self.pool.acquire() as conn:
+                    turn_row = await conn.fetchrow(
+                        "SELECT status, error_code FROM conversation_turns WHERE conversation_id = $1 AND idempotency_key = 'expire-before-complete-key'",
+                        conv_id,
+                    )
+                    self.assertIsNotNone(turn_row)
+                    self.assertEqual(turn_row["status"], "failed")
+                    self.assertEqual(turn_row["error_code"], "LEASE_LOST_CONFLICT")
+
+            # Verify subsequent query on this conversation is unblocked and completes cleanly
+            self.mock_groq.chat.completions.create.side_effect = None
+            self.mock_groq.chat.completions.create.return_value = MockCompletion("Unblocked response")
+            next_resp = await client.post(
+                "/query",
+                json={"prompt": "Next unblocked query", "conversation_id": conv_id},
+                headers={"X-Client-Token": self.token_a, "Idempotency-Key": "next-unblocked-key"},
+            )
+            self.assertEqual(next_resp.status_code, 200)
+            self.assertEqual(next_resp.json()["response"], "Unblocked response")
+
 
 if __name__ == "__main__":
     unittest.main()

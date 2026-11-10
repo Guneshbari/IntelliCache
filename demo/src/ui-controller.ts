@@ -13,7 +13,13 @@
  */
 
 import { GatewayApiClient, GatewayApiError } from './api-client'
-import type { ChatMessage, ConnectionInfo, ConnectionState, QueryRequestPayload } from './types'
+import type {
+  ChatMessage,
+  ConnectionInfo,
+  ConnectionState,
+  QueryRequestPayload,
+  QueryResponse,
+} from './types'
 import { ConversationManager } from './ui/conversation-manager'
 import { MarkdownRenderer } from './ui/markdown-renderer'
 import { MessageRenderer } from './ui/message-renderer'
@@ -416,6 +422,36 @@ export class DemoUIController {
               turnStatus: m.turn_status || undefined,
               turnErrorCode: m.turn_error_code || undefined,
             }
+            if (m.role === 'assistant') {
+              // Preserve existing responseMeta if available locally, or reconstruct from message metadata
+              const existingMatch = activeConv.messages.find(
+                (ex) =>
+                  (ex.turnId && ex.turnId === m.turn_id && ex.role === 'assistant') ||
+                  ex.id === m.id
+              )
+              if (existingMatch?.responseMeta) {
+                chatMsg.responseMeta = existingMatch.responseMeta
+              } else if (meta && (meta.model || meta.cache_type || meta.fingerprint)) {
+                chatMsg.responseMeta = {
+                  response: m.content,
+                  cached: (meta.cached as boolean) ?? false,
+                  cache_type: (meta.cache_type as QueryResponse['cache_type']) ?? 'none',
+                  model: (meta.model as string) ?? '',
+                  latency_ms: (meta.latency_ms as number) ?? 0,
+                  fingerprint: (meta.fingerprint as string) ?? '',
+                  conversation_id: activeConv.id,
+                  turn_id: m.turn_id,
+                  context_status: (meta.context_status as QueryResponse['context_status']) ?? null,
+                  created_at: m.created_at,
+                  cache_hit_count: 0,
+                  usage: (meta.usage as QueryResponse['usage']) ?? {
+                    prompt_tokens: 0,
+                    completion_tokens: 0,
+                    total_tokens: 0,
+                  },
+                }
+              }
+            }
             chatMessages.push(chatMsg)
           }
         }
@@ -656,14 +692,38 @@ export class DemoUIController {
       // Reuse the preceding turn's idempotency key so server deduplicates / recovers cleanly
       const idempotencyKey = retryIdempotencyKey || crypto.randomUUID()
       const response = await this.apiClient.sendQuery(payload, idempotencyKey)
-      const assistantMessage: ChatMessage = {
-        id: crypto.randomUUID(),
-        role: 'assistant',
-        content: response.response,
-        timestamp: Date.now(),
-        responseMeta: response,
+
+      if (
+        this.mode !== 'single-turn' &&
+        this.connectionInfo.state === 'connected' &&
+        this.apiClient.hasToken()
+      ) {
+        // Reconcile from server so that the persisted attempt history matches exactly
+        await this.loadMessagesForActiveConversation()
+        const currentConv = this.conversationManager.getActiveConversation()
+        const lastMsg = currentConv.messages[currentConv.messages.length - 1]
+        if (lastMsg && lastMsg.role === 'assistant') {
+          lastMsg.responseMeta = response
+        } else {
+          const assistantMessage: ChatMessage = {
+            id: crypto.randomUUID(),
+            role: 'assistant',
+            content: response.response,
+            timestamp: Date.now(),
+            responseMeta: response,
+          }
+          this.conversationManager.addMessage(activeConv.id, assistantMessage)
+        }
+      } else {
+        const assistantMessage: ChatMessage = {
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          content: response.response,
+          timestamp: Date.now(),
+          responseMeta: response,
+        }
+        this.conversationManager.addMessage(activeConv.id, assistantMessage)
       }
-      this.conversationManager.addMessage(activeConv.id, assistantMessage)
       this.metricsController.refresh().catch(() => {})
     } catch (err) {
       let errMsg = 'Failed to execute query.'
