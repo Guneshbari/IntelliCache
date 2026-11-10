@@ -22,10 +22,15 @@ from ..config import Settings, get_settings
 from ..context.builder import ContextBuilder
 from ..context.contracts import ContextStatus
 from ..context.policy import ContextPolicy
-from ..conversations.identity import AuthenticatedClient, verify_conversation_client
+from ..conversations.identity import (
+    AuthenticatedClient,
+    compute_turn_request_hash,
+    verify_conversation_client,
+)
 from ..conversations.repository import (
     ActiveTurnConflictError,
     ConversationNotFoundError,
+    IdempotencyConflictError,
 )
 from ..core.contracts import (
     ChatMessage,
@@ -159,6 +164,7 @@ class QueryResponse(BaseModel):
     fingerprint: str
     created_at: str
     cache_type: str = "none"
+    idempotent_replay: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -454,7 +460,6 @@ async def execute_query(
     settings: Settings = Depends(get_settings),
     core: IntelliCacheCore = Depends(get_core_service),
     provider: LLMProvider = Depends(get_llm_provider),
-    client: AuthenticatedClient = Depends(verify_conversation_client),
 ) -> Any:
     """
     Execute a natural language query against the configured LLM provider
@@ -462,7 +467,7 @@ async def execute_query(
     Supports conservative exact matching, single-flight consolidation, streaming,
     and server-managed persistent conversation turns.
     """
-    client_namespace = client.namespace
+    client_namespace = verify_client_token(raw_request, settings)
 
     # PRE-02: Resolve effective model once consistently
     effective_model = (request.model or settings.groq_model).strip()
@@ -487,6 +492,8 @@ async def execute_query(
     if is_server_managed:
         from .conversations import get_conversation_service
 
+        client = verify_conversation_client(raw_request, settings)
+
         idempotency_key = raw_request.headers.get("Idempotency-Key") or raw_request.headers.get(
             "X-Idempotency-Key"
         )
@@ -500,19 +507,30 @@ async def execute_query(
         conv_service = get_conversation_service(raw_request)
         user_query_text = (request.prompt or request.query or "").strip()
 
+        request_hash = compute_turn_request_hash(
+            prompt=user_query_text,
+            system_prompt=request.system_prompt,
+            model=effective_model,
+            temperature=effective_temperature,
+            max_tokens=effective_max_tokens,
+            stream=request.stream,
+        )
+
         try:
             turn_record, existing_msg, is_replay = await conv_service.begin_turn(
                 conversation_id=request.conversation_id,
                 owner_principal_id=client.principal_id,
                 idempotency_key=idempotency_key,
                 user_content=user_query_text,
+                request_hash=request_hash,
+                lease_duration_seconds=settings.conversation_turn_lease_seconds,
             )
         except ConversationNotFoundError:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Conversation '{request.conversation_id}' was not found or is not accessible.",
             )
-        except ActiveTurnConflictError as err:
+        except (ActiveTurnConflictError, IdempotencyConflictError) as err:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=str(err),
@@ -521,11 +539,11 @@ async def execute_query(
         if is_replay:
             return QueryResponse(
                 response=existing_msg.content if existing_msg else "",
-                cached=True,
+                cached=False,
                 model=effective_model,
                 latency_ms=0.0,
                 usage=UsageMetrics(),
-                cache_hit_count=1,
+                cache_hit_count=0,
                 conversation_id=request.conversation_id,
                 turn_id=turn_record.id,
                 context_status="complete",
@@ -533,11 +551,12 @@ async def execute_query(
                 created_at=existing_msg.created_at.isoformat()
                 if existing_msg
                 else datetime.now(timezone.utc).isoformat(),
-                cache_type="exact",
+                cache_type="none",
+                idempotent_replay=True,
             )
 
         try:
-            history = await conv_service.get_completed_history(
+            history, is_incomplete = await conv_service.get_validated_completed_history(
                 request.conversation_id,
                 client.principal_id,
             )
@@ -550,6 +569,7 @@ async def execute_query(
                 current_query=user_query_text,
                 history=history,
                 system_prompt=request.system_prompt,
+                is_history_incomplete=is_incomplete,
             )
             canonical_messages = context_result.messages
             effective_context_status = context_result.status.value

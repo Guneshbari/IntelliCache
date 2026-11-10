@@ -109,6 +109,53 @@ class TestConversationIdentity(unittest.TestCase):
         self.assertFalse(_is_loopback_address(""))
         self.assertFalse(_is_loopback_address("unknown-host"))
 
+    def test_insecure_secret_rejected_at_startup(self):
+        """Verifies that known placeholder and insecure identity secrets fail startup validation."""
+        insecure_secrets = [
+            "intellicache-default-identity-secret-change-in-production",
+            "replace_with_a_secure_random_hex_or_passphrase_at_least_16_chars",
+            "replace_with_your_key",
+            "short-secret",
+        ]
+        for sec in insecure_secrets:
+            with self.assertRaises(ValueError):
+                Settings(
+                    conversation_identity_secret=sec,
+                    client_api_token="test_client_token",
+                )
+
+    def test_stateless_query_operational_when_secret_unset(self):
+        """Verifies that stateless queries work when CONVERSATION_IDENTITY_SECRET is unset."""
+        with patch.dict(
+            os.environ,
+            {
+                "CLIENT_API_TOKENS": json.dumps({"test_stateless_token": "default"}),
+                "CONVERSATION_IDENTITY_SECRET": "",
+            },
+            clear=False,
+        ):
+            reload_settings()
+            try:
+                client = TestClient(app)
+                # Stateless query without conversation_id works
+                resp = client.post(
+                    "/query",
+                    json={"prompt": "Hello stateless"},
+                    headers={"X-Client-Token": "test_stateless_token"},
+                )
+                # Should not be 503 from missing identity secret
+                self.assertNotEqual(resp.status_code, 503)
+
+                # Persistent conversation creation returns 503
+                c_resp = client.post(
+                    "/conversations",
+                    headers={"X-Client-Token": "test_stateless_token"},
+                )
+                self.assertEqual(c_resp.status_code, 503)
+                self.assertIn("CONVERSATION_IDENTITY_SECRET must be set", c_resp.json()["detail"])
+            finally:
+                reload_settings()
+
 
 class TestConversationsFallbackWithoutDB(unittest.TestCase):
     """Tests ensuring graceful degradation when PostgreSQL is not configured."""
@@ -388,8 +435,10 @@ class TestPostgresConversationsIntegration(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(resp1_replay.status_code, 200)
             data1_replay = resp1_replay.json()
             self.assertEqual(data1_replay["response"], "Assistant Response #1")
-            self.assertTrue(data1_replay["cached"])
-            self.assertEqual(data1_replay["cache_type"], "exact")
+            self.assertFalse(data1_replay["cached"])
+            self.assertEqual(data1_replay["cache_type"], "none")
+            self.assertTrue(data1_replay.get("idempotent_replay", False))
+            self.assertEqual(data1_replay["cache_hit_count"], 0)
             self.assertEqual(data1_replay["fingerprint"], "idempotent_replay")
             self.assertEqual(data1_replay["turn_id"], turn1_id)
             # Upstream provider was NOT called again
@@ -527,6 +576,132 @@ class TestPostgresConversationsIntegration(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("exceed maximum context character budget", data["detail"])
         finally:
             settings.conversation_max_context_chars = old_max_chars
+
+    async def test_idempotency_key_payload_conflict_returns_409(self):
+        """Reusing the same Idempotency-Key with a different prompt/model payload returns HTTP 409 Conflict."""
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            c_resp = await client.post(
+                "/conversations",
+                headers={"X-Client-Token": self.token_a},
+            )
+            conv_id = c_resp.json()["id"]
+
+            # First turn with key "key-dup-test" and prompt "Original Prompt"
+            resp1 = await client.post(
+                "/query",
+                json={"prompt": "Original Prompt", "conversation_id": conv_id},
+                headers={"X-Client-Token": self.token_a, "Idempotency-Key": "key-dup-test"},
+            )
+            self.assertEqual(resp1.status_code, 200)
+
+            # Reusing same key with DIFFERENT prompt payload
+            resp2 = await client.post(
+                "/query",
+                json={"prompt": "Different Question Entirely", "conversation_id": conv_id},
+                headers={"X-Client-Token": self.token_a, "Idempotency-Key": "key-dup-test"},
+            )
+            self.assertEqual(resp2.status_code, 409)
+            data2 = resp2.json()
+            self.assertIn("detail", data2)
+            self.assertIn("previously used with a different request payload", data2["detail"])
+
+    async def test_expired_pending_turn_crash_recovery(self):
+        """Simulates a crashed server leaving a pending turn; verifies lease timeout recovery unblocks conversation."""
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            c_resp = await client.post(
+                "/conversations",
+                headers={"X-Client-Token": self.token_a},
+            )
+            conv_id = c_resp.json()["id"]
+
+            # Artificially insert an expired pending turn in the database (simulating a crash)
+            async with self.pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO conversation_turns (
+                        id, conversation_id, idempotency_key, status, created_at, lease_expires_at
+                    ) VALUES (
+                        'crashed-turn-id-123', $1, 'crashed-turn-key', 'pending',
+                        NOW() - INTERVAL '300 seconds', NOW() - INTERVAL '60 seconds'
+                    )
+                    """,
+                    conv_id,
+                )
+
+            # A new query arrives. It should recover the expired pending turn and succeed
+            resp = await client.post(
+                "/query",
+                json={"prompt": "Query after crash", "conversation_id": conv_id},
+                headers={"X-Client-Token": self.token_a, "Idempotency-Key": "fresh-turn-after-crash"},
+            )
+            self.assertEqual(resp.status_code, 200)
+            data = resp.json()
+            self.assertFalse(data["cached"])
+
+            # Verify the crashed turn in DB was transitioned to failed with LEASE_TIMEOUT_RECOVERED
+            async with self.pool.acquire() as conn:
+                crashed_status = await conn.fetchrow(
+                    "SELECT status, error_code, lease_expires_at FROM conversation_turns WHERE id = 'crashed-turn-id-123'"
+                )
+                self.assertEqual(crashed_status["status"], "failed")
+                self.assertEqual(crashed_status["error_code"], "LEASE_TIMEOUT_RECOVERED")
+                self.assertIsNone(crashed_status["lease_expires_at"])
+
+    async def test_history_sequence_continuity_gap_detected_and_bypasses_cache(self):
+        """Verifies that sequence gaps or malformed turn pairs flag history as incomplete and bypass cache."""
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            c_resp = await client.post(
+                "/conversations",
+                headers={"X-Client-Token": self.token_a},
+            )
+            conv_id = c_resp.json()["id"]
+
+            # Turn 1
+            await client.post(
+                "/query",
+                json={"prompt": "Q1", "conversation_id": conv_id},
+                headers={"X-Client-Token": self.token_a, "Idempotency-Key": "turn-gap-1"},
+            )
+
+            # Artificially corrupt sequence number of next completed turn (inject sequence gap: 1, 2, then 5)
+            async with self.pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO conversation_turns (id, conversation_id, idempotency_key, status, created_at, completed_at)
+                    VALUES ('corrupted-turn', $1, 'corrupted-key', 'completed', NOW(), NOW())
+                    """,
+                    conv_id,
+                )
+                # Sequence 5 introduces gap (missing 3 and 4)
+                await conn.execute(
+                    """
+                    INSERT INTO conversation_messages (id, conversation_id, turn_id, sequence_number, role, content, created_at)
+                    VALUES ('msg-u2', $1, 'corrupted-turn', 5, 'user', 'Broken seq', NOW())
+                    """,
+                    conv_id,
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO conversation_messages (id, conversation_id, turn_id, sequence_number, role, content, created_at)
+                    VALUES ('msg-a2', $1, 'corrupted-turn', 6, 'assistant', 'Broken resp', NOW())
+                    """,
+                    conv_id,
+                )
+
+            # Query should detect sequence gap, mark context incomplete, and bypass cache
+            resp = await client.post(
+                "/query",
+                json={"prompt": "Next Query", "conversation_id": conv_id},
+                headers={"X-Client-Token": self.token_a, "Idempotency-Key": "turn-gap-3"},
+            )
+            self.assertEqual(resp.status_code, 200)
+            data = resp.json()
+            self.assertEqual(data["context_status"], "incomplete")
+            self.assertFalse(data["cached"])
+            self.assertEqual(data["cache_type"], "none")
 
 
 if __name__ == "__main__":

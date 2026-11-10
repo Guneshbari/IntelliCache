@@ -74,8 +74,9 @@ async def create_conversation(
 ) -> ConversationResponse:
     """Creates a new conversation record owned by the authenticated caller."""
     title = payload.title if payload else None
+    conv_id = payload.id if payload else None
     return await service.create_conversation(
-        conversation_id=None,
+        conversation_id=conv_id,
         namespace=client.namespace,
         owner_principal_id=client.principal_id,
         title=title,

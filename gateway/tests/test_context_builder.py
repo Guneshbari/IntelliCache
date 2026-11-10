@@ -176,6 +176,37 @@ class TestContextBuilder(unittest.TestCase):
         self.assertEqual(result.status, ContextStatus.INCOMPLETE)
         self.assertIn("could not be reliably verified", result.reason)
 
+    def test_oversized_newer_turn_prevents_cherry_picking_older_smaller_turns(self):
+        """
+        When a newer turn cannot fit into the budget, the scan must stop immediately.
+        Older smaller turns must NOT be cherry-picked across the history gap.
+        """
+        # Budget: 80 chars total
+        # current_query: 20 chars -> remaining: 60 chars
+        policy = ContextPolicy(max_context_messages=20, max_context_chars=80)
+        builder = ContextBuilder(policy)
+
+        # Turn 1 (oldest): 10 chars total (would fit in 60 chars if cherry-picked!)
+        # Turn 2 (middle): 70 chars total (does NOT fit in 60 chars!)
+        history = [
+            ChatMessage(role="user", content="u1:small"),  # 8 chars
+            ChatMessage(role="assistant", content="a1"),    # 2 chars -> total 10 chars
+            ChatMessage(role="user", content="u2:" + "X" * 32),  # 35 chars
+            ChatMessage(role="assistant", content="a2:" + "Y" * 32),  # 35 chars -> total 70 chars
+        ]
+
+        result = builder.build_context(
+            current_query="current query text!!",  # 20 chars
+            history=history,
+        )
+
+        self.assertEqual(result.status, ContextStatus.COMPACTED)
+        # Turn 2 did not fit. Turn 1 MUST NOT be cherry-picked!
+        # Therefore, only current_query is present.
+        self.assertEqual(len(result.messages), 1)
+        self.assertEqual(result.messages[0].content, "current query text!!")
+        self.assertEqual(result.omitted_messages_count, 4)
+
 
 if __name__ == "__main__":
     unittest.main()

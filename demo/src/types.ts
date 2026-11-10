@@ -41,6 +41,7 @@ export interface QueryResponse {
   fingerprint: string
   created_at: string
   cache_type: 'exact' | 'semantic' | 'none' | string
+  idempotent_replay?: boolean
 }
 
 export interface ConversationSummary {

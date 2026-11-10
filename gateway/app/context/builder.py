@@ -87,14 +87,12 @@ class ContextBuilder:
             else:
                 # Turn cannot fit without truncation or breaking turn boundaries.
                 # Stop including older turns to preserve continuous recent context window.
-                omitted_turns_count += 1
-                omitted_messages_count += turn_msg_count
+                break
 
-        # Total omitted messages count also includes any older turns before the stopping point
-        if omitted_turns_count > 0:
-            total_historical_msgs = len(history_messages)
-            included_historical_msgs = sum(len(t) for t in selected_turns)
-            omitted_messages_count = total_historical_msgs - included_historical_msgs
+        # Total omitted messages count includes all older turns not selected
+        total_historical_msgs = len(history_messages)
+        included_historical_msgs = sum(len(t) for t in selected_turns)
+        omitted_messages_count = total_historical_msgs - included_historical_msgs
 
         # 5. Restore chronological order of historical messages
         final_history: List[ChatMessage] = []

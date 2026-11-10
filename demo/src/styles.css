@@ -944,6 +944,12 @@ body {
   border-color: var(--bypass-border);
 }
 
+.cache-badge.replay {
+  background: rgba(168, 85, 247, 0.15);
+  color: #c084fc;
+  border-color: rgba(168, 85, 247, 0.35);
+}
+
 .cache-latency-pill {
   font-family: var(--font-mono);
   font-size: 0.72rem;

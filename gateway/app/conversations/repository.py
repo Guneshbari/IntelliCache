@@ -3,7 +3,7 @@ PostgreSQL-backed repository for persistent conversations, turns, and messages.
 Uses asyncpg connection pool with strict transaction boundaries and row-level locking.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import json
 import logging
 from typing import Any, Dict, List, Optional, Tuple
@@ -28,6 +28,11 @@ class ConversationNotFoundError(Exception):
 
 class ActiveTurnConflictError(Exception):
     """Raised when another generation turn is currently active in the same conversation."""
+    pass
+
+
+class IdempotencyConflictError(Exception):
+    """Raised when an idempotency key is reused with a different request payload."""
     pass
 
 
@@ -195,17 +200,18 @@ class PostgresConversationRepository:
             ]
             return messages, int(total or 0)
 
-    async def get_completed_history(
+    async def get_validated_completed_history(
         self,
         conversation_id: str,
         owner_principal_id: str,
-    ) -> List[ChatMessage]:
+    ) -> Tuple[List[ChatMessage], bool]:
         """
-        Retrieves all messages belonging to completed turns in chronological order.
-        Strictly excludes pending, failed, or cancelled turns from context reconstruction.
+        Retrieves all messages belonging to completed turns in chronological order,
+        verifying message sequence continuity and turn pair completeness.
+        Returns: (messages, is_history_incomplete)
         """
         query = """
-            SELECT m.role, m.content
+            SELECT m.sequence_number, m.turn_id, m.role, m.content
             FROM conversation_messages m
             JOIN conversation_turns t ON m.turn_id = t.id
             JOIN conversations c ON m.conversation_id = c.id
@@ -216,7 +222,57 @@ class PostgresConversationRepository:
         """
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(query, conversation_id, owner_principal_id)
-            return [ChatMessage(role=r["role"], content=r["content"]) for r in rows]
+
+        if not rows:
+            return [], False
+
+        is_incomplete = False
+
+        # 1. Contiguous sequence validation: 1, 2, 3...
+        expected_seq = 1
+        for r in rows:
+            if r["sequence_number"] != expected_seq:
+                logger.warning(
+                    "Conversation '%s' sequence continuity gap: expected %d, got %d",
+                    conversation_id,
+                    expected_seq,
+                    r["sequence_number"],
+                )
+                is_incomplete = True
+                break
+            expected_seq += 1
+
+        # 2. Complete turn validation: strictly pairs of user followed by assistant per turn_id
+        if not is_incomplete:
+            turns_dict: Dict[str, List[Dict[str, Any]]] = {}
+            for r in rows:
+                turns_dict.setdefault(r["turn_id"], []).append(r)
+
+            for tid, t_msgs in turns_dict.items():
+                if len(t_msgs) != 2 or t_msgs[0]["role"] != "user" or t_msgs[1]["role"] != "assistant":
+                    logger.warning(
+                        "Conversation '%s' malformed turn '%s': messages=%s",
+                        conversation_id,
+                        tid,
+                        [(m["sequence_number"], m["role"]) for m in t_msgs],
+                    )
+                    is_incomplete = True
+                    break
+
+        chat_messages = [ChatMessage(role=r["role"], content=r["content"]) for r in rows]
+        return chat_messages, is_incomplete
+
+    async def get_completed_history(
+        self,
+        conversation_id: str,
+        owner_principal_id: str,
+    ) -> List[ChatMessage]:
+        """
+        Retrieves all messages belonging to completed turns in chronological order.
+        Strictly excludes pending, failed, or cancelled turns from context reconstruction.
+        """
+        messages, _ = await self.get_validated_completed_history(conversation_id, owner_principal_id)
+        return messages
 
     async def begin_turn(
         self,
@@ -224,15 +280,19 @@ class PostgresConversationRepository:
         owner_principal_id: str,
         idempotency_key: str,
         user_content: str,
+        request_hash: Optional[str] = None,
+        lease_duration_seconds: int = 120,
     ) -> Tuple[ConversationTurnRecord, Optional[ConversationMessageRecord], bool]:
         """
         Begins a new conversation turn transaction.
         1. Locks conversation row for update.
         2. Checks for existing idempotency key.
            - If already completed: returns (turn, assistant_message, is_replay=True).
-           - If pending: raises ActiveTurnConflictError (HTTP 409).
-        3. Enforces that no other turn in this conversation is currently pending.
-        4. Inserts pending turn and user message record in sequence.
+           - If pending and lease unexpired: raises ActiveTurnConflictError (HTTP 409).
+           - If pending and lease expired: marks failed (LEASE_TIMEOUT_RECOVERED) and retries.
+           - Validates request_hash match on reuse (raises IdempotencyConflictError if mismatched).
+        3. Enforces that no other turn in this conversation is currently pending (recovers expired leases).
+        4. Inserts pending turn and user message record in sequence with lease.
         5. Updates conversation last_message_at and auto-sets title on first message.
         6. Returns (turn, user_message, is_replay=False).
         """
@@ -247,15 +307,27 @@ class PostgresConversationRepository:
                 if not conv_row:
                     raise ConversationNotFoundError(f"Conversation '{conversation_id}' not found.")
 
+                now_utc = datetime.now(timezone.utc)
+
                 # 2. Check for matching idempotency key in this conversation
                 existing_turn = await conn.fetchrow(
-                    "SELECT id, conversation_id, idempotency_key, status, created_at, completed_at, error_code "
+                    "SELECT id, conversation_id, idempotency_key, status, created_at, completed_at, error_code, request_hash, lease_expires_at "
                     "FROM conversation_turns WHERE conversation_id = $1 AND idempotency_key = $2",
                     conversation_id,
                     idempotency_key,
                 )
 
                 if existing_turn:
+                    # Enforce request fingerprint binding on idempotency key reuse
+                    if (
+                        request_hash
+                        and existing_turn["request_hash"]
+                        and existing_turn["request_hash"] != request_hash
+                    ):
+                        raise IdempotencyConflictError(
+                            f"Idempotency key '{idempotency_key}' was previously used with a different request payload."
+                        )
+
                     t_status = existing_turn["status"]
                     if t_status == "completed":
                         # Retrieve completed assistant message for idempotent return
@@ -284,25 +356,60 @@ class PostgresConversationRepository:
                             created_at=existing_turn["created_at"],
                             completed_at=existing_turn["completed_at"],
                             error_code=existing_turn["error_code"],
+                            request_hash=existing_turn["request_hash"],
+                            lease_expires_at=existing_turn["lease_expires_at"],
                         )
                         return turn_rec, asst_msg, True
 
                     elif t_status == "pending":
-                        raise ActiveTurnConflictError(
-                            "An active turn with this idempotency key is already in progress."
+                        # Check lease expiry for pending turn recovery
+                        is_lease_expired = (
+                            existing_turn["lease_expires_at"] is not None
+                            and existing_turn["lease_expires_at"] <= now_utc
                         )
-                    # If failed or cancelled, we delete or update the existing turn to retry
-                    await conn.execute("DELETE FROM conversation_turns WHERE id = $1", existing_turn["id"])
+                        if is_lease_expired:
+                            logger.warning(
+                                "Recovering expired pending turn '%s' (idempotency_key='%s') in conversation '%s'",
+                                existing_turn["id"],
+                                idempotency_key,
+                                conversation_id,
+                            )
+                            await conn.execute("DELETE FROM conversation_messages WHERE turn_id = $1", existing_turn["id"])
+                            await conn.execute("DELETE FROM conversation_turns WHERE id = $1", existing_turn["id"])
+                        else:
+                            raise ActiveTurnConflictError(
+                                "An active turn with this idempotency key is already in progress."
+                            )
+                    else:
+                        # If failed or cancelled, delete existing turn and messages to retry cleanly
+                        await conn.execute("DELETE FROM conversation_messages WHERE turn_id = $1", existing_turn["id"])
+                        await conn.execute("DELETE FROM conversation_turns WHERE id = $1", existing_turn["id"])
 
-                # 3. Verify no OTHER turn is currently active in this conversation
-                active_turn = await conn.fetchval(
-                    "SELECT id FROM conversation_turns WHERE conversation_id = $1 AND status = 'pending'",
+                # 3. Verify no OTHER turn is currently active in this conversation, recovering any expired leases
+                pending_turns = await conn.fetch(
+                    "SELECT id, lease_expires_at FROM conversation_turns WHERE conversation_id = $1 AND status = 'pending'",
                     conversation_id,
                 )
-                if active_turn:
-                    raise ActiveTurnConflictError(
-                        "Another turn is currently in progress for this conversation."
+                for p_turn in pending_turns:
+                    is_p_expired = (
+                        p_turn["lease_expires_at"] is not None
+                        and p_turn["lease_expires_at"] <= now_utc
                     )
+                    if is_p_expired:
+                        logger.warning(
+                            "Recovering expired pending turn '%s' in conversation '%s'",
+                            p_turn["id"],
+                            conversation_id,
+                        )
+                        await conn.execute(
+                            "UPDATE conversation_turns SET status = 'failed', completed_at = NOW(), "
+                            "error_code = 'LEASE_TIMEOUT_RECOVERED', lease_expires_at = NULL WHERE id = $1",
+                            p_turn["id"],
+                        )
+                    else:
+                        raise ActiveTurnConflictError(
+                            "Another turn is currently in progress for this conversation."
+                        )
 
                 # 4. Allocate next message sequence number atomically
                 next_seq = await conn.fetchval(
@@ -312,11 +419,16 @@ class PostgresConversationRepository:
 
                 turn_id = str(uuid.uuid4())
                 await conn.execute(
-                    "INSERT INTO conversation_turns (id, conversation_id, idempotency_key, status, created_at) "
-                    "VALUES ($1, $2, $3, 'pending', NOW())",
+                    """
+                    INSERT INTO conversation_turns (
+                        id, conversation_id, idempotency_key, status, created_at, request_hash, lease_expires_at
+                    ) VALUES ($1, $2, $3, 'pending', NOW(), $4, NOW() + ($5 * INTERVAL '1 second'))
+                    """,
                     turn_id,
                     conversation_id,
                     idempotency_key,
+                    request_hash,
+                    lease_duration_seconds,
                 )
 
                 user_msg_id = str(uuid.uuid4())
@@ -351,6 +463,8 @@ class PostgresConversationRepository:
                     idempotency_key=idempotency_key,
                     status="pending",
                     created_at=datetime.now(timezone.utc),
+                    request_hash=request_hash,
+                    lease_expires_at=datetime.now(timezone.utc) + timedelta(seconds=lease_duration_seconds),
                 )
                 user_msg_record = ConversationMessageRecord(
                     id=user_row["id"],
@@ -405,7 +519,7 @@ class PostgresConversationRepository:
                 )
 
                 await conn.execute(
-                    "UPDATE conversation_turns SET status = 'completed', completed_at = NOW(), error_code = NULL "
+                    "UPDATE conversation_turns SET status = 'completed', completed_at = NOW(), error_code = NULL, lease_expires_at = NULL "
                     "WHERE id = $1",
                     turn_id,
                 )
@@ -429,7 +543,7 @@ class PostgresConversationRepository:
         """Marks an active turn as failed and releases the active turn lock."""
         async with self.pool.acquire() as conn:
             await conn.execute(
-                "UPDATE conversation_turns SET status = 'failed', completed_at = NOW(), error_code = $2 WHERE id = $1",
+                "UPDATE conversation_turns SET status = 'failed', completed_at = NOW(), error_code = $2, lease_expires_at = NULL WHERE id = $1",
                 turn_id,
                 error_code[:64],
             )
@@ -438,6 +552,17 @@ class PostgresConversationRepository:
         """Marks an active turn as cancelled and releases the active turn lock."""
         async with self.pool.acquire() as conn:
             await conn.execute(
-                "UPDATE conversation_turns SET status = 'cancelled', completed_at = NOW() WHERE id = $1",
+                "UPDATE conversation_turns SET status = 'cancelled', completed_at = NOW(), lease_expires_at = NULL WHERE id = $1",
                 turn_id,
             )
+
+    async def renew_turn_lease(self, turn_id: str, additional_seconds: int = 120) -> bool:
+        """Extends the lease expiration of an active pending turn."""
+        async with self.pool.acquire() as conn:
+            res = await conn.execute(
+                "UPDATE conversation_turns SET lease_expires_at = NOW() + ($2 * INTERVAL '1 second') "
+                "WHERE id = $1 AND status = 'pending'",
+                turn_id,
+                additional_seconds,
+            )
+            return "UPDATE 1" in res

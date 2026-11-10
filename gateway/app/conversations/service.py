@@ -119,19 +119,37 @@ class ConversationService:
     ) -> List[ChatMessage]:
         return await self.repo.get_completed_history(conversation_id, owner_principal_id)
 
+    async def get_validated_completed_history(
+        self,
+        conversation_id: str,
+        owner_principal_id: str,
+    ) -> Tuple[List[ChatMessage], bool]:
+        """
+        Retrieves all messages belonging to completed turns, validating sequence continuity
+        and turn completeness. Returns (messages, is_history_incomplete).
+        """
+        return await self.repo.get_validated_completed_history(conversation_id, owner_principal_id)
+
     async def begin_turn(
         self,
         conversation_id: str,
         owner_principal_id: str,
         idempotency_key: str,
         user_content: str,
+        request_hash: Optional[str] = None,
+        lease_duration_seconds: int = 120,
     ) -> Tuple[ConversationTurnRecord, Optional[ConversationMessageRecord], bool]:
         return await self.repo.begin_turn(
             conversation_id=conversation_id,
             owner_principal_id=owner_principal_id,
             idempotency_key=idempotency_key,
             user_content=user_content,
+            request_hash=request_hash,
+            lease_duration_seconds=lease_duration_seconds,
         )
+
+    async def renew_turn_lease(self, turn_id: str, additional_seconds: int = 120) -> bool:
+        return await self.repo.renew_turn_lease(turn_id, additional_seconds=additional_seconds)
 
     async def complete_turn(
         self,

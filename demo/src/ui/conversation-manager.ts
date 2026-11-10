@@ -37,6 +37,20 @@ export class ConversationManager {
     return session
   }
 
+  public createConversationWithId(id: string, title?: string): ConversationSession {
+    const now = Date.now()
+    const session: ConversationSession = {
+      id,
+      title: title || 'New Conversation',
+      createdAt: now,
+      updatedAt: now,
+      messages: [],
+    }
+    this.sessions.set(session.id, session)
+    this.activeId = session.id
+    return session
+  }
+
   public getConversations(): ConversationSession[] {
     return Array.from(this.sessions.values()).sort((a, b) => b.updatedAt - a.updatedAt)
   }

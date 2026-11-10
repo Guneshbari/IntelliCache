@@ -30,6 +30,8 @@ class ConversationTurnRecord:
     created_at: datetime
     completed_at: Optional[datetime] = None
     error_code: Optional[str] = None
+    request_hash: Optional[str] = None
+    lease_expires_at: Optional[datetime] = None
 
 
 @dataclass
@@ -52,6 +54,7 @@ class ConversationMessageRecord:
 class CreateConversationRequest(BaseModel):
     """Payload to create a new persistent conversation."""
     title: Optional[str] = Field(default=None, max_length=255)
+    id: Optional[str] = Field(default=None, max_length=64)
 
 
 class ConversationResponse(BaseModel):

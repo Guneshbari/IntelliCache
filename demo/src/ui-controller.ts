@@ -314,9 +314,23 @@ export class DemoUIController {
     if (!this.apiClient.hasToken()) return
     try {
       const resp = await this.apiClient.listConversations(50, 0)
-      if (resp && Array.isArray(resp.conversations) && resp.conversations.length > 0) {
-        this.conversationManager.setConversationsFromServer(resp.conversations)
-        await this.loadMessagesForActiveConversation()
+      if (resp && Array.isArray(resp.conversations)) {
+        if (resp.conversations.length > 0) {
+          this.conversationManager.setConversationsFromServer(resp.conversations)
+          await this.loadMessagesForActiveConversation()
+        } else {
+          try {
+            const created = await this.apiClient.createConversation('New Conversation')
+            if (created && created.id) {
+              this.conversationManager.createConversationWithId(
+                created.id,
+                created.title || 'New Conversation'
+              )
+            }
+          } catch {
+            // Non-blocking fallback
+          }
+        }
         this.renderConversationList()
         this.renderMessages()
       }
@@ -345,7 +359,29 @@ export class DemoUIController {
     }
   }
 
-  public handleNewChat(): void {
+  public async handleNewChat(): Promise<void> {
+    if (this.connectionInfo.state === 'connected' && this.apiClient.hasToken()) {
+      try {
+        const created = await this.apiClient.createConversation('New Conversation')
+        if (created && created.id) {
+          this.conversationManager.createConversationWithId(
+            created.id,
+            created.title || 'New Conversation'
+          )
+          this.renderConversationList()
+          this.renderMessages()
+          if (this.chatTextarea) {
+            this.chatTextarea.value = ''
+            this.autoResizeTextarea()
+            this.chatTextarea.focus()
+          }
+          this.closeMobileSidebar()
+          return
+        }
+      } catch {
+        // Fallback to local session
+      }
+    }
     this.conversationManager.createConversation('New Conversation')
     this.renderConversationList()
     this.renderMessages()
@@ -370,10 +406,24 @@ export class DemoUIController {
     }
   }
 
-  public handleDeleteConversation(id: string): void {
+  public async handleDeleteConversation(id: string): Promise<void> {
     this.conversationManager.deleteConversation(id)
     if (this.apiClient.hasToken()) {
       this.apiClient.deleteConversation(id).catch(() => {})
+      const remaining = this.conversationManager.getConversations()
+      if (remaining.length === 0) {
+        try {
+          const created = await this.apiClient.createConversation('New Conversation')
+          if (created && created.id) {
+            this.conversationManager.createConversationWithId(
+              created.id,
+              created.title || 'New Conversation'
+            )
+          }
+        } catch {
+          // Non-blocking fallback
+        }
+      }
     }
     this.renderConversationList()
     this.renderMessages()
@@ -411,6 +461,23 @@ export class DemoUIController {
       payload.prompt = text
     } else {
       // Multi-turn mode sends conversation_id and prompt; conversation history is reconstructed server-side
+      if (this.connectionInfo.state === 'connected' && this.apiClient.hasToken()) {
+        try {
+          await this.apiClient.getConversation(activeConv.id)
+        } catch (e: unknown) {
+          const err = e as { status?: number }
+          if (err?.status === 404) {
+            try {
+              await this.apiClient.createConversation(
+                activeConv.title || 'New Conversation',
+                activeConv.id
+              )
+            } catch {
+              // Ignore if already created
+            }
+          }
+        }
+      }
       payload.conversation_id = activeConv.id
       payload.prompt = text
     }

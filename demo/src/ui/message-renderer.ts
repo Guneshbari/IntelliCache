@@ -133,7 +133,11 @@ export class MessageRenderer {
     let badgeLabel = '🌐 Upstream Provider Generation'
     let latencyClass = 'latency-standard'
 
-    if (meta.cached && meta.cache_type === 'exact') {
+    if (meta.idempotent_replay) {
+      badgeClass = 'replay'
+      badgeLabel = '🔁 Idempotent Replay'
+      latencyClass = 'latency-fast'
+    } else if (meta.cached && meta.cache_type === 'exact') {
       badgeClass = 'exact'
       badgeLabel = '⚡ Exact Cache Hit'
       latencyClass = 'latency-fast'

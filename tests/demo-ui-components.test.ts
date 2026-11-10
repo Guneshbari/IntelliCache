@@ -147,6 +147,33 @@ describe('MessageRenderer (UI Presentation & Diagnostics)', () => {
     expect(html).toContain('32.8 ms')
   })
 
+  it('renders assistant message with idempotent replay badge', () => {
+    const mockMeta: QueryResponse = {
+      response: 'Deterministic replayed response.',
+      cached: false,
+      cache_type: 'none',
+      idempotent_replay: true,
+      model: 'llama-3.3-70b-versatile',
+      latency_ms: 0.0,
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+      cache_hit_count: 0,
+      fingerprint: 'idempotent_replay',
+      created_at: new Date().toISOString(),
+    }
+
+    const assistantMsg: ChatMessage = {
+      id: 'a-replay',
+      role: 'assistant',
+      content: 'Deterministic replayed response.',
+      timestamp: Date.now(),
+      responseMeta: mockMeta,
+    }
+
+    const html = MessageRenderer.renderMessages([assistantMsg], false)
+    expect(html).toContain('🔁 Idempotent Replay')
+    expect(html).toContain('cache-badge replay')
+  })
+
   it('renders assistant message with upstream provider generation badge', () => {
     const mockMeta: QueryResponse = {
       response: 'Fresh upstream provider completion.',
@@ -537,5 +564,51 @@ describe('DemoUIController (End-to-End Coordination & Request Payloads)', () => 
     expect(activeConv.messages[1].role).toBe('assistant')
     expect(activeConv.messages[1].content).toBe('Retried answer success')
     expect(activeConv.messages[1].error).toBeUndefined()
+  })
+
+  it('creates a new server conversation on handleNewChat when connected', async () => {
+    uiController.updateConnectionBadge('connected', 'Connected: default')
+    apiClient.setClientToken('test_token')
+
+    const createSpy = vi.spyOn(apiClient, 'createConversation').mockResolvedValueOnce({
+      id: 'server-conv-123',
+      title: 'New Conversation',
+      cache_namespace: 'default',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      last_message_at: new Date().toISOString(),
+    })
+
+    await uiController.handleNewChat()
+
+    expect(createSpy).toHaveBeenCalledWith('New Conversation')
+    const activeId = uiController.getConversationManager().getActiveConversationId()
+    expect(activeId).toBe('server-conv-123')
+  })
+
+  it('initializes a server conversation on syncConversationsFromServer when server returns empty list', async () => {
+    uiController.updateConnectionBadge('connected', 'Connected: default')
+    apiClient.setClientToken('test_token')
+
+    vi.spyOn(apiClient, 'listConversations').mockResolvedValueOnce({
+      conversations: [],
+      total: 0,
+    })
+
+    const createSpy = vi.spyOn(apiClient, 'createConversation').mockResolvedValueOnce({
+      id: 'server-initial-conv-456',
+      title: 'New Conversation',
+      cache_namespace: 'default',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      last_message_at: new Date().toISOString(),
+    })
+
+    await uiController.syncConversationsFromServer()
+
+    expect(createSpy).toHaveBeenCalledWith('New Conversation')
+    expect(uiController.getConversationManager().getActiveConversationId()).toBe(
+      'server-initial-conv-456'
+    )
   })
 })

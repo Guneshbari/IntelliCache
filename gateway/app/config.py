@@ -125,11 +125,11 @@ class Settings(BaseModel):
     )
 
     # Persistent Conversation & Context Builder Configuration
-    conversation_identity_secret: str = Field(
-        default_factory=lambda: os.getenv(
-            "CONVERSATION_IDENTITY_SECRET",
-            "intellicache-default-identity-secret-change-in-production",
-        ).strip()
+    conversation_identity_secret: Optional[str] = Field(
+        default_factory=lambda: (os.getenv("CONVERSATION_IDENTITY_SECRET") or "").strip() or None
+    )
+    conversation_turn_lease_seconds: int = Field(
+        default_factory=lambda: int(os.getenv("CONVERSATION_TURN_LEASE_SECONDS", "120"))
     )
     conversation_max_context_messages: int = Field(
         default_factory=lambda: int(os.getenv("CONVERSATION_MAX_CONTEXT_MESSAGES", "50"))
@@ -212,8 +212,22 @@ class Settings(BaseModel):
             raise ValueError("CONVERSATION_MAX_CONTEXT_MESSAGES must be positive.")
         if self.conversation_max_context_chars <= 0:
             raise ValueError("CONVERSATION_MAX_CONTEXT_CHARS must be positive.")
+        if self.conversation_turn_lease_seconds <= 0:
+            raise ValueError("CONVERSATION_TURN_LEASE_SECONDS must be positive.")
         if self.conversation_identity_secret is not None:
             cleaned = self.conversation_identity_secret.strip()
+            insecure_placeholders = {
+                "intellicache-default-identity-secret-change-in-production",
+                "replace_with_a_secure_random_hex_or_passphrase_at_least_16_chars",
+                "replace_with_your_key",
+                "change-me",
+                "secret",
+            }
+            if cleaned.lower() in insecure_placeholders:
+                raise ValueError(
+                    f"CONVERSATION_IDENTITY_SECRET cannot be a known public/placeholder string ('{cleaned}'). "
+                    "Configure a random 256-bit hex or secure private key."
+                )
             if len(cleaned) < 16:
                 raise ValueError("CONVERSATION_IDENTITY_SECRET must be at least 16 characters long.")
         return self

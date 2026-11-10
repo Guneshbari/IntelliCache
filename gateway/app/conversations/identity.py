@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import hashlib
 import hmac
 import ipaddress
+import json
 import logging
 from typing import Optional
 
@@ -14,6 +15,32 @@ from fastapi import Depends, HTTPException, Request, status
 from ..config import Settings, get_settings
 
 logger = logging.getLogger("intellicache.gateway.conversations.identity")
+
+
+def compute_turn_request_hash(
+    prompt: str,
+    system_prompt: Optional[str] = None,
+    model: Optional[str] = None,
+    temperature: Optional[float] = None,
+    max_tokens: Optional[int] = None,
+    stream: bool = False,
+) -> str:
+    """
+    Computes a deterministic SHA-256 hash of all generation-affecting parameters for a turn.
+    Used to bind idempotency keys to their specific request payload.
+    """
+    norm_prompt = " ".join(prompt.split()).strip()
+    norm_sys = " ".join((system_prompt or "").split()).strip()
+    canonical = {
+        "prompt": norm_prompt,
+        "system_prompt": norm_sys,
+        "model": (model or "").strip().lower(),
+        "temperature": round(float(temperature if temperature is not None else 0.0), 4),
+        "max_tokens": int(max_tokens if max_tokens is not None else 0),
+        "stream": bool(stream),
+    }
+    encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _is_loopback_address(host: Optional[str]) -> bool:
@@ -47,11 +74,13 @@ def derive_principal_id(client_token: str, identity_secret: str) -> str:
     from the client API token and the server-side identity secret using HMAC-SHA256.
     Never persists or logs the raw token.
     """
+    if not client_token or not client_token.strip():
+        raise ValueError("Client token cannot be empty.")
     if not identity_secret or len(identity_secret.strip()) < 16:
         raise ValueError("CONVERSATION_IDENTITY_SECRET must be at least 16 characters long.")
     return hmac.new(
-        identity_secret.encode("utf-8"),
-        client_token.encode("utf-8"),
+        identity_secret.strip().encode("utf-8"),
+        client_token.strip().encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()
 
@@ -64,8 +93,17 @@ def verify_conversation_client(
     FastAPI dependency that authenticates the client API token, resolves its
     authorized cache namespace, and derives the opaque client principal identity.
     """
-    token_map = settings.get_client_token_map()
     secret = settings.conversation_identity_secret
+    if not secret:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "Persistent conversation management is not configured. "
+                "CONVERSATION_IDENTITY_SECRET must be set to a secure secret."
+            ),
+        )
+
+    token_map = settings.get_client_token_map()
 
     # 1. Extract token candidate from headers
     token_candidate: Optional[str] = request.headers.get("X-Client-Token")
