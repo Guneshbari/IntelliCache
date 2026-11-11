@@ -46,6 +46,11 @@ export class DemoUIController {
   private activeAbortController: AbortController | null = null
 
   // DOM Elements
+  private themeToggleBtn: HTMLButtonElement | null = null
+  private themeDarkBtn: HTMLButtonElement | null = null
+  private themeLightBtn: HTMLButtonElement | null = null
+  private currentTheme: 'dark' | 'light' = 'dark'
+
   private connectionBadgeEl!: HTMLElement
   private connectionTextEl!: HTMLElement
   private headerNewChatBtn!: HTMLButtonElement
@@ -85,6 +90,7 @@ export class DemoUIController {
   public init(): void {
     MarkdownRenderer.init()
     this.bindDomElements()
+    this.initTheme()
     this.settingsController.init()
     this.metricsController.init()
     this.attachEventListeners()
@@ -129,10 +135,26 @@ export class DemoUIController {
     this.turnNoticeEl = document.getElementById('turn-notice')!
     this.jumpLatestBtn = document.getElementById('btn-jump-latest') as HTMLButtonElement
     this.toastContainerEl = document.getElementById('toast-container')!
+
+    this.themeToggleBtn = document.getElementById('btn-toggle-theme') as HTMLButtonElement | null
+    this.themeDarkBtn = document.getElementById('btn-theme-dark') as HTMLButtonElement | null
+    this.themeLightBtn = document.getElementById('btn-theme-light') as HTMLButtonElement | null
   }
 
   private attachEventListeners(): void {
     // Header actions
+    this.themeToggleBtn?.addEventListener('click', () => {
+      this.toggleTheme()
+    })
+
+    this.themeDarkBtn?.addEventListener('click', () => {
+      this.setTheme('dark')
+    })
+
+    this.themeLightBtn?.addEventListener('click', () => {
+      this.setTheme('light')
+    })
+
     this.connectionBadgeEl?.addEventListener('click', () => {
       this.settingsController.open()
     })
@@ -382,6 +404,89 @@ export class DemoUIController {
     this.connectionBadgeEl?.setAttribute('data-state', state)
     if (this.connectionTextEl) {
       this.connectionTextEl.textContent = text
+    }
+  }
+
+  public initTheme(): void {
+    if (typeof window === 'undefined' || typeof document === 'undefined') return
+
+    let preferredTheme: 'dark' | 'light' = 'dark'
+    try {
+      const saved = localStorage.getItem('intellicache_theme')
+      if (saved === 'dark' || saved === 'light') {
+        preferredTheme = saved
+      }
+    } catch {
+      // In restricted test or sandbox environments
+    }
+
+    this.currentTheme = preferredTheme
+    this.applyTheme(this.currentTheme)
+  }
+
+  public toggleTheme(): void {
+    const nextTheme: 'dark' | 'light' = this.currentTheme === 'dark' ? 'light' : 'dark'
+    this.setTheme(nextTheme, true)
+  }
+
+  public setTheme(theme: 'dark' | 'light', notify: boolean = true): void {
+    this.currentTheme = theme
+    try {
+      localStorage.setItem('intellicache_theme', theme)
+    } catch {
+      // Ignore
+    }
+    this.applyTheme(theme)
+    if (notify) {
+      this.showToast(`Switched to ${theme} mode`, 2000)
+    }
+  }
+
+  public getCurrentTheme(): 'dark' | 'light' {
+    return this.currentTheme
+  }
+
+  private applyTheme(theme: 'dark' | 'light'): void {
+    if (typeof document === 'undefined') return
+    document.documentElement.setAttribute('data-theme', theme)
+
+    if (this.themeToggleBtn) {
+      this.themeToggleBtn.setAttribute(
+        'title',
+        `Current: ${theme === 'dark' ? 'Dark' : 'Light'} mode. Click to switch to ${theme === 'dark' ? 'Light' : 'Dark'} mode.`
+      )
+      this.themeToggleBtn.setAttribute(
+        'aria-label',
+        `Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`
+      )
+
+      const lightIcon = this.themeToggleBtn.querySelector('.theme-icon-light')
+      const darkIcon = this.themeToggleBtn.querySelector('.theme-icon-dark')
+      const themeText = this.themeToggleBtn.querySelector('.theme-text')
+
+      if (lightIcon && darkIcon) {
+        if (theme === 'dark') {
+          lightIcon.classList.remove('hidden')
+          darkIcon.classList.add('hidden')
+        } else {
+          lightIcon.classList.add('hidden')
+          darkIcon.classList.remove('hidden')
+        }
+      }
+
+      if (themeText) {
+        themeText.textContent = theme === 'dark' ? 'Dark' : 'Light'
+      }
+    }
+
+    if (this.themeDarkBtn && this.themeLightBtn) {
+      if (theme === 'dark') {
+        this.themeDarkBtn.classList.add('active')
+        this.themeLightBtn.classList.remove('active')
+      } else {
+        this.themeLightBtn.classList.add('active')
+        this.themeDarkBtn.classList.remove('active')
+      }
     }
   }
 

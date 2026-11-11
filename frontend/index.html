@@ -5,6 +5,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>IntelliCache — Gateway Demonstration Chatbot</title>
     <link rel="icon" type="image/png" href="/favicon.png" />
+    <script>
+      ;(function () {
+        try {
+          var saved = localStorage.getItem('intellicache_theme')
+          var theme = saved === 'light' ? 'light' : 'dark'
+          document.documentElement.setAttribute('data-theme', theme)
+        } catch (e) {}
+      })()
+    </script>
   </head>
   <body>
     <!-- Top Application Header -->
@@ -44,6 +53,18 @@
       </div>
 
       <div class="header-right">
+        <button
+          id="btn-toggle-theme"
+          class="btn-header-action btn-theme-toggle"
+          type="button"
+          title="Toggle color theme (Light / Dark)"
+          aria-label="Switch color theme"
+        >
+          <span class="theme-icon-light" aria-hidden="true">☀️</span>
+          <span class="theme-icon-dark" aria-hidden="true">🌙</span>
+          <span class="btn-text theme-text">Theme</span>
+        </button>
+
         <button
           id="btn-header-new-chat"
           class="btn-header-action"
@@ -152,23 +173,29 @@
               </button>
             </div>
 
-            <div class="composer-checkboxes">
+            <div class="composer-checkboxes composer-toggles">
               <label
-                class="checkbox-label"
+                class="checkbox-label toggle-control"
                 for="stream-response-checkbox"
                 title="Enable incremental token delivery via Server-Sent Events (SSE)"
               >
-                <input id="stream-response-checkbox" type="checkbox" />
-                <span>Stream Response</span>
+                <input id="stream-response-checkbox" type="checkbox" class="toggle-checkbox" />
+                <span class="toggle-track" aria-hidden="true">
+                  <span class="toggle-thumb"></span>
+                </span>
+                <span class="toggle-label-text">Stream Response</span>
               </label>
 
               <label
-                class="checkbox-label"
+                class="checkbox-label toggle-control"
                 for="bypass-cache-checkbox"
                 title="Bypass Exact and Semantic Caches to force upstream LLM generation"
               >
-                <input id="bypass-cache-checkbox" type="checkbox" />
-                <span>Bypass Cache</span>
+                <input id="bypass-cache-checkbox" type="checkbox" class="toggle-checkbox" />
+                <span class="toggle-track" aria-hidden="true">
+                  <span class="toggle-thumb"></span>
+                </span>
+                <span class="toggle-label-text">Bypass Cache</span>
               </label>
             </div>
           </div>
@@ -297,6 +324,26 @@
             </div>
             <span class="form-hint"
               >Server-authorized token mapped in CLIENT_API_TOKENS for namespace routing</span
+            >
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Interface Theme</label>
+            <div class="theme-options-row" role="group" aria-label="Color Theme Selection">
+              <button id="btn-theme-dark" class="btn-theme-choice" type="button" data-theme="dark">
+                <span>🌙 Dark Mode</span>
+              </button>
+              <button
+                id="btn-theme-light"
+                class="btn-theme-choice"
+                type="button"
+                data-theme="light"
+              >
+                <span>☀️ Light Mode</span>
+              </button>
+            </div>
+            <span class="form-hint"
+              >Choose between dark obsidian or high-contrast clean light theme</span
             >
           </div>
 

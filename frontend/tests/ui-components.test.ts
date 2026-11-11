@@ -19,6 +19,11 @@ function setupTestDom(): void {
       <div id="connection-badge" data-state="disconnected">
         <span id="connection-text">Disconnected</span>
       </div>
+      <button id="btn-toggle-theme">
+        <span class="theme-icon-light">☀️</span>
+        <span class="theme-icon-dark">🌙</span>
+        <span class="theme-text">Theme</span>
+      </button>
       <button id="btn-header-new-chat"></button>
       <button id="btn-header-settings"></button>
       <button id="btn-toggle-metrics"></button>
@@ -63,6 +68,8 @@ function setupTestDom(): void {
     <div id="settings-backdrop"></div>
     <div id="settings-dialog">
       <button id="btn-close-settings"></button>
+      <button id="btn-theme-dark"></button>
+      <button id="btn-theme-light"></button>
       <input id="settings-gateway-url" value="http://127.0.0.1:8000" />
       <input id="settings-client-token" type="password" />
       <button id="btn-settings-toggle-token"></button>
@@ -2095,5 +2102,69 @@ describe('DemoUIController (End-to-End Coordination & Request Payloads)', () => 
     expect(toastContainer.contains(secondToast)).toBe(false)
 
     vi.useRealTimers()
+  })
+
+  describe('Color Theme Toggle & Persistence', () => {
+    it('initializes with dark theme by default when no preference is saved', () => {
+      localStorage.removeItem('intellicache_theme')
+      const controller = new DemoUIController(apiClient)
+      controller.init()
+
+      expect(controller.getCurrentTheme()).toBe('dark')
+      expect(document.documentElement.getAttribute('data-theme')).toBe('dark')
+      const themeText = document.querySelector('.theme-text')
+      expect(themeText?.textContent).toBe('Dark')
+    })
+
+    it('toggles between dark and light themes when toggle button is clicked', () => {
+      localStorage.removeItem('intellicache_theme')
+      const controller = new DemoUIController(apiClient)
+      controller.init()
+      expect(controller.getCurrentTheme()).toBe('dark')
+
+      const toggleBtn = document.getElementById('btn-toggle-theme')!
+      toggleBtn.click()
+
+      expect(controller.getCurrentTheme()).toBe('light')
+      expect(document.documentElement.getAttribute('data-theme')).toBe('light')
+      expect(localStorage.getItem('intellicache_theme')).toBe('light')
+      const themeText = document.querySelector('.theme-text')
+      expect(themeText?.textContent).toBe('Light')
+
+      toggleBtn.click()
+      expect(controller.getCurrentTheme()).toBe('dark')
+      expect(document.documentElement.getAttribute('data-theme')).toBe('dark')
+      expect(localStorage.getItem('intellicache_theme')).toBe('dark')
+      expect(themeText?.textContent).toBe('Dark')
+    })
+
+    it('sets theme explicitly via modal buttons and updates active states', () => {
+      const controller = new DemoUIController(apiClient)
+      controller.init()
+
+      const btnDark = document.getElementById('btn-theme-dark')!
+      const btnLight = document.getElementById('btn-theme-light')!
+
+      btnLight.click()
+      expect(controller.getCurrentTheme()).toBe('light')
+      expect(document.documentElement.getAttribute('data-theme')).toBe('light')
+      expect(btnLight.classList.contains('active')).toBe(true)
+      expect(btnDark.classList.contains('active')).toBe(false)
+
+      btnDark.click()
+      expect(controller.getCurrentTheme()).toBe('dark')
+      expect(document.documentElement.getAttribute('data-theme')).toBe('dark')
+      expect(btnDark.classList.contains('active')).toBe(true)
+      expect(btnLight.classList.contains('active')).toBe(false)
+    })
+
+    it('restores theme from localStorage on initialization', () => {
+      localStorage.setItem('intellicache_theme', 'light')
+      const controller = new DemoUIController(apiClient)
+      controller.init()
+
+      expect(controller.getCurrentTheme()).toBe('light')
+      expect(document.documentElement.getAttribute('data-theme')).toBe('light')
+    })
   })
 })

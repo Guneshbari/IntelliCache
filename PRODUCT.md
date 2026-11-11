@@ -49,9 +49,9 @@ Unlike basic key-value caches or opaque proxy solutions, IntelliCache combines:
 
 ## Brand Commitments
 
-- **Aesthetic**: Technical Dark Neo-Brutalist design language with hard borders (`2px solid`), tactile offset shadows (`var(--shadow-sm)`, `var(--shadow-md)`), and monospace telemetry elements.
-- **Palette**: Deep cyber dark background (`#0b0c10`), surface raised (`#1b1e2a`), signature IntelliCache Lime (`#b8ff00`), and semantic outcome color coding:
-  - Exact Match: Emerald (`#10b981`)
+- **Aesthetic**: Technical Neo-Brutalist design language with Light and Dark themes, tactile offset shadows (`var(--shadow-sm)`, `var(--shadow-md)`), accessible contrast, and monospace telemetry elements.
+- **Palette**: Electric Sapphire / Indigo brand accent (`#6366f1` / `#4f46e5`), dark obsidian (`#0b0f19`) and crisp daylight (`#f8fafc`) surfaces, with emerald green strictly reserved for authoritative exact cache hits:
+  - Exact Match: Emerald (`#10b981` dark / `#047857` light)
   - Semantic Match: Cyan (`#38bdf8`)
   - Upstream Provider: Amber (`#f59e0b`)
   - Cache Bypass: Purple (`#c084fc`)
