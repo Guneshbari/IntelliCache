@@ -16,7 +16,8 @@
     "test:watch": "vitest",
     "demo:dev": "vite",
     "demo:build": "vite build",
-    "demo:preview": "vite preview"
+    "demo:preview": "vite preview",
+    "build:all": "pnpm build"
   },
   "keywords": [
     "intellicache",

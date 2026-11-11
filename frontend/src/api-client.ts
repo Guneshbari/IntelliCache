@@ -134,6 +134,7 @@ export function validateStreamChunkPayload(raw: unknown): StreamChunkPayload {
 export class SseStreamParser {
   private buffer: string = ''
   private currentDataLines: string[] = []
+  private hasSeenDoneMarker: boolean = false
 
   private parseCurrentData(): { payload?: StreamChunkPayload; isDone: boolean } {
     if (this.currentDataLines.length === 0) {
@@ -162,8 +163,19 @@ export class SseStreamParser {
     return { payload, isDone: false }
   }
 
-  public feed(chunkText: string): { payloads: StreamChunkPayload[]; isDone: boolean } {
-    this.buffer += chunkText
+  private isIgnorable(text: string): boolean {
+    const trimmed = text.trim()
+    if (trimmed === '') {
+      return true
+    }
+    const lines = text.split(/\r\n|\n|\r/)
+    return lines.every((l) => l.trim() === '' || l.startsWith(':'))
+  }
+
+  private processBuffer(isEof: boolean = false): {
+    payloads: StreamChunkPayload[]
+    isDone: boolean
+  } {
     const payloads: StreamChunkPayload[] = []
     let isDone = false
 
@@ -175,8 +187,8 @@ export class SseStreamParser {
       const matchIndex = match.index
       const matchLen = match[0].length
 
-      // If \r is the very last char, wait to see if \n follows in next chunk
-      if (match[0] === '\r' && matchIndex === this.buffer.length - 1) {
+      // If \r is the very last char and not EOF, wait to see if \n follows in next chunk
+      if (!isEof && match[0] === '\r' && matchIndex === this.buffer.length - 1) {
         break
       }
 
@@ -184,12 +196,45 @@ export class SseStreamParser {
       lastIndex = matchIndex + matchLen
 
       if (line === '') {
-        const { payload, isDone: doneFlag } = this.parseCurrentData()
-        if (doneFlag) isDone = true
-        if (payload) payloads.push(payload)
-      } else if (line.startsWith('data:')) {
-        const content = line.slice(5).replace(/^ /, '')
-        this.currentDataLines.push(content)
+        // Blank line encountered -> event boundary
+        if (this.currentDataLines.length > 0) {
+          const { payload, isDone: doneFlag } = this.parseCurrentData()
+          if (doneFlag) {
+            if (this.hasSeenDoneMarker) {
+              throw new GatewayApiError(
+                0,
+                'Stream protocol error: Duplicate [DONE] terminal marker received.',
+                'STREAM_PROTOCOL_ERROR'
+              )
+            }
+            this.hasSeenDoneMarker = true
+            isDone = true
+          }
+          if (payload) {
+            if (this.hasSeenDoneMarker) {
+              throw new GatewayApiError(
+                0,
+                'Stream protocol error: Received data event payload after [DONE] terminal marker.',
+                'STREAM_PROTOCOL_ERROR'
+              )
+            }
+            payloads.push(payload)
+          }
+        }
+      } else if (line.startsWith(':')) {
+        // SSE comment - ignored
+      } else {
+        if (this.hasSeenDoneMarker && line.trim().length > 0) {
+          throw new GatewayApiError(
+            0,
+            'Stream protocol error: Unexpected event or data received after [DONE] terminal marker.',
+            'STREAM_PROTOCOL_ERROR'
+          )
+        }
+        if (line.startsWith('data:')) {
+          const content = line.slice(5).replace(/^ /, '')
+          this.currentDataLines.push(content)
+        }
       }
     }
 
@@ -197,24 +242,47 @@ export class SseStreamParser {
       this.buffer = this.buffer.slice(lastIndex)
     }
 
+    if (this.hasSeenDoneMarker && this.buffer.length > 0 && !this.isIgnorable(this.buffer)) {
+      throw new GatewayApiError(
+        0,
+        'Stream protocol error: Received trailing data after [DONE] terminal marker.',
+        'STREAM_PROTOCOL_ERROR'
+      )
+    }
+
     return { payloads, isDone }
   }
 
-  public flush(): { payloads: StreamChunkPayload[]; isDone: boolean } {
-    const payloads: StreamChunkPayload[] = []
-    let isDone = false
-
-    if (this.buffer.length > 0) {
-      const line = this.buffer
-      this.buffer = ''
-      if (line.startsWith('data:')) {
-        this.currentDataLines.push(line.slice(5).replace(/^ /, ''))
-      }
+  public feed(chunkText: string): { payloads: StreamChunkPayload[]; isDone: boolean } {
+    if (this.hasSeenDoneMarker && !this.isIgnorable(chunkText)) {
+      throw new GatewayApiError(
+        0,
+        'Stream protocol error: Unexpected data event received after [DONE] terminal marker.',
+        'STREAM_PROTOCOL_ERROR'
+      )
     }
 
-    const { payload, isDone: doneFlag } = this.parseCurrentData()
-    if (doneFlag) isDone = true
-    if (payload) payloads.push(payload)
+    this.buffer += chunkText
+    return this.processBuffer(false)
+  }
+
+  public flush(): { payloads: StreamChunkPayload[]; isDone: boolean } {
+    const { payloads, isDone } = this.processBuffer(true)
+
+    // S203-FIX-01: An event must be terminated by a blank line.
+    // If pending currentDataLines exist or unparsed buffer contains data, reject as INCOMPLETE_STREAM.
+    if (
+      this.currentDataLines.length > 0 ||
+      (this.buffer.length > 0 && !this.isIgnorable(this.buffer))
+    ) {
+      this.currentDataLines = []
+      this.buffer = ''
+      throw new GatewayApiError(
+        0,
+        'Incomplete stream response: SSE stream terminated before event boundary was received.',
+        'INCOMPLETE_STREAM'
+      )
+    }
 
     return { payloads, isDone }
   }
@@ -222,6 +290,7 @@ export class SseStreamParser {
   public reset(): void {
     this.buffer = ''
     this.currentDataLines = []
+    this.hasSeenDoneMarker = false
   }
 }
 
