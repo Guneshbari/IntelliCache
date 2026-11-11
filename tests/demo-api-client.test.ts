@@ -1,6 +1,11 @@
 // @vitest-environment happy-dom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { GatewayApiClient, GatewayApiError, SseStreamParser } from '../demo/src/api-client'
+import {
+  GatewayApiClient,
+  GatewayApiError,
+  SseStreamParser,
+  validateStreamChunkPayload,
+} from '../demo/src/api-client'
 import type {
   CacheStats,
   NamespaceMetricsSnapshot,
@@ -801,6 +806,60 @@ describe('GatewayApiClient (Demo Chatbot)', () => {
       expect(() => parser.feed(chunk)).toThrow(GatewayApiError)
     })
 
+    describe('validateStreamChunkPayload (Strict Runtime SSE Frame Validation)', () => {
+      it('rejects null, array, and primitive JSON payloads', () => {
+        expect(() => validateStreamChunkPayload(null)).toThrow(GatewayApiError)
+        expect(() => validateStreamChunkPayload([1, 2, 3])).toThrow(GatewayApiError)
+        expect(() => validateStreamChunkPayload('string-payload')).toThrow(GatewayApiError)
+        expect(() => validateStreamChunkPayload(12345)).toThrow(GatewayApiError)
+        expect(() => validateStreamChunkPayload(true)).toThrow(GatewayApiError)
+      })
+
+      it('rejects non-string delta', () => {
+        expect(() => validateStreamChunkPayload({ delta: 123 })).toThrow(GatewayApiError)
+        expect(() => validateStreamChunkPayload({ delta: ['array'] })).toThrow(GatewayApiError)
+        expect(() => validateStreamChunkPayload({ delta: { nested: true } })).toThrow(
+          GatewayApiError
+        )
+      })
+
+      it('rejects non-boolean done flags', () => {
+        expect(() => validateStreamChunkPayload({ done: 'false' })).toThrow(GatewayApiError)
+        expect(() => validateStreamChunkPayload({ done: 'true' })).toThrow(GatewayApiError)
+        expect(() => validateStreamChunkPayload({ done: 0 })).toThrow(GatewayApiError)
+        expect(() => validateStreamChunkPayload({ done: 1 })).toThrow(GatewayApiError)
+        expect(() => validateStreamChunkPayload({ done: null })).toThrow(GatewayApiError)
+      })
+
+      it('rejects non-string error field', () => {
+        expect(() => validateStreamChunkPayload({ error: 404 })).toThrow(GatewayApiError)
+        expect(() => validateStreamChunkPayload({ error: { msg: 'bad' } })).toThrow(GatewayApiError)
+      })
+
+      it('rejects invalid status_code', () => {
+        expect(() => validateStreamChunkPayload({ status_code: '500' })).toThrow(GatewayApiError)
+        expect(() => validateStreamChunkPayload({ status_code: 99 })).toThrow(GatewayApiError)
+        expect(() => validateStreamChunkPayload({ status_code: 600 })).toThrow(GatewayApiError)
+        expect(() => validateStreamChunkPayload({ status_code: 200.5 })).toThrow(GatewayApiError)
+      })
+
+      it('accepts valid intermediate and terminal frames', () => {
+        const intermediate = validateStreamChunkPayload({ delta: 'hello', done: false })
+        expect(intermediate.delta).toBe('hello')
+        expect(intermediate.done).toBe(false)
+
+        const terminal = validateStreamChunkPayload({
+          done: true,
+          cached: false,
+          cache_type: 'none',
+          latency_ms: 120,
+        })
+        expect(terminal.done).toBe(true)
+        expect(terminal.cached).toBe(false)
+        expect(terminal.latency_ms).toBe(120)
+      })
+    })
+
     it('ignores comments and handles flush at stream end', () => {
       const parser = new SseStreamParser()
       parser.feed(': heartbeat\n\ndata: {"delta": "trailing"}')
@@ -836,6 +895,37 @@ describe('GatewayApiClient (Demo Chatbot)', () => {
           }
         },
       })
+    }
+
+    function createMonitoredMockStream(chunks: string[]): {
+      stream: ReadableStream<Uint8Array>
+      cancelSpy: ReturnType<typeof vi.fn>
+      releaseLockSpy: ReturnType<typeof vi.fn>
+    } {
+      const cancelSpy = vi.fn().mockResolvedValue(undefined)
+      const releaseLockSpy = vi.fn()
+      const rawStream = createMockStream(chunks)
+      const originalGetReader = rawStream.getReader.bind(rawStream)
+
+      vi.spyOn(rawStream, 'getReader').mockImplementation((() => {
+        const reader = originalGetReader()
+        const origCancel = reader.cancel.bind(reader)
+        const origRelease = reader.releaseLock?.bind(reader)
+
+        reader.cancel = async (reason?: unknown) => {
+          cancelSpy(reason)
+          return origCancel(reason)
+        }
+        if (origRelease) {
+          reader.releaseLock = () => {
+            releaseLockSpy()
+            origRelease()
+          }
+        }
+        return reader
+      }) as unknown as typeof rawStream.getReader)
+
+      return { stream: rawStream, cancelSpy, releaseLockSpy }
     }
 
     it('sends streaming request with stream=true and required headers', async () => {
@@ -1195,6 +1285,315 @@ describe('GatewayApiClient (Demo Chatbot)', () => {
       expect(caughtErr?.detail).toBe('INVALID_CONTENT_TYPE')
       expect(caughtErr?.message).toContain("Expected 'text/event-stream' Content-Type")
       expect(onDoneSpy).not.toHaveBeenCalled()
+    })
+
+    describe('Stage 2.0.2 Strict Frame Validation & Reader Lifecycle', () => {
+      it('rejects a stream frame with done="false" string as STREAM_PROTOCOL_ERROR without calling onDone', async () => {
+        const sseChunks = ['data: {"delta": "test", "done": "false"}\n\n', 'data: [DONE]\n\n']
+        vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+          new Response(createMockStream(sseChunks), {
+            status: 200,
+            headers: { 'Content-Type': 'text/event-stream' },
+          })
+        )
+        const onDoneSpy = vi.fn()
+        let caughtErr: GatewayApiError | null = null
+        try {
+          await client.sendStreamQuery({ prompt: 'String false done' }, undefined, {
+            onDone: onDoneSpy,
+          })
+        } catch (e) {
+          caughtErr = e as GatewayApiError
+        }
+        expect(caughtErr).not.toBeNull()
+        expect(caughtErr?.detail).toBe('STREAM_PROTOCOL_ERROR')
+        expect(caughtErr?.message).toContain('StreamChunkPayload.done must be a boolean')
+        expect(onDoneSpy).not.toHaveBeenCalled()
+      })
+
+      it('rejects a stream frame with done="true" string as STREAM_PROTOCOL_ERROR without calling onDone', async () => {
+        const sseChunks = ['data: {"delta": "", "done": "true"}\n\n', 'data: [DONE]\n\n']
+        vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+          new Response(createMockStream(sseChunks), {
+            status: 200,
+            headers: { 'Content-Type': 'text/event-stream' },
+          })
+        )
+        const onDoneSpy = vi.fn()
+        let caughtErr: GatewayApiError | null = null
+        try {
+          await client.sendStreamQuery({ prompt: 'String true done' }, undefined, {
+            onDone: onDoneSpy,
+          })
+        } catch (e) {
+          caughtErr = e as GatewayApiError
+        }
+        expect(caughtErr).not.toBeNull()
+        expect(caughtErr?.detail).toBe('STREAM_PROTOCOL_ERROR')
+        expect(caughtErr?.message).toContain('StreamChunkPayload.done must be a boolean')
+        expect(onDoneSpy).not.toHaveBeenCalled()
+      })
+
+      it('rejects a stream frame with numeric done value as STREAM_PROTOCOL_ERROR without calling onDone', async () => {
+        const sseChunks = ['data: {"delta": "test", "done": 1}\n\n', 'data: [DONE]\n\n']
+        vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+          new Response(createMockStream(sseChunks), {
+            status: 200,
+            headers: { 'Content-Type': 'text/event-stream' },
+          })
+        )
+        const onDoneSpy = vi.fn()
+        let caughtErr: GatewayApiError | null = null
+        try {
+          await client.sendStreamQuery({ prompt: 'Numeric done' }, undefined, {
+            onDone: onDoneSpy,
+          })
+        } catch (e) {
+          caughtErr = e as GatewayApiError
+        }
+        expect(caughtErr).not.toBeNull()
+        expect(caughtErr?.detail).toBe('STREAM_PROTOCOL_ERROR')
+        expect(onDoneSpy).not.toHaveBeenCalled()
+      })
+
+      it('rejects null JSON payload as STREAM_PROTOCOL_ERROR without calling onDone', async () => {
+        const sseChunks = ['data: null\n\n']
+        vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+          new Response(createMockStream(sseChunks), {
+            status: 200,
+            headers: { 'Content-Type': 'text/event-stream' },
+          })
+        )
+        const onDoneSpy = vi.fn()
+        let caughtErr: GatewayApiError | null = null
+        try {
+          await client.sendStreamQuery({ prompt: 'Null payload' }, undefined, {
+            onDone: onDoneSpy,
+          })
+        } catch (e) {
+          caughtErr = e as GatewayApiError
+        }
+        expect(caughtErr).not.toBeNull()
+        expect(caughtErr?.detail).toBe('STREAM_PROTOCOL_ERROR')
+        expect(caughtErr?.message).toContain('SSE payload must be a non-null JSON object')
+        expect(onDoneSpy).not.toHaveBeenCalled()
+      })
+
+      it('rejects array or primitive JSON payload as STREAM_PROTOCOL_ERROR without calling onDone', async () => {
+        const sseChunks = ['data: ["not", "an", "object"]\n\n']
+        vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+          new Response(createMockStream(sseChunks), {
+            status: 200,
+            headers: { 'Content-Type': 'text/event-stream' },
+          })
+        )
+        const onDoneSpy = vi.fn()
+        let caughtErr: GatewayApiError | null = null
+        try {
+          await client.sendStreamQuery({ prompt: 'Array payload' }, undefined, {
+            onDone: onDoneSpy,
+          })
+        } catch (e) {
+          caughtErr = e as GatewayApiError
+        }
+        expect(caughtErr).not.toBeNull()
+        expect(caughtErr?.detail).toBe('STREAM_PROTOCOL_ERROR')
+        expect(onDoneSpy).not.toHaveBeenCalled()
+      })
+
+      it('rejects non-string delta as STREAM_PROTOCOL_ERROR without calling onDone', async () => {
+        const sseChunks = ['data: {"delta": 12345, "done": false}\n\n']
+        vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+          new Response(createMockStream(sseChunks), {
+            status: 200,
+            headers: { 'Content-Type': 'text/event-stream' },
+          })
+        )
+        const onDoneSpy = vi.fn()
+        let caughtErr: GatewayApiError | null = null
+        try {
+          await client.sendStreamQuery({ prompt: 'Number delta' }, undefined, {
+            onDone: onDoneSpy,
+          })
+        } catch (e) {
+          caughtErr = e as GatewayApiError
+        }
+        expect(caughtErr).not.toBeNull()
+        expect(caughtErr?.detail).toBe('STREAM_PROTOCOL_ERROR')
+        expect(caughtErr?.message).toContain('StreamChunkPayload.delta must be a string')
+        expect(onDoneSpy).not.toHaveBeenCalled()
+      })
+
+      it('accepts valid intermediate frame with done=false and invokes onDelta', async () => {
+        const sseChunks = [
+          'data: {"delta": "Alpha ", "done": false}\n\n',
+          'data: {"delta": "Beta", "done": false}\n\n',
+          'data: {"delta": "", "done": true, "cached": false, "cache_type": "none", "latency_ms": 100, "model": "test-m", "fingerprint": "fp_int"}\n\n',
+          'data: [DONE]\n\n',
+        ]
+        vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+          new Response(createMockStream(sseChunks), {
+            status: 200,
+            headers: { 'Content-Type': 'text/event-stream' },
+          })
+        )
+        const deltas: string[] = []
+        const onDoneSpy = vi.fn()
+        const res = await client.sendStreamQuery({ prompt: 'Intermediate test' }, undefined, {
+          onDelta: (d) => deltas.push(d),
+          onDone: onDoneSpy,
+        })
+        expect(res.response).toBe('Alpha Beta')
+        expect(deltas).toEqual(['Alpha ', 'Beta'])
+        expect(onDoneSpy).toHaveBeenCalledTimes(1)
+      })
+
+      it('releases the reader lock on normal EOF completion without cancel', async () => {
+        const sseChunks = [
+          'data: {"delta": "Done at EOF", "done": false}\n\n',
+          'data: {"delta": "", "done": true, "cached": false, "cache_type": "none", "latency_ms": 50, "model": "test", "fingerprint": "fp_eof"}\n\n',
+          'data: [DONE]',
+        ]
+        const { stream, cancelSpy, releaseLockSpy } = createMonitoredMockStream(sseChunks)
+        vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+          new Response(stream, {
+            status: 200,
+            headers: { 'Content-Type': 'text/event-stream' },
+          })
+        )
+        const res = await client.sendStreamQuery({ prompt: 'EOF test' })
+        expect(res.response).toBe('Done at EOF')
+        expect(cancelSpy).not.toHaveBeenCalled()
+        expect(releaseLockSpy).toHaveBeenCalled()
+      })
+
+      it('releases the reader lock when cancelled via AbortSignal', async () => {
+        const abortController = new AbortController()
+        const cancelSpy = vi.fn().mockResolvedValue(undefined)
+        const releaseLockSpy = vi.fn()
+        const rawStream = new ReadableStream<Uint8Array>({
+          async pull() {
+            abortController.abort()
+            const err = new Error('The operation was aborted')
+            err.name = 'AbortError'
+            throw err
+          },
+        })
+        const originalGetReader = rawStream.getReader.bind(rawStream)
+        vi.spyOn(rawStream, 'getReader').mockImplementation((() => {
+          const reader = originalGetReader()
+          const origRelease = reader.releaseLock?.bind(reader)
+          reader.cancel = async (reason?: unknown) => {
+            cancelSpy(reason)
+            return undefined
+          }
+          if (origRelease) {
+            reader.releaseLock = () => {
+              releaseLockSpy()
+              origRelease()
+            }
+          }
+          return reader
+        }) as unknown as typeof rawStream.getReader)
+
+        vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+          new Response(rawStream, {
+            status: 200,
+            headers: { 'Content-Type': 'text/event-stream' },
+          })
+        )
+
+        await expect(
+          client.sendStreamQuery(
+            { prompt: 'Abort test' },
+            undefined,
+            undefined,
+            abortController.signal
+          )
+        ).rejects.toThrow()
+        expect(releaseLockSpy).toHaveBeenCalled()
+      })
+
+      it('cancels unread stream body when early loop termination occurs upon [DONE] marker', async () => {
+        const sseChunks = [
+          'data: {"delta": "Early break", "done": false}\n\n',
+          'data: {"delta": "", "done": true, "cached": false, "cache_type": "none", "latency_ms": 60, "model": "test", "fingerprint": "fp_early"}\n\n',
+          'data: [DONE]\n\n',
+          'data: {"delta": "Unread trailing chunk that should never be read"}\n\n',
+        ]
+        const { stream, cancelSpy, releaseLockSpy } = createMonitoredMockStream(sseChunks)
+        vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+          new Response(stream, {
+            status: 200,
+            headers: { 'Content-Type': 'text/event-stream' },
+          })
+        )
+        const res = await client.sendStreamQuery({ prompt: 'Early break test' })
+        expect(res.response).toBe('Early break')
+        expect(cancelSpy).toHaveBeenCalledTimes(1)
+        expect(releaseLockSpy).toHaveBeenCalledTimes(1)
+      })
+
+      it('cancels reader and releases lock when [DONE] is received without final payload', async () => {
+        const sseChunks = [
+          'data: {"delta": "Missing final", "done": false}\n\n',
+          'data: [DONE]\n\n',
+          'data: {"delta": "trailing"}\n\n',
+        ]
+        const { stream, cancelSpy, releaseLockSpy } = createMonitoredMockStream(sseChunks)
+        vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+          new Response(stream, {
+            status: 200,
+            headers: { 'Content-Type': 'text/event-stream' },
+          })
+        )
+        await expect(client.sendStreamQuery({ prompt: 'Missing final test' })).rejects.toThrow(
+          GatewayApiError
+        )
+        expect(cancelSpy).toHaveBeenCalledTimes(1)
+        expect(releaseLockSpy).toHaveBeenCalledTimes(1)
+      })
+
+      it('cancels unread reader and releases lock on malformed payload error', async () => {
+        const sseChunks = [
+          'data: {"delta": 12345, "done": false}\n\n',
+          'data: {"delta": "trailing"}\n\n',
+        ]
+        const { stream, cancelSpy, releaseLockSpy } = createMonitoredMockStream(sseChunks)
+        vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+          new Response(stream, {
+            status: 200,
+            headers: { 'Content-Type': 'text/event-stream' },
+          })
+        )
+        await expect(client.sendStreamQuery({ prompt: 'Malformed cancel test' })).rejects.toThrow(
+          GatewayApiError
+        )
+        expect(cancelSpy).toHaveBeenCalledTimes(1)
+        expect(releaseLockSpy).toHaveBeenCalledTimes(1)
+      })
+
+      it('guarantees releaseLock executes even if reader.cancel() throws an error', async () => {
+        const sseChunks = [
+          'data: {"delta": "Cancel throws", "done": false}\n\n',
+          'data: {"delta": "", "done": true, "cached": false, "cache_type": "none", "latency_ms": 70, "model": "test", "fingerprint": "fp_ct"}\n\n',
+          'data: [DONE]\n\n',
+          'data: {"delta": "unread"}\n\n',
+        ]
+        const { stream, cancelSpy, releaseLockSpy } = createMonitoredMockStream(sseChunks)
+        cancelSpy.mockRejectedValue(new Error('Underlying transport cancel failed'))
+
+        vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+          new Response(stream, {
+            status: 200,
+            headers: { 'Content-Type': 'text/event-stream' },
+          })
+        )
+        const res = await client.sendStreamQuery({ prompt: 'Cancel throw test' })
+        expect(res.response).toBe('Cancel throws')
+        expect(cancelSpy).toHaveBeenCalledTimes(1)
+        expect(releaseLockSpy).toHaveBeenCalledTimes(1)
+      })
     })
   })
 })

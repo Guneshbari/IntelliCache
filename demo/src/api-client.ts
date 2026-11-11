@@ -52,6 +52,81 @@ export interface ConnectionTestResult {
 }
 
 /**
+ * Validates the runtime structure of an incoming SSE chunk payload.
+ * Enforces strict typing and rejects malformed types, null, arrays,
+ * primitives, non-string deltas, non-boolean done flags, non-string errors,
+ * or invalid status codes.
+ */
+export function validateStreamChunkPayload(raw: unknown): StreamChunkPayload {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    throw new GatewayApiError(
+      0,
+      'Stream protocol error: SSE payload must be a non-null JSON object.',
+      'STREAM_PROTOCOL_ERROR'
+    )
+  }
+
+  const obj = raw as Record<string, unknown>
+
+  if ('delta' in obj && obj.delta !== undefined && typeof obj.delta !== 'string') {
+    throw new GatewayApiError(
+      0,
+      'Stream protocol error: StreamChunkPayload.delta must be a string.',
+      'STREAM_PROTOCOL_ERROR'
+    )
+  }
+
+  if ('done' in obj && obj.done !== undefined && typeof obj.done !== 'boolean') {
+    throw new GatewayApiError(
+      0,
+      'Stream protocol error: StreamChunkPayload.done must be a boolean.',
+      'STREAM_PROTOCOL_ERROR'
+    )
+  }
+
+  if ('error' in obj && obj.error !== undefined && typeof obj.error !== 'string') {
+    throw new GatewayApiError(
+      0,
+      'Stream protocol error: StreamChunkPayload.error must be a string.',
+      'STREAM_PROTOCOL_ERROR'
+    )
+  }
+
+  if (
+    'status_code' in obj &&
+    obj.status_code !== undefined &&
+    (typeof obj.status_code !== 'number' ||
+      !Number.isInteger(obj.status_code) ||
+      obj.status_code < 100 ||
+      obj.status_code > 599)
+  ) {
+    throw new GatewayApiError(
+      0,
+      'Stream protocol error: StreamChunkPayload.status_code must be a valid numeric HTTP status code (100-599).',
+      'STREAM_PROTOCOL_ERROR'
+    )
+  }
+
+  if ('cached' in obj && obj.cached !== undefined && typeof obj.cached !== 'boolean') {
+    throw new GatewayApiError(
+      0,
+      'Stream protocol error: StreamChunkPayload.cached must be a boolean.',
+      'STREAM_PROTOCOL_ERROR'
+    )
+  }
+
+  if ('latency_ms' in obj && obj.latency_ms !== undefined && typeof obj.latency_ms !== 'number') {
+    throw new GatewayApiError(
+      0,
+      'Stream protocol error: StreamChunkPayload.latency_ms must be a number.',
+      'STREAM_PROTOCOL_ERROR'
+    )
+  }
+
+  return obj as StreamChunkPayload
+}
+
+/**
  * Resilient Server-Sent Events (SSE) Stream Parser.
  * Handles split JSON/event chunks across network reads, CRLF and LF line endings,
  * multiple events per chunk, [DONE] termination, comments, and empty lines.
@@ -72,9 +147,9 @@ export class SseStreamParser {
     if (!combined) {
       return { isDone: false }
     }
+    let parsed: unknown
     try {
-      const parsed = JSON.parse(combined) as StreamChunkPayload
-      return { payload: parsed, isDone: false }
+      parsed = JSON.parse(combined)
     } catch {
       throw new GatewayApiError(
         0,
@@ -82,6 +157,9 @@ export class SseStreamParser {
         'STREAM_PROTOCOL_ERROR'
       )
     }
+
+    const payload = validateStreamChunkPayload(parsed)
+    return { payload, isDone: false }
   }
 
   public feed(chunkText: string): { payloads: StreamChunkPayload[]; isDone: boolean } {
@@ -420,6 +498,7 @@ export class GatewayApiClient {
       let accumulatedText = ''
       let finalChunk: StreamChunkPayload | null = null
       let hasReceivedDoneMarker = false
+      let hasReachedTransportEof = false
 
       const handleChunk = (chunk: StreamChunkPayload) => {
         if (chunk.error || (chunk.status_code && chunk.status_code >= 400)) {
@@ -442,6 +521,7 @@ export class GatewayApiClient {
         while (true) {
           const { done, value } = await reader.read()
           if (done) {
+            hasReachedTransportEof = true
             // Stream EOF reached at transport level
             // Flush decoder first with stream: false to decode any trailing UTF-8 multi-byte sequence
             const remainingText = decoder.decode(undefined, { stream: false })
@@ -452,7 +532,7 @@ export class GatewayApiClient {
               }
               for (const chunk of fed.payloads) {
                 handleChunk(chunk)
-                if (chunk.done) {
+                if (chunk.done === true) {
                   finalChunk = chunk
                 }
               }
@@ -464,7 +544,7 @@ export class GatewayApiClient {
             }
             for (const chunk of flushed.payloads) {
               handleChunk(chunk)
-              if (chunk.done) {
+              if (chunk.done === true) {
                 finalChunk = chunk
               }
             }
@@ -479,7 +559,7 @@ export class GatewayApiClient {
 
           for (const chunk of payloads) {
             handleChunk(chunk)
-            if (chunk.done) {
+            if (chunk.done === true) {
               finalChunk = chunk
             }
           }
@@ -490,8 +570,8 @@ export class GatewayApiClient {
         }
       } finally {
         try {
-          if (!hasReceivedDoneMarker && !signal?.aborted) {
-            await reader.cancel().catch(() => {})
+          if (!hasReachedTransportEof && !signal?.aborted) {
+            await reader.cancel?.().catch(() => {})
           }
         } catch {
           // Ignore cancellation errors
@@ -502,7 +582,7 @@ export class GatewayApiClient {
 
       // Enforce authoritative completion: Must receive authoritative final payload (done=true) AND [DONE] marker
       const authoritativeChunk: StreamChunkPayload | null = finalChunk
-      if (!authoritativeChunk || !authoritativeChunk.done || !hasReceivedDoneMarker) {
+      if (!authoritativeChunk || authoritativeChunk.done !== true || !hasReceivedDoneMarker) {
         throw new GatewayApiError(
           0,
           'Incomplete stream response: Stream terminated before authoritative completion and [DONE] marker were received.',
