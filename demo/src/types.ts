@@ -65,6 +65,7 @@ export interface StreamChunkPayload {
 export interface StreamCallbacks {
   onDelta?: (delta: string) => void
   onChunk?: (chunk: StreamChunkPayload) => void
+  onDone?: (finalResponse: QueryResponse) => void
 }
 
 export interface ConversationSummary {

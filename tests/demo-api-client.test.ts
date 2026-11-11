@@ -795,12 +795,10 @@ describe('GatewayApiClient (Demo Chatbot)', () => {
       expect(isDone).toBe(true)
     })
 
-    it('handles malformed events safely without crashing', () => {
+    it('throws GatewayApiError on malformed non-empty data events rather than silently discarding them', () => {
       const parser = new SseStreamParser()
       const chunk = 'data: {invalid json\n\ndata: {"delta": "valid"}\n\n'
-      const { payloads } = parser.feed(chunk)
-
-      expect(payloads).toEqual([{ delta: 'valid' }])
+      expect(() => parser.feed(chunk)).toThrow(GatewayApiError)
     })
 
     it('ignores comments and handles flush at stream end', () => {
@@ -820,6 +818,19 @@ describe('GatewayApiClient (Demo Chatbot)', () => {
         pull(controller) {
           if (index < chunks.length) {
             controller.enqueue(encoder.encode(chunks[index++]))
+          } else {
+            controller.close()
+          }
+        },
+      })
+    }
+
+    function createByteStream(chunks: Uint8Array[]): ReadableStream<Uint8Array> {
+      let index = 0
+      return new ReadableStream({
+        pull(controller) {
+          if (index < chunks.length) {
+            controller.enqueue(chunks[index++])
           } else {
             controller.close()
           }
@@ -983,6 +994,207 @@ describe('GatewayApiClient (Demo Chatbot)', () => {
       expect(result.idempotent_replay).toBe(true)
       expect(result.fingerprint).toBe('idempotent_replay')
       expect(result.cached).toBe(false)
+    })
+
+    it('invokes onDone exactly once with the reconstructed QueryResponse on successful stream', async () => {
+      const sseChunks = [
+        'data: {"delta": "Hello ", "done": false}\n\n',
+        'data: {"delta": "world!", "done": false}\n\n',
+        'data: {"delta": "", "done": true, "cached": false, "cache_type": "none", "latency_ms": 150, "model": "llama-3.3-70b", "fingerprint": "fp_done_test"}\n\n',
+        'data: [DONE]\n\n',
+      ]
+
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response(createMockStream(sseChunks), {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        })
+      )
+
+      const onDoneSpy = vi.fn()
+      const result = await client.sendStreamQuery({ prompt: 'Callback test' }, undefined, {
+        onDone: onDoneSpy,
+      })
+
+      expect(result.response).toBe('Hello world!')
+      expect(onDoneSpy).toHaveBeenCalledTimes(1)
+      expect(onDoneSpy).toHaveBeenCalledWith(result)
+    })
+
+    it('rejects incomplete stream that reaches EOF without authoritative final done=true payload', async () => {
+      const sseChunks = [
+        'data: {"delta": "Partial output that cuts off abruptly", "done": false}\n\n',
+      ]
+
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response(createMockStream(sseChunks), {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        })
+      )
+
+      const onDoneSpy = vi.fn()
+      let caughtErr: GatewayApiError | null = null
+      try {
+        await client.sendStreamQuery({ prompt: 'Truncated stream' }, undefined, {
+          onDone: onDoneSpy,
+        })
+      } catch (e) {
+        caughtErr = e as GatewayApiError
+      }
+
+      expect(caughtErr).not.toBeNull()
+      expect(caughtErr?.detail).toBe('INCOMPLETE_STREAM')
+      expect(caughtErr?.message).toContain('Incomplete stream response')
+      expect(onDoneSpy).not.toHaveBeenCalled()
+    })
+
+    it('rejects incomplete stream with done=true payload but EOF before [DONE] marker', async () => {
+      const sseChunks = [
+        'data: {"delta": "Complete text", "done": false}\n\n',
+        'data: {"delta": "", "done": true, "cached": false, "cache_type": "none", "latency_ms": 100, "model": "test", "fingerprint": "fp1"}\n\n',
+        // EOF without data: [DONE]
+      ]
+
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response(createMockStream(sseChunks), {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        })
+      )
+
+      const onDoneSpy = vi.fn()
+      let caughtErr: GatewayApiError | null = null
+      try {
+        await client.sendStreamQuery({ prompt: 'Missing DONE' }, undefined, {
+          onDone: onDoneSpy,
+        })
+      } catch (e) {
+        caughtErr = e as GatewayApiError
+      }
+
+      expect(caughtErr).not.toBeNull()
+      expect(caughtErr?.detail).toBe('INCOMPLETE_STREAM')
+      expect(onDoneSpy).not.toHaveBeenCalled()
+    })
+
+    it('rejects incomplete stream with [DONE] marker but missing authoritative done=true payload', async () => {
+      const sseChunks = [
+        'data: {"delta": "Only delta without final chunk", "done": false}\n\n',
+        'data: [DONE]\n\n',
+      ]
+
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response(createMockStream(sseChunks), {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        })
+      )
+
+      const onDoneSpy = vi.fn()
+      let caughtErr: GatewayApiError | null = null
+      try {
+        await client.sendStreamQuery({ prompt: 'Missing final payload' }, undefined, {
+          onDone: onDoneSpy,
+        })
+      } catch (e) {
+        caughtErr = e as GatewayApiError
+      }
+
+      expect(caughtErr).not.toBeNull()
+      expect(caughtErr?.detail).toBe('INCOMPLETE_STREAM')
+      expect(onDoneSpy).not.toHaveBeenCalled()
+    })
+
+    it('rejects stream with malformed non-empty data event as STREAM_PROTOCOL_ERROR without calling onDone', async () => {
+      const sseChunks = [
+        'data: {"delta": "Initial delta", "done": false}\n\n',
+        'data: {corrupted-unparseable-json\n\n',
+      ]
+
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response(createMockStream(sseChunks), {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        })
+      )
+
+      const onDoneSpy = vi.fn()
+      let caughtErr: GatewayApiError | null = null
+      try {
+        await client.sendStreamQuery({ prompt: 'Malformed json' }, undefined, {
+          onDone: onDoneSpy,
+        })
+      } catch (e) {
+        caughtErr = e as GatewayApiError
+      }
+
+      expect(caughtErr).not.toBeNull()
+      expect(caughtErr?.detail).toBe('STREAM_PROTOCOL_ERROR')
+      expect(caughtErr?.message).toContain('Malformed SSE data event payload')
+      expect(onDoneSpy).not.toHaveBeenCalled()
+    })
+
+    it('reconstructs multi-byte UTF-8 character split across network chunks correctly', async () => {
+      // 🚀 is 4 bytes: [0xF0, 0x9F, 0x9A, 0x80] in UTF-8
+      const enc = new TextEncoder()
+      const prefix = enc.encode('data: {"delta": "Rocket: ')
+      const rocketBytes = enc.encode('🚀') // length 4: [240, 159, 154, 128]
+      const suffix = enc.encode('", "done": false}\n\n')
+
+      // Chunk 1: prefix + first 2 bytes of rocket
+      const chunk1 = new Uint8Array(prefix.length + 2)
+      chunk1.set(prefix, 0)
+      chunk1.set(rocketBytes.slice(0, 2), prefix.length)
+
+      // Chunk 2: remaining 2 bytes of rocket + suffix
+      const chunk2 = new Uint8Array(2 + suffix.length)
+      chunk2.set(rocketBytes.slice(2, 4), 0)
+      chunk2.set(suffix, 2)
+
+      const chunk3 = enc.encode(
+        'data: {"delta": "", "done": true, "cached": false, "cache_type": "none", "latency_ms": 50, "model": "test", "fingerprint": "fp_utf8"}\n\n'
+      )
+      const chunk4 = enc.encode('data: [DONE]\n\n')
+
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response(createByteStream([chunk1, chunk2, chunk3, chunk4]), {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        })
+      )
+
+      const deltas: string[] = []
+      const result = await client.sendStreamQuery({ prompt: 'Split UTF-8' }, undefined, {
+        onDelta: (d) => deltas.push(d),
+      })
+
+      expect(result.response).toBe('Rocket: 🚀')
+      expect(deltas.join('')).toBe('Rocket: 🚀')
+    })
+
+    it('rejects response with invalid Content-Type without calling onDone', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response(JSON.stringify({ response: 'Should have been SSE' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      )
+
+      const onDoneSpy = vi.fn()
+      let caughtErr: GatewayApiError | null = null
+      try {
+        await client.sendStreamQuery({ prompt: 'Wrong content type' }, undefined, {
+          onDone: onDoneSpy,
+        })
+      } catch (e) {
+        caughtErr = e as GatewayApiError
+      }
+
+      expect(caughtErr).not.toBeNull()
+      expect(caughtErr?.detail).toBe('INVALID_CONTENT_TYPE')
+      expect(caughtErr?.message).toContain("Expected 'text/event-stream' Content-Type")
+      expect(onDoneSpy).not.toHaveBeenCalled()
     })
   })
 })

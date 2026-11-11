@@ -90,6 +90,7 @@ export class DemoUIController {
     this.attachEventListeners()
     this.updateConnectionBadge('disconnected', 'Disconnected')
     this.renderTurnNotice()
+    this.updateGenerationControls()
     this.renderConversationList()
     this.renderMessages()
   }
@@ -293,6 +294,40 @@ export class DemoUIController {
         this.handleDeleteConversation(convId)
       }
     })
+  }
+
+  private updateGenerationControls(): void {
+    const activeConvId = this.conversationManager.getActiveConversationId()
+    const isCurrentConvGenerating = this.isGenerating && this.generatingConvId === activeConvId
+
+    if (isCurrentConvGenerating && this.isStreamingActive) {
+      if (this.sendBtn) {
+        this.sendBtn.classList.add('hidden')
+        this.sendBtn.disabled = true
+      }
+      if (this.stopBtn) {
+        this.stopBtn.classList.remove('hidden')
+        this.stopBtn.disabled = false
+      }
+    } else if (this.isGenerating) {
+      if (this.stopBtn) {
+        this.stopBtn.classList.add('hidden')
+        this.stopBtn.disabled = false
+      }
+      if (this.sendBtn) {
+        this.sendBtn.classList.remove('hidden')
+        this.sendBtn.disabled = true
+      }
+    } else {
+      if (this.stopBtn) {
+        this.stopBtn.classList.add('hidden')
+        this.stopBtn.disabled = false
+      }
+      if (this.sendBtn) {
+        this.sendBtn.classList.remove('hidden')
+        this.sendBtn.disabled = false
+      }
+    }
   }
 
   private autoResizeTextarea(): void {
@@ -555,6 +590,7 @@ export class DemoUIController {
       }
     }
     this.conversationManager.createConversation('New Conversation')
+    this.updateGenerationControls()
     this.renderConversationList()
     this.renderMessages()
     if (this.chatTextarea) {
@@ -571,6 +607,7 @@ export class DemoUIController {
       if (this.apiClient.hasToken()) {
         await this.loadMessagesForActiveConversation()
       }
+      this.updateGenerationControls()
       this.renderConversationList()
       this.renderMessages()
       this.closeMobileSidebar()
@@ -644,16 +681,9 @@ export class DemoUIController {
     this.generatingConvId = targetConvId
     this.isStreamingActive = stream
     this.accumulatedStreamText = ''
-    this.activeAbortController = new AbortController()
+    this.activeAbortController = stream ? new AbortController() : null
 
-    if (this.sendBtn) {
-      this.sendBtn.classList.add('hidden')
-      this.sendBtn.disabled = true
-    }
-    if (this.stopBtn) {
-      this.stopBtn.classList.remove('hidden')
-      this.stopBtn.disabled = false
-    }
+    this.updateGenerationControls()
 
     this.renderConversationList()
     this.renderMessages()
@@ -708,7 +738,7 @@ export class DemoUIController {
               }
             },
           },
-          this.activeAbortController.signal
+          this.activeAbortController?.signal
         )
       } else {
         response = await this.apiClient.sendQuery(payload, idempotencyKey)
@@ -782,14 +812,7 @@ export class DemoUIController {
       this.accumulatedStreamText = ''
       this.activeAbortController = null
 
-      if (this.stopBtn) {
-        this.stopBtn.classList.add('hidden')
-        this.stopBtn.disabled = false
-      }
-      if (this.sendBtn) {
-        this.sendBtn.classList.remove('hidden')
-        this.sendBtn.disabled = false
-      }
+      this.updateGenerationControls()
       this.jumpLatestBtn?.classList.add('hidden')
 
       this.renderConversationList()
@@ -842,16 +865,9 @@ export class DemoUIController {
     this.generatingConvId = targetConvId
     this.isStreamingActive = stream
     this.accumulatedStreamText = ''
-    this.activeAbortController = new AbortController()
+    this.activeAbortController = stream ? new AbortController() : null
 
-    if (this.sendBtn) {
-      this.sendBtn.classList.add('hidden')
-      this.sendBtn.disabled = true
-    }
-    if (this.stopBtn) {
-      this.stopBtn.classList.remove('hidden')
-      this.stopBtn.disabled = false
-    }
+    this.updateGenerationControls()
 
     this.renderMessages()
     this.scrollToBottom()
@@ -889,7 +905,7 @@ export class DemoUIController {
               }
             },
           },
-          this.activeAbortController.signal
+          this.activeAbortController?.signal
         )
       } else {
         response = await this.apiClient.sendQuery(payload, idempotencyKey)
@@ -962,14 +978,7 @@ export class DemoUIController {
       this.accumulatedStreamText = ''
       this.activeAbortController = null
 
-      if (this.stopBtn) {
-        this.stopBtn.classList.add('hidden')
-        this.stopBtn.disabled = false
-      }
-      if (this.sendBtn) {
-        this.sendBtn.classList.remove('hidden')
-        this.sendBtn.disabled = false
-      }
+      this.updateGenerationControls()
       this.jumpLatestBtn?.classList.add('hidden')
 
       this.renderConversationList()
@@ -979,6 +988,9 @@ export class DemoUIController {
   }
 
   public handleStopGeneration(): void {
+    if (!this.isGenerating || !this.isStreamingActive) {
+      return
+    }
     if (this.activeAbortController && !this.activeAbortController.signal.aborted) {
       this.activeAbortController.abort()
       if (this.stopBtn) {
@@ -1052,15 +1064,19 @@ export class DemoUIController {
     toast.textContent = message
     this.toastContainerEl.appendChild(toast)
 
-    requestAnimationFrame(() => {
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(() => {
+        toast.classList.add('visible')
+      })
+    } else {
       toast.classList.add('visible')
-    })
+    }
 
     setTimeout(() => {
       toast.classList.remove('visible')
       setTimeout(() => {
         toast.remove()
-      }, 300)
+      }, 200)
     }, durationMs)
   }
 

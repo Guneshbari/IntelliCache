@@ -196,6 +196,10 @@ The chatbot interface provides optional Server-Sent Events (SSE) token streaming
   > On the current FastAPI gateway backend (`gateway/app/api/routes.py`), streaming queries evaluate **deterministic exact-match caching (SHA-256)**, but **semantic similarity vector caching is not evaluated for streaming requests**.
   > If a query matches an exact cached entry, the gateway replays the full cached response. If the query does not match an exact cache entry, upstream generative streaming executes.
 - **Stop Generation / Abort Controller**: While streaming is active, a prominent `⏹ Stop` button replaces the send button. Clicking Stop aborts the underlying `fetch()` stream immediately via `AbortController.abort()`. The turn is recorded as a stopped attempt with a `⏹️ Generation Stopped` badge and a `🔄 Retry Query` button, without fabricating misleading cache diagnostics.
+- **Streaming Lifecycle Callbacks (`StreamCallbacks`)**:
+  - `onDelta?: (delta: string) => void`: Invoked for each incoming text delta fragment.
+  - `onChunk?: (chunk: StreamChunkPayload) => void`: Invoked for each parsed SSE payload chunk.
+  - `onDone?: (finalResponse: QueryResponse) => void`: Invoked exactly once upon authoritative terminal stream completion with the reconstructed `QueryResponse`. Never invoked on errors, cancellation, or incomplete streams.
 
 ### 5. UI Polish, Accessibility & Keyboard Controls
 

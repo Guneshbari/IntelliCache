@@ -1772,4 +1772,328 @@ describe('DemoUIController (End-to-End Coordination & Request Payloads)', () => 
     await new Promise((r) => setTimeout(r, 20))
     expect(cm.getConversations().find((c) => c.id === conv2.id)).toBeUndefined()
   })
+
+  it('maintains Stop hidden and Send disabled during in-flight non-streaming generation', async () => {
+    uiController.updateConnectionBadge('connected', 'Connected: default')
+    apiClient.setClientToken('test_token')
+
+    const btnSend = document.getElementById('btn-send') as HTMLButtonElement
+    const btnStop = document.getElementById('btn-stop') as HTMLButtonElement
+    const textarea = document.getElementById('chat-textarea') as HTMLTextAreaElement
+
+    let resolveQuery!: (res: QueryResponse) => void
+    const queryPromise = new Promise<QueryResponse>((resolve) => {
+      resolveQuery = resolve
+    })
+    vi.spyOn(apiClient, 'sendQuery').mockImplementation(() => queryPromise)
+
+    textarea.value = 'Non-streaming in-flight test'
+    const sendPromise = uiController.handleSend()
+
+    // During in-flight non-streaming request:
+    expect(btnStop.classList.contains('hidden')).toBe(true)
+    expect(btnSend.classList.contains('hidden')).toBe(false)
+    expect(btnSend.disabled).toBe(true)
+
+    // Complete generation
+    resolveQuery({
+      response: 'Non-streaming completed',
+      cached: false,
+      model: 'test-model',
+      latency_ms: 100,
+      fingerprint: 'fp-ns',
+      created_at: new Date().toISOString(),
+      cache_type: 'none',
+    })
+    await sendPromise
+
+    // After completion:
+    expect(btnStop.classList.contains('hidden')).toBe(true)
+    expect(btnSend.classList.contains('hidden')).toBe(false)
+    expect(btnSend.disabled).toBe(false)
+  })
+
+  it('shows Stop button and hides Send button during in-flight streaming generation, resetting after completion', async () => {
+    uiController.updateConnectionBadge('connected', 'Connected: default')
+    apiClient.setClientToken('test_token')
+
+    const streamCheckbox = document.getElementById('stream-response-checkbox') as HTMLInputElement
+    streamCheckbox.checked = true
+
+    const btnSend = document.getElementById('btn-send') as HTMLButtonElement
+    const btnStop = document.getElementById('btn-stop') as HTMLButtonElement
+    const textarea = document.getElementById('chat-textarea') as HTMLTextAreaElement
+
+    let resolveStream!: (res: QueryResponse) => void
+    const streamPromise = new Promise<QueryResponse>((resolve) => {
+      resolveStream = resolve
+    })
+    vi.spyOn(apiClient, 'sendStreamQuery').mockImplementation(() => streamPromise)
+
+    textarea.value = 'Streaming in-flight test'
+    const sendPromise = uiController.handleSend()
+
+    // During in-flight streaming request:
+    expect(btnStop.classList.contains('hidden')).toBe(false)
+    expect(btnStop.disabled).toBe(false)
+    expect(btnSend.classList.contains('hidden')).toBe(true)
+    expect(btnSend.disabled).toBe(true)
+
+    // Complete generation
+    resolveStream({
+      response: 'Streaming completed',
+      cached: false,
+      model: 'test-model',
+      latency_ms: 200,
+      fingerprint: 'fp-str',
+      created_at: new Date().toISOString(),
+      cache_type: 'none',
+    })
+    await sendPromise
+
+    // After completion:
+    expect(btnStop.classList.contains('hidden')).toBe(true)
+    expect(btnSend.classList.contains('hidden')).toBe(false)
+    expect(btnSend.disabled).toBe(false)
+  })
+
+  it('ignores handleStopGeneration during non-streaming requests without aborting or altering controls', async () => {
+    uiController.updateConnectionBadge('connected', 'Connected: default')
+    apiClient.setClientToken('test_token')
+
+    const btnSend = document.getElementById('btn-send') as HTMLButtonElement
+    const btnStop = document.getElementById('btn-stop') as HTMLButtonElement
+    const textarea = document.getElementById('chat-textarea') as HTMLTextAreaElement
+
+    let resolveQuery!: (res: QueryResponse) => void
+    const queryPromise = new Promise<QueryResponse>((resolve) => {
+      resolveQuery = resolve
+    })
+    vi.spyOn(apiClient, 'sendQuery').mockImplementation(() => queryPromise)
+
+    textarea.value = 'Non-streaming stop attempt'
+    const sendPromise = uiController.handleSend()
+
+    // Try calling handleStopGeneration while non-streaming is in flight
+    uiController.handleStopGeneration()
+
+    // Controls must remain non-streaming mode: Stop hidden, Send disabled
+    expect(btnStop.classList.contains('hidden')).toBe(true)
+    expect(btnSend.disabled).toBe(true)
+
+    // Complete the query normally
+    resolveQuery({
+      response: 'Non-streaming completed normally despite stop click',
+      cached: false,
+      model: 'test-model',
+      latency_ms: 100,
+      fingerprint: 'fp-ns-norm',
+      created_at: new Date().toISOString(),
+      cache_type: 'none',
+    })
+    await sendPromise
+
+    const container = document.getElementById('messages-container')!
+    expect(container.innerHTML).toContain('Non-streaming completed normally despite stop click')
+    expect(container.innerHTML).not.toContain('Generation stopped by user.')
+  })
+
+  it('retrying a cancelled streaming request preserves prompt, idempotency key, and shows Stop button during retry', async () => {
+    uiController.updateConnectionBadge('connected', 'Connected: default')
+    apiClient.setClientToken('test_token')
+
+    const streamCheckbox = document.getElementById('stream-response-checkbox') as HTMLInputElement
+    streamCheckbox.checked = true
+
+    let capturedIdempotencyKey: string | undefined
+    vi.spyOn(apiClient, 'sendStreamQuery').mockImplementation(
+      (_query, idempKey, _callbacks, signal) =>
+        new Promise<QueryResponse>((_resolve, reject) => {
+          capturedIdempotencyKey = idempKey
+          signal?.addEventListener('abort', () => {
+            reject(new GatewayApiError(0, 'Generation stopped by user.', 'ABORTED'))
+          })
+        })
+    )
+
+    const textarea = document.getElementById('chat-textarea') as HTMLTextAreaElement
+    textarea.value = 'Prompt to cancel and retry'
+
+    const sendPromise = uiController.handleSend()
+    uiController.handleStopGeneration()
+    await sendPromise
+
+    const container = document.getElementById('messages-container')!
+    expect(container.innerHTML).toContain('Generation stopped by user.')
+    expect(container.innerHTML).toContain('🔄 Retry Query')
+
+    const initialIdempKey = capturedIdempotencyKey
+    expect(initialIdempKey).toBeDefined()
+
+    // Now set up mock for the retry attempt
+    let retryResolve!: (res: QueryResponse) => void
+    let retryCapturedKey: string | undefined
+    vi.spyOn(apiClient, 'sendStreamQuery').mockImplementation((_query, idempKey) => {
+      retryCapturedKey = idempKey
+      return new Promise<QueryResponse>((resolve) => {
+        retryResolve = resolve
+      })
+    })
+
+    const retryBtn = container.querySelector('.btn-retry') as HTMLButtonElement
+    expect(retryBtn).not.toBeNull()
+    const retryId = retryBtn.getAttribute('data-retry-id')!
+    expect(retryId).toBeDefined()
+
+    // Trigger retry
+    const retryExecution = uiController.handleRetry(retryId)
+
+    const btnSend = document.getElementById('btn-send') as HTMLButtonElement
+    const btnStop = document.getElementById('btn-stop') as HTMLButtonElement
+
+    // During retry: Stop must be visible, Send hidden
+    expect(btnStop.classList.contains('hidden')).toBe(false)
+    expect(btnSend.classList.contains('hidden')).toBe(true)
+
+    // Verify original idempotency key was reused
+    expect(retryCapturedKey).toBe(initialIdempKey)
+
+    // Complete the retry
+    retryResolve({
+      response: 'Recovered after retry',
+      cached: false,
+      model: 'test-model',
+      latency_ms: 150,
+      fingerprint: 'fp-retry-ok',
+      created_at: new Date().toISOString(),
+      cache_type: 'none',
+    })
+    await retryExecution
+
+    expect(btnStop.classList.contains('hidden')).toBe(true)
+    expect(btnSend.classList.contains('hidden')).toBe(false)
+    expect(btnSend.disabled).toBe(false)
+    expect(container.innerHTML).toContain('Recovered after retry')
+  })
+
+  it('conversation switching during generation properly adjusts Send/Stop controls and does not leak loading indicator', async () => {
+    uiController.updateConnectionBadge('connected', 'Connected: default')
+    apiClient.setClientToken('test_token')
+    uiController.setMode('multi-turn')
+
+    const cm = uiController.getConversationManager()
+    const convA = cm.getActiveConversation()
+    const convB = cm.createConversation('Conversation B')
+    cm.setActiveConversation(convA.id)
+
+    const streamCheckbox = document.getElementById('stream-response-checkbox') as HTMLInputElement
+    streamCheckbox.checked = true
+
+    let resolveStream!: (res: QueryResponse) => void
+    const streamPromise = new Promise<QueryResponse>((resolve) => {
+      resolveStream = resolve
+    })
+    vi.spyOn(apiClient, 'sendStreamQuery').mockImplementation(() => streamPromise)
+    vi.spyOn(apiClient, 'getConversation').mockResolvedValue({
+      id: convA.id,
+      title: 'Conversation A',
+      cache_namespace: 'default',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      last_message_at: new Date().toISOString(),
+    })
+    vi.spyOn(apiClient, 'getConversationMessages').mockResolvedValue({
+      conversation_id: convB.id,
+      messages: [],
+      total: 0,
+    })
+
+    const btnSend = document.getElementById('btn-send') as HTMLButtonElement
+    const btnStop = document.getElementById('btn-stop') as HTMLButtonElement
+    const textarea = document.getElementById('chat-textarea') as HTMLTextAreaElement
+    const container = document.getElementById('messages-container')!
+
+    textarea.value = 'Stream in Conv A'
+    const sendPromise = uiController.handleSend()
+
+    // In Conv A: Stop visible, Send hidden
+    expect(btnStop.classList.contains('hidden')).toBe(false)
+    expect(btnSend.classList.contains('hidden')).toBe(true)
+
+    // Switch to Conv B while Conv A is generating
+    await uiController.handleSwitchConversation(convB.id)
+
+    // In Conv B: Stop must be hidden, Send must be disabled, no loading/streaming bubbles
+    expect(btnStop.classList.contains('hidden')).toBe(true)
+    expect(btnSend.classList.contains('hidden')).toBe(false)
+    expect(btnSend.disabled).toBe(true)
+    expect(container.querySelector('#msg-streaming')).toBeNull()
+    expect(container.querySelector('#msg-loading')).toBeNull()
+
+    // Switch back to Conv A: Stop becomes visible again, Send hidden
+    await uiController.handleSwitchConversation(convA.id)
+    expect(btnStop.classList.contains('hidden')).toBe(false)
+    expect(btnSend.classList.contains('hidden')).toBe(true)
+    expect(container.querySelector('#msg-streaming')).not.toBeNull()
+
+    // Resolve stream
+    resolveStream({
+      response: 'Conv A finished stream',
+      cached: false,
+      model: 'test-model',
+      latency_ms: 220,
+      fingerprint: 'fp-conv-a',
+      created_at: new Date().toISOString(),
+      cache_type: 'none',
+    })
+    await sendPromise
+
+    // After finish: Stop hidden, Send enabled
+    expect(btnStop.classList.contains('hidden')).toBe(true)
+    expect(btnSend.classList.contains('hidden')).toBe(false)
+    expect(btnSend.disabled).toBe(false)
+    expect(container.querySelector('#msg-streaming')).toBeNull()
+  })
+
+  it('toast notification receives visible class, matches CSS selector, supports multiple concurrent toasts, and cleans up after duration', async () => {
+    vi.useFakeTimers()
+    const toastContainer = document.getElementById('toast-container')!
+    toastContainer.innerHTML = ''
+
+    uiController.showToast('First toast notification', 1000)
+
+    expect(toastContainer.children.length).toBe(1)
+    const firstToast = toastContainer.children[0] as HTMLElement
+    expect(firstToast.textContent).toBe('First toast notification')
+    expect(firstToast.className).toBe('toast-notification')
+
+    // Advance frame for requestAnimationFrame
+    vi.advanceTimersByTime(20)
+    expect(firstToast.classList.contains('visible')).toBe(true)
+    expect(document.querySelector('.toast-notification.visible')).toBe(firstToast)
+
+    // Add a second concurrent toast with longer duration
+    uiController.showToast('Second toast notification', 3000)
+    expect(toastContainer.children.length).toBe(2)
+    const secondToast = toastContainer.children[1] as HTMLElement
+    expect(secondToast.textContent).toBe('Second toast notification')
+
+    vi.advanceTimersByTime(20)
+    expect(secondToast.classList.contains('visible')).toBe(true)
+
+    // Advance past first toast duration (1000ms from start)
+    vi.advanceTimersByTime(1000)
+    expect(firstToast.classList.contains('visible')).toBe(false)
+
+    // Advance past transition removal (200ms)
+    vi.advanceTimersByTime(250)
+    expect(toastContainer.contains(firstToast)).toBe(false)
+    expect(toastContainer.contains(secondToast)).toBe(true)
+
+    // Advance past second toast removal
+    vi.advanceTimersByTime(2500)
+    expect(toastContainer.contains(secondToast)).toBe(false)
+
+    vi.useRealTimers()
+  })
 })

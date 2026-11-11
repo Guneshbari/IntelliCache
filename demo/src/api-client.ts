@@ -60,6 +60,30 @@ export class SseStreamParser {
   private buffer: string = ''
   private currentDataLines: string[] = []
 
+  private parseCurrentData(): { payload?: StreamChunkPayload; isDone: boolean } {
+    if (this.currentDataLines.length === 0) {
+      return { isDone: false }
+    }
+    const combined = this.currentDataLines.join('\n').trim()
+    this.currentDataLines = []
+    if (combined === '[DONE]') {
+      return { isDone: true }
+    }
+    if (!combined) {
+      return { isDone: false }
+    }
+    try {
+      const parsed = JSON.parse(combined) as StreamChunkPayload
+      return { payload: parsed, isDone: false }
+    } catch {
+      throw new GatewayApiError(
+        0,
+        `Stream protocol error: Malformed SSE data event payload: ${combined.slice(0, 100)}`,
+        'STREAM_PROTOCOL_ERROR'
+      )
+    }
+  }
+
   public feed(chunkText: string): { payloads: StreamChunkPayload[]; isDone: boolean } {
     this.buffer += chunkText
     const payloads: StreamChunkPayload[] = []
@@ -82,20 +106,9 @@ export class SseStreamParser {
       lastIndex = matchIndex + matchLen
 
       if (line === '') {
-        if (this.currentDataLines.length > 0) {
-          const combined = this.currentDataLines.join('\n').trim()
-          this.currentDataLines = []
-          if (combined === '[DONE]') {
-            isDone = true
-          } else if (combined) {
-            try {
-              const parsed = JSON.parse(combined) as StreamChunkPayload
-              payloads.push(parsed)
-            } catch {
-              // Ignore malformed JSON payloads gracefully
-            }
-          }
-        }
+        const { payload, isDone: doneFlag } = this.parseCurrentData()
+        if (doneFlag) isDone = true
+        if (payload) payloads.push(payload)
       } else if (line.startsWith('data:')) {
         const content = line.slice(5).replace(/^ /, '')
         this.currentDataLines.push(content)
@@ -121,20 +134,9 @@ export class SseStreamParser {
       }
     }
 
-    if (this.currentDataLines.length > 0) {
-      const combined = this.currentDataLines.join('\n').trim()
-      this.currentDataLines = []
-      if (combined === '[DONE]') {
-        isDone = true
-      } else if (combined) {
-        try {
-          const parsed = JSON.parse(combined) as StreamChunkPayload
-          payloads.push(parsed)
-        } catch {
-          // Ignore malformed JSON payloads gracefully
-        }
-      }
-    }
+    const { payload, isDone: doneFlag } = this.parseCurrentData()
+    if (doneFlag) isDone = true
+    if (payload) payloads.push(payload)
 
     return { payloads, isDone }
   }
@@ -398,6 +400,15 @@ export class GatewayApiClient {
         return await this.parseResponse<QueryResponse>(res, endpoint)
       }
 
+      const contentType = res.headers.get('content-type') || ''
+      if (!contentType.toLowerCase().includes('text/event-stream')) {
+        throw new GatewayApiError(
+          0,
+          `Invalid stream response: Expected 'text/event-stream' Content-Type but received '${contentType}'.`,
+          'INVALID_CONTENT_TYPE'
+        )
+      }
+
       if (!res.body) {
         throw new GatewayApiError(0, 'Gateway response body stream is not available.')
       }
@@ -408,25 +419,51 @@ export class GatewayApiClient {
 
       let accumulatedText = ''
       let finalChunk: StreamChunkPayload | null = null
+      let hasReceivedDoneMarker = false
+
+      const handleChunk = (chunk: StreamChunkPayload) => {
+        if (chunk.error || (chunk.status_code && chunk.status_code >= 400)) {
+          throw new GatewayApiError(
+            chunk.status_code || 500,
+            chunk.error || `Stream failed with status ${chunk.status_code}`,
+            chunk.error
+          )
+        }
+
+        callbacks?.onChunk?.(chunk)
+
+        if (chunk.delta) {
+          accumulatedText += chunk.delta
+          callbacks?.onDelta?.(chunk.delta)
+        }
+      }
 
       try {
         while (true) {
           const { done, value } = await reader.read()
           if (done) {
+            // Stream EOF reached at transport level
+            // Flush decoder first with stream: false to decode any trailing UTF-8 multi-byte sequence
+            const remainingText = decoder.decode(undefined, { stream: false })
+            if (remainingText) {
+              const fed = parser.feed(remainingText)
+              if (fed.isDone) {
+                hasReceivedDoneMarker = true
+              }
+              for (const chunk of fed.payloads) {
+                handleChunk(chunk)
+                if (chunk.done) {
+                  finalChunk = chunk
+                }
+              }
+            }
+
             const flushed = parser.flush()
+            if (flushed.isDone) {
+              hasReceivedDoneMarker = true
+            }
             for (const chunk of flushed.payloads) {
-              if (chunk.error || (chunk.status_code && chunk.status_code >= 400)) {
-                throw new GatewayApiError(
-                  chunk.status_code || 500,
-                  chunk.error || `Stream failed with status ${chunk.status_code}`,
-                  chunk.error
-                )
-              }
-              callbacks?.onChunk?.(chunk)
-              if (chunk.delta) {
-                accumulatedText += chunk.delta
-                callbacks?.onDelta?.(chunk.delta)
-              }
+              handleChunk(chunk)
               if (chunk.done) {
                 finalChunk = chunk
               }
@@ -436,23 +473,12 @@ export class GatewayApiClient {
 
           const chunkText = decoder.decode(value, { stream: true })
           const { payloads, isDone } = parser.feed(chunkText)
+          if (isDone) {
+            hasReceivedDoneMarker = true
+          }
 
           for (const chunk of payloads) {
-            if (chunk.error || (chunk.status_code && chunk.status_code >= 400)) {
-              throw new GatewayApiError(
-                chunk.status_code || 500,
-                chunk.error || `Stream failed with status ${chunk.status_code}`,
-                chunk.error
-              )
-            }
-
-            callbacks?.onChunk?.(chunk)
-
-            if (chunk.delta) {
-              accumulatedText += chunk.delta
-              callbacks?.onDelta?.(chunk.delta)
-            }
-
+            handleChunk(chunk)
             if (chunk.done) {
               finalChunk = chunk
             }
@@ -463,25 +489,51 @@ export class GatewayApiClient {
           }
         }
       } finally {
-        reader.releaseLock?.()
+        try {
+          if (!hasReceivedDoneMarker && !signal?.aborted) {
+            await reader.cancel().catch(() => {})
+          }
+        } catch {
+          // Ignore cancellation errors
+        } finally {
+          reader.releaseLock?.()
+        }
       }
 
-      return {
-        response: accumulatedText,
-        cached: typeof finalChunk?.cached === 'boolean' ? finalChunk.cached : null,
-        cache_type: (finalChunk?.cache_type as QueryResponse['cache_type']) ?? 'none',
-        model: finalChunk?.model || payload.model || '',
-        latency_ms: typeof finalChunk?.latency_ms === 'number' ? finalChunk.latency_ms : null,
-        usage: finalChunk?.usage ? finalChunk.usage : null,
-        cache_hit_count:
-          typeof finalChunk?.cache_hit_count === 'number' ? finalChunk.cache_hit_count : null,
-        conversation_id: finalChunk?.conversation_id || payload.conversation_id || null,
-        turn_id: finalChunk?.turn_id || null,
-        context_status: (finalChunk?.context_status as QueryResponse['context_status']) || null,
-        fingerprint: finalChunk?.fingerprint || '',
-        created_at: new Date().toISOString(),
-        idempotent_replay: finalChunk?.idempotent_replay,
+      // Enforce authoritative completion: Must receive authoritative final payload (done=true) AND [DONE] marker
+      const authoritativeChunk: StreamChunkPayload | null = finalChunk
+      if (!authoritativeChunk || !authoritativeChunk.done || !hasReceivedDoneMarker) {
+        throw new GatewayApiError(
+          0,
+          'Incomplete stream response: Stream terminated before authoritative completion and [DONE] marker were received.',
+          'INCOMPLETE_STREAM'
+        )
       }
+
+      const finalResponse: QueryResponse = {
+        response: accumulatedText,
+        cached: typeof authoritativeChunk.cached === 'boolean' ? authoritativeChunk.cached : null,
+        cache_type: (authoritativeChunk.cache_type as QueryResponse['cache_type']) ?? 'none',
+        model: authoritativeChunk.model || payload.model || '',
+        latency_ms:
+          typeof authoritativeChunk.latency_ms === 'number' ? authoritativeChunk.latency_ms : null,
+        usage: authoritativeChunk.usage ? authoritativeChunk.usage : null,
+        cache_hit_count:
+          typeof authoritativeChunk.cache_hit_count === 'number'
+            ? authoritativeChunk.cache_hit_count
+            : null,
+        conversation_id: authoritativeChunk.conversation_id || payload.conversation_id || null,
+        turn_id: authoritativeChunk.turn_id || null,
+        context_status:
+          (authoritativeChunk.context_status as QueryResponse['context_status']) || null,
+        fingerprint: authoritativeChunk.fingerprint || '',
+        created_at: new Date().toISOString(),
+        idempotent_replay: authoritativeChunk.idempotent_replay,
+      }
+
+      callbacks?.onDone?.(finalResponse)
+
+      return finalResponse
     } catch (err: unknown) {
       if (signal?.aborted || (err instanceof Error && err.name === 'AbortError')) {
         throw new GatewayApiError(0, 'Generation stopped by user.', 'ABORTED')
