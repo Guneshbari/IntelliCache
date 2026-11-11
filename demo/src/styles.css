@@ -16,7 +16,7 @@
   /* 2. Ink & Typography */
   --ink: #f8fafc;
   --ink-muted: #94a3b8;
-  --ink-dim: #64748b;
+  --ink-dim: #7e8ea6;
   --ink-inverted: #000000;
 
   /* 3. IntelliCache Accents & Branding */
@@ -106,7 +106,32 @@ body {
   outline-offset: 2px;
 }
 
-/* Scrollbars */
+/* Browser Surface & Selection Styling */
+::selection {
+  background-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+::-moz-selection {
+  background-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+input,
+textarea {
+  caret-color: var(--accent);
+}
+
+a {
+  text-underline-offset: 3px;
+}
+
+/* Cross-Browser Scrollbars (Firefox & WebKit) */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #2a3042 var(--bg);
+}
+
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -123,6 +148,22 @@ body {
 
 ::-webkit-scrollbar-thumb:hover {
   background: #3d4660;
+}
+
+/* Tabular Numerals for Telemetry and Diagnostics (prevents layout jitter) */
+.metric-value,
+.stat-value,
+.meta-value,
+.telemetry-val,
+.cache-latency-pill,
+.diag-value,
+.message-timestamp,
+.connection-badge,
+.metrics-namespace-badge,
+.metrics-last-updated,
+.status-meta-item .meta-value,
+.diag-row span:last-child {
+  font-variant-numeric: tabular-nums lining-nums;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -223,6 +264,11 @@ body {
   transform: translateY(-1px);
 }
 
+.connection-badge:active {
+  transform: translate(1px, 1px);
+  box-shadow: var(--shadow-active);
+}
+
 .connection-dot {
   width: 8px;
   height: 8px;
@@ -305,6 +351,11 @@ body {
 
 .btn-icon:hover {
   background: var(--surface-hover);
+}
+
+.btn-icon:active {
+  transform: translate(1px, 1px);
+  box-shadow: var(--shadow-active);
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -457,7 +508,8 @@ body {
 }
 
 .conversation-item:hover .btn-delete-conv,
-.conversation-item.active .btn-delete-conv {
+.conversation-item.active .btn-delete-conv,
+.conversation-item:focus-within .btn-delete-conv {
   opacity: 1;
 }
 
@@ -651,6 +703,10 @@ body {
   border-color: var(--accent);
 }
 
+.prompt-chip:active {
+  transform: translate(1px, 1px);
+}
+
 /* Message Rows */
 .message-row {
   max-width: 820px;
@@ -691,7 +747,7 @@ body {
 }
 
 .user-failed-attempt .user-bubble {
-  border-left: 2px solid rgba(239, 68, 68, 0.5);
+  border-color: rgba(239, 68, 68, 0.4);
   opacity: 0.9;
 }
 
@@ -782,6 +838,10 @@ body {
   border-color: var(--exact-border);
 }
 
+.btn-copy-response:active {
+  transform: translate(1px, 1px);
+}
+
 .message-bubble {
   padding: 0.85rem 1.1rem;
   border-radius: var(--radius-sm);
@@ -859,7 +919,7 @@ body {
 }
 
 .assistant-bubble blockquote {
-  border-left: 3px solid var(--accent);
+  border-left: 2px solid var(--border-color-contrast);
   padding: 0.4rem 0.85rem;
   margin: 0.75rem 0;
   background: var(--surface-raised);
@@ -965,6 +1025,10 @@ body {
 .btn-copy-code.copied {
   color: var(--exact-color);
   border-color: var(--exact-border);
+}
+
+.btn-copy-code:active {
+  transform: translate(1px, 1px);
 }
 
 .code-block-wrapper pre {
@@ -1166,6 +1230,10 @@ body {
 .btn-copy-fp:hover {
   background: var(--surface-hover);
   color: var(--ink);
+}
+
+.btn-copy-fp:active {
+  transform: translate(1px, 1px);
 }
 
 /* Error Callout */
@@ -1758,6 +1826,11 @@ body {
   background: var(--surface-hover);
 }
 
+.btn-close-modal:active,
+.btn-toggle-visibility:active {
+  transform: translate(1px, 1px);
+}
+
 .settings-dialog-body {
   padding: 1.25rem;
   display: flex;
@@ -1877,12 +1950,20 @@ body {
 
 .btn-secondary:hover {
   background: var(--surface-hover);
+  border-color: var(--border-color-contrast);
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0 #000000;
+}
+
+.btn-secondary:active {
+  transform: translate(1px, 1px);
+  box-shadow: var(--shadow-active);
 }
 
 .security-callout {
   background: var(--surface-input);
-  border: 1px solid var(--border-color);
-  border-left: 3px solid var(--accent);
+  border: var(--border-contrast);
+  box-shadow: var(--shadow-sm);
   padding: 0.75rem 0.85rem;
   border-radius: var(--radius-xs);
   font-size: 0.72rem;
@@ -2021,6 +2102,7 @@ body {
     transform 0.2s ease;
 }
 
+.toast-notification.visible,
 .toast-notification.toast-visible {
   opacity: 1;
   transform: translateY(0);
@@ -2054,6 +2136,22 @@ body {
 
   .btn-text {
     display: none;
+  }
+
+  .btn-header-action,
+  .btn-icon,
+  .btn-icon-refresh {
+    min-height: 36px;
+    min-width: 36px;
+  }
+
+  .conversation-item .btn-delete-conv {
+    opacity: 0.85;
+    min-width: 36px;
+    min-height: 36px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
   }
 
   .sidebar {
