@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { GatewayApiClient, GatewayApiError } from '../demo/src/api-client'
+import { GatewayApiClient, GatewayApiError, SseStreamParser } from '../demo/src/api-client'
 import type {
   CacheStats,
   NamespaceMetricsSnapshot,
@@ -751,6 +751,238 @@ describe('GatewayApiClient (Demo Chatbot)', () => {
         expect.objectContaining({ method: 'DELETE' })
       )
       expect(success).toBe(true)
+    })
+  })
+
+  describe('SseStreamParser (Resilient SSE Parsing)', () => {
+    it('handles an event split across multiple network chunks', () => {
+      const parser = new SseStreamParser()
+
+      const res1 = parser.feed('data: {"delta": "Hello')
+      expect(res1.payloads).toEqual([])
+      expect(res1.isDone).toBe(false)
+
+      const res2 = parser.feed(' world"}\n\n')
+      expect(res2.payloads).toEqual([{ delta: 'Hello world' }])
+      expect(res2.isDone).toBe(false)
+    })
+
+    it('handles multiple events in one network chunk', () => {
+      const parser = new SseStreamParser()
+      const chunk = 'data: {"delta": "part1"}\n\ndata: {"delta": "part2"}\n\n'
+      const { payloads, isDone } = parser.feed(chunk)
+
+      expect(payloads.length).toBe(2)
+      expect(payloads[0]).toEqual({ delta: 'part1' })
+      expect(payloads[1]).toEqual({ delta: 'part2' })
+      expect(isDone).toBe(false)
+    })
+
+    it('handles CRLF (\\r\\n) and LF (\\n) line endings', () => {
+      const parser = new SseStreamParser()
+      const crlfChunk = 'data: {"delta": "line1"}\r\n\r\ndata: {"delta": "line2"}\n\n'
+      const { payloads } = parser.feed(crlfChunk)
+
+      expect(payloads).toEqual([{ delta: 'line1' }, { delta: 'line2' }])
+    })
+
+    it('recognises [DONE] termination', () => {
+      const parser = new SseStreamParser()
+      const chunk = 'data: {"delta": "final"}\n\ndata: [DONE]\n\n'
+      const { payloads, isDone } = parser.feed(chunk)
+
+      expect(payloads).toEqual([{ delta: 'final' }])
+      expect(isDone).toBe(true)
+    })
+
+    it('handles malformed events safely without crashing', () => {
+      const parser = new SseStreamParser()
+      const chunk = 'data: {invalid json\n\ndata: {"delta": "valid"}\n\n'
+      const { payloads } = parser.feed(chunk)
+
+      expect(payloads).toEqual([{ delta: 'valid' }])
+    })
+
+    it('ignores comments and handles flush at stream end', () => {
+      const parser = new SseStreamParser()
+      parser.feed(': heartbeat\n\ndata: {"delta": "trailing"}')
+      const flushed = parser.flush()
+
+      expect(flushed.payloads).toEqual([{ delta: 'trailing' }])
+    })
+  })
+
+  describe('GatewayApiClient.sendStreamQuery (Optional SSE Streaming)', () => {
+    function createMockStream(chunks: string[]): ReadableStream<Uint8Array> {
+      const encoder = new TextEncoder()
+      let index = 0
+      return new ReadableStream({
+        pull(controller) {
+          if (index < chunks.length) {
+            controller.enqueue(encoder.encode(chunks[index++]))
+          } else {
+            controller.close()
+          }
+        },
+      })
+    }
+
+    it('sends streaming request with stream=true and required headers', async () => {
+      client.setClientToken('stream-token-123')
+
+      const sseChunks = [
+        'data: {"delta": "Streamed response.", "done": false}\n\n',
+        'data: {"delta": "", "done": true, "cached": false, "cache_type": "none", "latency_ms": 250, "model": "llama-3.3-70b", "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}, "fingerprint": "fp_stream_123"}\n\n',
+        'data: [DONE]\n\n',
+      ]
+
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response(createMockStream(sseChunks), {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        })
+      )
+
+      const deltas: string[] = []
+      const result = await client.sendStreamQuery(
+        { prompt: 'Tell me about streaming' },
+        'custom-idemp-key',
+        {
+          onDelta: (d) => deltas.push(d),
+        }
+      )
+
+      expect(fetchSpy).toHaveBeenCalledWith(
+        'http://127.0.0.1:8000/query',
+        expect.objectContaining({
+          method: 'POST',
+          headers: expect.objectContaining({
+            Accept: 'text/event-stream, application/json',
+            'X-Client-Token': 'stream-token-123',
+            'Idempotency-Key': 'custom-idemp-key',
+          }),
+          body: JSON.stringify({ prompt: 'Tell me about streaming', stream: true }),
+        })
+      )
+
+      expect(deltas).toEqual(['Streamed response.'])
+      expect(result.response).toBe('Streamed response.')
+      expect(result.cached).toBe(false)
+      expect(result.cache_type).toBe('none')
+      expect(result.latency_ms).toBe(250)
+      expect(result.fingerprint).toBe('fp_stream_123')
+      expect(result.model).toBe('llama-3.3-70b')
+      expect(result.usage).toEqual({ prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 })
+    })
+
+    it('reconstructs authoritative QueryResponse with final metadata including hit counts', async () => {
+      const sseChunks = [
+        'data: {"delta": "Exact hit", "done": false, "cached": true, "cache_type": "exact"}\n\n',
+        'data: {"delta": "", "done": true, "cached": true, "cache_type": "exact", "cache_hit_count": 3, "latency_ms": 4.5, "model": "llama-3.3-70b", "fingerprint": "fp_exact_hit", "context_status": "complete"}\n\n',
+        'data: [DONE]\n\n',
+      ]
+
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response(createMockStream(sseChunks), {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        })
+      )
+
+      const result = await client.sendStreamQuery({ prompt: 'Cached query' })
+      expect(result.response).toBe('Exact hit')
+      expect(result.cached).toBe(true)
+      expect(result.cache_type).toBe('exact')
+      expect(result.cache_hit_count).toBe(3)
+      expect(result.latency_ms).toBe(4.5)
+      expect(result.context_status).toBe('complete')
+      expect(result.fingerprint).toBe('fp_exact_hit')
+    })
+
+    it('handles HTTP error responses by throwing GatewayApiError', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response(JSON.stringify({ detail: 'Conversation turn conflict' }), {
+          status: 409,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      )
+
+      await expect(client.sendStreamQuery({ prompt: 'Conflict test' })).rejects.toThrow(
+        GatewayApiError
+      )
+    })
+
+    it('handles SSE error payloads with status_code 409 as GatewayApiError', async () => {
+      const sseChunks = [
+        'data: {"error": "Turn \'turn-1\' lost its lease during generation.", "status_code": 409, "done": true}\n\n',
+      ]
+
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response(createMockStream(sseChunks), {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        })
+      )
+
+      let caughtErr: GatewayApiError | null = null
+      try {
+        await client.sendStreamQuery({ prompt: 'Lease loss test' })
+      } catch (e) {
+        caughtErr = e as GatewayApiError
+      }
+
+      expect(caughtErr).not.toBeNull()
+      expect(caughtErr?.status).toBe(409)
+      expect(caughtErr?.message).toContain("Turn 'turn-1' lost its lease")
+    })
+
+    it('distinguishes user cancellation (AbortError) as cancellation GatewayApiError', async () => {
+      const controller = new AbortController()
+
+      vi.spyOn(globalThis, 'fetch').mockImplementationOnce(() => {
+        const err = new Error('The operation was aborted.')
+        err.name = 'AbortError'
+        return Promise.reject(err)
+      })
+
+      controller.abort()
+
+      let caughtErr: GatewayApiError | null = null
+      try {
+        await client.sendStreamQuery(
+          { prompt: 'Cancel test' },
+          undefined,
+          undefined,
+          controller.signal
+        )
+      } catch (e) {
+        caughtErr = e as GatewayApiError
+      }
+
+      expect(caughtErr).not.toBeNull()
+      expect(caughtErr?.detail).toBe('ABORTED')
+      expect(caughtErr?.message).toContain('Generation stopped by user.')
+    })
+
+    it('correctly parses idempotent replay responses in streaming format', async () => {
+      const sseChunks = [
+        'data: {"delta": "Previous completed response", "done": false, "fingerprint": "idempotent_replay"}\n\n',
+        'data: {"delta": "", "done": true, "cached": false, "cache_type": "none", "latency_ms": 0.0, "fingerprint": "idempotent_replay", "idempotent_replay": true}\n\n',
+        'data: [DONE]\n\n',
+      ]
+
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response(createMockStream(sseChunks), {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        })
+      )
+
+      const result = await client.sendStreamQuery({ prompt: 'Replay query' })
+      expect(result.response).toBe('Previous completed response')
+      expect(result.idempotent_replay).toBe(true)
+      expect(result.fingerprint).toBe('idempotent_replay')
+      expect(result.cached).toBe(false)
     })
   })
 })

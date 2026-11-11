@@ -131,6 +131,15 @@
           <!-- Rendered dynamically by MessageRenderer -->
         </div>
 
+        <button
+          id="btn-jump-latest"
+          class="btn-jump-latest hidden"
+          type="button"
+          aria-label="Jump to latest message"
+        >
+          <span>↓ Jump to latest</span>
+        </button>
+
         <!-- Chat Composer Bar -->
         <div id="composer-container" class="composer-container">
           <div class="composer-options-row">
@@ -143,10 +152,25 @@
               </button>
             </div>
 
-            <label class="checkbox-label" for="bypass-cache-checkbox">
-              <input id="bypass-cache-checkbox" type="checkbox" />
-              <span>Bypass Cache</span>
-            </label>
+            <div class="composer-checkboxes">
+              <label
+                class="checkbox-label"
+                for="stream-response-checkbox"
+                title="Enable incremental token delivery via Server-Sent Events (SSE)"
+              >
+                <input id="stream-response-checkbox" type="checkbox" />
+                <span>Stream Response</span>
+              </label>
+
+              <label
+                class="checkbox-label"
+                for="bypass-cache-checkbox"
+                title="Bypass Exact and Semantic Caches to force upstream LLM generation"
+              >
+                <input id="bypass-cache-checkbox" type="checkbox" />
+                <span>Bypass Cache</span>
+              </label>
+            </div>
           </div>
 
           <div id="turn-notice" class="turn-notice">
@@ -164,6 +188,15 @@
             <button id="btn-send" class="btn-send" type="button" aria-label="Send message">
               <span class="send-text">Send</span>
               <span class="send-icon">↵</span>
+            </button>
+            <button
+              id="btn-stop"
+              class="btn-stop hidden"
+              type="button"
+              aria-label="Stop generation"
+            >
+              <span class="stop-icon">■</span>
+              <span class="stop-text">Stop</span>
             </button>
           </div>
         </div>
@@ -297,6 +330,9 @@
         </div>
       </div>
     </div>
+
+    <!-- Notification Toast Container -->
+    <div id="toast-container" class="toast-container" aria-live="polite" aria-atomic="true"></div>
 
     <script type="module" src="./src/main.ts"></script>
   </body>

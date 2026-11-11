@@ -39,6 +39,12 @@ export class DemoUIController {
     gatewayUrl: 'http://127.0.0.1:8000',
   }
 
+  // Generation state tracking bound to initiating conversation ID
+  private generatingConvId: string | null = null
+  private isStreamingActive: boolean = false
+  private accumulatedStreamText: string = ''
+  private activeAbortController: AbortController | null = null
+
   // DOM Elements
   private connectionBadgeEl!: HTMLElement
   private connectionTextEl!: HTMLElement
@@ -53,10 +59,14 @@ export class DemoUIController {
   private messagesContainerEl!: HTMLElement
   private chatTextarea!: HTMLTextAreaElement
   private sendBtn!: HTMLButtonElement
+  private stopBtn!: HTMLButtonElement
   private bypassCheckbox!: HTMLInputElement
+  private streamCheckbox!: HTMLInputElement
   private modeSingleBtn!: HTMLButtonElement
   private modeMultiBtn!: HTMLButtonElement
   private turnNoticeEl!: HTMLElement
+  private jumpLatestBtn!: HTMLButtonElement
+  private toastContainerEl!: HTMLElement
 
   constructor(apiClient: GatewayApiClient) {
     this.apiClient = apiClient
@@ -110,10 +120,14 @@ export class DemoUIController {
     this.messagesContainerEl = document.getElementById('messages-container')!
     this.chatTextarea = document.getElementById('chat-textarea') as HTMLTextAreaElement
     this.sendBtn = document.getElementById('btn-send') as HTMLButtonElement
+    this.stopBtn = document.getElementById('btn-stop') as HTMLButtonElement
     this.bypassCheckbox = document.getElementById('bypass-cache-checkbox') as HTMLInputElement
+    this.streamCheckbox = document.getElementById('stream-response-checkbox') as HTMLInputElement
     this.modeSingleBtn = document.getElementById('mode-single') as HTMLButtonElement
     this.modeMultiBtn = document.getElementById('mode-multi') as HTMLButtonElement
     this.turnNoticeEl = document.getElementById('turn-notice')!
+    this.jumpLatestBtn = document.getElementById('btn-jump-latest') as HTMLButtonElement
+    this.toastContainerEl = document.getElementById('toast-container')!
   }
 
   private attachEventListeners(): void {
@@ -151,8 +165,28 @@ export class DemoUIController {
     this.modeSingleBtn?.addEventListener('click', () => this.setMode('single-turn'))
     this.modeMultiBtn?.addEventListener('click', () => this.setMode('multi-turn'))
 
-    // Send on click and Enter (without Shift)
+    // Stream checkbox toggle
+    this.streamCheckbox?.addEventListener('change', () => {
+      this.renderTurnNotice()
+    })
+
+    // Send and Stop actions
     this.sendBtn?.addEventListener('click', () => this.handleSend())
+    this.stopBtn?.addEventListener('click', () => this.handleStopGeneration())
+
+    // Jump to latest messages
+    this.jumpLatestBtn?.addEventListener('click', () => {
+      this.scrollToBottom(true)
+    })
+
+    // Track scroll position to dismiss jump-to-bottom button
+    this.messagesContainerEl?.addEventListener('scroll', () => {
+      if (this.isUserAtBottom()) {
+        this.jumpLatestBtn?.classList.add('hidden')
+      } else {
+        this.jumpLatestBtn?.classList.remove('hidden')
+      }
+    })
 
     this.chatTextarea?.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
@@ -241,6 +275,24 @@ export class DemoUIController {
         }
       }
     })
+
+    // Keyboard navigation on conversation list
+    this.conversationListEl?.addEventListener('keydown', (e) => {
+      const target = e.target as HTMLElement
+      const itemEl = target.closest('.conversation-item') as HTMLElement
+      if (!itemEl) return
+
+      const convId = itemEl.getAttribute('data-conv-id')
+      if (!convId) return
+
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault()
+        this.handleSwitchConversation(convId)
+      } else if (e.key === 'Delete' || e.key === 'Backspace') {
+        e.preventDefault()
+        this.handleDeleteConversation(convId)
+      }
+    })
   }
 
   private autoResizeTextarea(): void {
@@ -307,12 +359,24 @@ export class DemoUIController {
 
   private renderTurnNotice(): void {
     if (!this.turnNoticeEl) return
+    const isStreaming = this.streamCheckbox?.checked ?? false
+
     if (this.mode === 'single-turn') {
-      this.turnNoticeEl.innerHTML =
-        '<span class="notice-icon">⚡</span><span><strong>Single-Turn Query Mode:</strong> Eligible for deterministic exact matching and HNSW semantic response caching.</span>'
+      if (isStreaming) {
+        this.turnNoticeEl.innerHTML =
+          '<span class="notice-icon">⚡</span><span><strong>Single-Turn Query Mode (Streaming):</strong> Incremental token delivery via SSE. Eligible for deterministic exact matching. Note: Semantic cache lookup is not evaluated for streaming requests on this gateway backend (exact cache only).</span>'
+      } else {
+        this.turnNoticeEl.innerHTML =
+          '<span class="notice-icon">⚡</span><span><strong>Single-Turn Query Mode:</strong> Eligible for deterministic exact matching and HNSW semantic response caching.</span>'
+      }
     } else {
-      this.turnNoticeEl.innerHTML =
-        '<span class="notice-icon">ℹ️</span><span><strong>Multi-Turn Conversation Mode:</strong> Server-managed conversation history in PostgreSQL with bounded context window. Excluded from semantic caching to prevent context ambiguity.</span>'
+      if (isStreaming) {
+        this.turnNoticeEl.innerHTML =
+          '<span class="notice-icon">ℹ️</span><span><strong>Multi-Turn Conversation Mode (Streaming):</strong> Server-managed conversation history in PostgreSQL with bounded context window. Excluded from semantic caching. Streaming delivers response tokens progressively.</span>'
+      } else {
+        this.turnNoticeEl.innerHTML =
+          '<span class="notice-icon">ℹ️</span><span><strong>Multi-Turn Conversation Mode:</strong> Server-managed conversation history in PostgreSQL with bounded context window. Excluded from semantic caching to prevent context ambiguity.</span>'
+      }
     }
   }
 
@@ -555,8 +619,10 @@ export class DemoUIController {
     if (!text || this.isGenerating) return
 
     const activeConv = this.conversationManager.getActiveConversation()
+    const targetConvId = activeConv.id
     const idempotencyKey = crypto.randomUUID()
     const bypass = this.bypassCheckbox.checked
+    const stream = this.streamCheckbox ? this.streamCheckbox.checked : false
 
     const userMessage: ChatMessage = {
       id: crypto.randomUUID(),
@@ -566,20 +632,36 @@ export class DemoUIController {
       idempotencyKey,
       originalOptions: {
         bypass_cache: bypass,
+        stream,
       },
     }
 
-    this.conversationManager.addMessage(activeConv.id, userMessage)
+    this.conversationManager.addMessage(targetConvId, userMessage)
     this.chatTextarea.value = ''
     this.autoResizeTextarea()
 
     this.isGenerating = true
-    this.sendBtn.disabled = true
+    this.generatingConvId = targetConvId
+    this.isStreamingActive = stream
+    this.accumulatedStreamText = ''
+    this.activeAbortController = new AbortController()
+
+    if (this.sendBtn) {
+      this.sendBtn.classList.add('hidden')
+      this.sendBtn.disabled = true
+    }
+    if (this.stopBtn) {
+      this.stopBtn.classList.remove('hidden')
+      this.stopBtn.disabled = false
+    }
+
     this.renderConversationList()
     this.renderMessages()
+    this.scrollToBottom()
 
     const payload: QueryRequestPayload = {
       bypass_cache: bypass,
+      stream,
     }
 
     if (this.mode === 'single-turn') {
@@ -589,14 +671,14 @@ export class DemoUIController {
       // Multi-turn mode sends conversation_id and prompt; conversation history is reconstructed server-side
       if (this.connectionInfo.state === 'connected' && this.apiClient.hasToken()) {
         try {
-          await this.apiClient.getConversation(activeConv.id)
+          await this.apiClient.getConversation(targetConvId)
         } catch (e: unknown) {
           const err = e as { status?: number }
           if (err?.status === 404) {
             try {
               await this.apiClient.createConversation(
                 activeConv.title || 'New Conversation',
-                activeConv.id
+                targetConvId
               )
             } catch {
               // Ignore if already created
@@ -604,26 +686,76 @@ export class DemoUIController {
           }
         }
       }
-      payload.conversation_id = activeConv.id
+      payload.conversation_id = targetConvId
       payload.prompt = text
     }
 
     try {
-      const response = await this.apiClient.sendQuery(payload, idempotencyKey)
-      const assistantMessage: ChatMessage = {
-        id: crypto.randomUUID(),
-        role: 'assistant',
-        content: response.response,
-        timestamp: Date.now(),
-        responseMeta: response,
+      let response: QueryResponse
+      if (stream) {
+        response = await this.apiClient.sendStreamQuery(
+          payload,
+          idempotencyKey,
+          {
+            onDelta: (delta: string) => {
+              this.accumulatedStreamText += delta
+              if (this.conversationManager.getActiveConversationId() === targetConvId) {
+                const streamTextEl = document.getElementById('streaming-text')
+                if (streamTextEl) {
+                  streamTextEl.textContent = this.accumulatedStreamText
+                  this.handleAutoScroll()
+                }
+              }
+            },
+          },
+          this.activeAbortController.signal
+        )
+      } else {
+        response = await this.apiClient.sendQuery(payload, idempotencyKey)
       }
-      this.conversationManager.addMessage(activeConv.id, assistantMessage)
+
+      if (
+        this.mode !== 'single-turn' &&
+        this.connectionInfo.state === 'connected' &&
+        this.apiClient.hasToken()
+      ) {
+        await this.loadMessagesForConversation(targetConvId)
+        const targetConversation = this.conversationManager.getConversation(targetConvId)
+        const lastMsg = targetConversation?.messages[targetConversation.messages.length - 1]
+        if (lastMsg && lastMsg.role === 'assistant') {
+          lastMsg.responseMeta = response
+        } else if (targetConversation) {
+          const assistantMessage: ChatMessage = {
+            id: crypto.randomUUID(),
+            role: 'assistant',
+            content: response.response,
+            timestamp: Date.now(),
+            responseMeta: response,
+          }
+          this.conversationManager.addMessage(targetConvId, assistantMessage)
+        }
+      } else {
+        const assistantMessage: ChatMessage = {
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          content: response.response,
+          timestamp: Date.now(),
+          responseMeta: response,
+        }
+        this.conversationManager.addMessage(targetConvId, assistantMessage)
+      }
 
       // Silently refresh metrics in background
       this.metricsController.refresh().catch(() => {})
-    } catch (err) {
+    } catch (err: unknown) {
+      const isCancelled =
+        this.activeAbortController?.signal.aborted ||
+        (err instanceof GatewayApiError && err.detail === 'ABORTED')
+
       let errMsg = 'Failed to execute query.'
-      if (err instanceof GatewayApiError) {
+      if (isCancelled) {
+        errMsg = 'Generation stopped by user.'
+      } else if (err instanceof GatewayApiError) {
         errMsg = err.message
       } else if (err instanceof Error) {
         errMsg = err.message
@@ -632,14 +764,34 @@ export class DemoUIController {
       const assistantError: ChatMessage = {
         id: crypto.randomUUID(),
         role: 'assistant',
-        content: `Error: ${errMsg}`,
+        content: isCancelled
+          ? this.accumulatedStreamText
+            ? `${this.accumulatedStreamText}\n\n*[Generation stopped by user]*`
+            : errMsg
+          : `Error: ${errMsg}`,
         timestamp: Date.now(),
         error: errMsg,
+        isCancelled,
+        isFailedAttempt: true,
       }
-      this.conversationManager.addMessage(activeConv.id, assistantError)
+      this.conversationManager.addMessage(targetConvId, assistantError)
     } finally {
       this.isGenerating = false
-      this.sendBtn.disabled = false
+      this.generatingConvId = null
+      this.isStreamingActive = false
+      this.accumulatedStreamText = ''
+      this.activeAbortController = null
+
+      if (this.stopBtn) {
+        this.stopBtn.classList.add('hidden')
+        this.stopBtn.disabled = false
+      }
+      if (this.sendBtn) {
+        this.sendBtn.classList.remove('hidden')
+        this.sendBtn.disabled = false
+      }
+      this.jumpLatestBtn?.classList.add('hidden')
+
       this.renderConversationList()
       this.renderMessages()
       this.chatTextarea?.focus()
@@ -675,16 +827,38 @@ export class DemoUIController {
     // Remove the error message from the conversation without duplicating the user turn
     this.conversationManager.removeMessage(targetConvId, failedMsgId)
 
-    this.isGenerating = true
-    this.sendBtn.disabled = true
-    this.renderMessages()
-
     const bypass =
       originalOptions?.bypass_cache !== undefined
         ? originalOptions.bypass_cache
         : this.bypassCheckbox.checked
+    const stream =
+      originalOptions?.stream !== undefined
+        ? originalOptions.stream
+        : this.streamCheckbox
+          ? this.streamCheckbox.checked
+          : false
+
+    this.isGenerating = true
+    this.generatingConvId = targetConvId
+    this.isStreamingActive = stream
+    this.accumulatedStreamText = ''
+    this.activeAbortController = new AbortController()
+
+    if (this.sendBtn) {
+      this.sendBtn.classList.add('hidden')
+      this.sendBtn.disabled = true
+    }
+    if (this.stopBtn) {
+      this.stopBtn.classList.remove('hidden')
+      this.stopBtn.disabled = false
+    }
+
+    this.renderMessages()
+    this.scrollToBottom()
+
     const payload: QueryRequestPayload = {
       bypass_cache: bypass,
+      stream,
     }
 
     if (this.mode === 'single-turn') {
@@ -697,7 +871,29 @@ export class DemoUIController {
     try {
       // Reuse the preceding turn's idempotency key so server deduplicates / recovers cleanly
       const idempotencyKey = retryIdempotencyKey || crypto.randomUUID()
-      const response = await this.apiClient.sendQuery(payload, idempotencyKey)
+      let response: QueryResponse
+
+      if (stream) {
+        response = await this.apiClient.sendStreamQuery(
+          payload,
+          idempotencyKey,
+          {
+            onDelta: (delta: string) => {
+              this.accumulatedStreamText += delta
+              if (this.conversationManager.getActiveConversationId() === targetConvId) {
+                const streamTextEl = document.getElementById('streaming-text')
+                if (streamTextEl) {
+                  streamTextEl.textContent = this.accumulatedStreamText
+                  this.handleAutoScroll()
+                }
+              }
+            },
+          },
+          this.activeAbortController.signal
+        )
+      } else {
+        response = await this.apiClient.sendQuery(payload, idempotencyKey)
+      }
 
       if (
         this.mode !== 'single-turn' &&
@@ -731,9 +927,15 @@ export class DemoUIController {
         this.conversationManager.addMessage(targetConvId, assistantMessage)
       }
       this.metricsController.refresh().catch(() => {})
-    } catch (err) {
+    } catch (err: unknown) {
+      const isCancelled =
+        this.activeAbortController?.signal.aborted ||
+        (err instanceof GatewayApiError && err.detail === 'ABORTED')
+
       let errMsg = 'Failed to execute query.'
-      if (err instanceof GatewayApiError) {
+      if (isCancelled) {
+        errMsg = 'Generation stopped by user.'
+      } else if (err instanceof GatewayApiError) {
         errMsg = err.message
       } else if (err instanceof Error) {
         errMsg = err.message
@@ -742,17 +944,46 @@ export class DemoUIController {
       const assistantError: ChatMessage = {
         id: crypto.randomUUID(),
         role: 'assistant',
-        content: `Error: ${errMsg}`,
+        content: isCancelled
+          ? this.accumulatedStreamText
+            ? `${this.accumulatedStreamText}\n\n*[Generation stopped by user]*`
+            : errMsg
+          : `Error: ${errMsg}`,
         timestamp: Date.now(),
         error: errMsg,
+        isCancelled,
+        isFailedAttempt: true,
       }
       this.conversationManager.addMessage(targetConvId, assistantError)
     } finally {
       this.isGenerating = false
-      this.sendBtn.disabled = false
+      this.generatingConvId = null
+      this.isStreamingActive = false
+      this.accumulatedStreamText = ''
+      this.activeAbortController = null
+
+      if (this.stopBtn) {
+        this.stopBtn.classList.add('hidden')
+        this.stopBtn.disabled = false
+      }
+      if (this.sendBtn) {
+        this.sendBtn.classList.remove('hidden')
+        this.sendBtn.disabled = false
+      }
+      this.jumpLatestBtn?.classList.add('hidden')
+
       this.renderConversationList()
       this.renderMessages()
       this.chatTextarea?.focus()
+    }
+  }
+
+  public handleStopGeneration(): void {
+    if (this.activeAbortController && !this.activeAbortController.signal.aborted) {
+      this.activeAbortController.abort()
+      if (this.stopBtn) {
+        this.stopBtn.disabled = true
+      }
     }
   }
 
@@ -767,6 +998,7 @@ export class DemoUIController {
         const originalText = buttonEl.innerHTML
         buttonEl.innerHTML = '✓ Copied!'
         buttonEl.classList.add('copied')
+        this.showToast('Response markdown copied to clipboard')
         setTimeout(() => {
           buttonEl.innerHTML = originalText
           buttonEl.classList.remove('copied')
@@ -787,6 +1019,7 @@ export class DemoUIController {
         const originalText = buttonEl.textContent
         buttonEl.textContent = 'Copied!'
         buttonEl.classList.add('copied')
+        this.showToast('Code block copied to clipboard')
         setTimeout(() => {
           buttonEl.textContent = originalText
           buttonEl.classList.remove('copied')
@@ -803,12 +1036,60 @@ export class DemoUIController {
         const originalText = buttonEl.textContent
         buttonEl.textContent = 'Copied!'
         buttonEl.classList.add('copied')
+        this.showToast('SHA-256 fingerprint copied to clipboard')
         setTimeout(() => {
           buttonEl.textContent = originalText
           buttonEl.classList.remove('copied')
         }, 2000)
       })
       .catch(() => {})
+  }
+
+  public showToast(message: string, durationMs: number = 2500): void {
+    if (!this.toastContainerEl) return
+    const toast = document.createElement('div')
+    toast.className = 'toast-notification'
+    toast.textContent = message
+    this.toastContainerEl.appendChild(toast)
+
+    requestAnimationFrame(() => {
+      toast.classList.add('visible')
+    })
+
+    setTimeout(() => {
+      toast.classList.remove('visible')
+      setTimeout(() => {
+        toast.remove()
+      }, 300)
+    }, durationMs)
+  }
+
+  private isUserAtBottom(threshold: number = 80): boolean {
+    if (!this.messagesContainerEl) return true
+    const { scrollTop, scrollHeight, clientHeight } = this.messagesContainerEl
+    return scrollHeight - (scrollTop + clientHeight) <= threshold
+  }
+
+  private scrollToBottom(smooth: boolean = false): void {
+    if (!this.messagesContainerEl) return
+    if (smooth) {
+      this.messagesContainerEl.scrollTo({
+        top: this.messagesContainerEl.scrollHeight,
+        behavior: 'smooth',
+      })
+    } else {
+      this.messagesContainerEl.scrollTop = this.messagesContainerEl.scrollHeight
+    }
+    this.jumpLatestBtn?.classList.add('hidden')
+  }
+
+  private handleAutoScroll(): void {
+    if (this.isUserAtBottom()) {
+      this.scrollToBottom()
+      this.jumpLatestBtn?.classList.add('hidden')
+    } else {
+      this.jumpLatestBtn?.classList.remove('hidden')
+    }
   }
 
   private renderConversationList(): void {
@@ -832,12 +1113,12 @@ export class DemoUIController {
       const safeTitle = MarkdownRenderer.escapeHtml(conv.title)
 
       html += `
-        <div class="conversation-item ${activeClass}" data-conv-id="${conv.id}" role="button" tabindex="0">
+        <div class="conversation-item ${activeClass}" data-conv-id="${conv.id}" role="button" tabindex="0" aria-label="Conversation: ${safeTitle}">
           <div class="conv-item-left">
             <span class="conv-icon">💬</span>
             <span class="conv-title" title="${safeTitle}">${safeTitle}</span>
           </div>
-          <button class="btn-delete-conv" type="button" data-conv-id="${conv.id}" title="Delete conversation" aria-label="Delete conversation">
+          <button class="btn-delete-conv" type="button" data-conv-id="${conv.id}" title="Delete conversation" aria-label="Delete conversation: ${safeTitle}">
             ×
           </button>
         </div>
@@ -850,10 +1131,17 @@ export class DemoUIController {
   private renderMessages(): void {
     if (!this.messagesContainerEl) return
     const activeConv = this.conversationManager.getActiveConversation()
-    const html = MessageRenderer.renderMessages(activeConv.messages, this.isGenerating)
+    const isCurrentConvGenerating = this.isGenerating && this.generatingConvId === activeConv.id
+    const html = MessageRenderer.renderMessages(
+      activeConv.messages,
+      isCurrentConvGenerating,
+      isCurrentConvGenerating && this.isStreamingActive,
+      this.accumulatedStreamText
+    )
     this.messagesContainerEl.innerHTML = html
 
-    // Auto scroll to bottom
-    this.messagesContainerEl.scrollTop = this.messagesContainerEl.scrollHeight
+    if (this.isUserAtBottom()) {
+      this.scrollToBottom()
+    }
   }
 }

@@ -18,6 +18,7 @@ export class SettingsController {
   private apiClient: GatewayApiClient
   private callbacks: SettingsCallbacks
   private isOpen: boolean = false
+  private previousFocusedEl: HTMLElement | null = null
 
   // DOM Elements
   private dialogEl!: HTMLElement
@@ -79,15 +80,37 @@ export class SettingsController {
     this.closeBtn?.addEventListener('click', () => this.close())
     this.backdropEl?.addEventListener('click', () => this.close())
 
-    // Keyboard support: Escape to close
+    // Keyboard support: Escape to close and Tab focus trapping
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && this.isOpen) {
+      if (!this.isOpen) return
+
+      if (e.key === 'Escape') {
         this.close()
+        return
+      }
+
+      if (e.key === 'Tab') {
+        const focusableElements = this.dialogEl.querySelectorAll<HTMLElement>(
+          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+        )
+        if (focusableElements.length === 0) return
+
+        const first = focusableElements[0]
+        const last = focusableElements[focusableElements.length - 1]
+
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault()
+          last.focus()
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault()
+          first.focus()
+        }
       }
     })
   }
 
   public open(): void {
+    this.previousFocusedEl = document.activeElement as HTMLElement
     this.isOpen = true
     this.dialogEl.classList.add('open')
     this.backdropEl.classList.add('open')
@@ -100,6 +123,7 @@ export class SettingsController {
     this.dialogEl.classList.remove('open')
     this.backdropEl.classList.remove('open')
     this.dialogEl.setAttribute('aria-hidden', 'true')
+    this.previousFocusedEl?.focus()
   }
 
   public isDialogOpen(): boolean {

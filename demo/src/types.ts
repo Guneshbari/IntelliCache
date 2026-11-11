@@ -44,6 +44,29 @@ export interface QueryResponse {
   idempotent_replay?: boolean
 }
 
+export interface StreamChunkPayload {
+  delta?: string
+  done?: boolean
+  cached?: boolean
+  cache_type?: 'exact' | 'semantic' | 'none' | string
+  cache_hit_count?: number
+  latency_ms?: number
+  model?: string
+  usage?: UsageMetrics
+  fingerprint?: string
+  conversation_id?: string
+  turn_id?: string
+  context_status?: string
+  idempotent_replay?: boolean
+  error?: string
+  status_code?: number
+}
+
+export interface StreamCallbacks {
+  onDelta?: (delta: string) => void
+  onChunk?: (chunk: StreamChunkPayload) => void
+}
+
 export interface ConversationSummary {
   id: string
   title: string
@@ -220,8 +243,10 @@ export interface ChatMessage {
   turnStatus?: string
   turnErrorCode?: string
   isFailedAttempt?: boolean
+  isCancelled?: boolean
   originalOptions?: {
     bypass_cache?: boolean
+    stream?: boolean
     model?: string
     temperature?: number
     system_prompt?: string

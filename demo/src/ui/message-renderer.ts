@@ -12,7 +12,12 @@ export class MessageRenderer {
   /**
    * Renders the complete conversation history or the empty welcome state.
    */
-  public static renderMessages(messages: ChatMessage[], isGenerating: boolean): string {
+  public static renderMessages(
+    messages: ChatMessage[],
+    isGenerating: boolean,
+    isStreaming: boolean = false,
+    streamingText: string = ''
+  ): string {
     if (messages.length === 0 && !isGenerating) {
       return this.renderEmptyState()
     }
@@ -29,7 +34,11 @@ export class MessageRenderer {
     }
 
     if (isGenerating) {
-      html += this.renderLoadingIndicator()
+      if (isStreaming) {
+        html += this.renderStreamingIndicator(streamingText)
+      } else {
+        html += this.renderLoadingIndicator()
+      }
     }
 
     return html
@@ -236,20 +245,45 @@ export class MessageRenderer {
   private static renderErrorMessage(msg: ChatMessage): string {
     const timeStr = this.formatTime(msg.timestamp)
     const errorText = MarkdownRenderer.escapeHtml(msg.error || msg.content)
+    const badgeText = msg.isCancelled ? '⏹️ Generation Stopped' : '⚠️ Gateway Error'
+    const badgeClass = msg.isCancelled ? 'stopped-badge' : 'error-badge'
 
     return `
-      <div class="message-row assistant error-row" id="msg-${msg.id}">
+      <div class="message-row assistant error-row ${msg.isCancelled ? 'cancelled-row' : ''}" id="msg-${msg.id}">
         <div class="message-header">
-          <span class="author-badge error-badge">⚠️ Gateway Error</span>
+          <span class="author-badge ${badgeClass}">${badgeText}</span>
           <span class="message-timestamp">${timeStr}</span>
         </div>
-        <div class="error-callout">
+        <div class="error-callout ${msg.isCancelled ? 'cancelled-callout' : ''}">
           <div class="error-message">${errorText}</div>
           <div class="error-actions">
             <button class="btn-retry" type="button" data-retry-id="${msg.id}" aria-label="Retry query">
               🔄 Retry Query
             </button>
           </div>
+        </div>
+      </div>
+    `
+  }
+
+  private static renderStreamingIndicator(streamingText: string): string {
+    const timeStr = this.formatTime(Date.now())
+    const escapedText = MarkdownRenderer.escapeHtml(streamingText)
+
+    return `
+      <div class="message-row assistant streaming-row" id="msg-streaming">
+        <div class="message-header">
+          <div class="assistant-meta">
+            <span class="author-badge assistant-badge">⚡ IntelliCache</span>
+            <span class="model-pill streaming-pill">streaming</span>
+          </div>
+          <div class="message-header-right">
+            <span class="message-timestamp">${timeStr}</span>
+          </div>
+        </div>
+        <div class="message-bubble assistant-bubble streaming-bubble">
+          <span class="streaming-text" id="streaming-text">${escapedText}</span>
+          <span class="streaming-cursor" aria-hidden="true">▋</span>
         </div>
       </div>
     `

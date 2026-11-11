@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { GatewayApiClient } from '../demo/src/api-client'
+import { GatewayApiClient, GatewayApiError } from '../demo/src/api-client'
 import type {
   CacheStats,
   ChatMessage,
@@ -35,15 +35,18 @@ function setupTestDom(): void {
 
       <section id="chat-area">
         <div id="messages-container"></div>
+        <button id="btn-jump-latest" class="hidden"></button>
         <div id="composer-container">
           <div class="composer-options-row">
             <button id="mode-single" class="active"></button>
             <button id="mode-multi"></button>
             <input id="bypass-cache-checkbox" type="checkbox" />
+            <input id="stream-response-checkbox" type="checkbox" />
           </div>
           <div id="turn-notice"></div>
           <textarea id="chat-textarea"></textarea>
           <button id="btn-send"></button>
+          <button id="btn-stop" class="hidden"></button>
         </div>
       </section>
 
@@ -54,6 +57,8 @@ function setupTestDom(): void {
         <div id="metrics-body"></div>
       </aside>
     </div>
+
+    <div id="toast-container"></div>
 
     <div id="settings-backdrop"></div>
     <div id="settings-dialog">
@@ -251,6 +256,35 @@ describe('MessageRenderer (UI Presentation & Diagnostics)', () => {
     expect(html).toContain('loading-bubble')
     expect(html).toContain('Executing query on IntelliCache gateway...')
   })
+
+  it('renders progressive streaming indicator with cursor and streaming pill when isStreaming is true', () => {
+    const html = MessageRenderer.renderMessages([], true, true, 'Streaming in progress...')
+    expect(html).toContain('streaming-row')
+    expect(html).toContain('streaming-pill')
+    expect(html).toContain('streaming')
+    expect(html).toContain('streaming-cursor')
+    expect(html).toContain('Streaming in progress...')
+  })
+
+  it('renders generation stopped state with stopped-badge and retry action when isCancelled is true', () => {
+    const cancelledMsg: ChatMessage = {
+      id: 'c1',
+      role: 'assistant',
+      content: 'Generation stopped by user.',
+      timestamp: Date.now(),
+      error: 'Generation stopped by user.',
+      isCancelled: true,
+    }
+
+    const html = MessageRenderer.renderMessages([cancelledMsg], false)
+    expect(html).toContain('cancelled-row')
+    expect(html).toContain('stopped-badge')
+    expect(html).toContain('⏹️ Generation Stopped')
+    expect(html).toContain('cancelled-callout')
+    expect(html).toContain('Generation stopped by user.')
+    expect(html).toContain('btn-retry')
+    expect(html).toContain('data-retry-id="c1"')
+  })
 })
 
 describe('SettingsController (Connection & Memory Token Management)', () => {
@@ -320,6 +354,38 @@ describe('SettingsController (Connection & Memory Token Management)', () => {
 
     const statusCard = document.getElementById('settings-status-card')!
     expect(statusCard.innerHTML).toContain('Disconnected. In-memory client token cleared.')
+  })
+
+  it('traps Tab navigation within open settings dialog and restores focus on close', () => {
+    const triggerBtn = document.getElementById('btn-header-settings')!
+    triggerBtn.focus()
+    expect(document.activeElement).toBe(triggerBtn)
+
+    settingsCtrl.open()
+    expect(settingsCtrl.isDialogOpen()).toBe(true)
+
+    // Focus is moved into preferred focusable element inside dialog (the URL input)
+    const gatewayInput = document.getElementById('settings-gateway-url')!
+    expect(document.activeElement).toBe(gatewayInput)
+
+    // Dispatch Shift+Tab when on first element -> wraps to last focusable element
+    const closeBtn = document.getElementById('btn-close-settings')!
+    closeBtn.focus()
+    expect(document.activeElement).toBe(closeBtn)
+
+    const shiftTabEvent = new KeyboardEvent('keydown', {
+      key: 'Tab',
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    })
+    document.dispatchEvent(shiftTabEvent)
+    expect(shiftTabEvent.defaultPrevented).toBe(true)
+
+    // Close settings dialog -> focus is restored to trigger button
+    settingsCtrl.close()
+    expect(settingsCtrl.isDialogOpen()).toBe(false)
+    expect(document.activeElement).toBe(triggerBtn)
   })
 })
 
@@ -1307,10 +1373,18 @@ describe('DemoUIController (End-to-End Coordination & Request Payloads)', () => 
     // While retry is generating in Conv A, user switches to Conv B
     await uiController.handleSwitchConversation(convB.id)
 
-    // Verify Conv B is the active conversation
+    // Verify Conv B is active and DOES NOT show Conv A's generating spinner
     expect(cm.getActiveConversationId()).toBe(convB.id)
     const container = document.getElementById('messages-container')!
+    expect(container.querySelector('#msg-loading')).toBeNull()
+
+    // When switching back to Conv A while still in flight, Conv A shows spinner
+    await uiController.handleSwitchConversation(convA.id)
     expect(container.querySelector('#msg-loading')).not.toBeNull()
+
+    // Switch back to Conv B before resolving
+    await uiController.handleSwitchConversation(convB.id)
+    expect(container.querySelector('#msg-loading')).toBeNull()
 
     // Now resolve the retry in Conv A
     resolveRetry({
@@ -1327,7 +1401,7 @@ describe('DemoUIController (End-to-End Coordination & Request Payloads)', () => 
 
     await retryExecution
 
-    // Verify Conv B view has NO stuck generating spinner
+    // Verify Conv B view still has NO stuck generating spinner
     expect(container.querySelector('#msg-loading')).toBeNull()
   })
 
@@ -1366,7 +1440,15 @@ describe('DemoUIController (End-to-End Coordination & Request Payloads)', () => 
     await uiController.handleSwitchConversation(convB.id)
     expect(cm.getActiveConversationId()).toBe(convB.id)
     const container = document.getElementById('messages-container')!
+    expect(container.querySelector('#msg-loading')).toBeNull()
+
+    // Switch back to Conv A while still generating
+    await uiController.handleSwitchConversation(convA.id)
     expect(container.querySelector('#msg-loading')).not.toBeNull()
+
+    // Switch back to Conv B
+    await uiController.handleSwitchConversation(convB.id)
+    expect(container.querySelector('#msg-loading')).toBeNull()
 
     // Resolve send in Conv A
     resolveSend({
@@ -1385,5 +1467,309 @@ describe('DemoUIController (End-to-End Coordination & Request Payloads)', () => 
 
     // Conv B view must have cleared the generating indicator
     expect(container.querySelector('#msg-loading')).toBeNull()
+  })
+
+  it('stream checkbox defaults to unchecked and updates notice when toggled', () => {
+    const streamCheckbox = document.getElementById('stream-response-checkbox') as HTMLInputElement
+    expect(streamCheckbox).not.toBeNull()
+    expect(streamCheckbox.checked).toBe(false)
+
+    const turnNotice = document.getElementById('turn-notice')!
+    expect(turnNotice.textContent).toContain('Single-Turn Query Mode')
+
+    // Toggle stream mode ON
+    streamCheckbox.checked = true
+    streamCheckbox.dispatchEvent(new Event('change'))
+
+    expect(turnNotice.textContent).toContain('Single-Turn Query Mode (Streaming)')
+    expect(turnNotice.textContent).toContain('exact cache only')
+
+    // Toggle stream mode OFF
+    streamCheckbox.checked = false
+    streamCheckbox.dispatchEvent(new Event('change'))
+    expect(turnNotice.textContent).not.toContain('(Streaming)')
+  })
+
+  it('non-streaming query uses sendQuery and keeps stop button hidden', async () => {
+    uiController.updateConnectionBadge('connected', 'Connected: default')
+    apiClient.setClientToken('test_token')
+
+    const sendQuerySpy = vi.spyOn(apiClient, 'sendQuery').mockResolvedValueOnce({
+      response: 'Standard response',
+      cached: false,
+      model: 'test-model',
+      latency_ms: 120,
+      usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 },
+      cache_hit_count: 0,
+      fingerprint: 'fp-std',
+      created_at: new Date().toISOString(),
+      cache_type: 'none',
+    })
+    const sendStreamSpy = vi.spyOn(apiClient, 'sendStreamQuery')
+
+    const textarea = document.getElementById('chat-textarea') as HTMLTextAreaElement
+    const btnSend = document.getElementById('btn-send') as HTMLButtonElement
+    const btnStop = document.getElementById('btn-stop') as HTMLButtonElement
+
+    textarea.value = 'Hello standard query'
+    await uiController.handleSend()
+
+    expect(sendQuerySpy).toHaveBeenCalledTimes(1)
+    expect(sendStreamSpy).not.toHaveBeenCalled()
+    expect(btnStop.classList.contains('hidden')).toBe(true)
+    expect(btnSend.classList.contains('hidden')).toBe(false)
+  })
+
+  it('streaming query uses sendStreamQuery, toggles stop button, renders progressive text, and shows final message', async () => {
+    uiController.updateConnectionBadge('connected', 'Connected: default')
+    apiClient.setClientToken('test_token')
+
+    const streamCheckbox = document.getElementById('stream-response-checkbox') as HTMLInputElement
+    streamCheckbox.checked = true
+
+    const mockStreamResponse: QueryResponse = {
+      response: 'Streamed hello world response',
+      cached: false,
+      model: 'llama-3.3-70b-versatile',
+      latency_ms: 250,
+      usage: { prompt_tokens: 12, completion_tokens: 15, total_tokens: 27 },
+      cache_hit_count: 0,
+      fingerprint: 'fp-streamed',
+      created_at: new Date().toISOString(),
+      cache_type: 'none',
+    }
+
+    const sendStreamSpy = vi
+      .spyOn(apiClient, 'sendStreamQuery')
+      .mockImplementation(async (_query, _idempotencyKey, callbacks) => {
+        callbacks?.onDelta?.('Streamed hello world response')
+        return mockStreamResponse
+      })
+
+    const textarea = document.getElementById('chat-textarea') as HTMLTextAreaElement
+    textarea.value = 'Stream query'
+
+    await uiController.handleSend()
+
+    expect(sendStreamSpy).toHaveBeenCalledTimes(1)
+    const container = document.getElementById('messages-container')!
+    expect(container.innerHTML).toContain('Streamed hello world response')
+    expect(container.innerHTML).toContain('Upstream Provider Generation')
+  })
+
+  it('stop generation aborts streaming request, renders stopped badge, and leaves retry button without cache diagnostics', async () => {
+    uiController.updateConnectionBadge('connected', 'Connected: default')
+    apiClient.setClientToken('test_token')
+
+    const streamCheckbox = document.getElementById('stream-response-checkbox') as HTMLInputElement
+    streamCheckbox.checked = true
+
+    // Simulate an aborted stream when signal is aborted
+    vi.spyOn(apiClient, 'sendStreamQuery').mockImplementation(
+      (_query, _idempotencyKey, _callbacks, signal) =>
+        new Promise<QueryResponse>((_resolve, reject) => {
+          if (signal) {
+            signal.addEventListener('abort', () => {
+              reject(new GatewayApiError(0, 'Generation stopped by user.', 'ABORTED'))
+            })
+          }
+        })
+    )
+
+    const textarea = document.getElementById('chat-textarea') as HTMLTextAreaElement
+    textarea.value = 'Stream to be stopped'
+
+    const sendExecution = uiController.handleSend()
+
+    // Stop generation while in flight
+    uiController.handleStopGeneration()
+
+    await sendExecution
+
+    const container = document.getElementById('messages-container')!
+    expect(container.innerHTML).toContain('Generation stopped by user.')
+    expect(container.innerHTML).toContain('⏹️ Generation Stopped')
+    expect(container.innerHTML).toContain('🔄 Retry Query')
+    // Must NOT fabricate cache hit or diagnostics card for cancelled turn
+    expect(container.innerHTML).not.toContain('Exact Cache Hit')
+    expect(container.innerHTML).not.toContain('Semantic Cache Hit')
+    expect(container.innerHTML).not.toContain('Technical Cache Diagnostics')
+  })
+
+  it('switching conversations during streaming preserves active stream for initiating conversation only', async () => {
+    uiController.updateConnectionBadge('connected', 'Connected: default')
+    apiClient.setClientToken('test_token')
+    uiController.setMode('multi-turn')
+
+    const streamCheckbox = document.getElementById('stream-response-checkbox') as HTMLInputElement
+    streamCheckbox.checked = true
+
+    const cm = uiController.getConversationManager()
+    const convA = cm.getActiveConversation()
+    const convB = cm.createConversation('Conversation B')
+    cm.setActiveConversation(convA.id)
+
+    let deltaCb!: (delta: string) => void
+    let resolveStream!: (val: QueryResponse) => void
+    const streamPromise = new Promise<QueryResponse>((res) => {
+      resolveStream = res
+    })
+
+    vi.spyOn(apiClient, 'sendStreamQuery').mockImplementation(async (_query, _key, callbacks) => {
+      deltaCb = (delta: string) => callbacks?.onDelta?.(delta)
+      return streamPromise
+    })
+    vi.spyOn(apiClient, 'getConversation').mockResolvedValue({
+      id: convA.id,
+      title: 'Conversation A',
+      cache_namespace: 'default',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      last_message_at: new Date().toISOString(),
+    })
+    vi.spyOn(apiClient, 'getConversationMessages').mockResolvedValue({
+      conversation_id: convB.id,
+      messages: [],
+      total: 0,
+    })
+
+    const textarea = document.getElementById('chat-textarea') as HTMLTextAreaElement
+    textarea.value = 'Stream in Conv A'
+
+    const sendExecution = uiController.handleSend()
+    await Promise.resolve()
+    await Promise.resolve()
+
+    // Deliver first chunk
+    deltaCb('Alpha ')
+
+    // User switches to Conv B
+    await uiController.handleSwitchConversation(convB.id)
+    const container = document.getElementById('messages-container')!
+    // Conv B must NOT show Conv A's streaming bubble or spinner
+    expect(container.querySelector('#msg-streaming')).toBeNull()
+    expect(container.querySelector('#msg-loading')).toBeNull()
+
+    // Switch back to Conv A while still generating
+    await uiController.handleSwitchConversation(convA.id)
+    expect(container.querySelector('#msg-streaming')).not.toBeNull()
+
+    // Resolve stream
+    resolveStream({
+      response: 'Alpha Beta Completed',
+      cached: false,
+      model: 'test-model',
+      latency_ms: 300,
+      usage: { prompt_tokens: 5, completion_tokens: 5, total_tokens: 10 },
+      cache_hit_count: 0,
+      fingerprint: 'fp-ab',
+      created_at: new Date().toISOString(),
+      cache_type: 'none',
+    })
+
+    await sendExecution
+    expect(container.querySelector('#msg-streaming')).toBeNull()
+  })
+
+  it('auto-scroll manages Jump to latest button and scrolls to bottom on click', () => {
+    const messagesContainer = document.getElementById('messages-container')!
+    const btnJump = document.getElementById('btn-jump-latest') as HTMLButtonElement
+    expect(btnJump).not.toBeNull()
+    expect(btnJump.classList.contains('hidden')).toBe(true)
+
+    // Simulate scrolled up state
+    Object.defineProperty(messagesContainer, 'scrollHeight', { value: 1200, configurable: true })
+    Object.defineProperty(messagesContainer, 'clientHeight', { value: 400, configurable: true })
+    Object.defineProperty(messagesContainer, 'scrollTop', {
+      value: 200,
+      writable: true,
+      configurable: true,
+    })
+
+    messagesContainer.dispatchEvent(new Event('scroll'))
+    expect(btnJump.classList.contains('hidden')).toBe(false)
+
+    // Click Jump to latest
+    btnJump.click()
+    expect(btnJump.classList.contains('hidden')).toBe(true)
+  })
+
+  it('copy response button copies text and displays toast notification', async () => {
+    const writeTextSpy = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      value: {
+        writeText: writeTextSpy,
+      },
+      writable: true,
+      configurable: true,
+    })
+
+    const cm = uiController.getConversationManager()
+    const activeConv = cm.getActiveConversation()
+    cm.addMessage(activeConv.id, {
+      id: 'a-copy',
+      role: 'assistant',
+      content: 'Copy this assistant response text.',
+      timestamp: Date.now(),
+    })
+    ;(uiController as unknown as { renderMessages: () => void }).renderMessages()
+
+    const container = document.getElementById('messages-container')!
+    const copyBtn = container.querySelector('.btn-copy-response') as HTMLButtonElement
+    expect(copyBtn).not.toBeNull()
+
+    copyBtn.click()
+    await Promise.resolve()
+    expect(writeTextSpy).toHaveBeenCalledWith('Copy this assistant response text.')
+
+    const toastContainer = document.getElementById('toast-container')!
+    expect(toastContainer.innerHTML).toContain('Response markdown copied to clipboard')
+  })
+
+  it('keyboard navigation on conversation items supports Enter to switch and Delete to remove', async () => {
+    uiController.updateConnectionBadge('connected', 'Connected: default')
+    apiClient.setClientToken('test_token')
+
+    const cm = uiController.getConversationManager()
+    const conv1 = cm.getActiveConversation()
+    const conv2 = cm.createConversation('Second Conversation')
+    cm.setActiveConversation(conv1.id)
+    expect(cm.getActiveConversationId()).toBe(conv1.id)
+
+    vi.spyOn(apiClient, 'getConversationMessages').mockResolvedValue({
+      conversation_id: conv2.id,
+      messages: [],
+      total: 0,
+    })
+    vi.spyOn(apiClient, 'getConversation').mockResolvedValue({
+      id: conv2.id,
+      title: 'Second Conversation',
+      cache_namespace: 'default',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      last_message_at: new Date().toISOString(),
+    })
+    vi.spyOn(apiClient, 'deleteConversation').mockResolvedValue(true)
+
+    ;(uiController as unknown as { renderConversationList: () => void }).renderConversationList()
+    const convList = document.getElementById('conversation-list')!
+    const itemForConv2 = convList.querySelector<HTMLElement>(`[data-conv-id="${conv2.id}"]`)!
+    expect(itemForConv2).not.toBeNull()
+
+    // Press Enter to switch to conv2
+    itemForConv2.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    await new Promise((r) => setTimeout(r, 20))
+    expect(cm.getActiveConversationId()).toBe(conv2.id)
+
+    // Re-query item from DOM since renderConversationList() refreshed the list
+    const currentItemForConv2 = convList.querySelector<HTMLElement>(`[data-conv-id="${conv2.id}"]`)!
+    expect(currentItemForConv2).not.toBeNull()
+
+    // Press Delete on conv2 item to remove it
+    currentItemForConv2.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Delete', bubbles: true })
+    )
+    await new Promise((r) => setTimeout(r, 20))
+    expect(cm.getConversations().find((c) => c.id === conv2.id)).toBeUndefined()
   })
 })

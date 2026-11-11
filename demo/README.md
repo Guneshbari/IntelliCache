@@ -185,7 +185,29 @@ The demonstration interface operates on an **on-demand telemetry model**:
 - Metrics are also automatically refreshed after each successful query execution.
 - There is deliberately no continuous background polling loop, avoiding unnecessary load on the gateway.
 
-### 4. Cross-Origin Resource Sharing (CORS) Configuration
+### 4. Optional SSE Streaming & Semantic Cache Limitations
+
+The chatbot interface provides optional Server-Sent Events (SSE) token streaming via the `Stream response tokens` toggle:
+
+- **Standard (Non-Streaming) Mode (Default)**: Sends a regular JSON `POST /query`. Eligible for exact-match caching and, for single-turn queries, HNSW semantic response caching.
+- **Streaming Mode (`stream: true`)**: Streams incremental delta chunks via SSE (`text/event-stream`). Tokens are rendered progressively using safe `textContent` DOM updates to avoid layout reflows and flicker. Markdown and syntax highlighting are rendered upon completion.
+- **Cache Policy for Streaming**:
+  > [!IMPORTANT]
+  > On the current FastAPI gateway backend (`gateway/app/api/routes.py`), streaming queries evaluate **deterministic exact-match caching (SHA-256)**, but **semantic similarity vector caching is not evaluated for streaming requests**.
+  > If a query matches an exact cached entry, the gateway replays the full cached response. If the query does not match an exact cache entry, upstream generative streaming executes.
+- **Stop Generation / Abort Controller**: While streaming is active, a prominent `⏹ Stop` button replaces the send button. Clicking Stop aborts the underlying `fetch()` stream immediately via `AbortController.abort()`. The turn is recorded as a stopped attempt with a `⏹️ Generation Stopped` badge and a `🔄 Retry Query` button, without fabricating misleading cache diagnostics.
+
+### 5. UI Polish, Accessibility & Keyboard Controls
+
+- **Auto-Scroll & Jump to Latest**: The chat view automatically scrolls to the newest token if the user is near the bottom. If the user scrolls up to review prior messages, auto-scroll pauses and a floating `↓ Jump to latest` button appears.
+- **Keyboard Navigation**:
+  - `Enter` / `Space` on conversation items in the sidebar selects and switches conversations.
+  - `Delete` / `Backspace` on a selected conversation item deletes it.
+  - `Enter` in the composer textarea sends the message; `Shift + Enter` inserts a newline.
+  - `Escape` dismisses settings modal dialogs with focus trapping (`Tab` / `Shift + Tab`) and focus restoration.
+- **Action Toast Notifications**: Copying response markdown, syntax-highlighted code blocks, or SHA-256 query fingerprints displays transient visual toast feedback without disruptive alert popups.
+
+### 6. Cross-Origin Resource Sharing (CORS) Configuration
 
 When running the gateway and demo on different origins (e.g. gateway on `http://127.0.0.1:8000` and demo on `http://localhost:5174`):
 

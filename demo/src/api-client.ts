@@ -14,6 +14,8 @@ import type {
   QueryRequestPayload,
   QueryResponse,
   RootStatusResponse,
+  StreamCallbacks,
+  StreamChunkPayload,
 } from './types'
 
 export class GatewayApiError extends Error {
@@ -47,6 +49,100 @@ export interface ConnectionTestResult {
   cacheBackend?: string
   cacheEnabled?: boolean
   error?: string
+}
+
+/**
+ * Resilient Server-Sent Events (SSE) Stream Parser.
+ * Handles split JSON/event chunks across network reads, CRLF and LF line endings,
+ * multiple events per chunk, [DONE] termination, comments, and empty lines.
+ */
+export class SseStreamParser {
+  private buffer: string = ''
+  private currentDataLines: string[] = []
+
+  public feed(chunkText: string): { payloads: StreamChunkPayload[]; isDone: boolean } {
+    this.buffer += chunkText
+    const payloads: StreamChunkPayload[] = []
+    let isDone = false
+
+    const newlineRegex = /\r\n|\n|\r/g
+    let lastIndex = 0
+    let match: RegExpExecArray | null
+
+    while ((match = newlineRegex.exec(this.buffer)) !== null) {
+      const matchIndex = match.index
+      const matchLen = match[0].length
+
+      // If \r is the very last char, wait to see if \n follows in next chunk
+      if (match[0] === '\r' && matchIndex === this.buffer.length - 1) {
+        break
+      }
+
+      const line = this.buffer.slice(lastIndex, matchIndex)
+      lastIndex = matchIndex + matchLen
+
+      if (line === '') {
+        if (this.currentDataLines.length > 0) {
+          const combined = this.currentDataLines.join('\n').trim()
+          this.currentDataLines = []
+          if (combined === '[DONE]') {
+            isDone = true
+          } else if (combined) {
+            try {
+              const parsed = JSON.parse(combined) as StreamChunkPayload
+              payloads.push(parsed)
+            } catch {
+              // Ignore malformed JSON payloads gracefully
+            }
+          }
+        }
+      } else if (line.startsWith('data:')) {
+        const content = line.slice(5).replace(/^ /, '')
+        this.currentDataLines.push(content)
+      }
+    }
+
+    if (lastIndex > 0) {
+      this.buffer = this.buffer.slice(lastIndex)
+    }
+
+    return { payloads, isDone }
+  }
+
+  public flush(): { payloads: StreamChunkPayload[]; isDone: boolean } {
+    const payloads: StreamChunkPayload[] = []
+    let isDone = false
+
+    if (this.buffer.length > 0) {
+      const line = this.buffer
+      this.buffer = ''
+      if (line.startsWith('data:')) {
+        this.currentDataLines.push(line.slice(5).replace(/^ /, ''))
+      }
+    }
+
+    if (this.currentDataLines.length > 0) {
+      const combined = this.currentDataLines.join('\n').trim()
+      this.currentDataLines = []
+      if (combined === '[DONE]') {
+        isDone = true
+      } else if (combined) {
+        try {
+          const parsed = JSON.parse(combined) as StreamChunkPayload
+          payloads.push(parsed)
+        } catch {
+          // Ignore malformed JSON payloads gracefully
+        }
+      }
+    }
+
+    return { payloads, isDone }
+  }
+
+  public reset(): void {
+    this.buffer = ''
+    this.currentDataLines = []
+  }
 }
 
 export class GatewayApiClient {
@@ -260,6 +356,139 @@ export class GatewayApiClient {
       })
       return await this.parseResponse<QueryResponse>(res, endpoint)
     } catch (err) {
+      return await this.handleFetchError(err, endpoint)
+    }
+  }
+
+  /**
+   * Sends an optional streaming query request via SSE to POST /query.
+   * Handles progressive chunk delivery, [DONE] termination, status_code 409 conflict,
+   * error payloads over HTTP 200, AbortSignal cancellation, and reconstructs authoritative QueryResponse.
+   */
+  public async sendStreamQuery(
+    payload: QueryRequestPayload,
+    idempotencyKey?: string,
+    callbacks?: StreamCallbacks,
+    signal?: AbortSignal
+  ): Promise<QueryResponse> {
+    const endpoint = '/query'
+    try {
+      const headers = this.buildHeaders(true)
+      headers['Accept'] = 'text/event-stream, application/json'
+
+      const effectiveKey =
+        idempotencyKey || (payload.conversation_id ? crypto.randomUUID() : undefined)
+      if (effectiveKey) {
+        headers['Idempotency-Key'] = effectiveKey
+      }
+
+      const streamPayload: QueryRequestPayload = {
+        ...payload,
+        stream: true,
+      }
+
+      const res = await fetch(`${this.baseUrl}${endpoint}`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(streamPayload),
+        signal,
+      })
+
+      if (!res.ok) {
+        return await this.parseResponse<QueryResponse>(res, endpoint)
+      }
+
+      if (!res.body) {
+        throw new GatewayApiError(0, 'Gateway response body stream is not available.')
+      }
+
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder('utf-8')
+      const parser = new SseStreamParser()
+
+      let accumulatedText = ''
+      let finalChunk: StreamChunkPayload | null = null
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) {
+            const flushed = parser.flush()
+            for (const chunk of flushed.payloads) {
+              if (chunk.error || (chunk.status_code && chunk.status_code >= 400)) {
+                throw new GatewayApiError(
+                  chunk.status_code || 500,
+                  chunk.error || `Stream failed with status ${chunk.status_code}`,
+                  chunk.error
+                )
+              }
+              callbacks?.onChunk?.(chunk)
+              if (chunk.delta) {
+                accumulatedText += chunk.delta
+                callbacks?.onDelta?.(chunk.delta)
+              }
+              if (chunk.done) {
+                finalChunk = chunk
+              }
+            }
+            break
+          }
+
+          const chunkText = decoder.decode(value, { stream: true })
+          const { payloads, isDone } = parser.feed(chunkText)
+
+          for (const chunk of payloads) {
+            if (chunk.error || (chunk.status_code && chunk.status_code >= 400)) {
+              throw new GatewayApiError(
+                chunk.status_code || 500,
+                chunk.error || `Stream failed with status ${chunk.status_code}`,
+                chunk.error
+              )
+            }
+
+            callbacks?.onChunk?.(chunk)
+
+            if (chunk.delta) {
+              accumulatedText += chunk.delta
+              callbacks?.onDelta?.(chunk.delta)
+            }
+
+            if (chunk.done) {
+              finalChunk = chunk
+            }
+          }
+
+          if (isDone) {
+            break
+          }
+        }
+      } finally {
+        reader.releaseLock?.()
+      }
+
+      return {
+        response: accumulatedText,
+        cached: typeof finalChunk?.cached === 'boolean' ? finalChunk.cached : null,
+        cache_type: (finalChunk?.cache_type as QueryResponse['cache_type']) ?? 'none',
+        model: finalChunk?.model || payload.model || '',
+        latency_ms: typeof finalChunk?.latency_ms === 'number' ? finalChunk.latency_ms : null,
+        usage: finalChunk?.usage ? finalChunk.usage : null,
+        cache_hit_count:
+          typeof finalChunk?.cache_hit_count === 'number' ? finalChunk.cache_hit_count : null,
+        conversation_id: finalChunk?.conversation_id || payload.conversation_id || null,
+        turn_id: finalChunk?.turn_id || null,
+        context_status: (finalChunk?.context_status as QueryResponse['context_status']) || null,
+        fingerprint: finalChunk?.fingerprint || '',
+        created_at: new Date().toISOString(),
+        idempotent_replay: finalChunk?.idempotent_replay,
+      }
+    } catch (err: unknown) {
+      if (signal?.aborted || (err instanceof Error && err.name === 'AbortError')) {
+        throw new GatewayApiError(0, 'Generation stopped by user.', 'ABORTED')
+      }
+      if (err instanceof GatewayApiError) {
+        throw err
+      }
       return await this.handleFetchError(err, endpoint)
     }
   }
