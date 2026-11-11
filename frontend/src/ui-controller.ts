@@ -21,6 +21,7 @@ import type {
   QueryResponse,
 } from './types'
 import { ConversationManager } from './ui/conversation-manager'
+import { ICON_BOLT, ICON_CHAT, ICON_CHECK, ICON_INFO } from './ui/icons'
 import { MarkdownRenderer } from './ui/markdown-renderer'
 import { MessageRenderer } from './ui/message-renderer'
 import { MetricsController } from './ui/metrics-controller'
@@ -503,19 +504,15 @@ export class DemoUIController {
 
     if (this.mode === 'single-turn') {
       if (isStreaming) {
-        this.turnNoticeEl.innerHTML =
-          '<span class="notice-icon">⚡</span><span><strong>Single-Turn Query Mode (Streaming):</strong> Incremental token delivery via SSE. Eligible for deterministic exact matching. Note: Semantic cache lookup is not evaluated for streaming requests on this gateway backend (exact cache only).</span>'
+        this.turnNoticeEl.innerHTML = `<span class="notice-icon">${ICON_BOLT}</span><span><strong>Single-Turn Query Mode (Streaming):</strong> Incremental token delivery via SSE. Eligible for deterministic exact matching. Note: Semantic cache lookup is not evaluated for streaming requests on this gateway backend (exact cache only).</span>`
       } else {
-        this.turnNoticeEl.innerHTML =
-          '<span class="notice-icon">⚡</span><span><strong>Single-Turn Query Mode:</strong> Eligible for deterministic exact matching and HNSW semantic response caching.</span>'
+        this.turnNoticeEl.innerHTML = `<span class="notice-icon">${ICON_BOLT}</span><span><strong>Single-Turn Query Mode:</strong> Eligible for deterministic exact matching and HNSW semantic response caching.</span>`
       }
     } else {
       if (isStreaming) {
-        this.turnNoticeEl.innerHTML =
-          '<span class="notice-icon">ℹ️</span><span><strong>Multi-Turn Conversation Mode (Streaming):</strong> Server-managed conversation history in PostgreSQL with bounded context window. Excluded from semantic caching. Streaming delivers response tokens progressively.</span>'
+        this.turnNoticeEl.innerHTML = `<span class="notice-icon">${ICON_INFO}</span><span><strong>Multi-Turn Conversation Mode (Streaming):</strong> Server-managed conversation history in PostgreSQL with bounded context window. Excluded from semantic caching. Streaming delivers response tokens progressively.</span>`
       } else {
-        this.turnNoticeEl.innerHTML =
-          '<span class="notice-icon">ℹ️</span><span><strong>Multi-Turn Conversation Mode:</strong> Server-managed conversation history in PostgreSQL with bounded context window. Excluded from semantic caching to prevent context ambiguity.</span>'
+        this.turnNoticeEl.innerHTML = `<span class="notice-icon">${ICON_INFO}</span><span><strong>Multi-Turn Conversation Mode:</strong> Server-managed conversation history in PostgreSQL with bounded context window. Excluded from semantic caching to prevent context ambiguity.</span>`
       }
     }
   }
@@ -1113,7 +1110,7 @@ export class DemoUIController {
       .writeText(msg.content)
       .then(() => {
         const originalText = buttonEl.innerHTML
-        buttonEl.innerHTML = '✓ Copied!'
+        buttonEl.innerHTML = `${ICON_CHECK} Copied!`
         buttonEl.classList.add('copied')
         this.showToast('Response markdown copied to clipboard')
         setTimeout(() => {
@@ -1236,7 +1233,7 @@ export class DemoUIController {
       html += `
         <div class="conversation-item ${activeClass}" data-conv-id="${conv.id}" role="button" tabindex="0" aria-label="Conversation: ${safeTitle}">
           <div class="conv-item-left">
-            <span class="conv-icon">💬</span>
+            <span class="conv-icon">${ICON_CHAT}</span>
             <span class="conv-title" title="${safeTitle}">${safeTitle}</span>
           </div>
           <button class="btn-delete-conv" type="button" data-conv-id="${conv.id}" title="Delete conversation" aria-label="Delete conversation: ${safeTitle}">

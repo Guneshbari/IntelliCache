@@ -6,6 +6,18 @@
  */
 
 import type { ChatMessage, QueryResponse } from '../types'
+import {
+  ICON_ALERT,
+  ICON_BOLT,
+  ICON_BRAIN,
+  ICON_CHEVRON_DOWN,
+  ICON_COPY,
+  ICON_GLOBE,
+  ICON_INFO,
+  ICON_REFRESH,
+  ICON_REPLAY,
+  ICON_STOP,
+} from './icons'
 import { MarkdownRenderer } from './markdown-renderer'
 
 export class MessageRenderer {
@@ -58,7 +70,7 @@ export class MessageRenderer {
 
           <div class="sample-group">
             <div class="sample-group-title">
-              <span class="sample-group-icon">⚡</span>
+              <span class="sample-group-icon">${ICON_BOLT}</span>
               <span>1. Exact Cache Hit (Deterministic SHA-256 Match)</span>
             </div>
             <div class="prompt-chips">
@@ -73,7 +85,7 @@ export class MessageRenderer {
 
           <div class="sample-group">
             <div class="sample-group-title">
-              <span class="sample-group-icon">🧠</span>
+              <span class="sample-group-icon">${ICON_BRAIN}</span>
               <span>2. Semantic Cache Hit (pgvector HNSW Cosine Rephrasing)</span>
             </div>
             <div class="prompt-chips">
@@ -125,13 +137,13 @@ export class MessageRenderer {
       <div class="message-row assistant" id="msg-${msg.id}">
         <div class="message-header">
           <div class="assistant-meta">
-            <span class="author-badge assistant-badge">⚡ IntelliCache</span>
+            <span class="author-badge assistant-badge">${ICON_BOLT} IntelliCache</span>
             <span class="model-pill">${modelName}</span>
           </div>
           <div class="message-header-right">
             <span class="message-timestamp">${timeStr}</span>
             <button class="btn-copy-response" type="button" data-msg-id="${msg.id}" title="Copy response markdown to clipboard" aria-label="Copy response">
-              📋 Copy
+              ${ICON_COPY} Copy
             </button>
           </div>
         </div>
@@ -145,24 +157,29 @@ export class MessageRenderer {
 
   private static renderCacheDiagnostics(meta: QueryResponse): string {
     let badgeClass = 'provider'
-    let badgeLabel = '🌐 Upstream Provider Generation'
+    let badgeIcon = ICON_GLOBE
+    let badgeLabel = 'Upstream Provider Generation'
     let latencyClass = 'latency-standard'
 
     if (meta.cached === null || meta.cached === undefined) {
       badgeClass = 'unknown'
-      badgeLabel = 'ℹ️ Diagnostic History Unavailable'
+      badgeIcon = ICON_INFO
+      badgeLabel = 'Diagnostic History Unavailable'
       latencyClass = 'latency-standard'
     } else if (meta.idempotent_replay) {
       badgeClass = 'replay'
-      badgeLabel = '🔁 Idempotent Replay'
+      badgeIcon = ICON_REPLAY
+      badgeLabel = 'Idempotent Replay'
       latencyClass = 'latency-fast'
     } else if (meta.cached && meta.cache_type === 'exact') {
       badgeClass = 'exact'
-      badgeLabel = '⚡ Exact Cache Hit'
+      badgeIcon = ICON_BOLT
+      badgeLabel = 'Exact Cache Hit'
       latencyClass = 'latency-fast'
     } else if (meta.cached && meta.cache_type === 'semantic') {
       badgeClass = 'semantic'
-      badgeLabel = '🧠 Semantic Cache Hit'
+      badgeIcon = ICON_BRAIN
+      badgeLabel = 'Semantic Cache Hit'
       latencyClass = 'latency-fast'
     }
 
@@ -182,12 +199,12 @@ export class MessageRenderer {
     return `
       <div class="cache-diagnostics-container">
         <div class="cache-compact-strip">
-          <span class="cache-badge ${badgeClass}">${badgeLabel}</span>
+          <span class="cache-badge ${badgeClass}">${badgeIcon} ${badgeLabel}</span>
           <span class="cache-latency-pill ${latencyClass}">${formattedLatency}</span>
           <details class="diagnostics-details">
             <summary class="diagnostics-summary">
               <span>Inspect Cache Metadata</span>
-              <span class="details-chevron">▾</span>
+              <span class="details-chevron">${ICON_CHEVRON_DOWN}</span>
             </summary>
             <div class="diagnostics-card">
               <div class="diagnostics-grid">
@@ -245,7 +262,9 @@ export class MessageRenderer {
   private static renderErrorMessage(msg: ChatMessage): string {
     const timeStr = this.formatTime(msg.timestamp)
     const errorText = MarkdownRenderer.escapeHtml(msg.error || msg.content)
-    const badgeText = msg.isCancelled ? '⏹️ Generation Stopped' : '⚠️ Gateway Error'
+    const badgeText = msg.isCancelled
+      ? `${ICON_STOP} Generation Stopped`
+      : `${ICON_ALERT} Gateway Error`
     const badgeClass = msg.isCancelled ? 'stopped-badge' : 'error-badge'
 
     return `
@@ -258,7 +277,7 @@ export class MessageRenderer {
           <div class="error-message">${errorText}</div>
           <div class="error-actions">
             <button class="btn-retry" type="button" data-retry-id="${msg.id}" aria-label="Retry query">
-              🔄 Retry Query
+              ${ICON_REFRESH} Retry Query
             </button>
           </div>
         </div>
@@ -274,7 +293,7 @@ export class MessageRenderer {
       <div class="message-row assistant streaming-row" id="msg-streaming">
         <div class="message-header">
           <div class="assistant-meta">
-            <span class="author-badge assistant-badge">⚡ IntelliCache</span>
+            <span class="author-badge assistant-badge">${ICON_BOLT} IntelliCache</span>
             <span class="model-pill streaming-pill">streaming</span>
           </div>
           <div class="message-header-right">
@@ -293,7 +312,7 @@ export class MessageRenderer {
     return `
       <div class="message-row assistant loading-row" id="msg-loading">
         <div class="message-header">
-          <span class="author-badge assistant-badge">⚡ IntelliCache</span>
+          <span class="author-badge assistant-badge">${ICON_BOLT} IntelliCache</span>
           <span class="model-pill">processing</span>
         </div>
         <div class="loading-bubble">

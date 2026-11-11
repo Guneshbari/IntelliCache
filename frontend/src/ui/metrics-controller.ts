@@ -7,6 +7,7 @@
 
 import { GatewayApiClient } from '../api-client'
 import type { CacheStats, NamespaceMetricsSnapshot } from '../types'
+import { ICON_CHART, ICON_LOCK } from './icons'
 import { MarkdownRenderer } from './markdown-renderer'
 
 export class MetricsController {
@@ -58,8 +59,8 @@ export class MetricsController {
 
     if (this.togglePanelBtn) {
       this.togglePanelBtn.innerHTML = this.isCollapsed
-        ? '<span class="icon">📊</span><span class="btn-text">Metrics</span>'
-        : '<span class="icon">📊</span><span class="btn-text">Close Metrics</span>'
+        ? `${ICON_CHART}<span class="btn-text">Telemetry</span>`
+        : `${ICON_CHART}<span class="btn-text">Close Telemetry</span>`
     }
   }
 
@@ -77,7 +78,7 @@ export class MetricsController {
     if (!this.apiClient.hasToken()) {
       this.metricsBodyEl.innerHTML = `
         <div class="metrics-notice">
-          <div class="notice-icon">🔒</div>
+          <div class="notice-icon">${ICON_LOCK}</div>
           <div class="notice-title">Authentication Required</div>
           <p class="notice-desc">
             Authenticate with a client API token in Connection Settings to inspect real-time namespace cache statistics, hit rates, token savings, and latency distributions.

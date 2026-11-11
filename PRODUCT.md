@@ -50,12 +50,12 @@ Unlike basic key-value caches or opaque proxy solutions, IntelliCache combines:
 ## Brand Commitments
 
 - **Aesthetic**: Technical Neo-Brutalist design language with Light and Dark themes, tactile offset shadows (`var(--shadow-sm)`, `var(--shadow-md)`), accessible contrast, and monospace telemetry elements.
-- **Palette**: Electric Sapphire / Indigo brand accent (`#6366f1` / `#4f46e5`), dark obsidian (`#0b0f19`) and crisp daylight (`#f8fafc`) surfaces, with emerald green strictly reserved for authoritative exact cache hits:
-  - Exact Match: Emerald (`#10b981` dark / `#047857` light)
-  - Semantic Match: Cyan (`#38bdf8`)
-  - Upstream Provider: Amber (`#f59e0b`)
-  - Cache Bypass: Purple (`#c084fc`)
-  - Error: Coral Red (`#f87171`)
+- **Palette**: Warm Golden Amber brand accent (`#ffc107` / `#e68e0d`), dark slate surfaces (`#121212`, `#1a1a1a`) and crisp warm stone daylight (`#f5f5f4`, `#ffffff`), with high-contrast neo-brutalist signals:
+  - Exact Match: Golden Amber (`#ffc107` dark / `#b45309` light)
+  - Semantic Match: Rich Golden Ochre (`#f59e0b` dark / `#c2410c` light)
+  - Upstream Provider: Coral Red (`#d35f5f` dark / `#b91c1c` light)
+  - Cache Bypass: Platinum Silver (`#bebebe` dark / `#475569` light)
+  - Error: Crimson Red (`#d35f5f` dark / `#b91c1c` light)
 - **Tone**: Authoritative, transparent, diagnostic, developer-focused, no marketing fluff.
 
 ## Evidence on Hand

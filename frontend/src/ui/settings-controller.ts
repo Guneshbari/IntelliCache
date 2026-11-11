@@ -7,6 +7,7 @@
 
 import { GatewayApiClient, type ConnectionTestResult } from '../api-client'
 import type { ConnectionInfo, ConnectionState } from '../types'
+import { ICON_EYE, ICON_EYE_OFF } from './icons'
 import { MarkdownRenderer } from './markdown-renderer'
 
 export interface SettingsCallbacks {
@@ -63,7 +64,7 @@ export class SettingsController {
     this.toggleTokenBtn?.addEventListener('click', () => {
       const isPassword = this.clientTokenInput.type === 'password'
       this.clientTokenInput.type = isPassword ? 'text' : 'password'
-      this.toggleTokenBtn.textContent = isPassword ? '🙈' : '👁️'
+      this.toggleTokenBtn.innerHTML = isPassword ? ICON_EYE_OFF : ICON_EYE
       this.toggleTokenBtn.setAttribute(
         'aria-label',
         isPassword ? 'Hide client API token' : 'Show client API token'

@@ -122,12 +122,12 @@ pnpm preview
    ```
 3. Click **Send (↵)**.
    - **First Turn (Cache Miss)**: Upstream provider generation executes.
-   - Badge displays `🌐 Upstream Provider Generation` (amber/gray).
+   - Badge displays `Upstream Provider Generation` (coral red).
    - Latency reflects live LLM generation (typically ~800 ms - 2,500 ms depending on model and network).
    - Note the generated SHA-256 fingerprint (e.g. `a3f9c2...`).
 4. Click **Send (↵)** again with the identical text.
    - **Second Turn (Exact Cache Hit)**: Gateway matches exact canonical hash.
-   - Badge displays `⚡ Exact Cache Hit` (emerald green).
+   - Badge displays `Exact Cache Hit` (golden amber).
    - Latency drops significantly (typically ~2 ms - 15 ms, representing a >98% latency reduction).
    - Hit count increments to `1` (or higher).
    - Token usage indicates cached savings.
@@ -150,7 +150,7 @@ _(Requires `CACHE_BACKEND=postgres`, `SEMANTIC_CACHE_ENABLED=true`, and running 
    ```
 3. **Outcome (Semantic Reuse)**:
    - Gateway vector search identifies the candidate within cosine distance `< 0.08` (similarity `> 0.92`).
-   - Badge displays `🧠 Semantic Cache Hit` (vibrant cyan).
+   - Badge displays `Semantic Cache Hit` (rich golden ochre).
    - Latency reflects the embedding and vector retrieval time (typically ~20 ms - 60 ms on local hardware) compared to seconds of generative inference.
    - Telemetry increments `semantic_hits` in the Namespace Telemetry panel.
 
@@ -195,7 +195,7 @@ The chatbot interface provides optional Server-Sent Events (SSE) token streaming
   > [!IMPORTANT]
   > On the current FastAPI gateway backend (`gateway/app/api/routes.py`), streaming queries evaluate **deterministic exact-match caching (SHA-256)**, but **semantic similarity vector caching is not evaluated for streaming requests**.
   > If a query matches an exact cached entry, the gateway replays the full cached response. If the query does not match an exact cache entry, upstream generative streaming executes.
-- **Stop Generation / Abort Controller**: While streaming is active, a prominent `⏹ Stop` button replaces the send button. Clicking Stop aborts the underlying `fetch()` stream immediately via `AbortController.abort()`. The turn is recorded as a stopped attempt with a `⏹️ Generation Stopped` badge and a `🔄 Retry Query` button, without fabricating misleading cache diagnostics.
+- **Stop Generation / Abort Controller**: While streaming is active, a prominent `Stop` button replaces the send button. Clicking Stop aborts the underlying `fetch()` stream immediately via `AbortController.abort()`. The turn is recorded as a stopped attempt with a `Generation Stopped` badge and a `Retry Query` button, without fabricating misleading cache diagnostics.
 - **Streaming Lifecycle Callbacks (`StreamCallbacks`)**:
   - `onDelta?: (delta: string) => void`: Invoked for each incoming text delta fragment.
   - `onChunk?: (chunk: StreamChunkPayload) => void`: Invoked for each parsed SSE payload chunk.

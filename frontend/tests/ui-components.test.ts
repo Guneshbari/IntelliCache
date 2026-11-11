@@ -20,8 +20,8 @@ function setupTestDom(): void {
         <span id="connection-text">Disconnected</span>
       </div>
       <button id="btn-toggle-theme">
-        <span class="theme-icon-light">☀️</span>
-        <span class="theme-icon-dark">🌙</span>
+        <span class="theme-icon-light"><svg class="icon-svg icon-sun"></svg></span>
+        <span class="theme-icon-dark"><svg class="icon-svg icon-moon"></svg></span>
         <span class="theme-text">Theme</span>
       </button>
       <button id="btn-header-new-chat"></button>
@@ -125,7 +125,8 @@ describe('MessageRenderer (UI Presentation & Diagnostics)', () => {
     }
 
     const html = MessageRenderer.renderMessages([assistantMsg], false)
-    expect(html).toContain('⚡ Exact Cache Hit')
+    expect(html).toContain('Exact Cache Hit')
+    expect(html).toContain('icon-bolt')
     expect(html).toContain('4.5 ms')
     expect(html).toContain('Hit Count:')
     expect(html).toContain('5')
@@ -156,7 +157,8 @@ describe('MessageRenderer (UI Presentation & Diagnostics)', () => {
     }
 
     const html = MessageRenderer.renderMessages([assistantMsg], false)
-    expect(html).toContain('🧠 Semantic Cache Hit')
+    expect(html).toContain('Semantic Cache Hit')
+    expect(html).toContain('icon-brain')
     expect(html).toContain('32.8 ms')
   })
 
@@ -183,7 +185,8 @@ describe('MessageRenderer (UI Presentation & Diagnostics)', () => {
     }
 
     const html = MessageRenderer.renderMessages([assistantMsg], false)
-    expect(html).toContain('🔁 Idempotent Replay')
+    expect(html).toContain('Idempotent Replay')
+    expect(html).toContain('icon-replay')
     expect(html).toContain('cache-badge replay')
   })
 
@@ -210,7 +213,8 @@ describe('MessageRenderer (UI Presentation & Diagnostics)', () => {
 
     const html = MessageRenderer.renderMessages([assistantMsg], false)
     expect(html).toContain('cache-badge unknown')
-    expect(html).toContain('ℹ️ Diagnostic History Unavailable')
+    expect(html).toContain('Diagnostic History Unavailable')
+    expect(html).toContain('icon-info')
     expect(html).toContain('<span class="cache-latency-pill latency-standard">—</span>')
     expect(html).toContain('<span class="diag-value highlight-accent">—</span>')
     expect(html).toContain('<span class="diag-value">—</span>')
@@ -239,7 +243,8 @@ describe('MessageRenderer (UI Presentation & Diagnostics)', () => {
     }
 
     const html = MessageRenderer.renderMessages([assistantMsg], false)
-    expect(html).toContain('🌐 Upstream Provider Generation')
+    expect(html).toContain('Upstream Provider Generation')
+    expect(html).toContain('icon-globe')
     expect(html).toContain('1150.2 ms')
   })
 
@@ -253,7 +258,8 @@ describe('MessageRenderer (UI Presentation & Diagnostics)', () => {
     }
 
     const html = MessageRenderer.renderMessages([errorMsg], false)
-    expect(html).toContain('⚠️ Gateway Error')
+    expect(html).toContain('Gateway Error')
+    expect(html).toContain('icon-alert')
     expect(html).toContain('btn-retry')
     expect(html).toContain('data-retry-id="e1"')
   })
@@ -286,7 +292,8 @@ describe('MessageRenderer (UI Presentation & Diagnostics)', () => {
     const html = MessageRenderer.renderMessages([cancelledMsg], false)
     expect(html).toContain('cancelled-row')
     expect(html).toContain('stopped-badge')
-    expect(html).toContain('⏹️ Generation Stopped')
+    expect(html).toContain('Generation Stopped')
+    expect(html).toContain('icon-stop')
     expect(html).toContain('cancelled-callout')
     expect(html).toContain('Generation stopped by user.')
     expect(html).toContain('btn-retry')
@@ -1326,7 +1333,8 @@ describe('DemoUIController (End-to-End Coordination & Request Payloads)', () => 
 
     uiController['renderMessages']()
     const container = document.getElementById('messages-container')!
-    expect(container.innerHTML).toContain('ℹ️ Diagnostic History Unavailable')
+    expect(container.innerHTML).toContain('Diagnostic History Unavailable')
+    expect(container.innerHTML).toContain('icon-info')
     expect(container.innerHTML).toContain('cache-badge unknown')
     expect(container.innerHTML).not.toContain('0 hits')
     expect(container.innerHTML).not.toContain('0.0 ms')
@@ -1595,8 +1603,10 @@ describe('DemoUIController (End-to-End Coordination & Request Payloads)', () => 
 
     const container = document.getElementById('messages-container')!
     expect(container.innerHTML).toContain('Generation stopped by user.')
-    expect(container.innerHTML).toContain('⏹️ Generation Stopped')
-    expect(container.innerHTML).toContain('🔄 Retry Query')
+    expect(container.innerHTML).toContain('Generation Stopped')
+    expect(container.innerHTML).toContain('icon-stop')
+    expect(container.innerHTML).toContain('Retry Query')
+    expect(container.innerHTML).toContain('icon-refresh')
     // Must NOT fabricate cache hit or diagnostics card for cancelled turn
     expect(container.innerHTML).not.toContain('Exact Cache Hit')
     expect(container.innerHTML).not.toContain('Semantic Cache Hit')
@@ -1932,7 +1942,8 @@ describe('DemoUIController (End-to-End Coordination & Request Payloads)', () => 
 
     const container = document.getElementById('messages-container')!
     expect(container.innerHTML).toContain('Generation stopped by user.')
-    expect(container.innerHTML).toContain('🔄 Retry Query')
+    expect(container.innerHTML).toContain('Retry Query')
+    expect(container.innerHTML).toContain('icon-refresh')
 
     const initialIdempKey = capturedIdempotencyKey
     expect(initialIdempKey).toBeDefined()

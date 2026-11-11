@@ -9,50 +9,50 @@
 [data-theme='dark'] {
   color-scheme: dark;
 
-  /* 1. Base Surfaces (Dark Theme) */
-  --bg: #0b0f19;
-  --surface: #111827;
-  --surface-raised: #1f2937;
-  --surface-hover: #2d3748;
-  --surface-input: #0e1422;
+  /* 1. Base Surfaces (Dark Theme from swatch BG #121212) */
+  --bg: #121212;
+  --surface: #1a1a1a;
+  --surface-raised: #242424;
+  --surface-hover: #2e2e2e;
+  --surface-input: #161616;
 
-  /* 2. Ink & Typography */
-  --ink: #f9fafb;
-  --ink-muted: #cbd5e1;
-  --ink-dim: #94a3b8;
-  --ink-inverted: #0f172a;
+  /* 2. Ink & Typography (from swatch FG+ #ffffff, FG #bebebe, DIM #8a8a8d) */
+  --ink: #ffffff;
+  --ink-muted: #bebebe;
+  --ink-dim: #8a8a8d;
+  --ink-inverted: #121212;
 
-  /* 3. IntelliCache Accents & Branding (Electric Sapphire / Indigo) */
-  --accent: #6366f1;
-  --accent-hover: #4f46e5;
-  --accent-ink: #ffffff;
-  --accent-cyan: #38bdf8;
-  --accent-blue: #3b82f6;
+  /* 3. IntelliCache Accents & Branding (Warm Golden Amber from swatch GR / GR+ #ffc107 & BL #e68e0d) */
+  --accent: #ffc107;
+  --accent-hover: #e68e0d;
+  --accent-ink: #121212;
+  --accent-cyan: #bebebe;
+  --accent-blue: #f59e0b;
 
-  /* 4. Semantic Cache Outcomes (Emerald Green reserved for Cache Hits) */
-  --exact-color: #10b981;
-  --exact-bg: rgba(16, 185, 129, 0.12);
-  --exact-border: #059669;
+  /* 4. Semantic Cache Outcomes */
+  --exact-color: #ffc107;
+  --exact-bg: rgba(255, 193, 7, 0.12);
+  --exact-border: #e68e0d;
 
-  --semantic-color: #38bdf8;
-  --semantic-bg: rgba(56, 189, 248, 0.12);
-  --semantic-border: #0284c7;
+  --semantic-color: #f59e0b;
+  --semantic-bg: rgba(245, 158, 11, 0.12);
+  --semantic-border: #d97706;
 
-  --provider-color: #f59e0b;
-  --provider-bg: rgba(245, 158, 11, 0.12);
-  --provider-border: #d97706;
+  --provider-color: #d35f5f;
+  --provider-bg: rgba(211, 95, 95, 0.12);
+  --provider-border: #b91c1c;
 
-  --bypass-color: #c084fc;
-  --bypass-bg: rgba(192, 132, 252, 0.12);
-  --bypass-border: #9333ea;
+  --bypass-color: #bebebe;
+  --bypass-bg: rgba(190, 190, 190, 0.12);
+  --bypass-border: #8a8a8d;
 
-  --error-color: #f87171;
-  --error-bg: rgba(248, 113, 113, 0.12);
-  --error-border: #dc2626;
+  --error-color: #d35f5f;
+  --error-bg: rgba(211, 95, 95, 0.12);
+  --error-border: #b91c1c;
 
   /* 5. Neo-Brutalist Borders & Hard Shadows */
-  --border-color: #2a3449;
-  --border-color-contrast: #3d4a66;
+  --border-color: #2c2c2e;
+  --border-color-contrast: #404043;
   --border: 2px solid var(--border-color);
   --border-contrast: 2px solid var(--border-color-contrast);
   --border-accent: 2px solid var(--accent);
@@ -65,14 +65,14 @@
   --shadow-active: 1px 1px 0 var(--shadow-color);
 
   /* 6. Code block surfaces */
-  --code-bg: #0d1117;
-  --code-header-bg: #161b22;
-  --code-border: #30363d;
-  --code-header-ink: #94a3b8;
+  --code-bg: #161616;
+  --code-header-bg: #202020;
+  --code-border: #2c2c2e;
+  --code-header-ink: #8a8a8d;
 
   /* 7. Scrollbars */
-  --scrollbar-thumb: #2a3449;
-  --scrollbar-thumb-hover: #3d4a66;
+  --scrollbar-thumb: #2c2c2e;
+  --scrollbar-thumb-hover: #404043;
   --scrollbar-track: var(--bg);
 }
 
@@ -80,69 +80,69 @@
   color-scheme: light;
 
   /* 1. Base Surfaces (Light Theme) */
-  --bg: #f8fafc;
+  --bg: #f5f5f4;
   --surface: #ffffff;
-  --surface-raised: #f1f5f9;
-  --surface-hover: #e2e8f0;
+  --surface-raised: #eaeaea;
+  --surface-hover: #dedede;
   --surface-input: #ffffff;
 
   /* 2. Ink & Typography */
-  --ink: #0f172a;
-  --ink-muted: #334155;
-  --ink-dim: #475569;
-  --ink-inverted: #f8fafc;
+  --ink: #121212;
+  --ink-muted: #383838;
+  --ink-dim: #666666;
+  --ink-inverted: #ffffff;
 
-  /* 3. IntelliCache Accents & Branding (Electric Sapphire / Indigo) */
-  --accent: #4f46e5;
-  --accent-hover: #4338ca;
-  --accent-ink: #ffffff;
-  --accent-cyan: #0284c7;
-  --accent-blue: #1d4ed8;
+  /* 3. IntelliCache Accents & Branding (Warm Golden Amber) */
+  --accent: #ffc107;
+  --accent-hover: #e68e0d;
+  --accent-ink: #121212;
+  --accent-cyan: #475569;
+  --accent-blue: #b45309;
 
-  /* 4. Semantic Cache Outcomes (Emerald Green reserved for Cache Hits) */
-  --exact-color: #047857;
-  --exact-bg: rgba(4, 120, 87, 0.08);
-  --exact-border: #059669;
+  /* 4. Semantic Cache Outcomes (WCAG AA/AAA on Light Surfaces) */
+  --exact-color: #b45309;
+  --exact-bg: rgba(245, 158, 11, 0.12);
+  --exact-border: #d97706;
 
-  --semantic-color: #0284c7;
-  --semantic-bg: rgba(2, 132, 199, 0.08);
-  --semantic-border: #0284c7;
+  --semantic-color: #c2410c;
+  --semantic-bg: rgba(234, 88, 12, 0.12);
+  --semantic-border: #ea580c;
 
-  --provider-color: #b45309;
-  --provider-bg: rgba(180, 83, 9, 0.08);
-  --provider-border: #d97706;
+  --provider-color: #b91c1c;
+  --provider-bg: rgba(185, 28, 28, 0.08);
+  --provider-border: #dc2626;
 
-  --bypass-color: #7e22ce;
-  --bypass-bg: rgba(126, 34, 206, 0.08);
-  --bypass-border: #9333ea;
+  --bypass-color: #475569;
+  --bypass-bg: rgba(71, 85, 105, 0.08);
+  --bypass-border: #64748b;
 
   --error-color: #b91c1c;
   --error-bg: rgba(185, 28, 28, 0.08);
-  --error-border: #dc2626;
+  --error-border: #b91c1c;
 
   /* 5. Neo-Brutalist Borders & Hard Shadows */
-  --border-color: #cbd5e1;
-  --border-color-contrast: #94a3b8;
+  --border-color: #d6d3d1;
+  --border-color-contrast: #a8a29e;
   --border: 2px solid var(--border-color);
   --border-contrast: 2px solid var(--border-color-contrast);
-  --border-accent: 2px solid var(--accent);
-  --border-hard: #0f172a;
+  --border-accent: 2px solid #b45309;
+  --border-hard: #121212;
 
-  --shadow-color: #0f172a;
+  --shadow-color: #121212;
   --shadow-lg: 5px 5px 0 var(--shadow-color);
   --shadow-md: 3px 3px 0 var(--shadow-color);
   --shadow-sm: 2px 2px 0 var(--shadow-color);
   --shadow-active: 1px 1px 0 var(--shadow-color);
 
   /* 6. Code block surfaces (Dark Slate for code clarity) */
-  --code-bg: #0f172a;
-  --code-header-bg: #1e293b;
-  --code-border: #334155;
-  --code-header-ink: #cbd5e1;
+  --code-bg: #1c1c1e;
+  --code-header-bg: #2c2c2e;
+  --code-border: #3a3a3c;
+  --code-header-ink: #eaeaea;
 
   /* 7. Scrollbars */
-  --scrollbar-thumb: #cbd5e1;
-  --scrollbar-thumb-hover: #94a3b8;
+  --scrollbar-thumb: #d6d3d1;
+  --scrollbar-thumb-hover: #a8a29e;
   --scrollbar-track: var(--bg);
 }
 
@@ -198,6 +198,90 @@ body {
 ::selection {
   background-color: var(--accent);
   color: var(--accent-ink);
+}
+
+/* Uniform Accessible Vector Iconography */
+.icon-svg {
+  display: inline-block;
+  vertical-align: -0.15em;
+  width: 1em;
+  height: 1em;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  flex-shrink: 0;
+}
+
+.icon-svg.fill-current {
+  fill: currentColor;
+  stroke: none;
+}
+
+.brand-logo .icon-bolt {
+  width: 18px;
+  height: 18px;
+  stroke: var(--accent-ink);
+  fill: var(--accent-ink);
+}
+
+.theme-icon-light,
+.theme-icon-dark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.badge-icon {
+  display: inline-block;
+  vertical-align: -0.15em;
+  width: 1.05em;
+  height: 1.05em;
+  stroke: currentColor;
+  flex-shrink: 0;
+}
+
+.author-icon-svg {
+  display: inline-block;
+  vertical-align: -0.15em;
+  width: 1em;
+  height: 1em;
+  stroke: currentColor;
+  flex-shrink: 0;
+}
+
+.btn-icon-svg {
+  display: inline-block;
+  vertical-align: -0.15em;
+  width: 1em;
+  height: 1em;
+  stroke: currentColor;
+  flex-shrink: 0;
+}
+
+.notice-icon-svg {
+  display: inline-block;
+  vertical-align: -0.18em;
+  width: 1.15em;
+  height: 1.15em;
+  stroke: currentColor;
+  flex-shrink: 0;
+}
+
+.conv-icon-svg {
+  display: inline-block;
+  vertical-align: -0.15em;
+  width: 1em;
+  height: 1em;
+  stroke: currentColor;
+  flex-shrink: 0;
+}
+
+.btn-icon-symbol {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 ::-moz-selection {
@@ -367,12 +451,12 @@ a {
 
 .connection-badge[data-state='connected'] .connection-dot {
   background-color: var(--exact-color);
-  box-shadow: 0 0 6px rgba(16, 185, 129, 0.6);
+  box-shadow: none;
 }
 
 .connection-badge[data-state='connecting'] .connection-dot {
   background-color: var(--provider-color);
-  animation: pulse-dot 1s infinite alternate;
+  opacity: 0.7;
 }
 
 .connection-badge[data-state='unauthorized'] .connection-dot {
@@ -869,7 +953,7 @@ a {
 }
 
 .stopped-badge {
-  color: #fbbf24;
+  color: var(--accent);
 }
 
 .assistant-meta {
@@ -1200,15 +1284,15 @@ a {
 }
 
 .cache-badge.replay {
-  background: rgba(168, 85, 247, 0.15);
-  color: #c084fc;
-  border-color: rgba(168, 85, 247, 0.35);
+  background: var(--bypass-bg);
+  color: var(--bypass-color);
+  border-color: var(--bypass-border);
 }
 
 .cache-badge.unknown {
-  background: rgba(148, 163, 184, 0.15);
-  color: var(--text-muted);
-  border-color: rgba(148, 163, 184, 0.35);
+  background: var(--surface-hover);
+  color: var(--ink-dim);
+  border-color: var(--border-color-contrast);
 }
 
 .cache-latency-pill {
@@ -1359,9 +1443,9 @@ a {
 }
 
 .cancelled-callout {
-  background: rgba(245, 158, 11, 0.08) !important;
-  border-color: var(--provider-border) !important;
-  color: #fcd34d !important;
+  background: var(--exact-bg) !important;
+  border-color: var(--exact-border) !important;
+  color: var(--exact-color) !important;
 }
 
 .error-actions {
@@ -1436,30 +1520,11 @@ a {
 }
 
 .loading-dots .dot {
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
   background-color: var(--accent);
   border-radius: 50%;
-  animation: pulse-dot 0.8s infinite alternate;
-}
-
-.loading-dots .dot:nth-child(2) {
-  animation-delay: 0.2s;
-}
-
-.loading-dots .dot:nth-child(3) {
-  animation-delay: 0.4s;
-}
-
-@keyframes pulse-dot {
-  from {
-    opacity: 0.3;
-    transform: scale(0.8);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1.1);
-  }
+  opacity: 0.85;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
