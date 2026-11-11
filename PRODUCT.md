@@ -17,6 +17,7 @@ Secondary: Enterprise Platform Administrators monitoring multi-tenant namespace 
 IntelliCache intercepts LLM inference requests to provide ultra-low latency response reuse through exact-match SHA-256 caching and vector-similarity semantic caching with pgvector. It shields upstream LLM providers (e.g. Groq, Ollama) from redundant calls, coalesces concurrent identical requests with SingleFlight, and provides transparent, namespace-isolated performance telemetry.
 
 Success means:
+
 - Sub-millisecond exact cache retrieval and low-latency pgvector semantic retrieval.
 - Zero cache stampedes during concurrent spikes via cancellation-safe SingleFlight coalescing.
 - Complete tenant isolation with cryptographically verified HMAC client tokens.
@@ -25,6 +26,7 @@ Success means:
 ## Positioning
 
 Unlike basic key-value caches or opaque proxy solutions, IntelliCache combines:
+
 1. Deterministic 3-tier prompt fingerprinting that accounts for all answer-affecting parameters.
 2. Technical eligibility filtering for semantic cache candidates using pgvector HNSW cosine similarity, preventing hallucinated reuse on non-deterministic queries.
 3. Cancellation-safe process-local SingleFlight execution that merges identical in-flight upstream requests into a single provider call without memory leaks or race conditions.

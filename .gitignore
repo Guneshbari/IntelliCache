@@ -13,3 +13,5 @@ releases/
 .venv/
 __pycache__/
 *.py[cod]
+.codex/
+.github/hooks/
