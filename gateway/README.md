@@ -192,12 +192,12 @@ The provider client is lazily constructed only when an actual upstream inference
 In a centralized deployment, multiple client machines communicate with a single central IntelliCache API service over HTTP or HTTPS:
 
 ```
-[ Client PC 1 (Browser Ext / App) ] ---\
-                                        +---> [ Central IntelliCache API Server ] ===> [ PostgreSQL (Persistent Cache) ]
-[ Client PC 2 (Browser Ext / App) ] ---/          (FastAPI Gateway)                            ||
-                                                          ||                                   ||
-                                                          \/                                   \/
-                                                [ Groq LLM Provider ]                 (Authoritative Shared Store)
+[ Client Application 1 ] ---\
+                            +---> [ Central IntelliCache API Server ] ===> [ PostgreSQL (Persistent Cache) ]
+[ Client Application 2 ] ---/          (FastAPI Gateway)                            ||
+                                              ||                                   ||
+                                              \/                                   \/
+                                    [ Groq LLM Provider ]                 (Authoritative Shared Store)
 ```
 
 ### Key Architectural Principles:
