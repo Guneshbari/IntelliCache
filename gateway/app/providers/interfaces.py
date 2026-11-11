@@ -2,9 +2,12 @@
 Abstract provider interface for LLM backends.
 """
 
+from __future__ import annotations
 from abc import ABC, abstractmethod
-from typing import AsyncGenerator
-from ..core.contracts import GenerationRequest, GenerationResult, StreamChunk
+from typing import TYPE_CHECKING, AsyncGenerator
+
+if TYPE_CHECKING:
+    from ..core.contracts import GenerationRequest, GenerationResult, StreamChunk
 
 
 class LLMProvider(ABC):

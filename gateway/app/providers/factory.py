@@ -24,8 +24,11 @@ class ProviderFactory:
     def get_provider_class(cls, name: str) -> Type[LLMProvider]:
         """Look up registered provider class by name."""
         key = name.lower().strip()
+        if key == "mock":
+            from .mock_adapter import MockProvider
+            return MockProvider
         if key not in cls._registry:
-            available = ", ".join(sorted(cls._registry.keys()))
+            available = ", ".join(sorted(list(cls._registry.keys()) + ["mock"]))
             raise ProviderConfigurationError(
                 f"Unknown LLM provider '{name}'. Available providers: [{available}]"
             )
@@ -43,4 +46,7 @@ class ProviderFactory:
         provider_cls = cls.get_provider_class(name)
         if provider_cls is GroqProvider:
             return GroqProvider(api_key=api_key, default_model=default_model, **kwargs)
+        if name.lower().strip() == "mock":
+            from .mock_adapter import MockProvider
+            return MockProvider(api_key=api_key, default_model=default_model, **kwargs)
         return provider_cls(**kwargs)
