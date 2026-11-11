@@ -50,8 +50,8 @@ jobs:
       - name: Build demonstration chatbot application
         run: pnpm demo:build
 
-  collector-tests-and-build:
-    name: Extension Tests & Distribution Builds
+  frontend-tests-and-build:
+    name: Frontend Tests & Demo Application Build
     needs: frontend-quality
     runs-on: ubuntu-latest
     steps:
@@ -75,31 +75,14 @@ jobs:
       - name: Run Vitest unit & integration test suite
         run: pnpm test
 
-      - name: Build Chromium & Firefox extension bundles
-        run: pnpm build:all
+      - name: Build demonstration chatbot application
+        run: pnpm build
 
-      - name: Verify release packaging pipeline
-        run: node scripts/release.mjs --skip-tests
-
-      - name: Upload Chromium build artifact
+      - name: Upload demo build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: intellicache-extension-chromium
-          path: dist/
-          retention-days: 14
-
-      - name: Upload Firefox build artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: intellicache-extension-firefox
-          path: dist-firefox/
-          retention-days: 14
-
-      - name: Upload standalone ZIP distribution packages
-        uses: actions/upload-artifact@v4
-        with:
-          name: intellicache-release-packages
-          path: releases/
+          name: intellicache-demo-build
+          path: dist-demo/
           retention-days: 14
 
   gateway-unit-tests:

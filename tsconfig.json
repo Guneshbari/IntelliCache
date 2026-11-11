@@ -15,15 +15,7 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
-    "types": ["chrome", "node"]
+    "types": ["node"]
   },
-  "include": [
-    "src",
-    "demo",
-    "manifest.config.ts",
-    "vite.config.ts",
-    "vite.demo.config.ts",
-    "vitest.config.ts",
-    "tests"
-  ]
+  "include": ["demo", "vite.config.ts", "vite.demo.config.ts", "vitest.config.ts", "tests"]
 }

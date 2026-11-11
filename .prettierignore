@@ -1,5 +1,5 @@
 dist
-dist-firefox
+dist-*
 node_modules
 pnpm-lock.yaml
 releases

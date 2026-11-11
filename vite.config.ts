@@ -1,18 +1,17 @@
+import { resolve } from 'path'
 import { defineConfig } from 'vite'
-import { crx } from '@crxjs/vite-plugin'
-import manifest from './manifest.config.ts'
 
 export default defineConfig({
-  plugins: [crx({ manifest })],
+  root: resolve(import.meta.dirname, 'demo'),
+  publicDir: resolve(import.meta.dirname, 'public'),
+  base: './',
   build: {
-    modulePreload: false,
+    outDir: resolve(import.meta.dirname, 'dist-demo'),
     emptyOutDir: true,
+    chunkSizeWarningLimit: 1200,
   },
   server: {
-    port: 5173,
-    strictPort: true,
-    hmr: {
-      port: 5173,
-    },
+    port: 5174,
+    strictPort: false,
   },
 })

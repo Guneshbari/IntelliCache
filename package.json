@@ -1,13 +1,11 @@
 {
-  "name": "intellicache-collector",
-  "version": "0.1.0",
-  "description": "Local AI conversation data collector browser extension for the IntelliCache research project",
+  "name": "intellicache",
+  "version": "0.2.0",
+  "description": "Intelligent semantic response cache gateway and demonstration chatbot for LLM inference",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "build:firefox": "tsc --noEmit && vite build && node scripts/build-firefox.mjs",
-    "build:all": "tsc --noEmit && vite build && node scripts/build-firefox.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
@@ -17,26 +15,23 @@
     "test:watch": "vitest",
     "demo:dev": "vite --config vite.demo.config.ts",
     "demo:build": "vite build --config vite.demo.config.ts",
-    "demo:preview": "vite preview --config vite.demo.config.ts",
-    "release": "node scripts/release.mjs"
+    "demo:preview": "vite preview --config vite.demo.config.ts"
   },
   "keywords": [
-    "browser-extension",
-    "manifest-v3",
     "intellicache",
-    "ai-data-collection"
+    "semantic-cache",
+    "llm-cache",
+    "gateway",
+    "fastapi"
   ],
   "author": "",
   "license": "MIT",
   "packageManager": "pnpm@12.15.0",
   "devDependencies": {
-    "@crxjs/vite-plugin": "^2.7.1",
     "@eslint/js": "^10.0.1",
-    "@types/chrome": "^0.2.6",
     "@types/dompurify": "^3.2.0",
     "@types/node": "^26.2.0",
     "eslint": "^10.8.1",
-    "fake-indexeddb": "^6.2.5",
     "happy-dom": "^20.11.2",
     "prettier": "^3.9.6",
     "typescript": "^5.8.3",
@@ -45,7 +40,6 @@
     "vitest": "^4.1.10"
   },
   "dependencies": {
-    "dexie": "^4.4.5",
     "dompurify": "^3.4.17",
     "highlight.js": "^11.12.0",
     "marked": "^18.1.3"

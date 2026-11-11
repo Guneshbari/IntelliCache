@@ -35,7 +35,6 @@ Unlike basic key-value caches or opaque proxy solutions, IntelliCache combines:
 ## Operating Context
 
 - **Developer / Evaluator Workflow**: Developers interact with the IntelliCache Gateway via the high-contrast Neo-Brutalist web demonstration interface or direct REST API (`POST /query`, `GET /metrics/me`, `/conversations`).
-- **Data Collection Companion**: A cross-browser Manifest V3 extension (Chromium and Firefox) passively collects real-world human-LLM interactions across ChatGPT, Claude, and Gemini into IndexedDB for benchmarking.
 - **Runtime Environment**: Python 3.11+ FastAPI gateway backed by PostgreSQL with the `pgvector` extension, and a vanilla TypeScript/Vite frontend client.
 
 ## Capabilities and Constraints
@@ -62,9 +61,8 @@ Unlike basic key-value caches or opaque proxy solutions, IntelliCache combines:
 ## Evidence on Hand
 
 - **Working Gateway Implementation**: `gateway/` contains full FastAPI implementation, comprehensive unit/integration test suite, and SQL migrations (`migrations/001_create_cache_entries.sql` through `004_conversation_fencing.sql`).
-- **Demonstration Chatbot Interface**: `demo/` contains the full vanilla TypeScript frontend with 40 passing Vitest test suites (558 tests) and zero mechanical defects.
+- **Demonstration Chatbot Interface**: `demo/` contains the full vanilla TypeScript frontend with robust Vitest test suites and zero mechanical defects.
 - **Evaluation Dataset**: `gateway/evaluation/dataset.json` contains benchmark queries with verified semantic similarity recall tests.
-- **Browser Extension**: `src/` contains cross-browser Manifest V3 extension for Chrome, Edge, Brave, and Firefox.
 
 ## Product Principles
 
