@@ -73,13 +73,13 @@ curl http://127.0.0.1:8000/
 # Expected: {"service":"IntelliCache Gateway","version":"1.0.0","status":"online",...}
 ```
 
-### Step 2: Start the Demonstration Web Application
+### Step 2: Start the Web Application
 
 In the root repository directory:
 
 ```bash
-# Start Vite development server for the demo chatbot (port 5174)
-pnpm demo:dev
+# Start Vite development server (port 5174)
+pnpm dev
 ```
 
 Open your browser at:
@@ -91,11 +91,11 @@ http://localhost:5174
 ### Production Build & Preview
 
 ```bash
-# Build production bundle to dist-demo/
-pnpm demo:build
+# Build production bundle to dist/
+pnpm build
 
 # Preview built application locally
-pnpm demo:preview
+pnpm preview
 ```
 
 ---

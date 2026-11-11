@@ -47,11 +47,11 @@ jobs:
       - name: Run TypeScript typecheck
         run: pnpm typecheck
 
-      - name: Build demonstration chatbot application
-        run: pnpm demo:build
+      - name: Build frontend application
+        run: pnpm build
 
   frontend-tests-and-build:
-    name: Frontend Tests & Demo Application Build
+    name: Frontend Tests & Application Build
     needs: frontend-quality
     runs-on: ubuntu-latest
     steps:
@@ -75,14 +75,14 @@ jobs:
       - name: Run Vitest unit & integration test suite
         run: pnpm test
 
-      - name: Build demonstration chatbot application
+      - name: Build frontend application
         run: pnpm build
 
-      - name: Upload demo build artifact
+      - name: Upload frontend build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: intellicache-demo-build
-          path: dist-demo/
+          name: intellicache-frontend-build
+          path: dist/
           retention-days: 14
 
   gateway-unit-tests:

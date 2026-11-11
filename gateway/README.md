@@ -644,9 +644,9 @@ python -m unittest tests/test_main.py          # Application integration tests
 
 ---
 
-## Demonstration Chatbot & End-to-End Integration (Step 12)
+## Frontend Web Interface & End-to-End Integration
 
-IntelliCache includes a lightweight, standalone web-based demonstration chatbot under [`demo/`](file:///home/gnx/Projects/IntelliCache/demo/) that connects exclusively to the gateway's REST API (`POST /query`, `GET /metrics/me`, `GET /cache/stats`).
+IntelliCache includes a lightweight, standalone web client under [`frontend/`](file:///home/gnx/Projects/IntelliCache/frontend/) that connects exclusively to the gateway's REST API (`POST /query`, `GET /metrics/me`, `GET /cache/stats`).
 
 ### Features:
 
@@ -655,14 +655,14 @@ IntelliCache includes a lightweight, standalone web-based demonstration chatbot 
 - **Live Cache Diagnostics**: Every assistant response is paired with a real-time Cache & Performance Card distinguishing exact cache hits (`⚡ EXACT CACHE HIT`), semantic hits (`🧠 SEMANTIC CACHE HIT`), and provider generations (`🌐 UPSTREAM PROVIDER GENERATION`), along with latency in milliseconds, token counts, and shortened SHA-256 fingerprints.
 - **Namespace Telemetry Panel**: A collapsible metrics panel fetching real-time tenant telemetry from `GET /metrics/me`.
 
-### Starting the Demo:
+### Starting the Frontend:
 
 ```bash
 # In repository root
-pnpm demo:dev
+pnpm dev
 ```
 
-Access the demonstration client at `http://localhost:5174`. See [`demo/README.md`](file:///home/gnx/Projects/IntelliCache/demo/README.md) for full verification workflows and instructions.
+Access the client at `http://localhost:5174`. See [`frontend/README.md`](file:///home/gnx/Projects/IntelliCache/frontend/README.md) for full verification workflows and instructions.
 
 ---
 
@@ -670,7 +670,7 @@ Access the demonstration client at `http://localhost:5174`. See [`demo/README.md
 
 The following capabilities represent the current implementation state:
 
-- **Current Scope**: Exact-match SHA-256 caching, centralized PostgreSQL storage, in-memory LRU/TTL storage, cancellation-safe SingleFlight coalescing for non-streaming requests, Groq LLM provider adapter, Ollama embedding provider, PostgreSQL + pgvector vector storage (`PostgresVectorStore`), semantic response caching service with deterministic eligibility policy, namespace-isolated runtime metrics collection, server-managed persistent conversation storage and bounded context building, and standalone web demonstration chatbot (`demo/`).
+- **Current Scope**: Exact-match SHA-256 caching, centralized PostgreSQL storage, in-memory LRU/TTL storage, cancellation-safe SingleFlight coalescing for non-streaming requests, Groq LLM provider adapter, Ollama embedding provider, PostgreSQL + pgvector vector storage (`PostgresVectorStore`), semantic response caching service with deterministic eligibility policy, namespace-isolated runtime metrics collection, server-managed persistent conversation storage and bounded context building, and standalone web client (`frontend/`).
 - **SingleFlight Boundary**: Request coalescing is strictly process-local (within a single Python asyncio event loop and process).
 - **Multi-Turn Semantic Policy**: Semantic caching explicitly evaluates independent single-turn technical queries (`messages` count = 1, role = 'user', no `conversation_id`). Multi-turn conversations and requests with `conversation_id` are excluded from semantic caching by design to prevent contextual ambiguity.
 - **Persistent Conversation Store**: Persistent conversation management, bounded context windows, HMAC principal isolation, and concurrency safety are fully implemented and integrated across the gateway and demo client.

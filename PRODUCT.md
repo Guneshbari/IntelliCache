@@ -61,7 +61,7 @@ Unlike basic key-value caches or opaque proxy solutions, IntelliCache combines:
 ## Evidence on Hand
 
 - **Working Gateway Implementation**: `gateway/` contains full FastAPI implementation, comprehensive unit/integration test suite, and SQL migrations (`migrations/001_create_cache_entries.sql` through `004_conversation_fencing.sql`).
-- **Demonstration Chatbot Interface**: `demo/` contains the full vanilla TypeScript frontend with robust Vitest test suites and zero mechanical defects.
+- **Frontend Web Application**: `frontend/` contains the full vanilla TypeScript frontend with robust Vitest test suites and zero mechanical defects.
 - **Evaluation Dataset**: `gateway/evaluation/dataset.json` contains benchmark queries with verified semantic similarity recall tests.
 
 ## Product Principles

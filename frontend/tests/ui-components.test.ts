@@ -1,17 +1,17 @@
 // @vitest-environment happy-dom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { GatewayApiClient, GatewayApiError } from '../demo/src/api-client'
+import { GatewayApiClient, GatewayApiError } from '../src/api-client'
 import type {
   CacheStats,
   ChatMessage,
   ConversationMessageItem,
   NamespaceMetricsSnapshot,
   QueryResponse,
-} from '../demo/src/types'
-import { DemoUIController } from '../demo/src/ui-controller'
-import { MessageRenderer } from '../demo/src/ui/message-renderer'
-import { MetricsController } from '../demo/src/ui/metrics-controller'
-import { SettingsController } from '../demo/src/ui/settings-controller'
+} from '../src/types'
+import { DemoUIController } from '../src/ui-controller'
+import { MessageRenderer } from '../src/ui/message-renderer'
+import { MetricsController } from '../src/ui/metrics-controller'
+import { SettingsController } from '../src/ui/settings-controller'
 
 function setupTestDom(): void {
   document.body.innerHTML = `

@@ -5,13 +5,13 @@ import {
   GatewayApiError,
   SseStreamParser,
   validateStreamChunkPayload,
-} from '../demo/src/api-client'
+} from '../src/api-client'
 import type {
   CacheStats,
   NamespaceMetricsSnapshot,
   QueryResponse,
   RootStatusResponse,
-} from '../demo/src/types'
+} from '../src/types'
 
 describe('GatewayApiClient (Demo Chatbot)', () => {
   let client: GatewayApiClient

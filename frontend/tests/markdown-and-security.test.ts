@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { beforeEach, describe, expect, it } from 'vitest'
-import { MarkdownRenderer } from '../demo/src/ui/markdown-renderer'
+import { MarkdownRenderer } from '../src/ui/markdown-renderer'
 
 describe('MarkdownRenderer & XSS Security Isolation', () => {
   beforeEach(() => {

@@ -1,11 +1,12 @@
 {
   "name": "intellicache",
   "version": "0.2.0",
-  "description": "Intelligent semantic response cache gateway and demonstration chatbot for LLM inference",
+  "description": "Intelligent semantic response cache gateway and web application for LLM inference",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
@@ -13,9 +14,9 @@
     "format:check": "prettier --check .",
     "test": "vitest run",
     "test:watch": "vitest",
-    "demo:dev": "vite --config vite.demo.config.ts",
-    "demo:build": "vite build --config vite.demo.config.ts",
-    "demo:preview": "vite preview --config vite.demo.config.ts"
+    "demo:dev": "vite",
+    "demo:build": "vite build",
+    "demo:preview": "vite preview"
   },
   "keywords": [
     "intellicache",

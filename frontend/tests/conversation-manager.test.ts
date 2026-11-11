@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { beforeEach, describe, expect, it } from 'vitest'
-import type { ChatMessage } from '../demo/src/types'
-import { ConversationManager } from '../demo/src/ui/conversation-manager'
+import type { ChatMessage } from '../src/types'
+import { ConversationManager } from '../src/ui/conversation-manager'
 
 describe('ConversationManager (In-Memory Session Model)', () => {
   let manager: ConversationManager

@@ -24,8 +24,9 @@ IntelliCache intercepts LLM inference requests to provide ultra-low latency resp
 
 ```
 IntelliCache/
-├── demo/                       # Vanilla TypeScript demonstration chatbot
-│   ├── index.html              # Chatbot HTML5 interface
+├── frontend/                   # Vanilla TypeScript frontend web client
+│   ├── index.html              # HTML5 entry point
+│   ├── public/                 # Static assets (favicon)
 │   ├── src/
 │   │   ├── api-client.ts       # GatewayApiClient with SSE streaming & auth
 │   │   ├── main.ts             # Application entry point
@@ -33,7 +34,13 @@ IntelliCache/
 │   │   ├── types.ts            # Frontend domain contracts and interfaces
 │   │   ├── ui-controller.ts    # Main UI interaction coordinator
 │   │   └── ui/                 # Specialized UI components (conversations, messages, metrics)
-│   └── README.md               # Demo interface documentation
+│   ├── tests/                  # Frontend unit & integration test suite (Vitest)
+│   │   ├── api-client.test.ts
+│   │   ├── conversation-manager.test.ts
+│   │   ├── markdown-and-security.test.ts
+│   │   ├── ui-components.test.ts
+│   │   └── setup.ts
+│   └── README.md               # Frontend interface documentation
 ├── gateway/                    # FastAPI Semantic Cache Gateway
 │   ├── app/
 │   │   ├── api/                # FastAPI routing and controllers
@@ -47,9 +54,9 @@ IntelliCache/
 │   │   └── vector_store/       # pgvector store and HNSW migration scripts
 │   ├── migrations/             # SQL database migration scripts
 │   └── tests/                  # Gateway unit and integration test suite
-├── tests/                      # Frontend unit & integration test suite (Vitest)
+├── assets/                     # Project branding, emblems, and logos
 ├── package.json                # Frontend scripts and dependencies
-├── vite.config.ts              # Vite configuration for demonstration chatbot
+├── vite.config.ts              # Vite configuration for frontend application
 ├── vitest.config.ts            # Vitest test runner configuration
 └── eslint.config.js            # Flat ESLint configuration
 ```
@@ -93,7 +100,7 @@ psql -U postgres -d intellicache -f migrations/vector/002_create_hnsw_index.sql
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-### 2. Demonstration Chatbot Setup
+### 2. Frontend Application Setup
 
 ```bash
 # Install dependencies
@@ -106,10 +113,10 @@ pnpm dev
 pnpm build
 
 # Preview production build
-pnpm demo:preview
+pnpm preview
 ```
 
-The demonstration chatbot will be available at `http://localhost:5174`.
+The web application will be available at `http://localhost:5174`.
 
 ---
 
