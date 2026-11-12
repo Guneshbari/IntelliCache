@@ -14,11 +14,11 @@ Secondary: Enterprise Platform Administrators monitoring multi-tenant namespace 
 
 ## Product Purpose
 
-IntelliCache intercepts LLM inference requests to provide ultra-low latency response reuse through exact-match SHA-256 caching and vector-similarity semantic caching with pgvector. It shields upstream LLM providers (e.g. Groq, Ollama) from redundant calls, coalesces concurrent identical requests with SingleFlight, and provides transparent, namespace-isolated performance telemetry.
+IntelliCache intercepts LLM inference requests to provide ultra-low latency response reuse through exact-match SHA-256 caching and vector-similarity semantic caching (supporting both in-memory FastEmbed and PostgreSQL pgvector). It shields upstream LLM providers (e.g. Groq, Ollama) from redundant calls, coalesces concurrent identical requests with SingleFlight, and provides transparent, namespace-isolated performance telemetry.
 
 Success means:
 
-- Sub-millisecond exact cache retrieval and low-latency pgvector semantic retrieval.
+- Sub-millisecond exact cache retrieval and low-latency in-memory / pgvector semantic retrieval.
 - Zero cache stampedes during concurrent spikes via cancellation-safe SingleFlight coalescing.
 - Complete tenant isolation with cryptographically verified HMAC client tokens.
 - Measurable token and latency savings reflected in real-time telemetry.
@@ -28,19 +28,19 @@ Success means:
 Unlike basic key-value caches or opaque proxy solutions, IntelliCache combines:
 
 1. Deterministic 3-tier prompt fingerprinting that accounts for all answer-affecting parameters.
-2. Technical eligibility filtering for semantic cache candidates using pgvector HNSW cosine similarity, preventing hallucinated reuse on non-deterministic queries.
+2. Technical eligibility filtering for semantic cache candidates using in-memory or pgvector cosine similarity, preventing hallucinated reuse on non-deterministic queries.
 3. Cancellation-safe process-local SingleFlight execution that merges identical in-flight upstream requests into a single provider call without memory leaks or race conditions.
 4. Hardened server-managed conversation lifecycle with atomic leasing, recovery fencing, and contiguity guarantees in PostgreSQL.
 
 ## Operating Context
 
 - **Developer / Evaluator Workflow**: Developers interact with the IntelliCache Gateway via the high-contrast Neo-Brutalist web demonstration interface or direct REST API (`POST /query`, `GET /metrics/me`, `/conversations`).
-- **Runtime Environment**: Python 3.11+ FastAPI gateway backed by PostgreSQL with the `pgvector` extension, and a vanilla TypeScript/Vite frontend client.
+- **Runtime Environment**: Python 3.11+ FastAPI gateway with support for both in-memory local operation (FastEmbed) and production PostgreSQL + pgvector, alongside a vanilla TypeScript/Vite frontend client.
 
 ## Capabilities and Constraints
 
 - **Exact-Match Cache**: In-memory and PostgreSQL LRU cache indexed by deterministic SHA-256 fingerprint.
-- **Semantic Similarity Cache**: HNSW vector index using pgvector and Ollama/Nomic embeddings for single-turn technical prompts.
+- **Semantic Similarity Cache**: Vector similarity caching supported in both in-memory mode (FastEmbed with BAAI/bge-small-en-v1.5) and persistent PostgreSQL mode (pgvector with Ollama/Nomic embeddings).
 - **Concurrency Control**: Process-local SingleFlight coordinator coalescing concurrent requests.
 - **Streaming & SSE**: Incremental token delivery via Server-Sent Events (`text/event-stream`) alongside standard JSON response payloads.
 - **Persistent Conversation Management**: Server-managed conversation turns, status fencing (`pending`, `completed`, `failed`), atomic lease renewals, and heartbeat-guarded completion.

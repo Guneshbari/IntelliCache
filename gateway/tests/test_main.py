@@ -135,5 +135,101 @@ class TestMainEndpoints(unittest.TestCase):
         self.assertNotEqual(response.headers.get("access-control-allow-credentials"), "true")
 
 
+class TestLifespanStartupAndShutdown(unittest.IsolatedAsyncioTestCase):
+    """Verifies application lifespan across memory and postgres configurations."""
+
+    async def asyncTearDown(self):
+        reload_settings()
+
+    async def test_lifespan_memory_semantic_cache_startup_and_shutdown(self):
+        """Memory cache with in-memory semantic cache starts up and shuts down cleanly."""
+        from app.main import create_app, lifespan
+        from app.vector_store import InMemoryVectorStore
+        from app.routes.query import get_query_cache, get_semantic_cache, get_vector_store
+
+        with patch.dict(os.environ, {
+            "CACHE_BACKEND": "memory",
+            "VECTOR_STORE_BACKEND": "memory",
+            "SEMANTIC_CACHE_ENABLED": "true",
+            "EMBEDDING_PROVIDER": "fastembed",
+            "GROQ_API_KEY": "gsk_test",
+        }, clear=False):
+            reload_settings()
+            app = create_app()
+
+            async with lifespan(app):
+                # Verify state and singletons
+                self.assertIsNotNone(app.state.cache)
+                self.assertIsInstance(app.state.vector_store, InMemoryVectorStore)
+                self.assertIsNotNone(app.state.semantic_cache)
+                self.assertIs(get_vector_store(), app.state.vector_store)
+                self.assertIs(get_semantic_cache(), app.state.semantic_cache)
+
+            # After shutdown, singletons reset
+            self.assertIsNone(get_semantic_cache())
+            self.assertIsNone(get_vector_store())
+
+    async def test_lifespan_postgres_semantic_cache_startup_and_shutdown(self):
+        """Postgres cache with pgvector semantic cache starts up, runs migrations, and cleans up."""
+        from unittest.mock import AsyncMock, MagicMock
+        from app.main import create_app, lifespan
+        from app.vector_store import PostgresVectorStore
+        from app.routes.query import get_query_cache, get_semantic_cache, get_vector_store
+
+        mock_pool = MagicMock()
+        mock_pool.close = AsyncMock()
+
+        with patch.dict(os.environ, {
+            "CACHE_BACKEND": "postgres",
+            "VECTOR_STORE_BACKEND": "postgres",
+            "DATABASE_URL": "postgresql://test_user:pass@localhost:5432/test_db",
+            "SEMANTIC_CACHE_ENABLED": "true",
+            "EMBEDDING_PROVIDER": "ollama",
+            "GROQ_API_KEY": "gsk_test",
+        }, clear=False):
+            reload_settings()
+            app = create_app()
+
+            with patch("asyncpg.create_pool", new_callable=AsyncMock, return_value=mock_pool), \
+                 patch("app.main.run_migrations", new_callable=AsyncMock) as mock_migrations, \
+                 patch("app.main.run_vector_migrations", new_callable=AsyncMock) as mock_vec_migrations, \
+                 patch("app.main.EmbeddingProviderFactory.create") as mock_factory:
+
+                mock_provider = MagicMock()
+                mock_provider.close = AsyncMock()
+                mock_factory.return_value = mock_provider
+
+                async with lifespan(app):
+                    mock_migrations.assert_awaited_once_with(mock_pool)
+                    mock_vec_migrations.assert_awaited_once_with(mock_pool, dimensions=768)
+                    self.assertIsInstance(app.state.vector_store, PostgresVectorStore)
+                    self.assertIsNotNone(app.state.semantic_cache)
+                    self.assertIs(get_vector_store(), app.state.vector_store)
+                    self.assertIs(get_semantic_cache(), app.state.semantic_cache)
+
+                # Shutdown cleans up
+                mock_pool.close.assert_awaited_once()
+                self.assertIsNone(get_semantic_cache())
+                self.assertIsNone(get_vector_store())
+
+    async def test_semantic_cache_startup_error_fails_fast(self):
+        """Startup errors in semantic cache are not swallowed by fail-open logic."""
+        from app.main import create_app, lifespan
+        from app.embeddings.errors import EmbeddingConfigurationError
+
+        with patch.dict(os.environ, {
+            "CACHE_BACKEND": "memory",
+            "SEMANTIC_CACHE_ENABLED": "true",
+            "EMBEDDING_PROVIDER": "unknown-provider",
+            "GROQ_API_KEY": "gsk_test",
+        }, clear=False):
+            reload_settings()
+            app = create_app()
+
+            with self.assertRaises(EmbeddingConfigurationError):
+                async with lifespan(app):
+                    pass
+
+
 if __name__ == "__main__":
     unittest.main()

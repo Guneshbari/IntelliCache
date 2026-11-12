@@ -164,10 +164,20 @@ class TestVectorContractsAndMath(unittest.TestCase):
         self.assertFalse(cfg.semantic_cache_enabled)
         self.assertEqual(cfg.vector_dimensions, 768)
 
-        # Enabling semantic cache without postgres backend raises ValueError
+        # Enabling semantic cache with memory cache succeeds and defaults vector_store_backend to memory
+        cfg_mem = Settings(groq_api_key="gsk_test", semantic_cache_enabled=True, cache_backend="memory")
+        self.assertTrue(cfg_mem.semantic_cache_enabled)
+        self.assertEqual(cfg_mem.vector_store_backend, "memory")
+
+        # Unsupported mismatched combinations raise ValueError
         with self.assertRaises(ValueError) as ctx:
-            Settings(groq_api_key="gsk_test", semantic_cache_enabled=True, cache_backend="memory")
-        self.assertIn("SEMANTIC_CACHE_ENABLED requires CACHE_BACKEND='postgres'", str(ctx.exception))
+            Settings(
+                groq_api_key="gsk_test",
+                semantic_cache_enabled=True,
+                cache_backend="memory",
+                vector_store_backend="postgres",
+            )
+        self.assertIn("Unsupported cache and vector-store backend combination", str(ctx.exception))
 
         # Non-positive vector dimensions raise ValueError
         with self.assertRaises(ValueError) as ctx:

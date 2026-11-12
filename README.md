@@ -11,7 +11,7 @@ IntelliCache intercepts LLM inference requests to provide ultra-low latency resp
 ### Key Capabilities
 
 - **Exact-Match Cache**: Sub-millisecond in-memory and PostgreSQL LRU cache indexed by deterministic SHA-256 prompt fingerprinting.
-- **Semantic Similarity Cache**: HNSW vector index using pgvector and Ollama/Nomic embeddings for single-turn technical prompts.
+- **Semantic Similarity Cache**: Vector similarity caching supported in two modes: local CPU in-memory vector store via FastEmbed (`BAAI/bge-small-en-v1.5`), and persistent PostgreSQL pgvector with HNSW indexing and Ollama/Nomic embeddings.
 - **Concurrency Control**: Process-local SingleFlight coordinator coalescing concurrent requests to eliminate cache stampedes.
 - **Server-Managed Conversations**: PostgreSQL conversation turns with atomic leasing, recovery fencing, and contiguity guarantees.
 - **Streaming & SSE**: Incremental token delivery via Server-Sent Events (`text/event-stream`) alongside standard JSON response payloads with strict frame validation.

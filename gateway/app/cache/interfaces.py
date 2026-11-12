@@ -74,6 +74,14 @@ class BaseCache(ABC):
         pass
 
     @abstractmethod
+    async def peek(self, key: str, namespace: Optional[str] = None) -> Optional[CacheEntry]:
+        """
+        Inspect an unexpired entry from cache without mutating hit counters,
+        access timestamps, tokens saved, or LRU eviction recency.
+        """
+        pass
+
+    @abstractmethod
     async def set(self, key: str, entry: CacheEntry, namespace: Optional[str] = None) -> None:
         """Add or update an entry in cache with eviction if necessary."""
         pass

@@ -122,6 +122,67 @@ class PostgresCache(BaseCache):
             entry.created_at = created.timestamp()
         return entry
 
+    async def peek(self, key: str, namespace: Optional[str] = None) -> Optional[CacheEntry]:
+        """
+        Non-mutating read operation for candidate validation.
+        Fetches row and checks TTL without updating last_accessed, hit_count, or savings.
+        """
+        ns = (namespace or self.default_namespace).strip()
+        query = """
+            SELECT id, cache_namespace, fingerprint, response, model, provider,
+                   prompt_tokens, completion_tokens, total_tokens, latency_ms,
+                   hit_count, metadata, created_at, expires_at
+            FROM cache_entries
+            WHERE cache_namespace = $1 AND fingerprint = $2
+        """
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, ns, key)
+            if not row:
+                return None
+
+            now = datetime.now(timezone.utc)
+            expires_at = row["expires_at"]
+            if expires_at is not None:
+                if expires_at.tzinfo is None:
+                    expires_at = expires_at.replace(tzinfo=timezone.utc)
+                if expires_at <= now:
+                    await conn.execute("DELETE FROM cache_entries WHERE id = $1", row["id"])
+                    return None
+
+        total_toks = row["total_tokens"] or 0
+        latency = float(row["latency_ms"] or 0.0)
+
+        usage = UsageMetrics(
+            prompt_tokens=row["prompt_tokens"] or 0,
+            completion_tokens=row["completion_tokens"] or 0,
+            total_tokens=total_toks,
+        )
+
+        raw_meta = row["metadata"]
+        if isinstance(raw_meta, str):
+            try:
+                metadata = json.loads(raw_meta)
+            except Exception:
+                metadata = {}
+        elif isinstance(raw_meta, dict):
+            metadata = raw_meta
+        else:
+            metadata = {}
+
+        entry = CacheEntry(
+            response=row["response"],
+            model=row["model"],
+            usage=usage,
+            latency_ms=latency,
+            metadata=metadata,
+            provider=row["provider"],
+        )
+        entry.hit_count = row["hit_count"]
+        created = row["created_at"]
+        if created:
+            entry.created_at = created.timestamp()
+        return entry
+
     async def set(self, key: str, entry: CacheEntry, namespace: Optional[str] = None) -> None:
         """
         Inserts or updates an exact-match entry with conflict safety and bounded LRU capacity.

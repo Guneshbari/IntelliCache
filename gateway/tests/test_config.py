@@ -218,5 +218,93 @@ class TestConfig(unittest.TestCase):
         self.assertNotIn("super_secret_token_123", err_msg)
 
 
+class TestSemanticCacheConfig(unittest.TestCase):
+    """Test configuration validation for semantic cache and vector stores."""
+
+    def test_vector_store_backend_defaults(self):
+        """Vector store backend defaults coherently to match cache_backend."""
+        # When cache_backend is memory, vector_store_backend defaults to memory
+        cfg_mem = Settings(cache_backend="memory")
+        self.assertEqual(cfg_mem.vector_store_backend, "memory")
+
+        # When cache_backend is postgres, vector_store_backend defaults to postgres
+        cfg_pg = Settings(cache_backend="postgres", database_url="postgresql://localhost/test")
+        self.assertEqual(cfg_pg.vector_store_backend, "postgres")
+
+    def test_supported_matching_combinations(self):
+        """Supported matching cache and vector store combinations instantiate cleanly."""
+        cfg_mem = Settings(cache_backend="memory", vector_store_backend="memory")
+        self.assertEqual(cfg_mem.cache_backend, "memory")
+        self.assertEqual(cfg_mem.vector_store_backend, "memory")
+
+        cfg_pg = Settings(
+            cache_backend="postgres",
+            vector_store_backend="postgres",
+            database_url="postgresql://localhost/test",
+        )
+        self.assertEqual(cfg_pg.cache_backend, "postgres")
+        self.assertEqual(cfg_pg.vector_store_backend, "postgres")
+
+    def test_rejected_mismatched_combinations(self):
+        """Mismatched cache and vector store combinations are rejected with clear ValueError."""
+        with self.assertRaises(ValueError) as ctx:
+            Settings(cache_backend="memory", vector_store_backend="postgres")
+        self.assertIn("Unsupported cache and vector-store backend combination", str(ctx.exception))
+        self.assertIn("CACHE_BACKEND='memory' cannot be paired with VECTOR_STORE_BACKEND='postgres'", str(ctx.exception))
+
+        with self.assertRaises(ValueError) as ctx:
+            Settings(
+                cache_backend="postgres",
+                vector_store_backend="memory",
+                database_url="postgresql://localhost/test",
+            )
+        self.assertIn("Unsupported cache and vector-store backend combination", str(ctx.exception))
+        self.assertIn("CACHE_BACKEND='postgres' cannot be paired with VECTOR_STORE_BACKEND='memory'", str(ctx.exception))
+
+    def test_invalid_backend_names_rejected(self):
+        """Invalid cache or vector store backend strings are rejected."""
+        with self.assertRaises(ValueError) as ctx:
+            Settings(cache_backend="redis")
+        self.assertIn("Invalid CACHE_BACKEND", str(ctx.exception))
+
+        with self.assertRaises(ValueError) as ctx:
+            Settings(vector_store_backend="redis")
+        self.assertIn("Invalid VECTOR_STORE_BACKEND", str(ctx.exception))
+
+    def test_provider_aware_model_and_dimension_defaults(self):
+        """Default embedding models and dimensions are set based on embedding provider."""
+        # FastEmbed defaults
+        cfg_fe = Settings(embedding_provider="fastembed")
+        self.assertEqual(cfg_fe.embedding_model, "BAAI/bge-small-en-v1.5")
+        self.assertEqual(cfg_fe.vector_dimensions, 384)
+
+        # Ollama defaults
+        cfg_ol = Settings(embedding_provider="ollama")
+        self.assertEqual(cfg_ol.embedding_model, "nomic-embed-text")
+        self.assertEqual(cfg_ol.vector_dimensions, 768)
+
+        # Explicit overrides are preserved
+        cfg_custom = Settings(
+            embedding_provider="fastembed",
+            embedding_model="custom/model",
+            vector_dimensions=512,
+        )
+        self.assertEqual(cfg_custom.embedding_model, "custom/model")
+        self.assertEqual(cfg_custom.vector_dimensions, 512)
+
+    def test_vector_store_max_entries_validation(self):
+        """VECTOR_STORE_MAX_ENTRIES must be positive."""
+        cfg = Settings(vector_store_max_entries=500)
+        self.assertEqual(cfg.vector_store_max_entries, 500)
+
+        with self.assertRaises(ValueError) as ctx:
+            Settings(vector_store_max_entries=0)
+        self.assertIn("VECTOR_STORE_MAX_ENTRIES must be positive", str(ctx.exception))
+
+        with self.assertRaises(ValueError) as ctx:
+            Settings(vector_store_max_entries=-10)
+        self.assertIn("VECTOR_STORE_MAX_ENTRIES must be positive", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

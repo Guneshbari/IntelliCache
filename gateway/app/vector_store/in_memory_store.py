@@ -2,13 +2,15 @@
 In-memory vector store implementation.
 Provides an asynchronous, memory-backed vector storage option conforming to BaseVectorStore.
 Supports nearest-neighbour retrieval by cosine distance, namespace isolation,
-and integration with ExactCache for response resolution.
+bounded deterministic capacity eviction, safe stale record pruning,
+and non-mutating ExactCache candidate resolution.
 """
 
 import asyncio
 from datetime import datetime, timezone
 import logging
 import math
+import time
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .contracts import VectorRecord, VectorSearchResult, cosine_distance_to_similarity
@@ -26,6 +28,7 @@ class InMemoryVectorStore(BaseVectorStore):
     In-memory vector store for development, testing, and environments
     where PostgreSQL pgvector is unavailable.
     Thread-safe and coroutine-safe using asyncio.Lock.
+    Enforces bounded capacity, deterministic FIFO eviction, and non-mutating exact cache lookups.
     """
 
     def __init__(
@@ -33,18 +36,24 @@ class InMemoryVectorStore(BaseVectorStore):
         dimensions: int = 384,
         default_namespace: str = "default",
         default_model: str = "BAAI/bge-small-en-v1.5",
+        max_records: int = 1000,
         exact_cache: Optional[Any] = None,
     ):
         if isinstance(dimensions, bool) or not isinstance(dimensions, int) or dimensions <= 0:
             raise VectorInvalidError(f"Vector dimensions must be a positive integer, got {dimensions}.")
+        if isinstance(max_records, bool) or not isinstance(max_records, int) or max_records <= 0:
+            raise VectorInvalidError(f"Vector store max_records must be a positive integer, got {max_records}.")
 
         self.dimensions = dimensions
         self.default_namespace = (default_namespace or "default").strip()
         self.default_model = (default_model or "BAAI/bge-small-en-v1.5").strip()
+        self.max_records = max_records
         self.exact_cache = exact_cache
         self._lock = asyncio.Lock()
         # Key: (cache_namespace, fingerprint, model) -> VectorRecord
         self._records: Dict[Tuple[str, str, str], VectorRecord] = {}
+        # Key: (cache_namespace, fingerprint, model) -> float (timestamp)
+        self._record_timestamps: Dict[Tuple[str, str, str], float] = {}
 
     def _validate_vector_dimensions(self, vector: Sequence[float], context: str = "Vector") -> None:
         """Validates vector length and element types."""
@@ -63,6 +72,7 @@ class InMemoryVectorStore(BaseVectorStore):
     async def upsert(self, record: VectorRecord) -> None:
         """
         Inserts or updates a vector record in memory.
+        Enforces maximum capacity with bounded deterministic eviction.
         Validates dimensions against store configuration.
         """
         if not isinstance(record, VectorRecord):
@@ -75,8 +85,34 @@ class InMemoryVectorStore(BaseVectorStore):
             raise VectorInvalidError("Cache namespace cannot be empty.")
 
         key = (ns, record.fingerprint.strip(), record.model.strip())
+
         async with self._lock:
+            # If inserting a new record and at capacity, evict
+            if key not in self._records and len(self._records) >= self.max_records:
+                # 1. First pass: Evict any orphaned/expired records if exact_cache is configured
+                if self.exact_cache is not None:
+                    stale_keys = []
+                    for k in list(self._records.keys()):
+                        k_ns, k_fp, _ = k
+                        if hasattr(self.exact_cache, "peek"):
+                            e = await self.exact_cache.peek(k_fp, namespace=k_ns)
+                        else:
+                            e = await self.exact_cache.get(k_fp, namespace=k_ns)
+                        if e is None:
+                            stale_keys.append(k)
+                    for sk in stale_keys:
+                        self._records.pop(sk, None)
+                        self._record_timestamps.pop(sk, None)
+
+                # 2. Second pass: If still at or over capacity, evict the oldest record deterministically (FIFO)
+                if len(self._records) >= self.max_records:
+                    oldest_key = min(self._records.keys(), key=lambda k: self._record_timestamps.get(k, 0.0))
+                    self._records.pop(oldest_key, None)
+                    self._record_timestamps.pop(oldest_key, None)
+                    logger.debug("Evicted oldest vector record from memory store: %s", oldest_key[1][:12])
+
             self._records[key] = record
+            self._record_timestamps[key] = time.time()
 
         logger.debug(
             "Upserted in-memory vector record: namespace='%s', fingerprint='%s', model='%s', dimensions=%d",
@@ -96,6 +132,8 @@ class InMemoryVectorStore(BaseVectorStore):
         """
         Searches for top-k nearest records by cosine distance.
         Enforces namespace and model isolation.
+        Performs non-mutating exact cache lookups using peek() to prevent
+        candidate inspections from modifying exact-cache LRU order or metrics.
         """
         if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k <= 0:
             raise VectorInvalidError(f"top_k must be a positive integer >= 1, got {top_k}.")
@@ -126,6 +164,8 @@ class InMemoryVectorStore(BaseVectorStore):
             raise VectorInvalidError("Query vector norm cannot be zero.")
 
         scored_candidates: List[VectorSearchResult] = []
+        orphaned_keys: List[Tuple[str, str, str]] = []
+
         for rec in candidates:
             # Dot product and candidate norm
             dot = 0.0
@@ -151,10 +191,17 @@ class InMemoryVectorStore(BaseVectorStore):
             original_latency_ms = 0.0
 
             if self.exact_cache is not None:
-                entry = await self.exact_cache.get(rec.fingerprint, namespace=rec.cache_namespace)
+                # Use non-mutating peek() to avoid modifying LRU recency or incrementing hit counts
+                if hasattr(self.exact_cache, "peek"):
+                    entry = await self.exact_cache.peek(rec.fingerprint, namespace=rec.cache_namespace)
+                else:
+                    entry = await self.exact_cache.get(rec.fingerprint, namespace=rec.cache_namespace)
+
                 if entry is None:
-                    # Inactive or expired exact cache entry -> exclude candidate
+                    # Stale or expired exact cache entry: mark for lazy cleanup and skip
+                    orphaned_keys.append((rec.cache_namespace, rec.fingerprint, rec.model))
                     continue
+
                 cached_resp = entry.response
                 usage = entry.usage
                 prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
@@ -182,6 +229,13 @@ class InMemoryVectorStore(BaseVectorStore):
                 )
             )
 
+        # Clean up any orphaned records detected during search
+        if orphaned_keys:
+            async with self._lock:
+                for ok in orphaned_keys:
+                    self._records.pop(ok, None)
+                    self._record_timestamps.pop(ok, None)
+
         # Order by cosine distance ascending (closest / highest similarity first)
         scored_candidates.sort(key=lambda c: c.distance)
         return scored_candidates[:top_k]
@@ -201,6 +255,7 @@ class InMemoryVectorStore(BaseVectorStore):
             ]
             for k in keys_to_delete:
                 del self._records[k]
+                self._record_timestamps.pop(k, None)
             return len(keys_to_delete) > 0
 
     async def clear(self, namespace: Optional[str] = None) -> int:
@@ -213,10 +268,20 @@ class InMemoryVectorStore(BaseVectorStore):
             ]
             for k in keys_to_delete:
                 del self._records[k]
+                self._record_timestamps.pop(k, None)
             return len(keys_to_delete)
+
+    async def get_record_count(self, namespace: Optional[str] = None) -> int:
+        """Returns the number of active vector records in the store."""
+        async with self._lock:
+            if namespace is None:
+                return len(self._records)
+            ns = namespace.strip()
+            return sum(1 for (r_ns, _, _) in self._records.keys() if r_ns == ns)
 
     async def close(self) -> None:
         """Cleans up in-memory vector store resources."""
         async with self._lock:
             self._records.clear()
+            self._record_timestamps.clear()
         logger.info("InMemoryVectorStore closed.")

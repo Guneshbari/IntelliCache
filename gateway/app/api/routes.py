@@ -67,6 +67,7 @@ from ..providers.factory import ProviderFactory
 from ..providers.groq_adapter import GroqProvider
 from ..providers.interfaces import LLMProvider
 from ..semantic_cache.interfaces import BaseSemanticCache
+from ..vector_store.interfaces import BaseVectorStore
 
 logger = logging.getLogger("intellicache.gateway.api")
 router = APIRouter()
@@ -351,7 +352,7 @@ _single_flight_singleton: Optional[SingleFlightCoordinator] = None
 _core_singleton: Optional[IntelliCacheCore] = None
 
 
-def set_query_cache(cache: BaseCache) -> None:
+def set_query_cache(cache: Optional[BaseCache]) -> None:
     """Set the active cache instance (used by lifecycle manager on startup or tests)."""
     global _cache_singleton, _core_singleton
     _cache_singleton = cache
@@ -387,6 +388,7 @@ def get_single_flight_coordinator() -> SingleFlightCoordinator:
 
 
 _semantic_cache_singleton: Optional[BaseSemanticCache] = None
+_vector_store_singleton: Optional[BaseVectorStore] = None
 
 
 def get_semantic_cache() -> Optional[BaseSemanticCache]:
@@ -398,6 +400,17 @@ def set_semantic_cache(semantic_cache: Optional[BaseSemanticCache]) -> None:
     """Configures the global semantic cache singleton."""
     global _semantic_cache_singleton
     _semantic_cache_singleton = semantic_cache
+
+
+def get_vector_store() -> Optional[BaseVectorStore]:
+    """Dependency returning configured BaseVectorStore singleton (or None if disabled)."""
+    return _vector_store_singleton
+
+
+def set_vector_store(vector_store: Optional[BaseVectorStore]) -> None:
+    """Configures the global vector store singleton."""
+    global _vector_store_singleton
+    _vector_store_singleton = vector_store
 
 
 def get_core_service(

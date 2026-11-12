@@ -37,9 +37,11 @@ from app.routes.query import (
     QueryCache,
     get_query_cache,
     get_semantic_cache,
+    get_vector_store,
     router as query_router,
     set_query_cache,
     set_semantic_cache,
+    set_vector_store,
     verify_admin_token,
     verify_client_token,
     verify_metrics_auth,
@@ -93,6 +95,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         app.state.cache = pg_cache
 
         if settings.semantic_cache_enabled:
+            if settings.vector_store_backend != "postgres":
+                raise ValueError(
+                    f"Unsupported vector_store_backend '{settings.vector_store_backend}' for CACHE_BACKEND='postgres'"
+                )
             logger.info("Semantic cache enabled. Running vector store migrations...")
             await run_vector_migrations(pool, dimensions=settings.vector_dimensions)
             vector_store = PostgresVectorStore(
@@ -102,11 +108,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 dimensions=settings.vector_dimensions,
             )
             app.state.vector_store = vector_store
+            set_vector_store(vector_store)
 
             # Instantiate embedding provider and semantic cache policy/service
             embedding_provider = EmbeddingProviderFactory.create(
-                name=settings.embedding_provider,
+                provider_name=settings.embedding_provider,
                 model=settings.embedding_model,
+                dimensions=settings.vector_dimensions,
                 base_url=settings.embedding_base_url,
                 timeout_seconds=settings.embedding_timeout_seconds,
             )
@@ -134,6 +142,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             )
         else:
             set_semantic_cache(None)
+            set_vector_store(None)
             app.state.vector_store = None
             app.state.semantic_cache = None
     else:
@@ -145,17 +154,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         app.state.cache = mem_cache
 
         if settings.semantic_cache_enabled:
+            if settings.vector_store_backend != "memory":
+                raise ValueError(
+                    f"Unsupported vector_store_backend '{settings.vector_store_backend}' for CACHE_BACKEND='memory'"
+                )
             vector_store = InMemoryVectorStore(
                 dimensions=settings.vector_dimensions,
                 default_namespace=settings.cache_namespace,
                 default_model=settings.embedding_model,
                 exact_cache=mem_cache,
+                max_records=settings.vector_store_max_entries,
             )
             app.state.vector_store = vector_store
+            set_vector_store(vector_store)
 
             embedding_provider = EmbeddingProviderFactory.create(
                 provider_name=settings.embedding_provider,
                 model=settings.embedding_model,
+                dimensions=settings.vector_dimensions,
                 base_url=settings.embedding_base_url,
                 timeout_seconds=settings.embedding_timeout_seconds,
             )
@@ -183,6 +199,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             )
         else:
             set_semantic_cache(None)
+            set_vector_store(None)
             app.state.vector_store = None
             app.state.semantic_cache = None
 
@@ -193,9 +210,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await app.state.semantic_cache.close()
     elif hasattr(app.state, "vector_store") and app.state.vector_store is not None:
         await app.state.vector_store.close()
+    set_semantic_cache(None)
+    set_vector_store(None)
+
     active_cache = get_query_cache()
     if active_cache is not None:
         await active_cache.close()
+    elif hasattr(app.state, "db_pool") and app.state.db_pool is not None:
+        await app.state.db_pool.close()
+    if hasattr(app.state, "db_pool"):
+        app.state.db_pool = None
+    set_query_cache(None)
 
 
 def create_app() -> FastAPI:

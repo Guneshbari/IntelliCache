@@ -49,13 +49,15 @@ gateway/
 │   │   ├── contracts.py      # EmbeddingResult and EmbeddingTask definitions
 │   │   ├── errors.py         # Embedding error hierarchy
 │   │   ├── interfaces.py     # EmbeddingProvider abstract interface
+│   │   ├── fastembed_adapter.py # Optional local FastEmbed (ONNX CPU) adapter
 │   │   ├── ollama_adapter.py # Ollama embedding adapter with Nomic retrieval prefixes
 │   │   └── factory.py        # EmbeddingProviderFactory
-│   ├── vector_store/         # Provider-independent PostgreSQL + pgvector vector storage
+│   ├── vector_store/         # In-memory and PostgreSQL + pgvector vector storage
 │   │   ├── __init__.py
 │   │   ├── contracts.py      # VectorRecord, VectorSearchResult, and similarity formulas
 │   │   ├── errors.py         # VectorStore error hierarchy
 │   │   ├── interfaces.py     # BaseVectorStore interface
+│   │   ├── in_memory_store.py # Bounded InMemoryVectorStore with dynamic pruning
 │   │   ├── postgres_store.py # PostgresVectorStore implementation
 │   │   └── migration.py      # Independent pgvector migration runner
 │   ├── semantic_cache/       # Semantic caching policy, candidate validation, and orchestration
@@ -117,9 +119,9 @@ gateway/
    - Verified via automated Abstract Syntax Tree (AST) boundary tests in `test_core.py`.
 
 3. **Cache Storage Layer (`gateway/app/cache/`)**:
-   - Exposes the asynchronous `BaseCache` interface (`get`, `set`, `record_miss`, `record_coalesced_join`, `record_coalesced_success`, `clear`, `stats`).
+   - Exposes the asynchronous `BaseCache` interface (`get`, `peek`, `set`, `record_miss`, `record_coalesced_join`, `record_coalesced_success`, `clear`, `stats`).
    - Supports two interchangeable implementations:
-     - `ExactCache`: In-memory LRU capacity eviction and TTL-based entry expiration for local test/dev.
+     - `ExactCache`: In-memory LRU capacity eviction, non-mutating `peek` for vector candidate inspection, and TTL-based entry expiration for local test/dev.
      - `PostgresCache`: Persistent, centralized exact cache backed by PostgreSQL and `asyncpg` with bounded capacity, LRU eviction, and atomic access tracking.
    - Automated database schema migrations (`run_migrations`) executed during application startup.
    - Accurate request accounting: `total_requests = hits + misses + coalesced_requests`.
@@ -366,16 +368,42 @@ IntelliCache includes a deterministic semantic caching layer in `gateway/app/sem
 
 1. **Exact-Cache Lookup**: Checks SHA-256 exact fingerprint. Returns immediately on hit (`cache_type="exact"`).
 2. **Eligibility Evaluation**: If exact miss, checks query against deterministic single-turn programming eligibility and sensitive credential detection.
-3. **Semantic Lookup**: Generates query embedding via `OllamaEmbeddingProvider` and searches nearest neighbours via `PostgresVectorStore`.
-4. **Candidate Verification**: Filters candidates by namespace, model, temperature, max_tokens, similarity threshold ($\ge 0.92$), and ambiguity margin ($\ge 0.03$).
+3. **Semantic Lookup**: Generates query embedding via the configured `EmbeddingProvider` (`fastembed` or `ollama`) and searches nearest neighbours via the configured `BaseVectorStore` (`InMemoryVectorStore` or `PostgresVectorStore`).
+4. **Candidate Verification**: Filters candidates by namespace, model, temperature, max_tokens, similarity threshold ($\ge 0.92$), and ambiguity margin ($\ge 0.03$). Candidate inspection uses non-mutating `peek` on the exact cache to preserve LRU recency and prevent hit metric inflation.
 5. **Semantic Hit**: Returns cached answer without calling LLM (`cache_type="semantic"`). Semantic hits are not recursively indexed under new fingerprints.
 6. **Provider Fallback**: If semantic miss or error, invokes configured LLM provider (`cache_type="none"`).
 7. **Safe Indexing**: Writes exact-cache entry first, then indexes vector record in vector store. Indexing failures fail safely and do not fail the query.
+
+### Supported Operating Modes
+
+IntelliCache supports two cohesive operational modes for semantic caching:
+
+1. **Local In-Memory Mode (Zero Daemons / Local Development)**:
+   - `CACHE_BACKEND=memory`
+   - `VECTOR_STORE_BACKEND=memory`
+   - `SEMANTIC_CACHE_ENABLED=true`
+   - `EMBEDDING_PROVIDER=fastembed` (default model: `BAAI/bge-small-en-v1.5`, 384 dimensions)
+   - `VECTOR_STORE_MAX_ENTRIES=1000`
+   - In-memory vector store with bounded FIFO eviction, dynamic orphaned entry pruning, and in-process CPU embedding generation via ONNX Runtime. Install FastEmbed via `pip install -r requirements-fastembed.txt`.
+
+2. **Persistent PostgreSQL Mode (Production / Shared Instances)**:
+   - `CACHE_BACKEND=postgres`
+   - `VECTOR_STORE_BACKEND=postgres`
+   - `DATABASE_URL=postgresql://user:password@localhost:5432/intellicache`
+   - `SEMANTIC_CACHE_ENABLED=true`
+   - `EMBEDDING_PROVIDER=ollama` (default model: `nomic-embed-text`, 768 dimensions) or `fastembed`
+   - Distributed persistence backed by PostgreSQL 16+ with `pgvector` HNSW cosine indexing.
 
 ### Configuration
 
 ```bash
 SEMANTIC_CACHE_ENABLED=false           # Disabled by default
+CACHE_BACKEND=memory                   # "memory" or "postgres"
+VECTOR_STORE_BACKEND=memory            # "memory" or "postgres" (must match CACHE_BACKEND)
+VECTOR_STORE_MAX_ENTRIES=1000          # Maximum vector records in memory store
+EMBEDDING_PROVIDER=fastembed           # "fastembed" or "ollama"
+EMBEDDING_MODEL=BAAI/bge-small-en-v1.5 # BAAI/bge-small-en-v1.5 (FastEmbed) or nomic-embed-text (Ollama)
+VECTOR_DIMENSIONS=384                  # 384 for bge-small, 768 for nomic-embed-text
 SEMANTIC_CACHE_MIN_SIMILARITY=0.92     # Minimum cosine similarity threshold
 SEMANTIC_CACHE_MIN_MARGIN=0.03         # Minimum margin required between top candidate and alternative candidate
 SEMANTIC_CACHE_TOP_K=5                 # Nearest neighbour candidates evaluated

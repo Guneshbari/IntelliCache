@@ -55,6 +55,24 @@ class ExactCache(BaseCache):
         self._latency_saved_ms += entry.latency_ms
         return entry
 
+    async def peek(self, key: str, namespace: Optional[str] = None) -> Optional[CacheEntry]:
+        """
+        Non-mutating read operation for candidate validation.
+        Honours TTL (returns None if expired and lazily evicts), but does NOT update
+        hit counters, access timestamps, tokens saved, or LRU recency.
+        """
+        ns = (namespace or self.default_namespace).strip()
+        cache_key = (ns, key)
+        entry = self._entries.get(cache_key)
+        if entry is None:
+            return None
+
+        if entry.is_expired(self.ttl_seconds):
+            del self._entries[cache_key]
+            return None
+
+        return entry
+
     async def set(self, key: str, entry: CacheEntry, namespace: Optional[str] = None) -> None:
         """Add or update an entry with LRU eviction when capacity is reached."""
         ns = (namespace or self.default_namespace).strip()

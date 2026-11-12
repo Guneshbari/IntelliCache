@@ -144,8 +144,8 @@ class Settings(BaseModel):
     embedding_provider: str = Field(
         default_factory=lambda: os.getenv("EMBEDDING_PROVIDER", "ollama").lower().strip()
     )
-    embedding_model: str = Field(
-        default_factory=lambda: os.getenv("EMBEDDING_MODEL", "nomic-embed-text").strip()
+    embedding_model: Optional[str] = Field(
+        default_factory=lambda: (os.getenv("EMBEDDING_MODEL") or "").strip() or None
     )
     embedding_base_url: str = Field(
         default_factory=lambda: os.getenv("EMBEDDING_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
@@ -167,25 +167,55 @@ class Settings(BaseModel):
     semantic_cache_top_k: int = Field(
         default_factory=lambda: int(os.getenv("SEMANTIC_CACHE_TOP_K", "5"))
     )
-    vector_store_backend: str = Field(
-        default_factory=lambda: os.getenv("VECTOR_STORE_BACKEND", "postgres").lower().strip()
+    vector_store_backend: Optional[str] = Field(
+        default_factory=lambda: (os.getenv("VECTOR_STORE_BACKEND") or "").lower().strip() or None
     )
-    vector_dimensions: int = Field(
-        default_factory=lambda: int(
-            os.getenv(
-                "VECTOR_DIMENSIONS",
-                os.getenv(
-                    "EMBEDDING_DIMENSIONS",
-                    "384" if os.getenv("EMBEDDING_PROVIDER", "").lower().strip() in ("fastembed", "local") else "768",
-                ),
-            )
+    vector_store_max_entries: int = Field(
+        default_factory=lambda: int(os.getenv("VECTOR_STORE_MAX_ENTRIES", os.getenv("CACHE_MAX_ENTRIES", "1000")))
+    )
+    vector_dimensions: Optional[int] = Field(
+        default_factory=lambda: (
+            int(os.getenv("VECTOR_DIMENSIONS") or os.getenv("EMBEDDING_DIMENSIONS"))
+            if (os.getenv("VECTOR_DIMENSIONS") or os.getenv("EMBEDDING_DIMENSIONS"))
+            else None
         )
     )
 
     @model_validator(mode="after")
-    def validate_database_config(self) -> "Settings":
+    def validate_backends(self) -> "Settings":
+        valid_cache_backends = {"memory", "postgres"}
+        if self.cache_backend not in valid_cache_backends:
+            raise ValueError(
+                f"Invalid CACHE_BACKEND '{self.cache_backend}'. Supported backends are: 'memory', 'postgres'."
+            )
+
+        # Coherent default: if vector_store_backend is not explicitly specified, default to match cache_backend
+        if not self.vector_store_backend:
+            object.__setattr__(self, "vector_store_backend", self.cache_backend)
+
+        valid_vector_backends = {"memory", "postgres"}
+        if self.vector_store_backend not in valid_vector_backends:
+            raise ValueError(
+                f"Invalid VECTOR_STORE_BACKEND '{self.vector_store_backend}'. Supported backends are: 'memory', 'postgres'."
+            )
+
         if self.cache_backend == "postgres" and not self.database_url:
             raise ValueError("DATABASE_URL must be configured when CACHE_BACKEND='postgres'.")
+
+        # Supported combinations: (memory, memory) and (postgres, postgres)
+        if self.cache_backend == "memory" and self.vector_store_backend != "memory":
+            raise ValueError(
+                f"Unsupported cache and vector-store backend combination: "
+                f"CACHE_BACKEND='{self.cache_backend}' cannot be paired with VECTOR_STORE_BACKEND='{self.vector_store_backend}'."
+            )
+        if self.cache_backend == "postgres" and self.vector_store_backend != "postgres":
+            raise ValueError(
+                f"Unsupported cache and vector-store backend combination: "
+                f"CACHE_BACKEND='{self.cache_backend}' cannot be paired with VECTOR_STORE_BACKEND='{self.vector_store_backend}'."
+            )
+        if self.semantic_cache_enabled and self.cache_backend == "postgres" and not self.database_url:
+            raise ValueError("DATABASE_URL must be configured when SEMANTIC_CACHE_ENABLED is true.")
+
         return self
 
     @model_validator(mode="after")
@@ -195,26 +225,33 @@ class Settings(BaseModel):
         if self.embedding_provider not in ("fastembed", "local"):
             if not (self.embedding_base_url.startswith("http://") or self.embedding_base_url.startswith("https://")):
                 raise ValueError("EMBEDDING_BASE_URL must be a valid HTTP or HTTPS URL.")
+
+        if not self.embedding_model:
+            if self.embedding_provider in ("fastembed", "local"):
+                object.__setattr__(self, "embedding_model", "BAAI/bge-small-en-v1.5")
+            else:
+                object.__setattr__(self, "embedding_model", "nomic-embed-text")
+
+        if self.vector_dimensions is None:
+            if self.embedding_provider in ("fastembed", "local"):
+                object.__setattr__(self, "vector_dimensions", 384)
+            else:
+                object.__setattr__(self, "vector_dimensions", 768)
+
         return self
 
     @model_validator(mode="after")
     def validate_semantic_cache_config(self) -> "Settings":
-        if self.vector_dimensions <= 0:
+        if self.vector_dimensions is not None and self.vector_dimensions <= 0:
             raise ValueError("VECTOR_DIMENSIONS must be positive.")
+        if self.vector_store_max_entries <= 0:
+            raise ValueError("VECTOR_STORE_MAX_ENTRIES must be positive.")
         if not (0.0 <= self.semantic_cache_min_similarity <= 1.0):
             raise ValueError("SEMANTIC_CACHE_MIN_SIMILARITY must be between 0.0 and 1.0.")
         if not (0.0 <= self.semantic_cache_min_margin <= 1.0):
             raise ValueError("SEMANTIC_CACHE_MIN_MARGIN must be between 0.0 and 1.0.")
-        if self.semantic_cache_top_k < 1:
-            raise ValueError("SEMANTIC_CACHE_TOP_K must be at least 1.")
-        if self.semantic_cache_enabled:
-            if self.vector_store_backend == "memory":
-                if self.cache_backend not in ("memory", "postgres"):
-                    raise ValueError("SEMANTIC_CACHE_ENABLED with VECTOR_STORE_BACKEND='memory' requires CACHE_BACKEND to be 'memory' or 'postgres'.")
-            elif self.cache_backend != "postgres":
-                raise ValueError("SEMANTIC_CACHE_ENABLED requires CACHE_BACKEND='postgres'.")
-            elif not self.database_url:
-                raise ValueError("DATABASE_URL must be configured when SEMANTIC_CACHE_ENABLED is true.")
+        if self.semantic_cache_top_k <= 0:
+            raise ValueError("SEMANTIC_CACHE_TOP_K must be positive.")
         return self
 
     @model_validator(mode="after")

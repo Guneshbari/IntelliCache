@@ -1,0 +1,2 @@
+# Optional FastEmbed dependency for local CPU embeddings in IntelliCache Gateway
+fastembed==0.9.1

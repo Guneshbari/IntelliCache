@@ -343,12 +343,107 @@ class TestEmbeddingProviderFactory(unittest.TestCase):
         self.assertEqual(provider.model, "nomic-embed-text")
         self.assertEqual(provider.timeout_seconds, 15.0)
 
+    def test_create_fastembed_provider(self):
+        """Factory creates FastEmbedProvider accepting either provider_name or name kwargs."""
+        from app.embeddings.fastembed_adapter import FastEmbedProvider
+
+        p1 = EmbeddingProviderFactory.create(
+            provider_name="fastembed",
+            model="BAAI/bge-small-en-v1.5",
+            dimensions=384,
+        )
+        self.assertIsInstance(p1, FastEmbedProvider)
+        self.assertEqual(p1.model, "BAAI/bge-small-en-v1.5")
+        self.assertEqual(p1.dimensions, 384)
+
+        p2 = EmbeddingProviderFactory.create(
+            name="fastembed",
+        )
+        self.assertIsInstance(p2, FastEmbedProvider)
+        self.assertEqual(p2.model, "BAAI/bge-small-en-v1.5")
+        self.assertEqual(p2.dimensions, 384)
+
     def test_unsupported_provider_raises_configuration_error(self):
         """Unsupported provider name raises EmbeddingConfigurationError with supported options."""
         with self.assertRaises(EmbeddingConfigurationError) as ctx:
             EmbeddingProviderFactory.create("openai-embeddings")
         self.assertIn("Unsupported embedding provider 'openai-embeddings'", str(ctx.exception))
         self.assertIn("ollama", str(ctx.exception))
+        self.assertIn("fastembed", str(ctx.exception))
+
+
+class TestFastEmbedProviderMocked(unittest.IsolatedAsyncioTestCase):
+    """Unit tests for FastEmbedProvider with mocked TextEmbedding (no network/weight downloads)."""
+
+    async def test_embed_query_routing(self):
+        """EmbeddingTask.QUERY routes to model.query_embed."""
+        from app.embeddings.fastembed_adapter import FastEmbedProvider
+        from unittest.mock import MagicMock
+
+        provider = FastEmbedProvider(model="BAAI/bge-small-en-v1.5", dimensions=4)
+        mock_model = MagicMock()
+        mock_model.query_embed.return_value = [[0.1, 0.2, 0.3, 0.4]]
+
+        with patch.object(provider, "_get_model", return_value=mock_model):
+            res = await provider.embed("What is Rust?", task=EmbeddingTask.QUERY)
+            self.assertEqual(res.dimensions, 4)
+            self.assertEqual(res.to_list(), [0.1, 0.2, 0.3, 0.4])
+            mock_model.query_embed.assert_called_once_with("What is Rust?")
+            mock_model.passage_embed.assert_not_called()
+        await provider.close()
+
+    async def test_embed_document_routing(self):
+        """EmbeddingTask.DOCUMENT routes to model.passage_embed."""
+        from app.embeddings.fastembed_adapter import FastEmbedProvider
+        from unittest.mock import MagicMock
+
+        provider = FastEmbedProvider(model="BAAI/bge-small-en-v1.5", dimensions=4)
+        mock_model = MagicMock()
+        mock_model.passage_embed.return_value = [[0.5, 0.6, 0.7, 0.8]]
+
+        with patch.object(provider, "_get_model", return_value=mock_model):
+            res = await provider.embed("Documentation about Rust", task=EmbeddingTask.DOCUMENT)
+            self.assertEqual(res.dimensions, 4)
+            self.assertEqual(res.to_list(), [0.5, 0.6, 0.7, 0.8])
+            mock_model.passage_embed.assert_called_once_with(["Documentation about Rust"])
+            mock_model.query_embed.assert_not_called()
+        await provider.close()
+
+    async def test_dimension_validation_failure(self):
+        """When vector length does not match declared dimensions, raises EmbeddingResponseError."""
+        from app.embeddings.fastembed_adapter import FastEmbedProvider
+        from app.embeddings.errors import EmbeddingResponseError
+        from unittest.mock import MagicMock
+
+        provider = FastEmbedProvider(model="BAAI/bge-small-en-v1.5", dimensions=384)
+        mock_model = MagicMock()
+        # Model returns 4 dimensions while 384 declared
+        mock_model.query_embed.return_value = [[0.1, 0.2, 0.3, 0.4]]
+
+        with patch.object(provider, "_get_model", return_value=mock_model):
+            with self.assertRaises(EmbeddingResponseError) as ctx:
+                await provider.embed("Test", task=EmbeddingTask.QUERY)
+            self.assertIn("expected 384", str(ctx.exception))
+        await provider.close()
+
+    async def test_uninstalled_fastembed_raises_configuration_error(self):
+        """When fastembed package is not installed, clear EmbeddingConfigurationError is raised."""
+        from app.embeddings.fastembed_adapter import FastEmbedProvider
+        import builtins
+
+        provider = FastEmbedProvider(model="BAAI/bge-small-en-v1.5")
+        real_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "fastembed":
+                raise ImportError("No module named 'fastembed'")
+            return real_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=fake_import):
+            with self.assertRaises(EmbeddingConfigurationError) as ctx:
+                provider._get_model()
+            self.assertIn("FastEmbed is not installed", str(ctx.exception))
+            self.assertIn("requirements-fastembed.txt", str(ctx.exception))
 
 
 class TestEmbeddingConfiguration(unittest.TestCase):

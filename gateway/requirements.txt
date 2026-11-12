@@ -25,3 +25,6 @@ uvicorn==0.54.0
 uvloop==0.23.0
 watchfiles==1.3.0
 websockets==17.3
+
+# Optional local embedding provider (CPU-based, zero daemon):
+# pip install -r requirements-fastembed.txt

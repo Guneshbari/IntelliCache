@@ -225,6 +225,147 @@ class TestInMemoryVectorStore(unittest.IsolatedAsyncioTestCase):
         cleared_count = await self.store.clear(namespace="ns1")
         self.assertEqual(cleared_count, 1)
 
+    async def test_search_peek_does_not_mutate_exact_cache(self):
+        """Searching candidates uses peek() and must not alter hit metrics or LRU access times."""
+        exact_cache = ExactCache(max_entries=10, ttl_seconds=3600)
+        store = InMemoryVectorStore(
+            dimensions=4,
+            default_namespace="default",
+            default_model="test-model",
+            exact_cache=exact_cache,
+        )
+
+        entry = CacheEntry(
+            response="Candidate response",
+            model="test-model",
+            usage=UsageMetrics(prompt_tokens=10, completion_tokens=20, total_tokens=30),
+            latency_ms=100.0,
+            provider="groq",
+        )
+        await exact_cache.set("fp_candidate", entry, namespace="default")
+        stored_entry = await exact_cache.peek("fp_candidate", namespace="default")
+        self.assertIsNotNone(stored_entry)
+        initial_hit_count = stored_entry.hit_count
+        initial_last_accessed = stored_entry.last_accessed
+
+        rec = VectorRecord(
+            cache_namespace="default",
+            fingerprint="fp_candidate",
+            query_text="Candidate question",
+            vector=[1.0, 0.0, 0.0, 0.0],
+            model="test-model",
+        )
+        await store.upsert(rec)
+
+        # Execute search in vector store
+        results = await store.search(
+            query_vector=[1.0, 0.0, 0.0, 0.0],
+            namespace="default",
+            model="test-model",
+        )
+        self.assertEqual(len(results), 1)
+
+        # Inspect entry in exact cache again via peek
+        inspected_entry = await exact_cache.peek("fp_candidate", namespace="default")
+        self.assertIsNotNone(inspected_entry)
+        self.assertEqual(inspected_entry.hit_count, initial_hit_count)
+        self.assertEqual(inspected_entry.last_accessed, initial_last_accessed)
+
+        # Exact cache stats must show 0 hits
+        stats = await exact_cache.stats()
+        self.assertEqual(stats.hits, 0)
+
+        await store.close()
+        await exact_cache.close()
+
+    async def test_bounded_capacity_eviction(self):
+        """When max_records is reached, older records are evicted deterministically."""
+        store = InMemoryVectorStore(
+            dimensions=4,
+            default_namespace="default",
+            default_model="test-model",
+            max_records=3,
+        )
+
+        for i in range(5):
+            rec = VectorRecord(
+                cache_namespace="default",
+                fingerprint=f"fp_{i}",
+                query_text=f"Query {i}",
+                vector=[float(i == 0), float(i == 1), float(i == 2), float(i >= 3)],
+                model="test-model",
+            )
+            await store.upsert(rec)
+
+        count = await store.get_record_count("default")
+        self.assertEqual(count, 3)
+
+        # Earliest records (fp_0, fp_1) should have been evicted
+        results = await store.search(
+            query_vector=[1.0, 0.0, 0.0, 0.0],
+            namespace="default",
+            model="test-model",
+            top_k=10,
+        )
+        returned_fps = {r.fingerprint for r in results}
+        self.assertNotIn("fp_0", returned_fps)
+        self.assertNotIn("fp_1", returned_fps)
+        self.assertIn("fp_2", returned_fps)
+        self.assertIn("fp_3", returned_fps)
+        self.assertIn("fp_4", returned_fps)
+
+        await store.close()
+
+    async def test_orphaned_pruning_on_search(self):
+        """Expired or deleted exact cache records are actively pruned during search."""
+        exact_cache = ExactCache(max_entries=10, ttl_seconds=3600)
+        store = InMemoryVectorStore(
+            dimensions=4,
+            default_namespace="default",
+            default_model="test-model",
+            exact_cache=exact_cache,
+        )
+
+        entry1 = CacheEntry(response="R1", model="test-model", usage=UsageMetrics(), latency_ms=10.0)
+        entry2 = CacheEntry(response="R2", model="test-model", usage=UsageMetrics(), latency_ms=10.0)
+        await exact_cache.set("fp_keep", entry1, namespace="default")
+        await exact_cache.set("fp_expire", entry2, namespace="default")
+
+        await store.upsert(VectorRecord(
+            cache_namespace="default",
+            fingerprint="fp_keep",
+            query_text="Keep",
+            vector=[1.0, 0.0, 0.0, 0.0],
+            model="test-model",
+        ))
+        await store.upsert(VectorRecord(
+            cache_namespace="default",
+            fingerprint="fp_expire",
+            query_text="Expire",
+            vector=[0.0, 1.0, 0.0, 0.0],
+            model="test-model",
+        ))
+        self.assertEqual(await store.get_record_count("default"), 2)
+
+        # Explicitly remove fp_expire from exact cache
+        exact_cache._entries.pop(("default", "fp_expire"), None)
+
+        # Run search
+        results = await store.search(
+            query_vector=[0.0, 1.0, 0.0, 0.0],
+            namespace="default",
+            model="test-model",
+        )
+        # fp_expire was pruned, so only fp_keep remains
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].fingerprint, "fp_keep")
+
+        # Verify that fp_expire was pruned from store
+        self.assertEqual(await store.get_record_count("default"), 1)
+
+        await store.close()
+        await exact_cache.close()
+
 
 class TestFastEmbedProvider(unittest.IsolatedAsyncioTestCase):
     """Unit tests for FastEmbedProvider adapter."""
@@ -249,6 +390,8 @@ class TestFastEmbedProvider(unittest.IsolatedAsyncioTestCase):
                 import time
                 time.sleep(0.05)
                 return [[0.1] * 384]
+            mock_model.query_embed.side_effect = slow_embed
+            mock_model.passage_embed.side_effect = slow_embed
             mock_model.embed.side_effect = slow_embed
             mock_get.return_value = mock_model
 
