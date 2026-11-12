@@ -345,9 +345,10 @@ def get_settings() -> Settings:
 def reload_settings() -> Settings:
     """Force reload settings from environment and .env file."""
     global _settings_instance
-    if ENV_PATH.exists():
-        load_dotenv(dotenv_path=ENV_PATH, override=True)
-    else:
-        load_dotenv(override=True)
+    if "unittest" not in sys.modules and "pytest" not in sys.modules:
+        if ENV_PATH.exists():
+            load_dotenv(dotenv_path=ENV_PATH, override=True)
+        else:
+            load_dotenv(override=True)
     _settings_instance = Settings()
     return _settings_instance
