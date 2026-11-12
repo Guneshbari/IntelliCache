@@ -7,6 +7,7 @@ from pathlib import Path
 import json
 import logging
 import os
+import sys
 from typing import Dict, List, Optional
 from pydantic import BaseModel, Field, model_validator
 from dotenv import load_dotenv
@@ -18,11 +19,12 @@ logger = logging.getLogger("intellicache.gateway.config")
 BASE_DIR = Path(__file__).resolve().parent.parent
 ENV_PATH = BASE_DIR / ".env"
 
-# Load .env if it exists
-if ENV_PATH.exists():
-    load_dotenv(dotenv_path=ENV_PATH)
-else:
-    load_dotenv()
+# Load .env if it exists and not running under unit tests
+if "unittest" not in sys.modules and "pytest" not in sys.modules:
+    if ENV_PATH.exists():
+        load_dotenv(dotenv_path=ENV_PATH)
+    else:
+        load_dotenv()
 
 
 def _get_list_from_env(key: str, default: List[str]) -> List[str]:
@@ -165,8 +167,19 @@ class Settings(BaseModel):
     semantic_cache_top_k: int = Field(
         default_factory=lambda: int(os.getenv("SEMANTIC_CACHE_TOP_K", "5"))
     )
+    vector_store_backend: str = Field(
+        default_factory=lambda: os.getenv("VECTOR_STORE_BACKEND", "postgres").lower().strip()
+    )
     vector_dimensions: int = Field(
-        default_factory=lambda: int(os.getenv("VECTOR_DIMENSIONS", os.getenv("EMBEDDING_DIMENSIONS", "768")))
+        default_factory=lambda: int(
+            os.getenv(
+                "VECTOR_DIMENSIONS",
+                os.getenv(
+                    "EMBEDDING_DIMENSIONS",
+                    "384" if os.getenv("EMBEDDING_PROVIDER", "").lower().strip() in ("fastembed", "local") else "768",
+                ),
+            )
+        )
     )
 
     @model_validator(mode="after")
@@ -179,8 +192,9 @@ class Settings(BaseModel):
     def validate_embedding_config(self) -> "Settings":
         if self.embedding_timeout_seconds <= 0:
             raise ValueError("EMBEDDING_TIMEOUT_SECONDS must be positive.")
-        if not (self.embedding_base_url.startswith("http://") or self.embedding_base_url.startswith("https://")):
-            raise ValueError("EMBEDDING_BASE_URL must be a valid HTTP or HTTPS URL.")
+        if self.embedding_provider not in ("fastembed", "local"):
+            if not (self.embedding_base_url.startswith("http://") or self.embedding_base_url.startswith("https://")):
+                raise ValueError("EMBEDDING_BASE_URL must be a valid HTTP or HTTPS URL.")
         return self
 
     @model_validator(mode="after")
@@ -194,9 +208,12 @@ class Settings(BaseModel):
         if self.semantic_cache_top_k < 1:
             raise ValueError("SEMANTIC_CACHE_TOP_K must be at least 1.")
         if self.semantic_cache_enabled:
-            if self.cache_backend != "postgres":
+            if self.vector_store_backend == "memory":
+                if self.cache_backend not in ("memory", "postgres"):
+                    raise ValueError("SEMANTIC_CACHE_ENABLED with VECTOR_STORE_BACKEND='memory' requires CACHE_BACKEND to be 'memory' or 'postgres'.")
+            elif self.cache_backend != "postgres":
                 raise ValueError("SEMANTIC_CACHE_ENABLED requires CACHE_BACKEND='postgres'.")
-            if not self.database_url:
+            elif not self.database_url:
                 raise ValueError("DATABASE_URL must be configured when SEMANTIC_CACHE_ENABLED is true.")
         return self
 

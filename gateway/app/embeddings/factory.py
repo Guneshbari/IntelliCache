@@ -9,6 +9,7 @@ import httpx
 from .errors import EmbeddingConfigurationError
 from .interfaces import EmbeddingProvider
 from .ollama_adapter import OllamaEmbeddingProvider
+from .fastembed_adapter import FastEmbedProvider
 
 
 class EmbeddingProviderFactory:
@@ -16,6 +17,8 @@ class EmbeddingProviderFactory:
 
     _registry: Dict[str, Type[EmbeddingProvider]] = {
         "ollama": OllamaEmbeddingProvider,
+        "fastembed": FastEmbedProvider,
+        "local": FastEmbedProvider,
     }
 
     @classmethod

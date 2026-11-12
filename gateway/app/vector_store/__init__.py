@@ -17,11 +17,13 @@ from .errors import (
     VectorStoreError,
 )
 from .interfaces import BaseVectorStore
+from .in_memory_store import InMemoryVectorStore
 from .migration import check_pgvector_available, run_vector_migrations
 from .postgres_store import PostgresVectorStore
 
 __all__ = [
     "BaseVectorStore",
+    "InMemoryVectorStore",
     "PostgresVectorStore",
     "VectorDimensionMismatchError",
     "VectorInvalidError",

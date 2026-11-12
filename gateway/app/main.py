@@ -24,7 +24,11 @@ from app.metrics import (
     get_metrics_collector,
 )
 from app.semantic_cache import SemanticCachePolicy, SemanticCacheService
-from app.vector_store import PostgresVectorStore, run_vector_migrations
+from app.vector_store import (
+    InMemoryVectorStore,
+    PostgresVectorStore,
+    run_vector_migrations,
+)
 from app.routes.query import (
     BaseCache,
     CacheStats,
@@ -138,10 +142,49 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             ttl_seconds=settings.cache_ttl_seconds,
         )
         set_query_cache(mem_cache)
-        set_semantic_cache(None)
         app.state.cache = mem_cache
-        app.state.vector_store = None
-        app.state.semantic_cache = None
+
+        if settings.semantic_cache_enabled:
+            vector_store = InMemoryVectorStore(
+                dimensions=settings.vector_dimensions,
+                default_namespace=settings.cache_namespace,
+                default_model=settings.embedding_model,
+                exact_cache=mem_cache,
+            )
+            app.state.vector_store = vector_store
+
+            embedding_provider = EmbeddingProviderFactory.create(
+                provider_name=settings.embedding_provider,
+                model=settings.embedding_model,
+                base_url=settings.embedding_base_url,
+                timeout_seconds=settings.embedding_timeout_seconds,
+            )
+            policy = SemanticCachePolicy(
+                min_similarity=settings.semantic_cache_min_similarity,
+                min_margin=settings.semantic_cache_min_margin,
+                top_k=settings.semantic_cache_top_k,
+                configured_model=settings.embedding_model,
+            )
+            semantic_cache = SemanticCacheService(
+                embedding_provider=embedding_provider,
+                vector_store=vector_store,
+                policy=policy,
+                default_namespace=settings.cache_namespace,
+            )
+            set_semantic_cache(semantic_cache)
+            app.state.semantic_cache = semantic_cache
+            logger.info(
+                "In-memory semantic cache initialized: dimensions=%d, model=%s, min_sim=%.2f, min_margin=%.2f, top_k=%d",
+                settings.vector_dimensions,
+                settings.embedding_model,
+                settings.semantic_cache_min_similarity,
+                settings.semantic_cache_min_margin,
+                settings.semantic_cache_top_k,
+            )
+        else:
+            set_semantic_cache(None)
+            app.state.vector_store = None
+            app.state.semantic_cache = None
 
     yield
 

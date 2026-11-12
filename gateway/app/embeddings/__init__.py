@@ -13,6 +13,7 @@ from .errors import (
     EmbeddingTimeoutError,
 )
 from .factory import EmbeddingProviderFactory
+from .fastembed_adapter import FastEmbedProvider
 from .interfaces import EmbeddingProvider
 from .ollama_adapter import OllamaEmbeddingProvider
 
@@ -26,5 +27,6 @@ __all__ = [
     "EmbeddingResult",
     "EmbeddingTask",
     "EmbeddingTimeoutError",
+    "FastEmbedProvider",
     "OllamaEmbeddingProvider",
 ]
