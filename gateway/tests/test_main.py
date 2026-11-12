@@ -230,6 +230,203 @@ class TestLifespanStartupAndShutdown(unittest.IsolatedAsyncioTestCase):
                 async with lifespan(app):
                     pass
 
+    async def test_startup_db_migration_failure_closes_pool(self):
+        """If database migration fails during startup, the PostgreSQL pool is closed and singletons reset."""
+        from unittest.mock import AsyncMock, MagicMock
+        from app.main import create_app, lifespan
+        import app.api.routes as routes
+        from app.routes.query import get_semantic_cache, get_vector_store
+
+        mock_pool = MagicMock()
+        mock_pool.close = AsyncMock()
+
+        with patch.dict(os.environ, {
+            "CACHE_BACKEND": "postgres",
+            "DATABASE_URL": "postgresql://test_user:pass@localhost:5432/test_db",
+            "GROQ_API_KEY": "gsk_test",
+        }, clear=False):
+            reload_settings()
+            app = create_app()
+
+            with patch("asyncpg.create_pool", new_callable=AsyncMock, return_value=mock_pool), \
+                 patch("app.main.run_migrations", new_callable=AsyncMock, side_effect=RuntimeError("Migration failed")):
+
+                with self.assertRaises(RuntimeError) as ctx:
+                    async with lifespan(app):
+                        pass
+                self.assertIn("Migration failed", str(ctx.exception))
+
+            mock_pool.close.assert_awaited_once()
+            self.assertIsNone(routes._cache_singleton)
+            self.assertIsNone(get_vector_store())
+            self.assertIsNone(get_semantic_cache())
+            self.assertIsNone(app.state.db_pool)
+            self.assertIsNone(app.state.cache)
+
+    async def test_startup_vector_migration_failure_closes_pool_and_releases_resources(self):
+        """If vector migration fails, the PostgreSQL pool is closed and singletons reset."""
+        from unittest.mock import AsyncMock, MagicMock
+        from app.main import create_app, lifespan
+        import app.api.routes as routes
+        from app.routes.query import get_semantic_cache, get_vector_store
+
+        mock_pool = MagicMock()
+        mock_pool.close = AsyncMock()
+
+        with patch.dict(os.environ, {
+            "CACHE_BACKEND": "postgres",
+            "VECTOR_STORE_BACKEND": "postgres",
+            "DATABASE_URL": "postgresql://test_user:pass@localhost:5432/test_db",
+            "SEMANTIC_CACHE_ENABLED": "true",
+            "GROQ_API_KEY": "gsk_test",
+        }, clear=False):
+            reload_settings()
+            app = create_app()
+
+            with patch("asyncpg.create_pool", new_callable=AsyncMock, return_value=mock_pool), \
+                 patch("app.main.run_migrations", new_callable=AsyncMock), \
+                 patch("app.main.run_vector_migrations", new_callable=AsyncMock, side_effect=RuntimeError("Vector migration error")):
+
+                with self.assertRaises(RuntimeError) as ctx:
+                    async with lifespan(app):
+                        pass
+                self.assertIn("Vector migration error", str(ctx.exception))
+
+            mock_pool.close.assert_awaited_once()
+            self.assertIsNone(routes._cache_singleton)
+            self.assertIsNone(get_vector_store())
+            self.assertIsNone(get_semantic_cache())
+
+    async def test_startup_embedding_factory_failure_postgres_closes_pool(self):
+        """If embedding provider factory fails in PostgreSQL mode, pool is closed cleanly."""
+        from unittest.mock import AsyncMock, MagicMock
+        from app.main import create_app, lifespan
+        from app.embeddings.errors import EmbeddingConfigurationError
+        import app.api.routes as routes
+        from app.routes.query import get_semantic_cache, get_vector_store
+
+        mock_pool = MagicMock()
+        mock_pool.close = AsyncMock()
+
+        with patch.dict(os.environ, {
+            "CACHE_BACKEND": "postgres",
+            "VECTOR_STORE_BACKEND": "postgres",
+            "DATABASE_URL": "postgresql://test_user:pass@localhost:5432/test_db",
+            "SEMANTIC_CACHE_ENABLED": "true",
+            "GROQ_API_KEY": "gsk_test",
+        }, clear=False):
+            reload_settings()
+            app = create_app()
+
+            with patch("asyncpg.create_pool", new_callable=AsyncMock, return_value=mock_pool), \
+                 patch("app.main.run_migrations", new_callable=AsyncMock), \
+                 patch("app.main.run_vector_migrations", new_callable=AsyncMock), \
+                 patch("app.main.EmbeddingProviderFactory.create", side_effect=EmbeddingConfigurationError("Factory error")):
+
+                with self.assertRaises(EmbeddingConfigurationError):
+                    async with lifespan(app):
+                        pass
+
+            mock_pool.close.assert_awaited_once()
+            self.assertIsNone(routes._cache_singleton)
+            self.assertIsNone(get_vector_store())
+            self.assertIsNone(get_semantic_cache())
+
+    async def test_startup_embedding_factory_failure_memory_clears_resources(self):
+        """If embedding provider factory fails in memory mode, partial memory resources are cleared."""
+        from app.main import create_app, lifespan
+        from app.embeddings.errors import EmbeddingConfigurationError
+        import app.api.routes as routes
+        from app.routes.query import get_semantic_cache, get_vector_store
+
+        with patch.dict(os.environ, {
+            "CACHE_BACKEND": "memory",
+            "VECTOR_STORE_BACKEND": "memory",
+            "SEMANTIC_CACHE_ENABLED": "true",
+            "GROQ_API_KEY": "gsk_test",
+        }, clear=False):
+            reload_settings()
+            app = create_app()
+
+            with patch("app.main.EmbeddingProviderFactory.create", side_effect=EmbeddingConfigurationError("Mem factory fail")):
+                with self.assertRaises(EmbeddingConfigurationError):
+                    async with lifespan(app):
+                        pass
+
+            self.assertIsNone(routes._cache_singleton)
+            self.assertIsNone(get_vector_store())
+            self.assertIsNone(get_semantic_cache())
+
+    async def test_shutdown_semantic_cache_error_still_closes_exact_cache_and_pool(self):
+        """If semantic-cache cleanup raises, exact-cache and PostgreSQL pool are still closed."""
+        from unittest.mock import AsyncMock, MagicMock
+        from app.main import create_app, lifespan
+        import app.api.routes as routes
+        from app.routes.query import get_semantic_cache, get_vector_store
+
+        mock_pool = MagicMock()
+        mock_pool.close = AsyncMock()
+
+        with patch.dict(os.environ, {
+            "CACHE_BACKEND": "postgres",
+            "VECTOR_STORE_BACKEND": "postgres",
+            "DATABASE_URL": "postgresql://test_user:pass@localhost:5432/test_db",
+            "SEMANTIC_CACHE_ENABLED": "true",
+            "GROQ_API_KEY": "gsk_test",
+        }, clear=False):
+            reload_settings()
+            app = create_app()
+
+            with patch("asyncpg.create_pool", new_callable=AsyncMock, return_value=mock_pool), \
+                 patch("app.main.run_migrations", new_callable=AsyncMock), \
+                 patch("app.main.run_vector_migrations", new_callable=AsyncMock), \
+                 patch("app.main.EmbeddingProviderFactory.create") as mock_factory:
+
+                mock_provider = MagicMock()
+                mock_provider.close = AsyncMock()
+                mock_factory.return_value = mock_provider
+
+                with self.assertRaises(RuntimeError) as ctx:
+                    async with lifespan(app):
+                        # Mock semantic_cache.close to raise an error during shutdown
+                        app.state.semantic_cache.close = AsyncMock(side_effect=RuntimeError("Semantic close exploded"))
+                self.assertIn("Semantic close exploded", str(ctx.exception))
+
+                # Pool should STILL be closed even though semantic cache close exploded!
+                mock_pool.close.assert_awaited_once()
+                # Global singletons must still be reset
+                self.assertIsNone(get_semantic_cache())
+                self.assertIsNone(get_vector_store())
+                self.assertIsNone(routes._cache_singleton)
+
+    async def test_shutdown_vector_store_error_in_lifespan_still_closes_exact_cache(self):
+        """If vector-store cleanup raises during unowned shutdown, exact-cache is still closed."""
+        from unittest.mock import AsyncMock
+        from app.main import create_app, lifespan
+        import app.api.routes as routes
+        from app.routes.query import get_semantic_cache, get_vector_store
+
+        with patch.dict(os.environ, {
+            "CACHE_BACKEND": "memory",
+            "VECTOR_STORE_BACKEND": "memory",
+            "SEMANTIC_CACHE_ENABLED": "true",
+            "GROQ_API_KEY": "gsk_test",
+        }, clear=False):
+            reload_settings()
+            app = create_app()
+
+            with self.assertRaises(RuntimeError) as ctx:
+                async with lifespan(app):
+                    # Detach semantic_cache so vector_store is closed independently, and mock vector_store.close to raise
+                    app.state.semantic_cache = None
+                    app.state.vector_store.close = AsyncMock(side_effect=RuntimeError("Vector store close exploded"))
+            self.assertIn("Vector store close exploded", str(ctx.exception))
+
+            # Singletons must be reset
+            self.assertIsNone(get_semantic_cache())
+            self.assertIsNone(get_vector_store())
+            self.assertIsNone(routes._cache_singleton)
+
 
 if __name__ == "__main__":
     unittest.main()

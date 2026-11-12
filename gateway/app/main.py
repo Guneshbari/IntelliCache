@@ -58,6 +58,59 @@ logger = logging.getLogger("intellicache.gateway")
 _STARTUP_TIME = time.time()
 
 
+async def _cleanup_gateway_resources(
+    semantic_cache: Optional[SemanticCacheService] = None,
+    vector_store: Optional[BaseVectorStore] = None,
+    embedding_provider: Optional[Any] = None,
+    cache: Optional[BaseCache] = None,
+    pool: Optional[asyncpg.Pool] = None,
+) -> list[Exception]:
+    """
+    Cleans up gateway infrastructure resources independently.
+    Ensures failure in one resource cleanup does not prevent subsequent resources from closing.
+    Avoids double-closing the PostgreSQL pool (closed by PostgresCache if cache exists, or pool directly).
+    """
+    errors: list[Exception] = []
+
+    # 1. Close semantic cache (which closes owned embedding provider and vector store independently)
+    if semantic_cache is not None:
+        try:
+            await semantic_cache.close()
+        except Exception as exc:
+            logger.error("Error closing semantic cache: %s", exc)
+            errors.append(exc)
+    else:
+        # If semantic_cache was not created, clean up partially initialized vector_store or embedding_provider
+        if vector_store is not None:
+            try:
+                await vector_store.close()
+            except Exception as exc:
+                logger.error("Error closing vector store: %s", exc)
+                errors.append(exc)
+        if embedding_provider is not None:
+            try:
+                await embedding_provider.close()
+            except Exception as exc:
+                logger.error("Error closing embedding provider: %s", exc)
+                errors.append(exc)
+
+    # 2. Close exact cache (PostgresCache owns and closes pool) or raw pool if cache was not yet created
+    if cache is not None:
+        try:
+            await cache.close()
+        except Exception as exc:
+            logger.error("Error closing cache: %s", exc)
+            errors.append(exc)
+    elif pool is not None:
+        try:
+            await pool.close()
+        except Exception as exc:
+            logger.error("Error closing database pool: %s", exc)
+            errors.append(exc)
+
+    return errors
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan manager for startup and shutdown events."""
@@ -72,155 +125,175 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Cache: %s (TTL: %ss)", "Enabled" if settings.cache_enabled else "Disabled", settings.cache_ttl_seconds)
     logger.info("=" * 60)
 
-    pg_cache: Optional[PostgresCache] = None
-    if settings.cache_backend == "postgres":
-        if not settings.database_url:
-            raise RuntimeError("DATABASE_URL must be configured when CACHE_BACKEND='postgres'.")
-        logger.info("Initializing PostgreSQL connection pool...")
-        pool = await asyncpg.create_pool(
-            dsn=settings.database_url,
-            min_size=settings.db_pool_min_size,
-            max_size=settings.db_pool_max_size,
-        )
-        logger.info("Applying database migrations...")
-        await run_migrations(pool)
-        pg_cache = PostgresCache(
-            pool=pool,
-            max_entries=settings.cache_max_entries,
-            ttl_seconds=settings.cache_ttl_seconds,
-            default_namespace=settings.cache_namespace,
-        )
-        set_query_cache(pg_cache)
-        app.state.db_pool = pool
-        app.state.cache = pg_cache
+    # Track resources locally as they are created
+    pool: Optional[asyncpg.Pool] = None
+    cache: Optional[BaseCache] = None
+    vector_store: Optional[BaseVectorStore] = None
+    embedding_provider: Optional[Any] = None
+    semantic_cache: Optional[SemanticCacheService] = None
 
-        if settings.semantic_cache_enabled:
-            if settings.vector_store_backend != "postgres":
-                raise ValueError(
-                    f"Unsupported vector_store_backend '{settings.vector_store_backend}' for CACHE_BACKEND='postgres'"
-                )
-            logger.info("Semantic cache enabled. Running vector store migrations...")
-            await run_vector_migrations(pool, dimensions=settings.vector_dimensions)
-            vector_store = PostgresVectorStore(
+    try:
+        if settings.cache_backend == "postgres":
+            if not settings.database_url:
+                raise RuntimeError("DATABASE_URL must be configured when CACHE_BACKEND='postgres'.")
+            logger.info("Initializing PostgreSQL connection pool...")
+            pool = await asyncpg.create_pool(
+                dsn=settings.database_url,
+                min_size=settings.db_pool_min_size,
+                max_size=settings.db_pool_max_size,
+            )
+            logger.info("Applying database migrations...")
+            await run_migrations(pool)
+            cache = PostgresCache(
                 pool=pool,
-                default_namespace=settings.cache_namespace,
-                default_model=settings.embedding_model,
-                dimensions=settings.vector_dimensions,
-            )
-            app.state.vector_store = vector_store
-            set_vector_store(vector_store)
-
-            # Instantiate embedding provider and semantic cache policy/service
-            embedding_provider = EmbeddingProviderFactory.create(
-                provider_name=settings.embedding_provider,
-                model=settings.embedding_model,
-                dimensions=settings.vector_dimensions,
-                base_url=settings.embedding_base_url,
-                timeout_seconds=settings.embedding_timeout_seconds,
-            )
-            policy = SemanticCachePolicy(
-                min_similarity=settings.semantic_cache_min_similarity,
-                min_margin=settings.semantic_cache_min_margin,
-                top_k=settings.semantic_cache_top_k,
-                configured_model=settings.embedding_model,
-            )
-            semantic_cache = SemanticCacheService(
-                embedding_provider=embedding_provider,
-                vector_store=vector_store,
-                policy=policy,
+                max_entries=settings.cache_max_entries,
+                ttl_seconds=settings.cache_ttl_seconds,
                 default_namespace=settings.cache_namespace,
             )
-            set_semantic_cache(semantic_cache)
-            app.state.semantic_cache = semantic_cache
-            logger.info(
-                "Semantic cache initialized: dimensions=%d, model=%s, min_sim=%.2f, min_margin=%.2f, top_k=%d",
-                settings.vector_dimensions,
-                settings.embedding_model,
-                settings.semantic_cache_min_similarity,
-                settings.semantic_cache_min_margin,
-                settings.semantic_cache_top_k,
-            )
-        else:
-            set_semantic_cache(None)
-            set_vector_store(None)
-            app.state.vector_store = None
-            app.state.semantic_cache = None
-    else:
-        mem_cache = ExactCache(
-            max_entries=settings.cache_max_entries,
-            ttl_seconds=settings.cache_ttl_seconds,
-        )
-        set_query_cache(mem_cache)
-        app.state.cache = mem_cache
 
-        if settings.semantic_cache_enabled:
-            if settings.vector_store_backend != "memory":
-                raise ValueError(
-                    f"Unsupported vector_store_backend '{settings.vector_store_backend}' for CACHE_BACKEND='memory'"
+            if settings.semantic_cache_enabled:
+                if settings.vector_store_backend != "postgres":
+                    raise ValueError(
+                        f"Unsupported vector_store_backend '{settings.vector_store_backend}' for CACHE_BACKEND='postgres'"
+                    )
+                logger.info("Semantic cache enabled. Running vector store migrations...")
+                await run_vector_migrations(pool, dimensions=settings.vector_dimensions)
+                vector_store = PostgresVectorStore(
+                    pool=pool,
+                    default_namespace=settings.cache_namespace,
+                    default_model=settings.embedding_model,
+                    dimensions=settings.vector_dimensions,
                 )
-            vector_store = InMemoryVectorStore(
-                dimensions=settings.vector_dimensions,
-                default_namespace=settings.cache_namespace,
-                default_model=settings.embedding_model,
-                exact_cache=mem_cache,
-                max_records=settings.vector_store_max_entries,
-            )
-            app.state.vector_store = vector_store
-            set_vector_store(vector_store)
 
-            embedding_provider = EmbeddingProviderFactory.create(
-                provider_name=settings.embedding_provider,
-                model=settings.embedding_model,
-                dimensions=settings.vector_dimensions,
-                base_url=settings.embedding_base_url,
-                timeout_seconds=settings.embedding_timeout_seconds,
-            )
-            policy = SemanticCachePolicy(
-                min_similarity=settings.semantic_cache_min_similarity,
-                min_margin=settings.semantic_cache_min_margin,
-                top_k=settings.semantic_cache_top_k,
-                configured_model=settings.embedding_model,
-            )
-            semantic_cache = SemanticCacheService(
-                embedding_provider=embedding_provider,
-                vector_store=vector_store,
-                policy=policy,
-                default_namespace=settings.cache_namespace,
-            )
-            set_semantic_cache(semantic_cache)
-            app.state.semantic_cache = semantic_cache
-            logger.info(
-                "In-memory semantic cache initialized: dimensions=%d, model=%s, min_sim=%.2f, min_margin=%.2f, top_k=%d",
-                settings.vector_dimensions,
-                settings.embedding_model,
-                settings.semantic_cache_min_similarity,
-                settings.semantic_cache_min_margin,
-                settings.semantic_cache_top_k,
-            )
+                # Instantiate embedding provider and semantic cache policy/service
+                embedding_provider = EmbeddingProviderFactory.create(
+                    provider_name=settings.embedding_provider,
+                    model=settings.embedding_model,
+                    dimensions=settings.vector_dimensions,
+                    base_url=settings.embedding_base_url,
+                    timeout_seconds=settings.embedding_timeout_seconds,
+                )
+                policy = SemanticCachePolicy(
+                    min_similarity=settings.semantic_cache_min_similarity,
+                    min_margin=settings.semantic_cache_min_margin,
+                    top_k=settings.semantic_cache_top_k,
+                    configured_model=settings.embedding_model,
+                )
+                semantic_cache = SemanticCacheService(
+                    embedding_provider=embedding_provider,
+                    vector_store=vector_store,
+                    policy=policy,
+                    default_namespace=settings.cache_namespace,
+                )
+                logger.info(
+                    "Semantic cache initialized: dimensions=%d, model=%s, min_sim=%.2f, min_margin=%.2f, top_k=%d",
+                    settings.vector_dimensions,
+                    settings.embedding_model,
+                    settings.semantic_cache_min_similarity,
+                    settings.semantic_cache_min_margin,
+                    settings.semantic_cache_top_k,
+                )
         else:
+            cache = ExactCache(
+                max_entries=settings.cache_max_entries,
+                ttl_seconds=settings.cache_ttl_seconds,
+            )
+
+            if settings.semantic_cache_enabled:
+                if settings.vector_store_backend != "memory":
+                    raise ValueError(
+                        f"Unsupported vector_store_backend '{settings.vector_store_backend}' for CACHE_BACKEND='memory'"
+                    )
+                vector_store = InMemoryVectorStore(
+                    dimensions=settings.vector_dimensions,
+                    default_namespace=settings.cache_namespace,
+                    default_model=settings.embedding_model,
+                    exact_cache=cache,
+                    max_records=settings.vector_store_max_entries,
+                )
+
+                embedding_provider = EmbeddingProviderFactory.create(
+                    provider_name=settings.embedding_provider,
+                    model=settings.embedding_model,
+                    dimensions=settings.vector_dimensions,
+                    base_url=settings.embedding_base_url,
+                    timeout_seconds=settings.embedding_timeout_seconds,
+                )
+                policy = SemanticCachePolicy(
+                    min_similarity=settings.semantic_cache_min_similarity,
+                    min_margin=settings.semantic_cache_min_margin,
+                    top_k=settings.semantic_cache_top_k,
+                    configured_model=settings.embedding_model,
+                )
+                semantic_cache = SemanticCacheService(
+                    embedding_provider=embedding_provider,
+                    vector_store=vector_store,
+                    policy=policy,
+                    default_namespace=settings.cache_namespace,
+                )
+                logger.info(
+                    "In-memory semantic cache initialized: dimensions=%d, model=%s, min_sim=%.2f, min_margin=%.2f, top_k=%d",
+                    settings.vector_dimensions,
+                    settings.embedding_model,
+                    settings.semantic_cache_min_similarity,
+                    settings.semantic_cache_min_margin,
+                    settings.semantic_cache_top_k,
+                )
+
+        # Register initialized components in app.state and global singletons only after full success
+        app.state.db_pool = pool
+        app.state.cache = cache
+        app.state.vector_store = vector_store
+        app.state.semantic_cache = semantic_cache
+
+        set_query_cache(cache)
+        set_vector_store(vector_store)
+        set_semantic_cache(semantic_cache)
+
+    except Exception as startup_err:
+        logger.error("Startup initialization failed: %s", startup_err)
+        try:
+            await _cleanup_gateway_resources(
+                semantic_cache=semantic_cache,
+                vector_store=vector_store,
+                embedding_provider=embedding_provider,
+                cache=cache,
+                pool=pool,
+            )
+        finally:
             set_semantic_cache(None)
             set_vector_store(None)
-            app.state.vector_store = None
+            set_query_cache(None)
             app.state.semantic_cache = None
+            app.state.vector_store = None
+            app.state.cache = None
+            app.state.db_pool = None
+        raise
 
-    yield
+    try:
+        yield
+    finally:
+        logger.info("Shutting down IntelliCache Gateway.")
+        shutdown_errors: list[Exception] = []
+        try:
+            shutdown_errors = await _cleanup_gateway_resources(
+                semantic_cache=semantic_cache,
+                vector_store=vector_store,
+                embedding_provider=embedding_provider,
+                cache=cache,
+                pool=pool,
+            )
+        finally:
+            set_semantic_cache(None)
+            set_vector_store(None)
+            set_query_cache(None)
+            app.state.semantic_cache = None
+            app.state.vector_store = None
+            app.state.cache = None
+            app.state.db_pool = None
 
-    logger.info("Shutting down IntelliCache Gateway.")
-    if hasattr(app.state, "semantic_cache") and app.state.semantic_cache is not None:
-        await app.state.semantic_cache.close()
-    elif hasattr(app.state, "vector_store") and app.state.vector_store is not None:
-        await app.state.vector_store.close()
-    set_semantic_cache(None)
-    set_vector_store(None)
-
-    active_cache = get_query_cache()
-    if active_cache is not None:
-        await active_cache.close()
-    elif hasattr(app.state, "db_pool") and app.state.db_pool is not None:
-        await app.state.db_pool.close()
-    if hasattr(app.state, "db_pool"):
-        app.state.db_pool = None
-    set_query_cache(None)
+        if shutdown_errors:
+            raise shutdown_errors[0]
 
 
 def create_app() -> FastAPI:

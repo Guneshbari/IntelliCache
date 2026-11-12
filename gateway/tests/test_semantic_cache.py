@@ -768,3 +768,70 @@ class TestPostgresSemanticCacheIntegration(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stats["hits"], 1)
         self.assertEqual(stats["misses"], 1)
         self.assertEqual(stats["indexing_successes"], 1)
+
+
+class TestSemanticCacheServiceShutdown(unittest.IsolatedAsyncioTestCase):
+    """Verifies independent resource cleanup during SemanticCacheService.close()."""
+
+    async def test_shutdown_embedding_provider_error_still_closes_vector_store(self):
+        """If embedding_provider.close() raises an error, vector_store.close() is still executed."""
+        mock_provider = MagicMock()
+        mock_provider.close = AsyncMock(side_effect=RuntimeError("Embedding close failure"))
+
+        mock_vector_store = MagicMock()
+        mock_vector_store.close = AsyncMock()
+
+        policy = SemanticCachePolicy(configured_model="test-model")
+        service = SemanticCacheService(
+            embedding_provider=mock_provider,
+            vector_store=mock_vector_store,
+            policy=policy,
+        )
+
+        with self.assertRaises(RuntimeError) as ctx:
+            await service.close()
+        self.assertIn("Embedding close failure", str(ctx.exception))
+
+        mock_provider.close.assert_awaited_once()
+        mock_vector_store.close.assert_awaited_once()
+
+    async def test_shutdown_vector_store_error_still_closes_embedding_provider(self):
+        """If vector_store.close() raises an error, embedding_provider.close() is still executed."""
+        mock_provider = MagicMock()
+        mock_provider.close = AsyncMock()
+
+        mock_vector_store = MagicMock()
+        mock_vector_store.close = AsyncMock(side_effect=RuntimeError("Vector store close failure"))
+
+        policy = SemanticCachePolicy(configured_model="test-model")
+        service = SemanticCacheService(
+            embedding_provider=mock_provider,
+            vector_store=mock_vector_store,
+            policy=policy,
+        )
+
+        with self.assertRaises(RuntimeError) as ctx:
+            await service.close()
+        self.assertIn("Vector store close failure", str(ctx.exception))
+
+        mock_provider.close.assert_awaited_once()
+        mock_vector_store.close.assert_awaited_once()
+
+    async def test_normal_shutdown_closes_each_once(self):
+        """Normal shutdown closes both provider and vector store exactly once."""
+        mock_provider = MagicMock()
+        mock_provider.close = AsyncMock()
+
+        mock_vector_store = MagicMock()
+        mock_vector_store.close = AsyncMock()
+
+        policy = SemanticCachePolicy(configured_model="test-model")
+        service = SemanticCacheService(
+            embedding_provider=mock_provider,
+            vector_store=mock_vector_store,
+            policy=policy,
+        )
+
+        await service.close()
+        mock_provider.close.assert_awaited_once()
+        mock_vector_store.close.assert_awaited_once()

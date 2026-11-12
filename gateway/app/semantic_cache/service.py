@@ -296,9 +296,20 @@ class SemanticCacheService(BaseSemanticCache):
         }
 
     async def close(self) -> None:
-        """Closes owned embedding provider and vector store resources."""
+        """Closes owned embedding provider and vector store resources independently."""
+        errors: list[Exception] = []
         if self.embedding_provider:
-            await self.embedding_provider.close()
+            try:
+                await self.embedding_provider.close()
+            except Exception as exc:
+                logger.error("Error closing embedding provider during shutdown: %s", exc)
+                errors.append(exc)
         if self.vector_store:
-            await self.vector_store.close()
+            try:
+                await self.vector_store.close()
+            except Exception as exc:
+                logger.error("Error closing vector store during shutdown: %s", exc)
+                errors.append(exc)
         logger.info("SemanticCacheService resources closed.")
+        if errors:
+            raise errors[0]

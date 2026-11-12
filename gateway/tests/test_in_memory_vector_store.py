@@ -366,6 +366,123 @@ class TestInMemoryVectorStore(unittest.IsolatedAsyncioTestCase):
         await store.close()
         await exact_cache.close()
 
+    async def test_concurrent_upsert_during_stale_pruning_preserved(self):
+        """A concurrent upsert for the same fingerprint during search pruning is preserved."""
+        exact_cache = ExactCache(max_entries=10, ttl_seconds=3600)
+        store = InMemoryVectorStore(
+            dimensions=4,
+            default_namespace="default",
+            default_model="test-model",
+            exact_cache=exact_cache,
+        )
+
+        # 1. Insert initial record (stale candidate)
+        rec_old = VectorRecord(
+            cache_namespace="default",
+            fingerprint="fp_concurrent",
+            query_text="Initial stale query",
+            vector=[1.0, 0.0, 0.0, 0.0],
+            model="test-model",
+        )
+        await store.upsert(rec_old)
+        self.assertEqual(await store.get_record_count("default"), 1)
+
+        # Ensure exact_cache does not have this entry so peek() returns None
+        self.assertIsNone(await exact_cache.peek("fp_concurrent", namespace="default"))
+
+        # Synchronization events to coordinate deterministic concurrency
+        search_peeking = asyncio.Event()
+        upsert_completed = asyncio.Event()
+
+        original_peek = exact_cache.peek
+
+        async def hooked_peek(fingerprint, namespace=None):
+            result = await original_peek(fingerprint, namespace=namespace)
+            if fingerprint == "fp_concurrent":
+                # Signal that search has identified the stale entry and is about to prune
+                search_peeking.set()
+                # Await the concurrent upsert to complete before search acquires the lock to prune
+                await upsert_completed.wait()
+            return result
+
+        exact_cache.peek = hooked_peek
+
+        # Define concurrent upsert task
+        rec_new = VectorRecord(
+            cache_namespace="default",
+            fingerprint="fp_concurrent",
+            query_text="Replacement query during concurrent flight",
+            vector=[0.0, 1.0, 0.0, 0.0],
+            model="test-model",
+        )
+
+        async def concurrent_upsert_worker():
+            await search_peeking.wait()
+            await store.upsert(rec_new)
+            upsert_completed.set()
+
+        # Run search and concurrent upsert concurrently
+        search_task = asyncio.create_task(
+            store.search(
+                query_vector=[1.0, 0.0, 0.0, 0.0],
+                namespace="default",
+                model="test-model",
+            )
+        )
+        upsert_task = asyncio.create_task(concurrent_upsert_worker())
+
+        await asyncio.gather(search_task, upsert_task)
+
+        # Verification:
+        # 1. The store must still hold the record
+        self.assertEqual(await store.get_record_count("default"), 1)
+        stored_rec = store._records.get(("default", "fp_concurrent", "test-model"))
+        # 2. It must be rec_new, NOT rec_old
+        self.assertIs(stored_rec, rec_new)
+        self.assertEqual(stored_rec.query_text, "Replacement query during concurrent flight")
+
+        await store.close()
+        await exact_cache.close()
+
+    async def test_record_versioning_lifecycle(self):
+        """Record version counter increments on upsert and is cleaned up on delete/clear."""
+        store = InMemoryVectorStore(dimensions=4)
+        rec1 = VectorRecord(
+            cache_namespace="default",
+            fingerprint="fp1",
+            query_text="Q1",
+            vector=[1.0, 0.0, 0.0, 0.0],
+            model="m1",
+        )
+        await store.upsert(rec1)
+        key1 = ("default", "fp1", "m1")
+        self.assertIn(key1, store._record_versions)
+        v1 = store._record_versions[key1]
+
+        # Upserting again increments version
+        rec1_updated = VectorRecord(
+            cache_namespace="default",
+            fingerprint="fp1",
+            query_text="Q1 updated",
+            vector=[0.0, 1.0, 0.0, 0.0],
+            model="m1",
+        )
+        await store.upsert(rec1_updated)
+        v2 = store._record_versions[key1]
+        self.assertGreater(v2, v1)
+
+        # Deleting cleans up version mapping
+        await store.delete("fp1", namespace="default")
+        self.assertNotIn(key1, store._record_versions)
+
+        # Clear cleans up versions too
+        await store.upsert(rec1)
+        self.assertIn(key1, store._record_versions)
+        await store.clear(namespace="default")
+        self.assertNotIn(key1, store._record_versions)
+
+        await store.close()
+
 
 class TestFastEmbedProvider(unittest.IsolatedAsyncioTestCase):
     """Unit tests for FastEmbedProvider adapter."""

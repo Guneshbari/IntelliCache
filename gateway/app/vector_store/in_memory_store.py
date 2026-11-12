@@ -54,6 +54,9 @@ class InMemoryVectorStore(BaseVectorStore):
         self._records: Dict[Tuple[str, str, str], VectorRecord] = {}
         # Key: (cache_namespace, fingerprint, model) -> float (timestamp)
         self._record_timestamps: Dict[Tuple[str, str, str], float] = {}
+        # Key: (cache_namespace, fingerprint, model) -> int (generation / version)
+        self._record_versions: Dict[Tuple[str, str, str], int] = {}
+        self._version_counter: int = 0
 
     def _validate_vector_dimensions(self, vector: Sequence[float], context: str = "Vector") -> None:
         """Validates vector length and element types."""
@@ -103,16 +106,20 @@ class InMemoryVectorStore(BaseVectorStore):
                     for sk in stale_keys:
                         self._records.pop(sk, None)
                         self._record_timestamps.pop(sk, None)
+                        self._record_versions.pop(sk, None)
 
                 # 2. Second pass: If still at or over capacity, evict the oldest record deterministically (FIFO)
                 if len(self._records) >= self.max_records:
                     oldest_key = min(self._records.keys(), key=lambda k: self._record_timestamps.get(k, 0.0))
                     self._records.pop(oldest_key, None)
                     self._record_timestamps.pop(oldest_key, None)
+                    self._record_versions.pop(oldest_key, None)
                     logger.debug("Evicted oldest vector record from memory store: %s", oldest_key[1][:12])
 
+            self._version_counter += 1
             self._records[key] = record
             self._record_timestamps[key] = time.time()
+            self._record_versions[key] = self._version_counter
 
         logger.debug(
             "Upserted in-memory vector record: namespace='%s', fingerprint='%s', model='%s', dimensions=%d",
@@ -150,8 +157,9 @@ class InMemoryVectorStore(BaseVectorStore):
 
         async with self._lock:
             candidates = [
-                rec for (r_ns, _, r_model), rec in self._records.items()
-                if r_ns == ns and r_model == target_model
+                (k, rec, self._record_versions.get(k, 0))
+                for (k, rec) in self._records.items()
+                if k[0] == ns and k[2] == target_model
             ]
 
         if not candidates:
@@ -164,9 +172,9 @@ class InMemoryVectorStore(BaseVectorStore):
             raise VectorInvalidError("Query vector norm cannot be zero.")
 
         scored_candidates: List[VectorSearchResult] = []
-        orphaned_keys: List[Tuple[str, str, str]] = []
+        orphaned_candidates: List[Tuple[Tuple[str, str, str], VectorRecord, int]] = []
 
-        for rec in candidates:
+        for k, rec, ver in candidates:
             # Dot product and candidate norm
             dot = 0.0
             rec_norm_sq = 0.0
@@ -199,7 +207,7 @@ class InMemoryVectorStore(BaseVectorStore):
 
                 if entry is None:
                     # Stale or expired exact cache entry: mark for lazy cleanup and skip
-                    orphaned_keys.append((rec.cache_namespace, rec.fingerprint, rec.model))
+                    orphaned_candidates.append((k, rec, ver))
                     continue
 
                 cached_resp = entry.response
@@ -229,12 +237,17 @@ class InMemoryVectorStore(BaseVectorStore):
                 )
             )
 
-        # Clean up any orphaned records detected during search
-        if orphaned_keys:
+        # Clean up any orphaned records detected during search, verifying identity and version
+        if orphaned_candidates:
             async with self._lock:
-                for ok in orphaned_keys:
-                    self._records.pop(ok, None)
-                    self._record_timestamps.pop(ok, None)
+                for ok, old_rec, old_version in orphaned_candidates:
+                    current_rec = self._records.get(ok)
+                    current_ver = self._record_versions.get(ok)
+                    # Verify under store lock that current record is still the exact same record that was inspected
+                    if current_rec is old_rec and current_ver == old_version:
+                        self._records.pop(ok, None)
+                        self._record_timestamps.pop(ok, None)
+                        self._record_versions.pop(ok, None)
 
         # Order by cosine distance ascending (closest / highest similarity first)
         scored_candidates.sort(key=lambda c: c.distance)
@@ -256,6 +269,7 @@ class InMemoryVectorStore(BaseVectorStore):
             for k in keys_to_delete:
                 del self._records[k]
                 self._record_timestamps.pop(k, None)
+                self._record_versions.pop(k, None)
             return len(keys_to_delete) > 0
 
     async def clear(self, namespace: Optional[str] = None) -> int:
@@ -269,6 +283,7 @@ class InMemoryVectorStore(BaseVectorStore):
             for k in keys_to_delete:
                 del self._records[k]
                 self._record_timestamps.pop(k, None)
+                self._record_versions.pop(k, None)
             return len(keys_to_delete)
 
     async def get_record_count(self, namespace: Optional[str] = None) -> int:
@@ -284,4 +299,5 @@ class InMemoryVectorStore(BaseVectorStore):
         async with self._lock:
             self._records.clear()
             self._record_timestamps.clear()
+            self._record_versions.clear()
         logger.info("InMemoryVectorStore closed.")
