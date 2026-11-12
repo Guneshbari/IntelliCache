@@ -3,6 +3,8 @@ Main entry point for the IntelliCache Gateway FastAPI application.
 Configures CORS, registers query and health routes, and manages database lifecycles.
 """
 
+from __future__ import annotations
+
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import logging
@@ -25,6 +27,7 @@ from app.metrics import (
 )
 from app.semantic_cache import SemanticCachePolicy, SemanticCacheService
 from app.vector_store import (
+    BaseVectorStore,
     InMemoryVectorStore,
     PostgresVectorStore,
     run_vector_migrations,
