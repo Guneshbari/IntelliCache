@@ -712,6 +712,27 @@ class TestSemanticEvaluation(unittest.IsolatedAsyncioTestCase):
         total_eval = results[0]["tp"] + results[0]["fp"] + results[0]["fn"] + results[0]["tn"]
         self.assertEqual(total_eval, 1)
 
+    async def test_threshold_sweep_uses_provider_model_identity(self) -> None:
+        """Verifies that run_threshold_sweep initializes policies with provider.model_name."""
+        cases = [
+            EvaluationCase(
+                id="dev-model-id", query="query text", category="positive_paraphrase", split="development",
+                expected_answer_label="l1", rationale="",
+                candidates=[CandidateData(id="c1", query_text="cand query", cached_response="resp", answer_label="l1")],
+            ),
+        ]
+        custom_model = "BAAI/bge-small-en-v1.5"
+        provider = DeterministicMockEmbeddingProvider(model=custom_model, dimensions=384)
+
+        with patch("scripts.evaluate_semantic_cache.evaluate_dataset", wraps=evaluate_dataset) as mock_eval:
+            results = await run_threshold_sweep(cases, provider, thresholds=[0.85], margins=[0.02], split="development")
+            self.assertEqual(len(results), 1)
+            # Inspect the policy passed to evaluate_dataset
+            self.assertTrue(mock_eval.called)
+            passed_policy = mock_eval.call_args[0][1]
+            self.assertEqual(passed_policy.configured_model, custom_model)
+            self.assertEqual(passed_policy.configured_model, provider.model_name)
+
     async def test_savings_accounting_distinguishes_safe_and_hazardous_reuse(self) -> None:
         """Verifies that safe reuse (TP) and incorrect reuse (FP) are accounted separately."""
         cases = [

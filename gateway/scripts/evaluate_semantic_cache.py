@@ -992,7 +992,11 @@ async def run_threshold_sweep(
     results = []
     for th in thresholds:
         for mg in margins:
-            policy = SemanticCachePolicy(min_similarity=th, min_margin=mg)
+            policy = SemanticCachePolicy(
+                min_similarity=th,
+                min_margin=mg,
+                configured_model=provider.model_name,
+            )
             metrics, _ = await evaluate_dataset(
                 dev_cases,
                 policy,
@@ -1017,8 +1021,8 @@ async def run_threshold_sweep(
                 "accuracy": metrics.accuracy,
             })
 
-    # Sort candidates by lowest FPR first, then highest F1 score
-    results.sort(key=lambda r: (-r["false_positive_rate"], r["f1_score"]), reverse=True)
+    # Prioritize fewer false positives first, then higher recall, then higher F1 score
+    results.sort(key=lambda r: (r["fp"], -r["recall"], -r["f1_score"]))
     return results
 
 
@@ -1727,14 +1731,18 @@ async def async_main() -> None:
                 dataset_hash=dataset_hash,
             )
             print("\n=== TOP 5 CONFIGURATIONS FROM DEV SWEEP (SPLIT = DEVELOPMENT) ===")
-            print(f"{'Threshold':<10} {'Margin':<8} {'Precision':<10} {'Recall':<8} {'F1':<8} {'FPR':<8} {'Rejection':<10}")
-            print("-" * 66)
+            print(f"{'Threshold':<10} {'Margin':<8} {'TP':<4} {'FP':<4} {'FN':<4} {'TN':<4} {'Precision':<10} {'Recall':<8} {'F1':<8} {'FPR':<8} {'Rejection':<10}")
+            print("-" * 88)
             for r in sweep_results[:5]:
                 print(
-                    f"{r['threshold']:<10.2f} {r['margin']:<8.2f} {r['precision']:<10.4f} "
-                    f"{r['recall']:<8.4f} {r['f1_score']:<8.4f} {r['false_positive_rate']:<8.4f} {r['rejection_rate']:<10.4f}"
+                    f"{r['threshold']:<10.2f} {r['margin']:<8.2f} {r['tp']:<4} {r['fp']:<4} {r['fn']:<4} {r['tn']:<4} "
+                    f"{r['precision']:<10.4f} {r['recall']:<8.4f} {r['f1_score']:<8.4f} {r['false_positive_rate']:<8.4f} {r['rejection_rate']:<10.4f}"
                 )
             selected_config = sweep_results[0]
+            if selected_config["fp"] > 0:
+                print("\n[SAFETY NOTICE] Every evaluated configuration in the sweep produced false positives on development data.")
+                print(f"Lowest-FP configuration (th={selected_config['threshold']:.2f}, mg={selected_config['margin']:.2f}) produced {selected_config['fp']} FP(s).")
+                print("The current policy and embedding model have not established a zero-false-positive threshold with non-zero recall.\n")
 
             # Cross-split comparison
             dev_cases = [c for c in cases if c.split == "development"]
