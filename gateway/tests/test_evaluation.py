@@ -138,13 +138,14 @@ class TestSemanticEvaluation(unittest.IsolatedAsyncioTestCase):
         # Precision = 5 / 5 -> 1.0
         # Recall = 5 / 17 -> 0.2941
         # F1 = 2 * 1.0 * 0.2941 / (1.0 + 0.2941) -> 0.4545
-        # FPR = 0 / 0 -> 0.0
+        # FPR = 0 / 0 -> None (undefined because FP+TN=0)
         # Rejection = 12 / 17 -> 0.7059
         # Accuracy = 5 / 17 -> 0.2941
         m_pos = compute_category_metrics(tp=5, fp=0, fn=12, tn=0, total=17)
         self.assertEqual(m_pos["precision"], 1.0)
-        self.assertEqual(m_pos["recall"], round(5 / 17, 4))
+        self.assertEqual(m_pos["recall"], 0.2941)
         self.assertIsNotNone(m_pos["f1_score"])
+        self.assertIsNone(m_pos["false_positive_rate"], "FPR must be None when FP+TN=0")
         self.assertEqual(m_pos["rejection_rate"], round(12 / 17, 4))
         self.assertEqual(m_pos["accuracy"], round(5 / 17, 4))
 
@@ -1027,6 +1028,11 @@ class TestSemanticEvaluation(unittest.IsolatedAsyncioTestCase):
         mock_cache = AsyncMock()
         mock_vector_store = AsyncMock()
         mock_vector_store.search.return_value = []
+        mock_vector_store.explain_search.return_value = {
+            "vector_index_used": True,
+            "retrieval_method": "HNSW",
+            "execution_plan_summary": [],
+        }
 
         case = EvaluationCase(
             id="test-ns-case",
@@ -1068,6 +1074,11 @@ class TestSemanticEvaluation(unittest.IsolatedAsyncioTestCase):
         mock_cache = AsyncMock()
         mock_vector_store = AsyncMock()
         mock_vector_store.search.return_value = []
+        mock_vector_store.explain_search.return_value = {
+            "vector_index_used": True,
+            "retrieval_method": "HNSW",
+            "execution_plan_summary": [],
+        }
 
         case = EvaluationCase(
             id="test-clean",
@@ -1111,6 +1122,11 @@ class TestSemanticEvaluation(unittest.IsolatedAsyncioTestCase):
         mock_cache = AsyncMock()
         mock_vector_store = AsyncMock()
         mock_vector_store.search.return_value = []
+        mock_vector_store.explain_search.return_value = {
+            "vector_index_used": True,
+            "retrieval_method": "HNSW",
+            "execution_plan_summary": [],
+        }
 
         case = EvaluationCase(
             id="bench-pgv",

@@ -4,7 +4,7 @@
     "dataset_path": "gateway/evaluation/dataset.json",
     "dataset_split": "development",
     "case_count": 57,
-    "evaluation_timestamp": "2026-11-13T15:17:46.111141+00:00",
+    "evaluation_timestamp": "2026-11-13T17:07:10.202982+00:00",
     "embedding_provider": "FastEmbedProvider (BAAI/bge-small-en-v1.5)",
     "embedding_model": "BAAI/bge-small-en-v1.5",
     "embedding_dimensions": 384,
@@ -43,7 +43,7 @@
         "precision": 1.0,
         "recall": 1.0,
         "f1_score": 1.0,
-        "false_positive_rate": 0.0,
+        "false_positive_rate": null,
         "rejection_rate": 0.0,
         "accuracy": 1.0
       },
@@ -158,7 +158,7 @@
     "hazardous_provider_calls_avoided": 15,
     "total_accepted_hits": 32,
     "safe_tokens_saved": 6290,
-    "safe_latency_saved_ms": 21149.53,
+    "safe_latency_saved_ms": 21160.98,
     "hazardous_tokens_involved": 5550
   },
   "sweep": [
@@ -735,8 +735,8 @@
       "decision": "safe_reuse",
       "classification": "TP",
       "rejection_reason": null,
-      "indexing_latency_ms": 6.78,
-      "lookup_latency_ms": 5.52
+      "indexing_latency_ms": 5.31,
+      "lookup_latency_ms": 5.14
     },
     {
       "case_id": "pos-dev-002",
@@ -748,8 +748,8 @@
       "decision": "safe_reuse",
       "classification": "TP",
       "rejection_reason": null,
-      "indexing_latency_ms": 5.51,
-      "lookup_latency_ms": 5.66
+      "indexing_latency_ms": 5.69,
+      "lookup_latency_ms": 5.38
     },
     {
       "case_id": "pos-dev-003",
@@ -761,8 +761,8 @@
       "decision": "safe_reuse",
       "classification": "TP",
       "rejection_reason": null,
-      "indexing_latency_ms": 6.43,
-      "lookup_latency_ms": 5.05
+      "indexing_latency_ms": 5.01,
+      "lookup_latency_ms": 5.46
     },
     {
       "case_id": "pos-dev-004",
@@ -774,8 +774,8 @@
       "decision": "safe_reuse",
       "classification": "TP",
       "rejection_reason": null,
-      "indexing_latency_ms": 6.81,
-      "lookup_latency_ms": 5.56
+      "indexing_latency_ms": 5.15,
+      "lookup_latency_ms": 4.9
     },
     {
       "case_id": "pos-dev-005",
@@ -787,8 +787,8 @@
       "decision": "safe_reuse",
       "classification": "TP",
       "rejection_reason": null,
-      "indexing_latency_ms": 6.55,
-      "lookup_latency_ms": 6.59
+      "indexing_latency_ms": 4.96,
+      "lookup_latency_ms": 5.22
     },
     {
       "case_id": "pos-dev-006",
@@ -800,8 +800,8 @@
       "decision": "safe_reuse",
       "classification": "TP",
       "rejection_reason": null,
-      "indexing_latency_ms": 6.43,
-      "lookup_latency_ms": 5.72
+      "indexing_latency_ms": 4.81,
+      "lookup_latency_ms": 5.32
     },
     {
       "case_id": "pos-dev-007",
@@ -813,8 +813,8 @@
       "decision": "safe_reuse",
       "classification": "TP",
       "rejection_reason": null,
-      "indexing_latency_ms": 5.5,
-      "lookup_latency_ms": 6.64
+      "indexing_latency_ms": 5.21,
+      "lookup_latency_ms": 5.03
     },
     {
       "case_id": "pos-dev-008",
@@ -826,8 +826,8 @@
       "decision": "safe_reuse",
       "classification": "TP",
       "rejection_reason": null,
-      "indexing_latency_ms": 5.02,
-      "lookup_latency_ms": 6.55
+      "indexing_latency_ms": 4.96,
+      "lookup_latency_ms": 5.18
     },
     {
       "case_id": "pos-dev-009",
@@ -839,8 +839,8 @@
       "decision": "safe_reuse",
       "classification": "TP",
       "rejection_reason": null,
-      "indexing_latency_ms": 4.95,
-      "lookup_latency_ms": 6.75
+      "indexing_latency_ms": 4.97,
+      "lookup_latency_ms": 5.24
     },
     {
       "case_id": "pos-dev-010",
@@ -852,8 +852,8 @@
       "decision": "safe_reuse",
       "classification": "TP",
       "rejection_reason": null,
-      "indexing_latency_ms": 4.94,
-      "lookup_latency_ms": 5.19
+      "indexing_latency_ms": 4.89,
+      "lookup_latency_ms": 5.09
     },
     {
       "case_id": "pos-dev-011",
@@ -865,8 +865,8 @@
       "decision": "safe_reuse",
       "classification": "TP",
       "rejection_reason": null,
-      "indexing_latency_ms": 5.36,
-      "lookup_latency_ms": 6.14
+      "indexing_latency_ms": 5.27,
+      "lookup_latency_ms": 5.35
     },
     {
       "case_id": "pos-dev-012",
@@ -878,8 +878,8 @@
       "decision": "safe_reuse",
       "classification": "TP",
       "rejection_reason": null,
-      "indexing_latency_ms": 5.13,
-      "lookup_latency_ms": 6.93
+      "indexing_latency_ms": 5.05,
+      "lookup_latency_ms": 4.81
     },
     {
       "case_id": "pos-dev-013",
@@ -891,8 +891,8 @@
       "decision": "safe_reuse",
       "classification": "TP",
       "rejection_reason": null,
-      "indexing_latency_ms": 5.81,
-      "lookup_latency_ms": 5.69
+      "indexing_latency_ms": 5.28,
+      "lookup_latency_ms": 4.93
     },
     {
       "case_id": "pos-dev-014",
@@ -904,8 +904,8 @@
       "decision": "safe_reuse",
       "classification": "TP",
       "rejection_reason": null,
-      "indexing_latency_ms": 4.78,
-      "lookup_latency_ms": 5.72
+      "indexing_latency_ms": 5.07,
+      "lookup_latency_ms": 5.11
     },
     {
       "case_id": "pos-dev-015",
@@ -917,8 +917,8 @@
       "decision": "safe_reuse",
       "classification": "TP",
       "rejection_reason": null,
-      "indexing_latency_ms": 5.31,
-      "lookup_latency_ms": 5.97
+      "indexing_latency_ms": 5.04,
+      "lookup_latency_ms": 6.85
     },
     {
       "case_id": "pos-dev-016",
@@ -930,8 +930,8 @@
       "decision": "safe_reuse",
       "classification": "TP",
       "rejection_reason": null,
-      "indexing_latency_ms": 5.07,
-      "lookup_latency_ms": 6.02
+      "indexing_latency_ms": 5.24,
+      "lookup_latency_ms": 5.37
     },
     {
       "case_id": "pos-dev-017",
@@ -943,8 +943,8 @@
       "decision": "safe_reuse",
       "classification": "TP",
       "rejection_reason": null,
-      "indexing_latency_ms": 4.88,
-      "lookup_latency_ms": 4.77
+      "indexing_latency_ms": 4.97,
+      "lookup_latency_ms": 4.64
     },
     {
       "case_id": "neg-lang-dev-001",
@@ -956,8 +956,8 @@
       "decision": "incorrect_reuse",
       "classification": "FP",
       "rejection_reason": null,
-      "indexing_latency_ms": 5.02,
-      "lookup_latency_ms": 6.09
+      "indexing_latency_ms": 4.88,
+      "lookup_latency_ms": 4.96
     },
     {
       "case_id": "neg-lang-dev-002",
@@ -969,8 +969,8 @@
       "decision": "incorrect_reuse",
       "classification": "FP",
       "rejection_reason": null,
-      "indexing_latency_ms": 5.34,
-      "lookup_latency_ms": 7.05
+      "indexing_latency_ms": 4.77,
+      "lookup_latency_ms": 4.9
     },
     {
       "case_id": "neg-lang-dev-003",
@@ -982,8 +982,8 @@
       "decision": "incorrect_reuse",
       "classification": "FP",
       "rejection_reason": null,
-      "indexing_latency_ms": 5.87,
-      "lookup_latency_ms": 5.78
+      "indexing_latency_ms": 4.7,
+      "lookup_latency_ms": 4.74
     },
     {
       "case_id": "neg-lang-dev-004",
@@ -995,8 +995,8 @@
       "decision": "incorrect_reuse",
       "classification": "FP",
       "rejection_reason": null,
-      "indexing_latency_ms": 4.67,
-      "lookup_latency_ms": 5.72
+      "indexing_latency_ms": 4.29,
+      "lookup_latency_ms": 4.37
     },
     {
       "case_id": "neg-lang-dev-005",
@@ -1008,8 +1008,8 @@
       "decision": "incorrect_reuse",
       "classification": "FP",
       "rejection_reason": null,
-      "indexing_latency_ms": 5.35,
-      "lookup_latency_ms": 5.92
+      "indexing_latency_ms": 4.54,
+      "lookup_latency_ms": 4.56
     },
     {
       "case_id": "neg-ver-dev-001",
@@ -1021,8 +1021,8 @@
       "decision": "incorrect_reuse",
       "classification": "FP",
       "rejection_reason": null,
-      "indexing_latency_ms": 5.76,
-      "lookup_latency_ms": 6.16
+      "indexing_latency_ms": 4.52,
+      "lookup_latency_ms": 4.84
     },
     {
       "case_id": "neg-ver-dev-002",
@@ -1034,8 +1034,8 @@
       "decision": "incorrect_reuse",
       "classification": "FP",
       "rejection_reason": null,
-      "indexing_latency_ms": 6.32,
-      "lookup_latency_ms": 5.65
+      "indexing_latency_ms": 4.92,
+      "lookup_latency_ms": 4.61
     },
     {
       "case_id": "neg-ver-dev-003",
@@ -1047,8 +1047,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.7673 < 0.8200.",
-      "indexing_latency_ms": 5.36,
-      "lookup_latency_ms": 5.0
+      "indexing_latency_ms": 4.54,
+      "lookup_latency_ms": 4.46
     },
     {
       "case_id": "neg-ver-dev-004",
@@ -1060,8 +1060,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.7756 < 0.8200.",
-      "indexing_latency_ms": 5.13,
-      "lookup_latency_ms": 5.72
+      "indexing_latency_ms": 4.5,
+      "lookup_latency_ms": 4.67
     },
     {
       "case_id": "neg-ver-dev-005",
@@ -1073,8 +1073,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.7760 < 0.8200.",
-      "indexing_latency_ms": 5.17,
-      "lookup_latency_ms": 6.89
+      "indexing_latency_ms": 4.98,
+      "lookup_latency_ms": 5.0
     },
     {
       "case_id": "neg-err-dev-001",
@@ -1086,8 +1086,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.7539 < 0.8200.",
-      "indexing_latency_ms": 5.64,
-      "lookup_latency_ms": 6.2
+      "indexing_latency_ms": 6.49,
+      "lookup_latency_ms": 5.73
     },
     {
       "case_id": "neg-err-dev-002",
@@ -1099,8 +1099,8 @@
       "decision": "incorrect_reuse",
       "classification": "FP",
       "rejection_reason": null,
-      "indexing_latency_ms": 5.29,
-      "lookup_latency_ms": 5.92
+      "indexing_latency_ms": 5.28,
+      "lookup_latency_ms": 5.2
     },
     {
       "case_id": "neg-err-dev-003",
@@ -1112,8 +1112,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.8138 < 0.8200.",
-      "indexing_latency_ms": 6.12,
-      "lookup_latency_ms": 6.04
+      "indexing_latency_ms": 5.42,
+      "lookup_latency_ms": 5.27
     },
     {
       "case_id": "neg-err-dev-004",
@@ -1125,8 +1125,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.7510 < 0.8200.",
-      "indexing_latency_ms": 6.31,
-      "lookup_latency_ms": 5.86
+      "indexing_latency_ms": 5.09,
+      "lookup_latency_ms": 5.6
     },
     {
       "case_id": "neg-err-dev-005",
@@ -1138,8 +1138,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.7865 < 0.8200.",
-      "indexing_latency_ms": 6.54,
-      "lookup_latency_ms": 5.74
+      "indexing_latency_ms": 5.0,
+      "lookup_latency_ms": 5.04
     },
     {
       "case_id": "neg-con-dev-001",
@@ -1151,8 +1151,8 @@
       "decision": "incorrect_reuse",
       "classification": "FP",
       "rejection_reason": null,
-      "indexing_latency_ms": 5.9,
-      "lookup_latency_ms": 5.77
+      "indexing_latency_ms": 4.54,
+      "lookup_latency_ms": 4.79
     },
     {
       "case_id": "neg-con-dev-002",
@@ -1164,8 +1164,8 @@
       "decision": "incorrect_reuse",
       "classification": "FP",
       "rejection_reason": null,
-      "indexing_latency_ms": 5.95,
-      "lookup_latency_ms": 6.18
+      "indexing_latency_ms": 4.17,
+      "lookup_latency_ms": 4.79
     },
     {
       "case_id": "neg-con-dev-003",
@@ -1177,8 +1177,8 @@
       "decision": "incorrect_reuse",
       "classification": "FP",
       "rejection_reason": null,
-      "indexing_latency_ms": 5.91,
-      "lookup_latency_ms": 5.47
+      "indexing_latency_ms": 4.4,
+      "lookup_latency_ms": 4.45
     },
     {
       "case_id": "neg-con-dev-004",
@@ -1190,8 +1190,8 @@
       "decision": "incorrect_reuse",
       "classification": "FP",
       "rejection_reason": null,
-      "indexing_latency_ms": 4.97,
-      "lookup_latency_ms": 5.37
+      "indexing_latency_ms": 4.2,
+      "lookup_latency_ms": 4.32
     },
     {
       "case_id": "neg-con-dev-005",
@@ -1203,8 +1203,8 @@
       "decision": "incorrect_reuse",
       "classification": "FP",
       "rejection_reason": null,
-      "indexing_latency_ms": 5.77,
-      "lookup_latency_ms": 6.44
+      "indexing_latency_ms": 4.35,
+      "lookup_latency_ms": 4.69
     },
     {
       "case_id": "neg-rt-dev-001",
@@ -1216,8 +1216,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.7634 < 0.8200.",
-      "indexing_latency_ms": 5.54,
-      "lookup_latency_ms": 5.59
+      "indexing_latency_ms": 6.7,
+      "lookup_latency_ms": 4.41
     },
     {
       "case_id": "neg-rt-dev-002",
@@ -1229,8 +1229,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.7402 < 0.8200.",
-      "indexing_latency_ms": 5.45,
-      "lookup_latency_ms": 5.14
+      "indexing_latency_ms": 4.33,
+      "lookup_latency_ms": 4.69
     },
     {
       "case_id": "neg-rt-dev-003",
@@ -1242,8 +1242,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.7570 < 0.8200.",
-      "indexing_latency_ms": 5.17,
-      "lookup_latency_ms": 5.6
+      "indexing_latency_ms": 4.33,
+      "lookup_latency_ms": 4.83
     },
     {
       "case_id": "neg-rt-dev-004",
@@ -1255,8 +1255,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.7098 < 0.8200.",
-      "indexing_latency_ms": 10.29,
-      "lookup_latency_ms": 6.14
+      "indexing_latency_ms": 4.62,
+      "lookup_latency_ms": 4.52
     },
     {
       "case_id": "neg-out-dev-001",
@@ -1268,8 +1268,8 @@
       "decision": "incorrect_reuse",
       "classification": "FP",
       "rejection_reason": null,
-      "indexing_latency_ms": 5.41,
-      "lookup_latency_ms": 5.57
+      "indexing_latency_ms": 4.33,
+      "lookup_latency_ms": 4.7
     },
     {
       "case_id": "neg-out-dev-002",
@@ -1281,8 +1281,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.7642 < 0.8200.",
-      "indexing_latency_ms": 6.06,
-      "lookup_latency_ms": 5.67
+      "indexing_latency_ms": 4.56,
+      "lookup_latency_ms": 5.03
     },
     {
       "case_id": "neg-out-dev-003",
@@ -1294,8 +1294,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.7408 < 0.8200.",
-      "indexing_latency_ms": 4.91,
-      "lookup_latency_ms": 4.95
+      "indexing_latency_ms": 4.41,
+      "lookup_latency_ms": 4.37
     },
     {
       "case_id": "neg-out-dev-004",
@@ -1307,8 +1307,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.7710 < 0.8200.",
-      "indexing_latency_ms": 6.11,
-      "lookup_latency_ms": 5.64
+      "indexing_latency_ms": 4.49,
+      "lookup_latency_ms": 4.3
     },
     {
       "case_id": "amb-dev-001",
@@ -1320,8 +1320,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Ambiguous candidate: nearest alternative candidate margin (0.0093) is below minimum margin (0.0300) with a different answer.",
-      "indexing_latency_ms": 10.51,
-      "lookup_latency_ms": 4.91
+      "indexing_latency_ms": 8.38,
+      "lookup_latency_ms": 4.1
     },
     {
       "case_id": "amb-dev-002",
@@ -1333,8 +1333,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Ambiguous candidate: nearest alternative candidate margin (0.0295) is below minimum margin (0.0300) with a different answer.",
-      "indexing_latency_ms": 11.63,
-      "lookup_latency_ms": 7.22
+      "indexing_latency_ms": 8.67,
+      "lookup_latency_ms": 4.35
     },
     {
       "case_id": "amb-dev-003",
@@ -1346,8 +1346,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Ambiguous candidate: nearest alternative candidate margin (0.0132) is below minimum margin (0.0300) with a different answer.",
-      "indexing_latency_ms": 12.13,
-      "lookup_latency_ms": 4.71
+      "indexing_latency_ms": 9.54,
+      "lookup_latency_ms": 4.16
     },
     {
       "case_id": "amb-dev-004",
@@ -1359,8 +1359,8 @@
       "decision": "incorrect_reuse",
       "classification": "FP",
       "rejection_reason": null,
-      "indexing_latency_ms": 10.85,
-      "lookup_latency_ms": 5.89
+      "indexing_latency_ms": 8.88,
+      "lookup_latency_ms": 4.21
     },
     {
       "case_id": "amb-dev-005",
@@ -1372,8 +1372,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Ambiguous candidate: nearest alternative candidate margin (0.0094) is below minimum margin (0.0300) with a different answer.",
-      "indexing_latency_ms": 11.73,
-      "lookup_latency_ms": 5.76
+      "indexing_latency_ms": 9.82,
+      "lookup_latency_ms": 4.43
     },
     {
       "case_id": "amb-dev-006",
@@ -1385,8 +1385,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.7632 < 0.8200.",
-      "indexing_latency_ms": 11.99,
-      "lookup_latency_ms": 5.01
+      "indexing_latency_ms": 9.45,
+      "lookup_latency_ms": 4.26
     },
     {
       "case_id": "unr-dev-001",
@@ -1398,8 +1398,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.4566 < 0.8200.",
-      "indexing_latency_ms": 5.81,
-      "lookup_latency_ms": 5.67
+      "indexing_latency_ms": 4.16,
+      "lookup_latency_ms": 4.87
     },
     {
       "case_id": "unr-dev-002",
@@ -1411,8 +1411,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.4076 < 0.8200.",
-      "indexing_latency_ms": 5.79,
-      "lookup_latency_ms": 5.56
+      "indexing_latency_ms": 4.28,
+      "lookup_latency_ms": 4.49
     },
     {
       "case_id": "unr-dev-003",
@@ -1424,8 +1424,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.3827 < 0.8200.",
-      "indexing_latency_ms": 5.93,
-      "lookup_latency_ms": 6.12
+      "indexing_latency_ms": 4.74,
+      "lookup_latency_ms": 5.51
     },
     {
       "case_id": "unr-dev-004",
@@ -1437,8 +1437,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.4947 < 0.8200.",
-      "indexing_latency_ms": 4.92,
-      "lookup_latency_ms": 5.08
+      "indexing_latency_ms": 4.57,
+      "lookup_latency_ms": 4.64
     },
     {
       "case_id": "unr-dev-005",
@@ -1450,8 +1450,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.4668 < 0.8200.",
-      "indexing_latency_ms": 6.07,
-      "lookup_latency_ms": 5.56
+      "indexing_latency_ms": 4.37,
+      "lookup_latency_ms": 4.41
     },
     {
       "case_id": "unr-dev-006",
@@ -1463,8 +1463,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.5396 < 0.8200.",
-      "indexing_latency_ms": 6.23,
-      "lookup_latency_ms": 5.38
+      "indexing_latency_ms": 4.45,
+      "lookup_latency_ms": 4.62
     }
   ]
 }

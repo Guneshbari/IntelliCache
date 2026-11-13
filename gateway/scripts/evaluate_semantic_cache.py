@@ -561,7 +561,7 @@ def compute_category_metrics(
         f1_score = round(2 * precision * recall / (precision + recall), 4)
     else:
         f1_score = None
-    false_positive_rate = round(fp / (fp + tn), 4) if (fp + tn) > 0 else 0.0
+    false_positive_rate = round(fp / (fp + tn), 4) if (fp + tn) > 0 else None
     rejection_rate = round((tn + fn) / total, 4) if total > 0 else 0.0
     accuracy = round((tp + tn) / total, 4) if total > 0 else 0.0
 
