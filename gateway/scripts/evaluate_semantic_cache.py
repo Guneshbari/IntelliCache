@@ -18,6 +18,7 @@ Usage:
     python scripts/evaluate_semantic_cache.py --sweep
     python scripts/evaluate_semantic_cache.py --benchmark --benchmark-mode component
     python scripts/evaluate_semantic_cache.py --provider ollama
+    python scripts/evaluate_semantic_cache.py --provider fastembed --benchmark-mode real
 """
 
 from __future__ import annotations
@@ -551,8 +552,14 @@ def calculate_cosine_similarity(vec1: Sequence[float], vec2: Sequence[float]) ->
     Calculates cosine distance and cosine similarity consistently with pgvector.
     similarity = 1.0 - distance
     """
+    norm1_sq = sum(a * a for a in vec1)
+    norm2_sq = sum(b * b for b in vec2)
+    norm1 = math.sqrt(norm1_sq)
+    norm2 = math.sqrt(norm2_sq)
+    if norm1 == 0.0 or norm2 == 0.0:
+        return 2.0, -1.0
     dot = sum(a * b for a, b in zip(vec1, vec2))
-    sim = max(-1.0, min(1.0, float(dot)))
+    sim = max(-1.0, min(1.0, float(dot / (norm1 * norm2))))
     dist = max(0.0, min(2.0, 1.0 - sim))
     return dist, sim
 
@@ -1295,9 +1302,13 @@ async def run_benchmark(
             )
         else:
             mode_label = "Real embedding provider in-memory evaluation"
+            if provider.__class__.__name__ == "FastEmbedProvider":
+                latency_src = "local ONNX CPU embedding inference latency"
+            else:
+                latency_src = "HTTP API embedding latency"
             disclaimer = (
                 f"Measured using real {provider.__class__.__name__} ({provider.model_name}). "
-                "Captures HTTP API embedding latency, in-memory cosine ranking, and policy rules. "
+                f"Captures {latency_src}, in-memory cosine ranking, and policy rules. "
                 "Does NOT measure PostgreSQL pgvector disk index scan time."
             )
 
@@ -1443,7 +1454,7 @@ async def async_main() -> None:
         "--provider",
         type=str,
         default="mock",
-        choices=["mock", "ollama"],
+        choices=["mock", "ollama", "fastembed"],
         help="Embedding provider adapter to use.",
     )
     parser.add_argument(
@@ -1454,8 +1465,8 @@ async def async_main() -> None:
     parser.add_argument(
         "--model",
         type=str,
-        default="nomic-embed-text",
-        help="Embedding model identifier.",
+        default=None,
+        help="Embedding model identifier (defaults to 'BAAI/bge-small-en-v1.5' for fastembed, 'nomic-embed-text' for ollama/mock).",
     )
     parser.add_argument(
         "--threshold",
@@ -1506,6 +1517,12 @@ async def async_main() -> None:
     )
 
     args = parser.parse_args()
+
+    if args.model is None:
+        if args.provider == "fastembed":
+            args.model = "BAAI/bge-small-en-v1.5"
+        else:
+            args.model = "nomic-embed-text"
 
     dataset_path = Path(args.dataset)
     if not dataset_path.is_absolute():
@@ -1627,6 +1644,35 @@ async def async_main() -> None:
                     exc,
                 )
                 provider = DeterministicMockEmbeddingProvider(model=args.model)
+                actual_provider_name = "DeterministicMockEmbeddingProvider (fallback)"
+                mock_used = True
+                mock_fallback_occurred = True
+    elif args.provider == "fastembed":
+        logger.info("Initializing FastEmbed embedding provider with model '%s'...", args.model)
+        from app.embeddings.fastembed_adapter import FastEmbedProvider
+        temp_provider = FastEmbedProvider(model=args.model, dimensions=384)
+        try:
+            ping_res = await temp_provider.embed("ping", task=EmbeddingTask.QUERY)
+            logger.info("FastEmbed initialized successfully (dims: %d).", ping_res.dimensions)
+            provider = temp_provider
+            actual_provider_name = f"FastEmbedProvider ({args.model})"
+            mock_used = False
+            mock_fallback_occurred = False
+        except Exception as exc:
+            await temp_provider.close()
+            if not args.allow_mock_fallback:
+                logger.error(
+                    "Requested embedding provider 'fastembed' failed to initialize: %s\n"
+                    "Failing clearly without silent fallback. To explicitly permit offline mock fallback, re-run with --allow-mock-fallback.",
+                    exc,
+                )
+                sys.exit(1)
+            else:
+                logger.warning(
+                    "FastEmbed failed (%s). Explicit mock fallback enabled via --allow-mock-fallback.",
+                    exc,
+                )
+                provider = DeterministicMockEmbeddingProvider(model=args.model, dimensions=384)
                 actual_provider_name = "DeterministicMockEmbeddingProvider (fallback)"
                 mock_used = True
                 mock_fallback_occurred = True

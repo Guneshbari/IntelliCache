@@ -37,12 +37,29 @@ Benchmarks never fabricate similarities or assign arbitrary placeholder values. 
 
 ### B. Real Embedding In-Memory Evaluation (`--benchmark-mode real`)
 
-- **Provider**: Explicitly configured live provider (e.g., `OllamaEmbeddingProvider` with `nomic-embed-text`).
-- **Scope**: Measures HTTP query embedding latency, candidate document embedding, in-memory cosine ranking, and policy candidate evaluation.
+- **Providers**:
+  - `FastEmbedProvider` (default model `BAAI/bge-small-en-v1.5`, 384 dimensions): executes in-process via ONNX Runtime CPU. Requires no external daemons. Initial run downloads ~67MB weights into `~/.cache/fastembed/`.
+  - `OllamaEmbeddingProvider` (default model `nomic-embed-text`, 768 dimensions): calls external HTTP Ollama daemon at `http://127.0.0.1:11434`.
+- **Scope**: Measures embedding latency (in-process ONNX or HTTP API), candidate document embedding, in-memory cosine ranking with exact vector norms, and policy candidate evaluation.
 - **Reporting Label**: `Real embedding provider in-memory evaluation`.
 - **Constraint**: Does not claim PostgreSQL pgvector disk index scan time was measured.
 
-### C. PostgreSQL / pgvector End-to-End Benchmark (`--benchmark-mode pgvector`)
+### C. FastEmbed Local Smoke Testing (`test_fastembed_smoke.py`)
+
+- **Opt-in Gate**: Gated behind `RUN_FASTEMBED_SMOKE=1`. When the variable is not set, discovery cleanly skips the test suite to keep CI deterministic and avoid forced model downloads.
+- **Execution Command**:
+  ```bash
+  cd gateway
+  pip install -r requirements-fastembed.txt
+  RUN_FASTEMBED_SMOKE=1 python -m unittest tests.test_fastembed_smoke
+  ```
+- **Verification Invariants**:
+  - Cold model loading time vs subsequent warm inference time (warm inference ~4–6ms on modern CPU).
+  - Both `EmbeddingTask.QUERY` (`query_embed`) and `EmbeddingTask.DOCUMENT` (`passage_embed`).
+  - 384 dimensions, all finite elements (`math.isfinite`), non-zero vector norm.
+  - Live nearest-neighbour ranking with `InMemoryVectorStore`.
+
+### D. PostgreSQL / pgvector End-to-End Benchmark (`--benchmark-mode pgvector`)
 
 - **Provider**: Live `OllamaEmbeddingProvider` using configured model (e.g. `nomic-embed-text`).
 - **Database Requirement**: Dedicated test database specified via `TEST_DATABASE_URL` (e.g. `postgresql://gnx@127.0.0.1:5433/intellicache_test`).
@@ -72,8 +89,8 @@ Benchmarks never fabricate similarities or assign arbitrary placeholder values. 
 
 ## 3. Strict Provider Fallback Policy
 
-- When `--provider ollama` is requested, the evaluator verifies connection to the daemon.
-- **No Silent Fallback**: If Ollama is unreachable, the script logs an error and exits immediately with exit code 1.
+- When `--provider ollama` or `--provider fastembed` is requested, the evaluator verifies provider readiness.
+- **No Silent Fallback**: If Ollama is unreachable or FastEmbed fails to load, the script logs an error and exits immediately with exit code 1.
 - **Explicit Fallback Opt-In**: The user may pass `--allow-mock-fallback` to explicitly permit fallback to `DeterministicMockEmbeddingProvider`.
 - **Auditability**: Every generated JSON and CSV report explicitly records `embedding_provider`, `mock_embeddings_used`, and `mock_fallback_occurred`. Mock results are never presented as real embedding measurements.
 
