@@ -1,16 +1,16 @@
 {
   "report_metadata": {
     "dataset_hash": "2b7a69845351f581a3d30e75eb20a98311fc5adccecb2c9aea339bec832d361b",
-    "dataset_path": "/home/gnx/Projects/IntelliCache/gateway/evaluation/dataset.json",
+    "dataset_path": "gateway/evaluation/dataset.json",
     "dataset_split": "test",
     "case_count": 57,
-    "evaluation_timestamp": "2026-11-13T14:53:59.021407+00:00",
+    "evaluation_timestamp": "2026-11-13T15:18:15.032317+00:00",
     "embedding_provider": "FastEmbedProvider (BAAI/bge-small-en-v1.5)",
     "embedding_model": "BAAI/bge-small-en-v1.5",
     "embedding_dimensions": 384,
     "mock_embeddings_used": false,
     "mock_fallback_occurred": false,
-    "similarity_threshold": 0.95,
+    "similarity_threshold": 0.92,
     "ambiguity_margin": 0.03,
     "benchmark_mode": "real",
     "vector_index_type": "none",
@@ -18,60 +18,60 @@
     "vector_index_used": false,
     "retrieval_method": "In-memory exact cosine similarity",
     "database_info": {},
-    "safety_status": "Safe: Zero false positives observed on this evaluation partition.",
+    "safety_status": "WARNING: 3 false positive(s) observed. Not zero-defect. Hazardous reuse occurred.",
     "sample_size_note": "Evaluated 57 cases on split 'test'. Synthetic pilot dataset; labels require domain review."
   },
   "summary_metrics": {
     "total_cases": 57,
-    "tp": 2,
-    "fp": 0,
-    "fn": 15,
-    "tn": 40,
-    "precision": 1.0,
-    "recall": 0.1176,
-    "f1_score": 0.2105,
-    "false_positive_rate": 0.0,
-    "rejection_rate": 0.9649,
-    "accuracy": 0.7368,
+    "tp": 3,
+    "fp": 3,
+    "fn": 14,
+    "tn": 37,
+    "precision": 0.5,
+    "recall": 0.1765,
+    "f1_score": 0.2609,
+    "false_positive_rate": 0.075,
+    "rejection_rate": 0.8947,
+    "accuracy": 0.7018,
     "category_breakdown": {
       "positive_paraphrase": {
         "total": 17,
-        "tp": 2,
+        "tp": 3,
         "fp": 0,
-        "fn": 15,
+        "fn": 14,
         "tn": 0,
         "precision": 1.0,
-        "recall": 0.1176,
-        "f1_score": 0.2105,
+        "recall": 0.1765,
+        "f1_score": 0.3,
         "false_positive_rate": 0.0,
-        "rejection_rate": 0.8824,
-        "accuracy": 0.1176
+        "rejection_rate": 0.8235,
+        "accuracy": 0.1765
       },
       "different_language": {
         "total": 5,
         "tp": 0,
-        "fp": 0,
+        "fp": 1,
         "fn": 0,
-        "tn": 5,
+        "tn": 4,
         "precision": 0.0,
-        "recall": 0.0,
-        "f1_score": 0.0,
-        "false_positive_rate": 0.0,
-        "rejection_rate": 1.0,
-        "accuracy": 1.0
+        "recall": null,
+        "f1_score": null,
+        "false_positive_rate": 0.2,
+        "rejection_rate": 0.8,
+        "accuracy": 0.8
       },
       "version_difference": {
         "total": 5,
         "tp": 0,
-        "fp": 0,
+        "fp": 1,
         "fn": 0,
-        "tn": 5,
+        "tn": 4,
         "precision": 0.0,
-        "recall": 0.0,
-        "f1_score": 0.0,
-        "false_positive_rate": 0.0,
-        "rejection_rate": 1.0,
-        "accuracy": 1.0
+        "recall": null,
+        "f1_score": null,
+        "false_positive_rate": 0.2,
+        "rejection_rate": 0.8,
+        "accuracy": 0.8
       },
       "error_difference": {
         "total": 5,
@@ -79,9 +79,9 @@
         "fp": 0,
         "fn": 0,
         "tn": 5,
-        "precision": 0.0,
-        "recall": 0.0,
-        "f1_score": 0.0,
+        "precision": null,
+        "recall": null,
+        "f1_score": null,
         "false_positive_rate": 0.0,
         "rejection_rate": 1.0,
         "accuracy": 1.0
@@ -92,9 +92,9 @@
         "fp": 0,
         "fn": 0,
         "tn": 5,
-        "precision": 0.0,
-        "recall": 0.0,
-        "f1_score": 0.0,
+        "precision": null,
+        "recall": null,
+        "f1_score": null,
         "false_positive_rate": 0.0,
         "rejection_rate": 1.0,
         "accuracy": 1.0
@@ -105,9 +105,9 @@
         "fp": 0,
         "fn": 0,
         "tn": 4,
-        "precision": 0.0,
-        "recall": 0.0,
-        "f1_score": 0.0,
+        "precision": null,
+        "recall": null,
+        "f1_score": null,
         "false_positive_rate": 0.0,
         "rejection_rate": 1.0,
         "accuracy": 1.0
@@ -118,9 +118,9 @@
         "fp": 0,
         "fn": 0,
         "tn": 4,
-        "precision": 0.0,
-        "recall": 0.0,
-        "f1_score": 0.0,
+        "precision": null,
+        "recall": null,
+        "f1_score": null,
         "false_positive_rate": 0.0,
         "rejection_rate": 1.0,
         "accuracy": 1.0
@@ -128,15 +128,15 @@
       "ambiguous_candidates": {
         "total": 6,
         "tp": 0,
-        "fp": 0,
+        "fp": 1,
         "fn": 0,
-        "tn": 6,
+        "tn": 5,
         "precision": 0.0,
-        "recall": 0.0,
-        "f1_score": 0.0,
-        "false_positive_rate": 0.0,
-        "rejection_rate": 1.0,
-        "accuracy": 1.0
+        "recall": null,
+        "f1_score": null,
+        "false_positive_rate": 0.1667,
+        "rejection_rate": 0.8333,
+        "accuracy": 0.8333
       },
       "unrelated_technical": {
         "total": 6,
@@ -144,22 +144,22 @@
         "fp": 0,
         "fn": 0,
         "tn": 6,
-        "precision": 0.0,
-        "recall": 0.0,
-        "f1_score": 0.0,
+        "precision": null,
+        "recall": null,
+        "f1_score": null,
         "false_positive_rate": 0.0,
         "rejection_rate": 1.0,
         "accuracy": 1.0
       }
     },
-    "safe_reuse_count": 2,
-    "incorrect_reuse_count": 0,
-    "safe_provider_calls_avoided": 2,
-    "hazardous_provider_calls_avoided": 0,
-    "total_accepted_hits": 2,
-    "safe_tokens_saved": 740,
-    "safe_latency_saved_ms": 2491.58,
-    "hazardous_tokens_involved": 0
+    "safe_reuse_count": 3,
+    "incorrect_reuse_count": 3,
+    "safe_provider_calls_avoided": 3,
+    "hazardous_provider_calls_avoided": 3,
+    "total_accepted_hits": 6,
+    "safe_tokens_saved": 1110,
+    "safe_latency_saved_ms": 3734.35,
+    "hazardous_tokens_involved": 1110
   },
   "sweep": [],
   "benchmark": {},
@@ -174,8 +174,8 @@
       "decision": "safe_reuse",
       "classification": "TP",
       "rejection_reason": null,
-      "indexing_latency_ms": 4.52,
-      "lookup_latency_ms": 4.23
+      "indexing_latency_ms": 5.49,
+      "lookup_latency_ms": 4.46
     },
     {
       "case_id": "pos-test-002",
@@ -186,9 +186,9 @@
       "margin": null,
       "decision": "incorrect_rejection",
       "classification": "FN",
-      "rejection_reason": "Similarity below threshold: 0.8886 < 0.9500.",
-      "indexing_latency_ms": 4.23,
-      "lookup_latency_ms": 4.42
+      "rejection_reason": "Similarity below threshold: 0.8886 < 0.9200.",
+      "indexing_latency_ms": 6.4,
+      "lookup_latency_ms": 5.52
     },
     {
       "case_id": "pos-test-003",
@@ -199,9 +199,9 @@
       "margin": null,
       "decision": "incorrect_rejection",
       "classification": "FN",
-      "rejection_reason": "Similarity below threshold: 0.8179 < 0.9500.",
-      "indexing_latency_ms": 4.3,
-      "lookup_latency_ms": 4.11
+      "rejection_reason": "Similarity below threshold: 0.8179 < 0.9200.",
+      "indexing_latency_ms": 5.03,
+      "lookup_latency_ms": 5.08
     },
     {
       "case_id": "pos-test-004",
@@ -212,9 +212,9 @@
       "margin": null,
       "decision": "incorrect_rejection",
       "classification": "FN",
-      "rejection_reason": "Similarity below threshold: 0.9024 < 0.9500.",
-      "indexing_latency_ms": 4.29,
-      "lookup_latency_ms": 4.32
+      "rejection_reason": "Similarity below threshold: 0.9024 < 0.9200.",
+      "indexing_latency_ms": 5.25,
+      "lookup_latency_ms": 5.4
     },
     {
       "case_id": "pos-test-005",
@@ -225,9 +225,9 @@
       "margin": null,
       "decision": "incorrect_rejection",
       "classification": "FN",
-      "rejection_reason": "Similarity below threshold: 0.8094 < 0.9500.",
-      "indexing_latency_ms": 4.51,
-      "lookup_latency_ms": 4.48
+      "rejection_reason": "Similarity below threshold: 0.8094 < 0.9200.",
+      "indexing_latency_ms": 6.22,
+      "lookup_latency_ms": 5.5
     },
     {
       "case_id": "pos-test-006",
@@ -236,11 +236,11 @@
       "safe_reuse_expected": true,
       "top_similarity": 0.937,
       "margin": null,
-      "decision": "incorrect_rejection",
-      "classification": "FN",
-      "rejection_reason": "Similarity below threshold: 0.9370 < 0.9500.",
-      "indexing_latency_ms": 4.21,
-      "lookup_latency_ms": 4.23
+      "decision": "safe_reuse",
+      "classification": "TP",
+      "rejection_reason": null,
+      "indexing_latency_ms": 5.07,
+      "lookup_latency_ms": 5.78
     },
     {
       "case_id": "pos-test-007",
@@ -251,9 +251,9 @@
       "margin": null,
       "decision": "incorrect_rejection",
       "classification": "FN",
-      "rejection_reason": "Similarity below threshold: 0.8192 < 0.9500.",
-      "indexing_latency_ms": 4.07,
-      "lookup_latency_ms": 4.25
+      "rejection_reason": "Similarity below threshold: 0.8192 < 0.9200.",
+      "indexing_latency_ms": 4.66,
+      "lookup_latency_ms": 6.71
     },
     {
       "case_id": "pos-test-008",
@@ -264,9 +264,9 @@
       "margin": null,
       "decision": "incorrect_rejection",
       "classification": "FN",
-      "rejection_reason": "Similarity below threshold: 0.9011 < 0.9500.",
-      "indexing_latency_ms": 4.02,
-      "lookup_latency_ms": 4.69
+      "rejection_reason": "Similarity below threshold: 0.9011 < 0.9200.",
+      "indexing_latency_ms": 4.61,
+      "lookup_latency_ms": 7.53
     },
     {
       "case_id": "pos-test-009",
@@ -278,8 +278,8 @@
       "decision": "safe_reuse",
       "classification": "TP",
       "rejection_reason": null,
-      "indexing_latency_ms": 3.95,
-      "lookup_latency_ms": 4.19
+      "indexing_latency_ms": 5.55,
+      "lookup_latency_ms": 5.4
     },
     {
       "case_id": "pos-test-010",
@@ -290,9 +290,9 @@
       "margin": null,
       "decision": "incorrect_rejection",
       "classification": "FN",
-      "rejection_reason": "Similarity below threshold: 0.8517 < 0.9500.",
-      "indexing_latency_ms": 4.28,
-      "lookup_latency_ms": 4.51
+      "rejection_reason": "Similarity below threshold: 0.8517 < 0.9200.",
+      "indexing_latency_ms": 5.33,
+      "lookup_latency_ms": 5.35
     },
     {
       "case_id": "pos-test-011",
@@ -303,9 +303,9 @@
       "margin": null,
       "decision": "incorrect_rejection",
       "classification": "FN",
-      "rejection_reason": "Similarity below threshold: 0.8231 < 0.9500.",
-      "indexing_latency_ms": 4.21,
-      "lookup_latency_ms": 4.39
+      "rejection_reason": "Similarity below threshold: 0.8231 < 0.9200.",
+      "indexing_latency_ms": 6.88,
+      "lookup_latency_ms": 4.98
     },
     {
       "case_id": "pos-test-012",
@@ -316,9 +316,9 @@
       "margin": null,
       "decision": "incorrect_rejection",
       "classification": "FN",
-      "rejection_reason": "Similarity below threshold: 0.8562 < 0.9500.",
-      "indexing_latency_ms": 4.13,
-      "lookup_latency_ms": 4.08
+      "rejection_reason": "Similarity below threshold: 0.8562 < 0.9200.",
+      "indexing_latency_ms": 5.59,
+      "lookup_latency_ms": 4.96
     },
     {
       "case_id": "pos-test-013",
@@ -329,9 +329,9 @@
       "margin": null,
       "decision": "incorrect_rejection",
       "classification": "FN",
-      "rejection_reason": "Similarity below threshold: 0.8889 < 0.9500.",
-      "indexing_latency_ms": 4.86,
-      "lookup_latency_ms": 4.34
+      "rejection_reason": "Similarity below threshold: 0.8889 < 0.9200.",
+      "indexing_latency_ms": 6.06,
+      "lookup_latency_ms": 5.35
     },
     {
       "case_id": "pos-test-014",
@@ -342,9 +342,9 @@
       "margin": null,
       "decision": "incorrect_rejection",
       "classification": "FN",
-      "rejection_reason": "Similarity below threshold: 0.8394 < 0.9500.",
-      "indexing_latency_ms": 3.98,
-      "lookup_latency_ms": 4.28
+      "rejection_reason": "Similarity below threshold: 0.8394 < 0.9200.",
+      "indexing_latency_ms": 5.42,
+      "lookup_latency_ms": 5.48
     },
     {
       "case_id": "pos-test-015",
@@ -355,9 +355,9 @@
       "margin": null,
       "decision": "incorrect_rejection",
       "classification": "FN",
-      "rejection_reason": "Similarity below threshold: 0.8343 < 0.9500.",
-      "indexing_latency_ms": 4.03,
-      "lookup_latency_ms": 4.49
+      "rejection_reason": "Similarity below threshold: 0.8343 < 0.9200.",
+      "indexing_latency_ms": 5.51,
+      "lookup_latency_ms": 5.88
     },
     {
       "case_id": "pos-test-016",
@@ -368,9 +368,9 @@
       "margin": null,
       "decision": "incorrect_rejection",
       "classification": "FN",
-      "rejection_reason": "Similarity below threshold: 0.7825 < 0.9500.",
-      "indexing_latency_ms": 4.34,
-      "lookup_latency_ms": 4.5
+      "rejection_reason": "Similarity below threshold: 0.7825 < 0.9200.",
+      "indexing_latency_ms": 5.75,
+      "lookup_latency_ms": 5.99
     },
     {
       "case_id": "pos-test-017",
@@ -381,9 +381,9 @@
       "margin": null,
       "decision": "incorrect_rejection",
       "classification": "FN",
-      "rejection_reason": "Similarity below threshold: 0.8612 < 0.9500.",
-      "indexing_latency_ms": 4.41,
-      "lookup_latency_ms": 10.68
+      "rejection_reason": "Similarity below threshold: 0.8612 < 0.9200.",
+      "indexing_latency_ms": 5.47,
+      "lookup_latency_ms": 5.66
     },
     {
       "case_id": "neg-lang-test-001",
@@ -392,11 +392,11 @@
       "safe_reuse_expected": false,
       "top_similarity": 0.9296,
       "margin": null,
-      "decision": "safe_rejection",
-      "classification": "TN",
-      "rejection_reason": "Similarity below threshold: 0.9296 < 0.9500.",
-      "indexing_latency_ms": 4.24,
-      "lookup_latency_ms": 4.19
+      "decision": "incorrect_reuse",
+      "classification": "FP",
+      "rejection_reason": null,
+      "indexing_latency_ms": 5.42,
+      "lookup_latency_ms": 4.88
     },
     {
       "case_id": "neg-lang-test-002",
@@ -407,9 +407,9 @@
       "margin": null,
       "decision": "safe_rejection",
       "classification": "TN",
-      "rejection_reason": "Similarity below threshold: 0.9068 < 0.9500.",
-      "indexing_latency_ms": 4.17,
-      "lookup_latency_ms": 4.23
+      "rejection_reason": "Similarity below threshold: 0.9068 < 0.9200.",
+      "indexing_latency_ms": 6.16,
+      "lookup_latency_ms": 5.15
     },
     {
       "case_id": "neg-lang-test-003",
@@ -420,9 +420,9 @@
       "margin": null,
       "decision": "safe_rejection",
       "classification": "TN",
-      "rejection_reason": "Similarity below threshold: 0.8994 < 0.9500.",
-      "indexing_latency_ms": 10.39,
-      "lookup_latency_ms": 4.38
+      "rejection_reason": "Similarity below threshold: 0.8994 < 0.9200.",
+      "indexing_latency_ms": 5.59,
+      "lookup_latency_ms": 5.52
     },
     {
       "case_id": "neg-lang-test-004",
@@ -433,9 +433,9 @@
       "margin": null,
       "decision": "safe_rejection",
       "classification": "TN",
-      "rejection_reason": "Similarity below threshold: 0.9100 < 0.9500.",
-      "indexing_latency_ms": 4.28,
-      "lookup_latency_ms": 4.25
+      "rejection_reason": "Similarity below threshold: 0.9100 < 0.9200.",
+      "indexing_latency_ms": 5.62,
+      "lookup_latency_ms": 5.76
     },
     {
       "case_id": "neg-lang-test-005",
@@ -446,9 +446,9 @@
       "margin": null,
       "decision": "safe_rejection",
       "classification": "TN",
-      "rejection_reason": "Similarity below threshold: 0.9175 < 0.9500.",
-      "indexing_latency_ms": 4.16,
-      "lookup_latency_ms": 4.05
+      "rejection_reason": "Similarity below threshold: 0.9175 < 0.9200.",
+      "indexing_latency_ms": 5.65,
+      "lookup_latency_ms": 5.46
     },
     {
       "case_id": "neg-ver-test-001",
@@ -459,9 +459,9 @@
       "margin": null,
       "decision": "safe_rejection",
       "classification": "TN",
-      "rejection_reason": "Similarity below threshold: 0.7837 < 0.9500.",
-      "indexing_latency_ms": 4.86,
-      "lookup_latency_ms": 4.37
+      "rejection_reason": "Similarity below threshold: 0.7837 < 0.9200.",
+      "indexing_latency_ms": 6.94,
+      "lookup_latency_ms": 5.43
     },
     {
       "case_id": "neg-ver-test-002",
@@ -472,9 +472,9 @@
       "margin": null,
       "decision": "safe_rejection",
       "classification": "TN",
-      "rejection_reason": "Similarity below threshold: 0.8555 < 0.9500.",
-      "indexing_latency_ms": 4.18,
-      "lookup_latency_ms": 4.76
+      "rejection_reason": "Similarity below threshold: 0.8555 < 0.9200.",
+      "indexing_latency_ms": 7.11,
+      "lookup_latency_ms": 7.14
     },
     {
       "case_id": "neg-ver-test-003",
@@ -485,9 +485,9 @@
       "margin": null,
       "decision": "safe_rejection",
       "classification": "TN",
-      "rejection_reason": "Similarity below threshold: 0.8735 < 0.9500.",
-      "indexing_latency_ms": 4.19,
-      "lookup_latency_ms": 4.4
+      "rejection_reason": "Similarity below threshold: 0.8735 < 0.9200.",
+      "indexing_latency_ms": 6.05,
+      "lookup_latency_ms": 5.54
     },
     {
       "case_id": "neg-ver-test-004",
@@ -496,11 +496,11 @@
       "safe_reuse_expected": false,
       "top_similarity": 0.9201,
       "margin": null,
-      "decision": "safe_rejection",
-      "classification": "TN",
-      "rejection_reason": "Similarity below threshold: 0.9201 < 0.9500.",
-      "indexing_latency_ms": 4.02,
-      "lookup_latency_ms": 3.96
+      "decision": "incorrect_reuse",
+      "classification": "FP",
+      "rejection_reason": null,
+      "indexing_latency_ms": 5.56,
+      "lookup_latency_ms": 5.22
     },
     {
       "case_id": "neg-ver-test-005",
@@ -511,9 +511,9 @@
       "margin": null,
       "decision": "safe_rejection",
       "classification": "TN",
-      "rejection_reason": "Similarity below threshold: 0.8369 < 0.9500.",
-      "indexing_latency_ms": 4.5,
-      "lookup_latency_ms": 4.46
+      "rejection_reason": "Similarity below threshold: 0.8369 < 0.9200.",
+      "indexing_latency_ms": 5.79,
+      "lookup_latency_ms": 5.74
     },
     {
       "case_id": "neg-err-test-001",
@@ -524,9 +524,9 @@
       "margin": null,
       "decision": "safe_rejection",
       "classification": "TN",
-      "rejection_reason": "Similarity below threshold: 0.7568 < 0.9500.",
-      "indexing_latency_ms": 5.05,
-      "lookup_latency_ms": 4.68
+      "rejection_reason": "Similarity below threshold: 0.7568 < 0.9200.",
+      "indexing_latency_ms": 6.14,
+      "lookup_latency_ms": 5.46
     },
     {
       "case_id": "neg-err-test-002",
@@ -537,9 +537,9 @@
       "margin": null,
       "decision": "safe_rejection",
       "classification": "TN",
-      "rejection_reason": "Similarity below threshold: 0.7293 < 0.9500.",
-      "indexing_latency_ms": 4.54,
-      "lookup_latency_ms": 4.66
+      "rejection_reason": "Similarity below threshold: 0.7293 < 0.9200.",
+      "indexing_latency_ms": 5.67,
+      "lookup_latency_ms": 5.55
     },
     {
       "case_id": "neg-err-test-003",
@@ -550,9 +550,9 @@
       "margin": null,
       "decision": "safe_rejection",
       "classification": "TN",
-      "rejection_reason": "Similarity below threshold: 0.7358 < 0.9500.",
-      "indexing_latency_ms": 4.82,
-      "lookup_latency_ms": 4.86
+      "rejection_reason": "Similarity below threshold: 0.7358 < 0.9200.",
+      "indexing_latency_ms": 5.29,
+      "lookup_latency_ms": 6.61
     },
     {
       "case_id": "neg-err-test-004",
@@ -563,9 +563,9 @@
       "margin": null,
       "decision": "safe_rejection",
       "classification": "TN",
-      "rejection_reason": "Similarity below threshold: 0.7586 < 0.9500.",
-      "indexing_latency_ms": 4.61,
-      "lookup_latency_ms": 5.2
+      "rejection_reason": "Similarity below threshold: 0.7586 < 0.9200.",
+      "indexing_latency_ms": 5.7,
+      "lookup_latency_ms": 7.69
     },
     {
       "case_id": "neg-err-test-005",
@@ -576,9 +576,9 @@
       "margin": null,
       "decision": "safe_rejection",
       "classification": "TN",
-      "rejection_reason": "Similarity below threshold: 0.6774 < 0.9500.",
-      "indexing_latency_ms": 4.92,
-      "lookup_latency_ms": 4.53
+      "rejection_reason": "Similarity below threshold: 0.6774 < 0.9200.",
+      "indexing_latency_ms": 6.12,
+      "lookup_latency_ms": 5.82
     },
     {
       "case_id": "neg-con-test-001",
@@ -589,9 +589,9 @@
       "margin": null,
       "decision": "safe_rejection",
       "classification": "TN",
-      "rejection_reason": "Similarity below threshold: 0.8756 < 0.9500.",
-      "indexing_latency_ms": 4.06,
-      "lookup_latency_ms": 4.3
+      "rejection_reason": "Similarity below threshold: 0.8756 < 0.9200.",
+      "indexing_latency_ms": 4.77,
+      "lookup_latency_ms": 4.7
     },
     {
       "case_id": "neg-con-test-002",
@@ -602,9 +602,9 @@
       "margin": null,
       "decision": "safe_rejection",
       "classification": "TN",
-      "rejection_reason": "Similarity below threshold: 0.7775 < 0.9500.",
-      "indexing_latency_ms": 4.27,
-      "lookup_latency_ms": 4.63
+      "rejection_reason": "Similarity below threshold: 0.7775 < 0.9200.",
+      "indexing_latency_ms": 5.03,
+      "lookup_latency_ms": 6.57
     },
     {
       "case_id": "neg-con-test-003",
@@ -615,9 +615,9 @@
       "margin": null,
       "decision": "safe_rejection",
       "classification": "TN",
-      "rejection_reason": "Similarity below threshold: 0.7824 < 0.9500.",
-      "indexing_latency_ms": 4.11,
-      "lookup_latency_ms": 4.77
+      "rejection_reason": "Similarity below threshold: 0.7824 < 0.9200.",
+      "indexing_latency_ms": 4.53,
+      "lookup_latency_ms": 6.83
     },
     {
       "case_id": "neg-con-test-004",
@@ -628,9 +628,9 @@
       "margin": null,
       "decision": "safe_rejection",
       "classification": "TN",
-      "rejection_reason": "Similarity below threshold: 0.8731 < 0.9500.",
-      "indexing_latency_ms": 4.2,
-      "lookup_latency_ms": 4.43
+      "rejection_reason": "Similarity below threshold: 0.8731 < 0.9200.",
+      "indexing_latency_ms": 5.05,
+      "lookup_latency_ms": 5.87
     },
     {
       "case_id": "neg-con-test-005",
@@ -641,9 +641,9 @@
       "margin": null,
       "decision": "safe_rejection",
       "classification": "TN",
-      "rejection_reason": "Similarity below threshold: 0.8104 < 0.9500.",
-      "indexing_latency_ms": 4.17,
-      "lookup_latency_ms": 4.5
+      "rejection_reason": "Similarity below threshold: 0.8104 < 0.9200.",
+      "indexing_latency_ms": 5.46,
+      "lookup_latency_ms": 6.2
     },
     {
       "case_id": "neg-rt-test-001",
@@ -654,9 +654,9 @@
       "margin": null,
       "decision": "safe_rejection",
       "classification": "TN",
-      "rejection_reason": "Similarity below threshold: 0.7832 < 0.9500.",
-      "indexing_latency_ms": 4.34,
-      "lookup_latency_ms": 4.66
+      "rejection_reason": "Similarity below threshold: 0.7832 < 0.9200.",
+      "indexing_latency_ms": 5.32,
+      "lookup_latency_ms": 7.02
     },
     {
       "case_id": "neg-rt-test-002",
@@ -667,9 +667,9 @@
       "margin": null,
       "decision": "safe_rejection",
       "classification": "TN",
-      "rejection_reason": "Similarity below threshold: 0.8106 < 0.9500.",
-      "indexing_latency_ms": 4.53,
-      "lookup_latency_ms": 5.29
+      "rejection_reason": "Similarity below threshold: 0.8106 < 0.9200.",
+      "indexing_latency_ms": 5.58,
+      "lookup_latency_ms": 5.87
     },
     {
       "case_id": "neg-rt-test-003",
@@ -680,9 +680,9 @@
       "margin": null,
       "decision": "safe_rejection",
       "classification": "TN",
-      "rejection_reason": "Similarity below threshold: 0.7302 < 0.9500.",
-      "indexing_latency_ms": 4.57,
-      "lookup_latency_ms": 5.04
+      "rejection_reason": "Similarity below threshold: 0.7302 < 0.9200.",
+      "indexing_latency_ms": 5.0,
+      "lookup_latency_ms": 5.36
     },
     {
       "case_id": "neg-rt-test-004",
@@ -693,9 +693,9 @@
       "margin": null,
       "decision": "safe_rejection",
       "classification": "TN",
-      "rejection_reason": "Similarity below threshold: 0.7655 < 0.9500.",
-      "indexing_latency_ms": 4.22,
-      "lookup_latency_ms": 4.55
+      "rejection_reason": "Similarity below threshold: 0.7655 < 0.9200.",
+      "indexing_latency_ms": 4.8,
+      "lookup_latency_ms": 6.12
     },
     {
       "case_id": "neg-out-test-001",
@@ -706,9 +706,9 @@
       "margin": null,
       "decision": "safe_rejection",
       "classification": "TN",
-      "rejection_reason": "Similarity below threshold: 0.8353 < 0.9500.",
-      "indexing_latency_ms": 4.68,
-      "lookup_latency_ms": 4.67
+      "rejection_reason": "Similarity below threshold: 0.8353 < 0.9200.",
+      "indexing_latency_ms": 5.77,
+      "lookup_latency_ms": 5.83
     },
     {
       "case_id": "neg-out-test-002",
@@ -719,9 +719,9 @@
       "margin": null,
       "decision": "safe_rejection",
       "classification": "TN",
-      "rejection_reason": "Similarity below threshold: 0.8308 < 0.9500.",
-      "indexing_latency_ms": 4.69,
-      "lookup_latency_ms": 4.66
+      "rejection_reason": "Similarity below threshold: 0.8308 < 0.9200.",
+      "indexing_latency_ms": 5.94,
+      "lookup_latency_ms": 5.89
     },
     {
       "case_id": "neg-out-test-003",
@@ -732,9 +732,9 @@
       "margin": null,
       "decision": "safe_rejection",
       "classification": "TN",
-      "rejection_reason": "Similarity below threshold: 0.8723 < 0.9500.",
-      "indexing_latency_ms": 4.56,
-      "lookup_latency_ms": 4.75
+      "rejection_reason": "Similarity below threshold: 0.8723 < 0.9200.",
+      "indexing_latency_ms": 5.31,
+      "lookup_latency_ms": 5.8
     },
     {
       "case_id": "neg-out-test-004",
@@ -745,9 +745,9 @@
       "margin": null,
       "decision": "safe_rejection",
       "classification": "TN",
-      "rejection_reason": "Similarity below threshold: 0.8107 < 0.9500.",
-      "indexing_latency_ms": 4.77,
-      "lookup_latency_ms": 4.26
+      "rejection_reason": "Similarity below threshold: 0.8107 < 0.9200.",
+      "indexing_latency_ms": 5.26,
+      "lookup_latency_ms": 6.17
     },
     {
       "case_id": "amb-test-001",
@@ -758,9 +758,9 @@
       "margin": 0.005,
       "decision": "safe_rejection",
       "classification": "TN",
-      "rejection_reason": "Similarity below threshold: 0.8523 < 0.9500.",
-      "indexing_latency_ms": 10.14,
-      "lookup_latency_ms": 4.49
+      "rejection_reason": "Similarity below threshold: 0.8523 < 0.9200.",
+      "indexing_latency_ms": 12.84,
+      "lookup_latency_ms": 6.22
     },
     {
       "case_id": "amb-test-002",
@@ -771,9 +771,9 @@
       "margin": 0.0195,
       "decision": "safe_rejection",
       "classification": "TN",
-      "rejection_reason": "Similarity below threshold: 0.8577 < 0.9500.",
-      "indexing_latency_ms": 8.37,
-      "lookup_latency_ms": 4.11
+      "rejection_reason": "Similarity below threshold: 0.8577 < 0.9200.",
+      "indexing_latency_ms": 10.07,
+      "lookup_latency_ms": 4.62
     },
     {
       "case_id": "amb-test-003",
@@ -782,11 +782,11 @@
       "safe_reuse_expected": false,
       "top_similarity": 0.9449,
       "margin": 0.0621,
-      "decision": "safe_rejection",
-      "classification": "TN",
-      "rejection_reason": "Similarity below threshold: 0.9449 < 0.9500.",
-      "indexing_latency_ms": 9.0,
-      "lookup_latency_ms": 4.04
+      "decision": "incorrect_reuse",
+      "classification": "FP",
+      "rejection_reason": null,
+      "indexing_latency_ms": 11.37,
+      "lookup_latency_ms": 5.53
     },
     {
       "case_id": "amb-test-004",
@@ -797,9 +797,9 @@
       "margin": 0.063,
       "decision": "safe_rejection",
       "classification": "TN",
-      "rejection_reason": "Similarity below threshold: 0.8175 < 0.9500.",
-      "indexing_latency_ms": 10.11,
-      "lookup_latency_ms": 4.39
+      "rejection_reason": "Similarity below threshold: 0.8175 < 0.9200.",
+      "indexing_latency_ms": 12.61,
+      "lookup_latency_ms": 5.42
     },
     {
       "case_id": "amb-test-005",
@@ -810,9 +810,9 @@
       "margin": 0.1659,
       "decision": "safe_rejection",
       "classification": "TN",
-      "rejection_reason": "Similarity below threshold: 0.9032 < 0.9500.",
-      "indexing_latency_ms": 9.01,
-      "lookup_latency_ms": 4.1
+      "rejection_reason": "Similarity below threshold: 0.9032 < 0.9200.",
+      "indexing_latency_ms": 11.65,
+      "lookup_latency_ms": 6.63
     },
     {
       "case_id": "amb-test-006",
@@ -823,9 +823,9 @@
       "margin": 0.0701,
       "decision": "safe_rejection",
       "classification": "TN",
-      "rejection_reason": "Similarity below threshold: 0.7754 < 0.9500.",
-      "indexing_latency_ms": 9.67,
-      "lookup_latency_ms": 4.43
+      "rejection_reason": "Similarity below threshold: 0.7754 < 0.9200.",
+      "indexing_latency_ms": 12.97,
+      "lookup_latency_ms": 5.12
     },
     {
       "case_id": "unr-test-001",
@@ -836,9 +836,9 @@
       "margin": null,
       "decision": "safe_rejection",
       "classification": "TN",
-      "rejection_reason": "Similarity below threshold: 0.4789 < 0.9500.",
-      "indexing_latency_ms": 4.95,
-      "lookup_latency_ms": 5.02
+      "rejection_reason": "Similarity below threshold: 0.4789 < 0.9200.",
+      "indexing_latency_ms": 5.78,
+      "lookup_latency_ms": 5.93
     },
     {
       "case_id": "unr-test-002",
@@ -849,9 +849,9 @@
       "margin": null,
       "decision": "safe_rejection",
       "classification": "TN",
-      "rejection_reason": "Similarity below threshold: 0.4742 < 0.9500.",
-      "indexing_latency_ms": 4.3,
-      "lookup_latency_ms": 4.73
+      "rejection_reason": "Similarity below threshold: 0.4742 < 0.9200.",
+      "indexing_latency_ms": 5.7,
+      "lookup_latency_ms": 5.88
     },
     {
       "case_id": "unr-test-003",
@@ -862,9 +862,9 @@
       "margin": null,
       "decision": "safe_rejection",
       "classification": "TN",
-      "rejection_reason": "Similarity below threshold: 0.4913 < 0.9500.",
-      "indexing_latency_ms": 4.31,
-      "lookup_latency_ms": 4.57
+      "rejection_reason": "Similarity below threshold: 0.4913 < 0.9200.",
+      "indexing_latency_ms": 5.29,
+      "lookup_latency_ms": 5.69
     },
     {
       "case_id": "unr-test-004",
@@ -875,9 +875,9 @@
       "margin": null,
       "decision": "safe_rejection",
       "classification": "TN",
-      "rejection_reason": "Similarity below threshold: 0.4882 < 0.9500.",
-      "indexing_latency_ms": 4.66,
-      "lookup_latency_ms": 5.26
+      "rejection_reason": "Similarity below threshold: 0.4882 < 0.9200.",
+      "indexing_latency_ms": 4.84,
+      "lookup_latency_ms": 6.58
     },
     {
       "case_id": "unr-test-005",
@@ -888,9 +888,9 @@
       "margin": null,
       "decision": "safe_rejection",
       "classification": "TN",
-      "rejection_reason": "Similarity below threshold: 0.4406 < 0.9500.",
-      "indexing_latency_ms": 4.06,
-      "lookup_latency_ms": 4.39
+      "rejection_reason": "Similarity below threshold: 0.4406 < 0.9200.",
+      "indexing_latency_ms": 4.8,
+      "lookup_latency_ms": 6.33
     },
     {
       "case_id": "unr-test-006",
@@ -901,9 +901,9 @@
       "margin": null,
       "decision": "safe_rejection",
       "classification": "TN",
-      "rejection_reason": "Similarity below threshold: 0.5248 < 0.9500.",
-      "indexing_latency_ms": 4.34,
-      "lookup_latency_ms": 4.76
+      "rejection_reason": "Similarity below threshold: 0.5248 < 0.9200.",
+      "indexing_latency_ms": 5.19,
+      "lookup_latency_ms": 6.23
     }
   ]
 }

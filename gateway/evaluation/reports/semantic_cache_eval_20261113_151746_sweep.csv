@@ -1,4 +1,4 @@
-# IntelliCache Parameter Sweep Results,DatasetHash: 2b7a69845351f581a3d30e75eb20a98311fc5adccecb2c9aea339bec832d361b,Split: development,Provider: FastEmbedProvider (BAAI/bge-small-en-v1.5),Model: BAAI/bge-small-en-v1.5,Timestamp: 2026-11-13T14:53:37.835348+00:00
+# IntelliCache Parameter Sweep Results,DatasetHash: 2b7a69845351f581a3d30e75eb20a98311fc5adccecb2c9aea339bec832d361b,Split: development,Provider: FastEmbedProvider (BAAI/bge-small-en-v1.5),Model: BAAI/bge-small-en-v1.5,Timestamp: 2026-11-13T15:17:46.111141+00:00
 threshold,margin,tp,fp,fn,tn,precision,recall,f1_score,false_positive_rate,rejection_rate,accuracy
 0.95,0.03,1,2,16,38,0.3333,0.0588,0.1,0.05,0.9474,0.6842
 0.95,0.02,1,2,16,38,0.3333,0.0588,0.1,0.05,0.9474,0.6842

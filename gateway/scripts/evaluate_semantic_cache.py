@@ -547,6 +547,39 @@ def compute_metrics_from_counts(
     return precision, recall, f1, fpr, rejection_rate, accuracy
 
 
+def compute_category_metrics(
+    tp: int, fp: int, fn: int, tn: int, total: int
+) -> Dict[str, Any]:
+    """
+    Computes category-specific metrics. When a metric is mathematically undefined
+    (zero denominator), it is represented as None (which serializes to null in JSON
+    and renders as N/A in Markdown), preserving 0.0 when the denominator is nonzero.
+    """
+    precision = round(tp / (tp + fp), 4) if (tp + fp) > 0 else None
+    recall = round(tp / (tp + fn), 4) if (tp + fn) > 0 else None
+    if precision is not None and recall is not None and (precision + recall) > 0:
+        f1_score = round(2 * precision * recall / (precision + recall), 4)
+    else:
+        f1_score = None
+    false_positive_rate = round(fp / (fp + tn), 4) if (fp + tn) > 0 else 0.0
+    rejection_rate = round((tn + fn) / total, 4) if total > 0 else 0.0
+    accuracy = round((tp + tn) / total, 4) if total > 0 else 0.0
+
+    return {
+        "total": total,
+        "tp": tp,
+        "fp": fp,
+        "fn": fn,
+        "tn": tn,
+        "precision": precision,
+        "recall": recall,
+        "f1_score": f1_score,
+        "false_positive_rate": false_positive_rate,
+        "rejection_rate": rejection_rate,
+        "accuracy": accuracy,
+    }
+
+
 def calculate_cosine_similarity(vec1: Sequence[float], vec2: Sequence[float]) -> Tuple[float, float]:
     """
     Calculates cosine distance and cosine similarity consistently with pgvector.
@@ -913,21 +946,13 @@ async def evaluate_dataset(
     # Build category breakdown
     cat_metrics: Dict[str, Dict[str, Any]] = {}
     for cat, counts in category_counts.items():
-        c_tp, c_fp, c_fn, c_tn = counts["tp"], counts["fp"], counts["fn"], counts["tn"]
-        c_p, c_r, c_f1, c_fpr, c_rej, c_acc = compute_metrics_from_counts(c_tp, c_fp, c_fn, c_tn)
-        cat_metrics[cat] = {
-            "total": counts["total"],
-            "tp": c_tp,
-            "fp": c_fp,
-            "fn": c_fn,
-            "tn": c_tn,
-            "precision": round(c_p, 4),
-            "recall": round(c_r, 4),
-            "f1_score": round(c_f1, 4),
-            "false_positive_rate": round(c_fpr, 4),
-            "rejection_rate": round(c_rej, 4),
-            "accuracy": round(c_acc, 4),
-        }
+        cat_metrics[cat] = compute_category_metrics(
+            tp=counts["tp"],
+            fp=counts["fp"],
+            fn=counts["fn"],
+            tn=counts["tn"],
+            total=counts["total"],
+        )
 
     metrics = EvaluationMetrics(
         total_cases=len(filtered_cases),
@@ -1923,14 +1948,23 @@ async def async_main() -> None:
         print(f"{'Category':<24} {'Total':<6} {'TP':<4} {'FP':<4} {'FN':<4} {'TN':<4} {'Precision':<10} {'Recall':<8} {'FPR':<8}")
         print("-" * 76)
         for cat, cm in metrics.category_breakdown.items():
+            p_str = f"{cm['precision']:.4f}" if cm['precision'] is not None else "N/A"
+            r_str = f"{cm['recall']:.4f}" if cm['recall'] is not None else "N/A"
+            fpr_str = f"{cm['false_positive_rate']:.4f}" if cm['false_positive_rate'] is not None else "N/A"
             print(
                 f"{cat:<24} {cm['total']:<6} {cm['tp']:<4} {cm['fp']:<4} {cm['fn']:<4} {cm['tn']:<4} "
-                f"{cm['precision']:<10.4f} {cm['recall']:<8.4f} {cm['false_positive_rate']:<8.4f}"
+                f"{p_str:<10} {r_str:<8} {fpr_str:<8}"
             )
+
+        repo_root = GATEWAY_ROOT.parent
+        try:
+            rel_dataset_path = str(dataset_path.relative_to(repo_root))
+        except ValueError:
+            rel_dataset_path = "gateway/evaluation/dataset.json"
 
         report_meta = {
             "dataset_hash": dataset_hash,
-            "dataset_path": str(dataset_path),
+            "dataset_path": rel_dataset_path,
             "dataset_split": args.split,
             "case_count": metrics.total_cases,
             "evaluation_timestamp": datetime.now(timezone.utc).isoformat(),

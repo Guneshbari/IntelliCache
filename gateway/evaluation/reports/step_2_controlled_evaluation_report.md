@@ -22,21 +22,25 @@ This report documents the empirical evaluation of IntelliCache's semantic cachin
    - Updated `run_threshold_sweep()` in [`gateway/scripts/evaluate_semantic_cache.py`](https://github.com/Guneshbari/IntelliCache/blob/main/gateway/scripts/evaluate_semantic_cache.py) to initialize `SemanticCachePolicy` with `configured_model=provider.model_name`.
    - Ensured evaluation candidate vectors and search queries match the active provider's model identity (`BAAI/bge-small-en-v1.5`) rather than falling back to default Nomic strings.
 2. **Deterministic Tie-Breaking in Threshold Sweep Selection**:
-   - Added deterministic multi-key sorting in `run_threshold_sweep()`:
+   - Added deterministic multi-key sorting in `run_threshold_sweep()` with the exact priority order:
      1. Fewer false positives (`r["fp"]` ascending)
-     2. Distance from runtime default margin 0.03 (`round(abs(r["margin"] - 0.03), 4)` ascending)
-     3. Higher threshold (`-r["threshold"]` descending)
-     4. Greater recall (`-r["recall"]` descending)
-     5. Greater F1 score (`-r["f1_score"]` descending)
+     2. Greater recall (`-r["recall"]` descending)
+     3. Greater F1 score (`-r["f1_score"]` descending)
+     4. Distance from runtime default margin 0.03 (`round(abs(r["margin"] - 0.03), 4)` ascending)
+     5. Higher similarity threshold (`-r["threshold"]` descending)
    - When all margins tie at threshold 0.95, margin `0.03` is deterministically selected.
    - Added automated regression test `test_threshold_sweep_tie_breaker_prefers_runtime_default_margin_0_03` in [`gateway/tests/test_evaluation.py`](https://github.com/Guneshbari/IntelliCache/blob/main/gateway/tests/test_evaluation.py).
-3. **Canonical Report Export**:
+3. **Category Breakdown Undefined Metric Handling**:
+   - Implemented `compute_category_metrics()` to represent mathematically undefined values ($0 / 0$ denominator) as `None` (`null` in JSON, rendered as `N/A` in Markdown) for both precision ($TP+FP=0$) and recall ($TP+FN=0$).
+   - Preserves `0.0000` when the denominator is non-zero and the numerator is zero.
+   - Added automated unit test `test_compute_category_metrics_undefined_handling` in [`gateway/tests/test_evaluation.py`](https://github.com/Guneshbari/IntelliCache/blob/main/gateway/tests/test_evaluation.py).
+4. **Canonical Report Export**:
    - Generated canonical sweep and evaluation artifacts:
-     - Development sweep CSV: [`semantic_cache_eval_20261113_145337_sweep.csv`](semantic_cache_eval_20261113_145337_sweep.csv)
-     - Development baseline JSON: [`semantic_cache_eval_20261113_145337.json`](semantic_cache_eval_20261113_145337.json)
-     - Development th=0.92 JSON: [`semantic_cache_eval_20261113_145347.json`](semantic_cache_eval_20261113_145347.json)
-     - Held-out test th=0.92 JSON: [`semantic_cache_eval_20261113_145353.json`](semantic_cache_eval_20261113_145353.json)
-     - Held-out test th=0.95 JSON: [`semantic_cache_eval_20261113_145359.json`](semantic_cache_eval_20261113_145359.json)
+     - Development sweep CSV: [`semantic_cache_eval_20261113_151746_sweep.csv`](semantic_cache_eval_20261113_151746_sweep.csv)
+     - Development baseline JSON: [`semantic_cache_eval_20261113_151746.json`](semantic_cache_eval_20261113_151746.json)
+     - Development th=0.92 JSON: [`semantic_cache_eval_20261113_151808.json`](semantic_cache_eval_20261113_151808.json)
+     - Held-out test th=0.92 JSON: [`semantic_cache_eval_20261113_151815.json`](semantic_cache_eval_20261113_151815.json)
+     - Held-out test th=0.95 JSON: [`semantic_cache_eval_20261113_151821.json`](semantic_cache_eval_20261113_151821.json)
 
 ---
 
@@ -118,7 +122,7 @@ xychart-beta
 > [!CAUTION]
 > **Safety Assessment**: Every evaluated configuration in the sweep produced false positives on development data. There is **no threshold** in the tested range $[0.70, 0.95]$ that achieves zero false positives while retaining non-zero recall.
 
-Per the selection criteria (prioritizing lowest FP, margin closest to 0.03, then highest recall, then F1):
+Per the selection criteria (prioritizing lowest FP, highest recall, highest F1, margin closest to runtime default 0.03, then higher threshold):
 - **Selected & Locked Configuration**: `threshold = 0.95`, `margin = 0.03`.
 - **Reason for Locking**: Minimizes incorrect reuse risk ($\text{FP}=2$, $\text{FPR}=5.0\%$).
 - **Caveat Recorded**: Its utility is severely impaired ($\text{Recall}=5.88\%$). Selecting this threshold demonstrates that cosine similarity alone cannot distinguish cross-lingual and constraint-inverting prompts without domain-level compatibility guards.
@@ -127,7 +131,7 @@ Per the selection criteria (prioritizing lowest FP, margin closest to 0.03, then
 
 ## 5. Held-Out Test Split Validation (57 Cases)
 
-Without tuning or modifying the selected parameters, the locked configuration was evaluated against the held-out test split, alongside the baseline and mid-point configurations:
+Without tuning or modifying the selected parameters, the locked configuration was evaluated against the held-out test split, alongside the baseline, mid-point, and runtime default configurations:
 
 | Configuration | Split | TP | FP | FN | TN | Precision | Recall | F1 Score | FPR | Rejection Rate | Accuracy |
 | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -139,19 +143,19 @@ Without tuning or modifying the selected parameters, the locked configuration wa
 ### Test Split Category Breakdown (`th=0.95, mg=0.03`)
 
 > [!NOTE]
-> For negative-only categories ($\text{TP}=0, \text{FP}=0$), Precision is undefined ($\frac{0}{0}$) and is marked **N/A**.
+> For negative-only categories, both positive actuals ($TP+FN=0$) and predicted positives ($TP+FP=0$) have zero denominators. Precision and Recall are mathematically undefined and are reported as **N/A** in Markdown (`null` in JSON), while valid zero-valued metrics with nonzero denominators (e.g. $\text{FPR} = \frac{0}{5} = 0.0000$) are preserved.
 
 | Category | Total | TP | FP | FN | TN | Precision | Recall | FPR |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
 | `positive_paraphrase` | 17 | 2 | 0 | 15 | 0 | 1.0000 | 0.1176 | 0.0000 |
-| `different_language` | 5 | 0 | 0 | 0 | 5 | N/A | 0.0000 | 0.0000 |
-| `version_difference` | 5 | 0 | 0 | 0 | 5 | N/A | 0.0000 | 0.0000 |
-| `error_difference` | 5 | 0 | 0 | 0 | 5 | N/A | 0.0000 | 0.0000 |
-| `constraint_difference` | 5 | 0 | 0 | 0 | 5 | N/A | 0.0000 | 0.0000 |
-| `runtime_difference` | 4 | 0 | 0 | 0 | 4 | N/A | 0.0000 | 0.0000 |
-| `output_difference` | 4 | 0 | 0 | 0 | 4 | N/A | 0.0000 | 0.0000 |
-| `ambiguous_candidates` | 6 | 0 | 0 | 0 | 6 | N/A | 0.0000 | 0.0000 |
-| `unrelated_technical` | 6 | 0 | 0 | 0 | 6 | N/A | 0.0000 | 0.0000 |
+| `different_language` | 5 | 0 | 0 | 0 | 5 | N/A | N/A | 0.0000 |
+| `version_difference` | 5 | 0 | 0 | 0 | 5 | N/A | N/A | 0.0000 |
+| `error_difference` | 5 | 0 | 0 | 0 | 5 | N/A | N/A | 0.0000 |
+| `constraint_difference` | 5 | 0 | 0 | 0 | 5 | N/A | N/A | 0.0000 |
+| `runtime_difference` | 4 | 0 | 0 | 0 | 4 | N/A | N/A | 0.0000 |
+| `output_difference` | 4 | 0 | 0 | 0 | 4 | N/A | N/A | 0.0000 |
+| `ambiguous_candidates` | 6 | 0 | 0 | 0 | 6 | N/A | N/A | 0.0000 |
+| `unrelated_technical` | 6 | 0 | 0 | 0 | 6 | N/A | N/A | 0.0000 |
 
 ### Critical Statistical Caveat
 While `th=0.95` observed 0 false positives across 40 negative test cases, **this is an empirical observation on this bounded sample ($N=40$ negatives), not proof of production zero-defect safety**. The development set proved that real false positives exist above 0.95 (e.g. at 0.9555 and 0.9661).

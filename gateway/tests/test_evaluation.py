@@ -42,6 +42,7 @@ from scripts.evaluate_semantic_cache import (
     EvaluationOutcome,
     calculate_cosine_similarity,
     compute_candidate_fingerprint,
+    compute_category_metrics,
     compute_latency_stats,
     compute_metrics_from_counts,
     evaluate_dataset,
@@ -96,6 +97,56 @@ class TestSemanticEvaluation(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fpr, 0.0)
         self.assertEqual(rej, 0.0)
         self.assertEqual(acc, 0.0)
+
+    def test_compute_category_metrics_undefined_handling(self) -> None:
+        """
+        Verifies that compute_category_metrics represents mathematically undefined metrics
+        (division by zero) as None (null in JSON / N/A in Markdown), while preserving 0.0
+        when the denominator is nonzero.
+        """
+        # 1. Negative-only category with zero false positives (TP=0, FP=0, FN=0, TN=5, total=5)
+        # Precision = 0 / 0 -> None (undefined)
+        # Recall = 0 / 0 -> None (undefined)
+        # F1 = None
+        # FPR = 0 / 5 -> 0.0 (valid zero because denominator is 5)
+        # Rejection = 5 / 5 -> 1.0
+        # Accuracy = 5 / 5 -> 1.0
+        m_neg_clean = compute_category_metrics(tp=0, fp=0, fn=0, tn=5, total=5)
+        self.assertIsNone(m_neg_clean["precision"], "Precision must be None when TP+FP=0")
+        self.assertIsNone(m_neg_clean["recall"], "Recall must be None when TP+FN=0")
+        self.assertIsNone(m_neg_clean["f1_score"], "F1 must be None when precision/recall is None")
+        self.assertEqual(m_neg_clean["false_positive_rate"], 0.0, "FPR must be 0.0 when FP=0 and FP+TN>0")
+        self.assertEqual(m_neg_clean["rejection_rate"], 1.0)
+        self.assertEqual(m_neg_clean["accuracy"], 1.0)
+
+        # 2. Negative-only category with false positives (TP=0, FP=2, FN=0, TN=3, total=5)
+        # Precision = 0 / 2 -> 0.0 (valid zero because denominator is 2)
+        # Recall = 0 / 0 -> None (undefined)
+        # F1 = None
+        # FPR = 2 / 5 -> 0.40
+        # Rejection = 3 / 5 -> 0.60
+        # Accuracy = 3 / 5 -> 0.60
+        m_neg_fp = compute_category_metrics(tp=0, fp=2, fn=0, tn=3, total=5)
+        self.assertEqual(m_neg_fp["precision"], 0.0, "Precision must be 0.0 when TP=0 and TP+FP>0")
+        self.assertIsNone(m_neg_fp["recall"], "Recall must be None when TP+FN=0")
+        self.assertIsNone(m_neg_fp["f1_score"], "F1 must be None when recall is None")
+        self.assertEqual(m_neg_fp["false_positive_rate"], 0.4)
+        self.assertEqual(m_neg_fp["rejection_rate"], 0.6)
+        self.assertEqual(m_neg_fp["accuracy"], 0.6)
+
+        # 3. Positive category with partial recall (TP=5, FP=0, FN=12, TN=0, total=17)
+        # Precision = 5 / 5 -> 1.0
+        # Recall = 5 / 17 -> 0.2941
+        # F1 = 2 * 1.0 * 0.2941 / (1.0 + 0.2941) -> 0.4545
+        # FPR = 0 / 0 -> 0.0
+        # Rejection = 12 / 17 -> 0.7059
+        # Accuracy = 5 / 17 -> 0.2941
+        m_pos = compute_category_metrics(tp=5, fp=0, fn=12, tn=0, total=17)
+        self.assertEqual(m_pos["precision"], 1.0)
+        self.assertEqual(m_pos["recall"], round(5 / 17, 4))
+        self.assertIsNotNone(m_pos["f1_score"])
+        self.assertEqual(m_pos["rejection_rate"], round(12 / 17, 4))
+        self.assertEqual(m_pos["accuracy"], round(5 / 17, 4))
 
     def test_dataset_schema_and_split_separation(self) -> None:
         """Verifies dataset structure, ID uniqueness, split balance, and category counts."""

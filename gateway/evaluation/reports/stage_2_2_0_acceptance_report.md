@@ -31,7 +31,7 @@ The offline evaluation harness evaluated the 114-case dataset (`57 dev / 57 test
 | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
 | `0.82` | `0.03` | **100.0%** (17/17) | 37.5% (15 FP) | 0.6939 | 0.5312 | Baseline: High recall, unacceptable false positive rate |
 | `0.88` | `0.03` | **70.6%** (12/17) | 25.0% (10 FP) | 0.6154 | 0.5455 | Mid-point: Balanced recall, high false positive rate |
-| `0.92` | `0.03` | **29.4%** (5/17) | 12.5% (5 FP) | 0.3704 | 0.5000 | Gateway Runtime Default: High precision for exact paraphrases |
+| `0.92` | `0.03` | **29.4%** (5/17) | 12.5% (5 FP) | 0.3704 | 0.5000 | Gateway Runtime Default: Lower FPR than 0.82 (12.5% vs 37.5%), but precision is 50.0% (5 FP / 5 TP)—insufficient for unrestricted technical-response reuse |
 | **`0.95`** | **`0.03`** | **5.9%** (1/17) | **5.0%** (2 FP) | **0.1000** | **0.3333** | **Selected & Locked Configuration**: Lowest FP rate on dev split |
 
 ### Locked Evaluation on Held-Out Test Split (No Parameter Tuning)
@@ -154,10 +154,10 @@ The verification across all components demonstrates complete test coverage and r
 
 | Test Suite / Area | Actual CI Result | Gated / Skipped Count | Notes |
 | :--- | :---: | :---: | :--- |
-| **Gateway Unit Suite (Python 3.11)** | **Passed** | 366 discovered, 67 skipped | Opt-in FastEmbed smoke and live PostgreSQL tests skipped |
-| **Gateway Unit Suite (Python 3.12)** | **Passed** | 366 discovered, 67 skipped | Opt-in FastEmbed smoke and live PostgreSQL tests skipped |
+| **Gateway Unit Suite (Python 3.11)** | **Passed** | 367 discovered, 67 skipped | Opt-in FastEmbed smoke and live PostgreSQL tests skipped |
+| **Gateway Unit Suite (Python 3.12)** | **Passed** | 367 discovered, 67 skipped | Opt-in FastEmbed smoke and live PostgreSQL tests skipped |
 | **PostgreSQL Focused Suite** | **Passed** | 123 discovered, 2 skipped | Focused integration against live PostgreSQL & pgvector |
-| **Full Gateway with PostgreSQL** | **Passed** | 366 discovered, 6 skipped | Complete regression suite with live database; 6 FastEmbed smoke skipped |
+| **Full Gateway with PostgreSQL** | **Passed** | 367 discovered, 6 skipped | Complete regression suite with live database; 6 FastEmbed smoke skipped |
 | **Frontend Tests (Vitest)** | **Passed** | 156 passed | All unit & integration component tests passed |
 | **Frontend Code Quality** | **Passed** | 0 warnings | ESLint, Prettier, TypeScript `tsc --noEmit` clean |
 | **Frontend Production Build** | **Passed** | 0 errors | `vite build` completed in 146ms |
@@ -167,6 +167,6 @@ The verification across all components demonstrates complete test coverage and r
 
 ## 7. Recommendations for Stage 3.0 Production Deployment
 
-1. **Default Threshold Selection**: Maintain runtime threshold at `SEMANTIC_CACHE_MIN_SIMILARITY=0.92` for high-precision technical queries.
+1. **Default Setting & Threshold Caution**: Preserve `SEMANTIC_CACHE_ENABLED=false` by default. The configured threshold 0.92 provides a lower false-positive rate than 0.82 (12.5% vs 37.5% on dev; 7.5% vs 40.0% on test), but with only 50.0% precision on both development and held-out test splits (half of all accepted semantic matches were incorrect in the evaluated sample), 0.92 is an operational configuration rather than an empirically established safe threshold. Thresholding alone is insufficient without domain-level compatibility guards.
 2. **Language Metadata Filtering**: For multi-language code assistants, index target programming language metadata (`metadata={"language": "rust"}`) to enforce strict language partitioning during vector search.
 3. **SingleFlight & Fail-Open**: Retain process-local SingleFlight and fail-open resilience as essential operational boundaries.
