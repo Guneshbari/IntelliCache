@@ -154,10 +154,10 @@ The verification across all components demonstrates complete test coverage and r
 
 | Test Suite / Area | Actual CI Result | Gated / Skipped Count | Notes |
 | :--- | :---: | :---: | :--- |
-| **Gateway Unit Suite (Python 3.11)** | **Passed** | 365 discovered, 67 skipped | Opt-in FastEmbed smoke and live PostgreSQL tests skipped |
-| **Gateway Unit Suite (Python 3.12)** | **Passed** | 365 discovered, 67 skipped | Opt-in FastEmbed smoke and live PostgreSQL tests skipped |
+| **Gateway Unit Suite (Python 3.11)** | **Passed** | 366 discovered, 67 skipped | Opt-in FastEmbed smoke and live PostgreSQL tests skipped |
+| **Gateway Unit Suite (Python 3.12)** | **Passed** | 366 discovered, 67 skipped | Opt-in FastEmbed smoke and live PostgreSQL tests skipped |
 | **PostgreSQL Focused Suite** | **Passed** | 123 discovered, 2 skipped | Focused integration against live PostgreSQL & pgvector |
-| **Full Gateway with PostgreSQL** | **Passed** | 365 discovered, 6 skipped | Complete regression suite with live database; 6 FastEmbed smoke skipped |
+| **Full Gateway with PostgreSQL** | **Passed** | 366 discovered, 6 skipped | Complete regression suite with live database; 6 FastEmbed smoke skipped |
 | **Frontend Tests (Vitest)** | **Passed** | 156 passed | All unit & integration component tests passed |
 | **Frontend Code Quality** | **Passed** | 0 warnings | ESLint, Prettier, TypeScript `tsc --noEmit` clean |
 | **Frontend Production Build** | **Passed** | 0 errors | `vite build` completed in 146ms |
