@@ -7,3 +7,4 @@ __pycache__/
 evaluation/reports/*
 !evaluation/reports/iterative_hnsw_benchmark.json
 !evaluation/reports/step_2_controlled_evaluation_report.md
+!evaluation/reports/stage_2_2_0_acceptance_report.md
