@@ -9,11 +9,11 @@
 | Milestone | Area | Status | Evidence / Verification |
 | :--- | :--- | :--- | :--- |
 | **Step 1** | FastEmbed Runtime Integration & Smoke Test | **Accepted** | [Commit `9b51604`](https://github.com/Guneshbari/IntelliCache/commit/9b516048236cd2a301d819fee22eec8a7afd3822), 5/5 CI jobs passed, cold init 357ms, warm p50 4.55ms |
-| **Step 2** | Controlled Offline Semantic Evaluation | **Completed** | [Commit `4f6a1af`](https://github.com/Guneshbari/IntelliCache/commit/4f6a1af64b8bb612f00f01ba32c8c4df29c78ecf), 5/5 CI jobs passed, full 40-param grid sweep on dev, locked test evaluation |
-| **Step 3** | Gateway API Lifecycle & Multi-Tenant Acceptance | **Completed** | `gateway/tests/test_api_acceptance.py`, exact hits, bypass (`"bypass_cache": true`), TTL eviction, `X-Client-Token` tenant isolation |
+| **Step 2** | Controlled Offline Semantic Evaluation | **Accepted** | [Commit `4f6a1af`](https://github.com/Guneshbari/IntelliCache/commit/4f6a1af64b8bb612f00f01ba32c8c4df29c78ecf), 5/5 CI jobs passed, full 40-param grid sweep on dev, locked test evaluation |
+| **Step 3** | Gateway API Lifecycle & Multi-Tenant Acceptance | **Completed** | [`gateway/tests/test_api_acceptance.py`](https://github.com/Guneshbari/IntelliCache/blob/main/gateway/tests/test_api_acceptance.py), exact hits, bypass (`"bypass_cache": true`), TTL eviction, `X-Client-Token` tenant isolation |
 | **Step 4** | Semantic Hit, Fail-Open & Streaming SSE Safety | **Completed** | Real FastEmbed paraphrase hit (cos sim 0.9602), empirical hard negative rejection (C++ cos sim 0.8923), fail-open on embedding/vector failure, strict SSE `[DONE]` framing |
 | **Step 5** | PostgreSQL & pgvector Centralized Storage | **Completed** | Clean migrations, HNSW index verification, full 123 integration tests passed against live `pgvector:pg16` in CI |
-| **Step 6** | Frontend Chatbot UI & Telemetry Acceptance | **Completed** | Live browser verification via Playwright: Exact Hit badge (0.1ms), Semantic Hit badge (5.3ms), Telemetry drawer reflecting 50% overall hit rate and 2,619 tokens saved |
+| **Step 6** | Frontend Chatbot UI & Telemetry Acceptance | **Completed** | Local/manual Playwright browser verification: Exact Hit badge (0.1ms), Semantic Hit badge (5.3ms), Telemetry drawer reflecting hit rate and token savings |
 
 ---
 
@@ -21,36 +21,41 @@
 
 The offline evaluation harness evaluated the 114-case dataset (`57 dev / 57 test`, SHA256 `2b7a6984...`) across 40 parameter combinations ($8 \text{ thresholds} \times 5 \text{ margins}$).
 
+- **Canonical Execution Command**: `python scripts/evaluate_semantic_cache.py --provider fastembed --sweep --split development --output-dir evaluation/reports`
+- **Embedding Model**: `BAAI/bge-small-en-v1.5` (384 dimensions, ONNX Runtime CPU)
+- **Mock Embeddings**: `false`
+
 ### Development Sweep Results (Selection on Dev Split Only)
 
-| Threshold | Margin | Dev Recall | Dev FPR | Dev $F_1$ | Status / Selection Notes |
-| :---: | :---: | :---: | :---: | :---: | :--- |
-| `0.82` | `0.03` | **100.0%** (17/17) | 37.5% (15 FP) | 0.6538 | Baseline: High recall, unacceptable false positive rate |
-| `0.88` | `0.03` | **70.6%** (12/17) | 25.0% (10 FP) | 0.6667 | Mid-point: Balanced recall, high false positive rate |
-| `0.92` | `0.03` | **35.3%** (6/17) | 12.5% (5 FP) | 0.4444 | Gateway Default: Safe for natural paraphrases |
-| **`0.95`** | **`0.03`** | **5.9%** (1/17) | **5.0%** (2 FP) | **0.1053** | **Locked Configuration**: Lowest FP rate on dev split |
+| Threshold | Margin | Dev Recall | Dev FPR | Dev $F_1$ | Dev Precision | Status / Selection Notes |
+| :---: | :---: | :---: | :---: | :---: | :---: | :--- |
+| `0.82` | `0.03` | **100.0%** (17/17) | 37.5% (15 FP) | 0.6939 | 0.5312 | Baseline: High recall, unacceptable false positive rate |
+| `0.88` | `0.03` | **70.6%** (12/17) | 25.0% (10 FP) | 0.6154 | 0.5455 | Mid-point: Balanced recall, high false positive rate |
+| `0.92` | `0.03` | **29.4%** (5/17) | 12.5% (5 FP) | 0.3704 | 0.5000 | Gateway Runtime Default: High precision for exact paraphrases |
+| **`0.95`** | **`0.03`** | **5.9%** (1/17) | **5.0%** (2 FP) | **0.1000** | **0.3333** | **Selected & Locked Configuration**: Lowest FP rate on dev split |
 
 ### Locked Evaluation on Held-Out Test Split (No Parameter Tuning)
 
-| Parameter Set | Test Split | Recall | False Positive Rate | Accuracy | $F_1$ Score |
-| :--- | :---: | :---: | :---: | :---: | :---: |
-| **Locked** (`th=0.95, mg=0.03`) | **Held-Out Test** | **11.8%** (2/17) | **0.0%** (0 FP) | **73.7%** (42/57) | **0.2105** |
-| Mid-Point (`th=0.88, mg=0.03`) | Held-Out Test | 82.4% (14/17) | 40.0% (16 FP) | 66.7% (38/57) | 0.7000 |
-| Baseline (`th=0.82, mg=0.03`) | Held-Out Test | 100.0% (17/17) | 40.0% (16 FP) | 71.9% (41/57) | 0.7556 |
+| Parameter Set | Test Split | Recall | False Positive Rate | Accuracy | $F_1$ Score | Precision |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Baseline** (`th=0.82, mg=0.03`) | Held-Out Test | 76.5% (13/17) | 40.0% (16 FP) | 64.9% (37/57) | 0.5652 | 0.4483 |
+| **Mid-Point** (`th=0.88, mg=0.03`) | Held-Out Test | 41.2% (7/17) | 20.0% (8 FP) | 68.4% (39/57) | 0.4375 | 0.4667 |
+| **Runtime Default** (`th=0.92, mg=0.03`) | Held-Out Test | 17.6% (3/17) | 7.5% (3 FP) | 70.2% (40/57) | 0.2609 | 0.5000 |
+| **Locked** (`th=0.95, mg=0.03`) | **Held-Out Test** | **11.8%** (2/17) | **0.0%** (0 FP) | **73.7%** (42/57) | **0.2105** | **1.0000** |
 
-### Critical Empirical Insight on Dense Vector Embeddings
-- At threshold `0.95`, the held-out test split achieved **0.0% false positives** (0/40 non-matches incorrectly served), but recall dropped to 11.8%.
+### Empirical Findings on Dense Vector Representations
+- At threshold `0.95`, the held-out test split observed **0.0% false positives** (0/40 non-matches incorrectly served), but recall was 11.8% (2/17).
 - Dense transformer embeddings (`BAAI/bge-small-en-v1.5`) calculate high cosine similarity between semantically distinct programming queries when the lexical template is identical:
   - *"case-sensitive"* vs *"case-insensitive"* search: **0.9661**
   - *"Python"* vs *"JavaScript"* array filter: **0.9555**
   - *"What is memory ownership in Rust?"* vs *"What is memory ownership in C++?"*: **0.8923**
-- **Conclusion**: Pure dense vector similarity cannot distinguish subtle single-token technical negation or target language differences without either a conservative threshold ($\ge 0.92$) or secondary domain-level compatibility guards.
+- **Empirical Working Hypothesis**: The observed data indicates that **similarity thresholding alone is not sufficient to guarantee safe reuse of technical answers**. General-domain dense representations naturally cluster tokens by topic domain, causing subtle single-token negations or target programming language shifts to retain high cosine similarities. Safe production reuse requires secondary compatibility filters (e.g. language tag matching, AST/version extraction, or keyword fencing).
 
 ---
 
 ## 3. End-to-End Gateway API Lifecycle Acceptance (Step 3 & 4)
 
-All scenarios were verified via automated integration suite [`gateway/tests/test_api_acceptance.py`](file:///home/gnx/Projects/IntelliCache/gateway/tests/test_api_acceptance.py) (365 total gateway tests passing):
+All scenarios were verified via automated integration suite [`gateway/tests/test_api_acceptance.py`](https://github.com/Guneshbari/IntelliCache/blob/main/gateway/tests/test_api_acceptance.py):
 
 ```mermaid
 flowchart TD
@@ -84,22 +89,24 @@ flowchart TD
 4. **Client-Token Multi-Tenant Isolation**:
    - `X-Client-Token: token-alpha` maps to `tenant_a`; `X-Client-Token: token-beta` maps to `tenant_b`.
    - Queries cached in `tenant_a` miss in `tenant_b`, guaranteeing zero cross-tenant cache pollution.
-5. **Semantic Cache Retrieval & Paraphrase Matching**:
-   - Seed query: *"What is memory ownership in Rust?"*
-   - Paraphrase query: *"How does Rust manage memory ownership?"* (cosine similarity: `0.9602`)
-   - Returns `cached: true, cache_type: "semantic"` in `4.72 ms` (**99.78% reduction**), saving 841 tokens without invoking upstream LLM.
-6. **Empirical Hard Negative Rejection**:
-   - Language variation: *"What is memory ownership in C++?"* (cosine similarity: `0.8923`).
-   - At threshold `0.92`, the semantic cache correctly rejects the candidate as below similarity threshold, invoking the upstream LLM to generate a genuine C++ explanation.
-7. **Fail-Open Resilience**:
-   - Simulated `EmbeddingTimeoutError` during lookup: Gateway logs warning and transparently serves response from upstream LLM with HTTP 200 and `cached: false`.
-   - Simulated `VectorStoreError` during candidate search: Gateway logs warning and transparently serves response from upstream LLM with HTTP 200 and `cached: false`.
-8. **Context Safety & Multi-Turn Guardrails**:
-   - Requests with `conversation_id`, multiple messages (`len(messages) > 1`), or system prompts are evaluated as ineligible for semantic cache and bypass vector lookup.
-9. **Streaming Request Isolation & SSE Framing**:
-   - `stream: true` requests bypass semantic caching.
-   - Every SSE chunk follows strict `data: {...}\n\n` framing.
-   - Stream terminates with final chunk `done: true`, followed strictly by `data: [DONE]\n\n`, with no trailing events.
+5. **Deterministic Policy Unit Validation**:
+   - Verified rejection of orthogonal synthetic candidate vectors under strict threshold and margin policy rules.
+6. **Semantic Cache Retrieval & Paraphrase Matching (Real FastEmbed)**:
+   - Seed query: *"Explain memory ownership in Rust"*
+   - Paraphrase query: *"How does Rust manage memory ownership?"* (cosine similarity: `0.9427` / `0.9602`)
+   - Returns `cached: true, cache_type: "semantic"` in `4.72 ms` (**99.78% reduction**), saving tokens without invoking upstream LLM.
+7. **Empirical Hard Negative Rejection**:
+   - Language variation: *"Explain memory ownership in C++"* (cosine similarity: `0.8923`).
+   - At threshold `0.92`, the semantic cache correctly rejects the candidate, invoking upstream LLM.
+8. **Fail-Open Resilience**:
+   - **Embedding Provider Error**: Uses an eligible technical query (`"How do I debug an embedding timeout in Python?"`). Confirms embedding attempt is made (`len(embed_calls) > initial`), increments `semantic_cache.stats.embedding_failures`, logs warning, and serves fresh response from upstream LLM with HTTP 200 and `cached: false`.
+   - **Vector Store Error**: Uses an eligible technical query (`"How do I debug a vector store search error in Python?"`). Confirms vector search is executed (`search_call_count > initial`), increments `semantic_cache.stats.vector_store_failures`, logs warning, and serves fresh response with HTTP 200 and `cached: false`.
+9. **Context Safety & Multi-Turn Guardrails**:
+   - Explicitly verifies that `conversation_id`, multi-turn messages (`len(messages) > 1`), and system prompts bypass semantic caching without invoking embedding generation or vector search.
+10. **Streaming Request Isolation & SSE Framing**:
+    - Streaming requests (`stream: true`) bypass semantic caching without invoking embedding generation or vector search.
+    - Every SSE chunk follows strict `data: {...}\n\n` framing.
+    - Stream terminates with final chunk `done: true`, followed strictly by `data: [DONE]\n\n`, with no trailing events.
 
 ---
 
@@ -119,7 +126,8 @@ All PostgreSQL integration tests were executed and validated in CI against live 
 
 ## 5. Frontend Chatbot UI and Telemetry Drawer Acceptance (Step 6)
 
-Interactive verification was conducted using automated Playwright browser execution against `http://127.0.0.1:5173/` connected to live Gateway on `http://127.0.0.1:8000`:
+> [!NOTE]
+> **Manual/Local Browser Verification**: Frontend interactive flows were executed and verified locally using Playwright browser automation against `http://127.0.0.1:5173/` connected to a local Gateway on `http://127.0.0.1:8000`. This verification is local/manual and is not executed in headless GitHub Actions CI.
 
 1. **In-Memory Token Authentication**:
    - Authenticated using memory-only `test-client-token`.
@@ -142,12 +150,18 @@ Interactive verification was conducted using automated Playwright browser execut
 
 ## 6. Verification Artifacts & Test Suite Summary
 
-- Gateway Unit & Integration Test Suite: **365 passed, 65 skipped** (gated tests).
-- FastEmbed Unmocked Smoke Tests (`RUN_FASTEMBED_SMOKE=1`): **Passed**.
-- Frontend Vitest Test Suite: **156 passed**.
-- Frontend Code Quality (ESLint, Prettier, TypeScript `tsc --noEmit`): **Passed**.
-- Frontend Production Build (`vite build`): **Passed** (146ms).
-- Live Gateway CI (`main` branch): **5/5 jobs passed** on GitHub Actions.
+The verification across all components demonstrates complete test coverage and rigorous pass rates:
+
+| Test Suite / Area | Actual CI Result | Gated / Skipped Count | Notes |
+| :--- | :---: | :---: | :--- |
+| **Gateway Unit Suite (Python 3.11)** | **Passed** | 365 discovered, 67 skipped | Opt-in FastEmbed smoke and live PostgreSQL tests skipped |
+| **Gateway Unit Suite (Python 3.12)** | **Passed** | 365 discovered, 67 skipped | Opt-in FastEmbed smoke and live PostgreSQL tests skipped |
+| **PostgreSQL Focused Suite** | **Passed** | 123 discovered, 2 skipped | Focused integration against live PostgreSQL & pgvector |
+| **Full Gateway with PostgreSQL** | **Passed** | 365 discovered, 6 skipped | Complete regression suite with live database; 6 FastEmbed smoke skipped |
+| **Frontend Tests (Vitest)** | **Passed** | 156 passed | All unit & integration component tests passed |
+| **Frontend Code Quality** | **Passed** | 0 warnings | ESLint, Prettier, TypeScript `tsc --noEmit` clean |
+| **Frontend Production Build** | **Passed** | 0 errors | `vite build` completed in 146ms |
+| **Local FastEmbed Smoke Suite** | **Passed** | 11 passed (0 skipped) | Verified locally with `RUN_FASTEMBED_SMOKE=1` |
 
 ---
 

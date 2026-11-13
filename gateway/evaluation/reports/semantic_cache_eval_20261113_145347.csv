@@ -1,0 +1,59 @@
+# IntelliCache Evaluation Report,DatasetHash: 2b7a69845351f581a3d30e75eb20a98311fc5adccecb2c9aea339bec832d361b,Split: development,Provider: FastEmbedProvider (BAAI/bge-small-en-v1.5),Model: BAAI/bge-small-en-v1.5,VectorIndex: none,IndexUsed: False,Timestamp: 2026-11-13T14:53:47.830468+00:00
+case_id,category,split,safe_reuse_expected,top_similarity,margin,classification,decision,indexing_latency_ms,lookup_latency_ms,rejection_reason
+pos-dev-001,positive_paraphrase,development,True,0.9607,,TP,safe_reuse,5.45,7.94,
+pos-dev-002,positive_paraphrase,development,True,0.855,,FN,incorrect_rejection,5.61,5.27,Similarity below threshold: 0.8550 < 0.9200.
+pos-dev-003,positive_paraphrase,development,True,0.8893,,FN,incorrect_rejection,4.85,5.2,Similarity below threshold: 0.8893 < 0.9200.
+pos-dev-004,positive_paraphrase,development,True,0.9352,,TP,safe_reuse,5.5,5.06,
+pos-dev-005,positive_paraphrase,development,True,0.8427,,FN,incorrect_rejection,5.08,5.14,Similarity below threshold: 0.8427 < 0.9200.
+pos-dev-006,positive_paraphrase,development,True,0.8947,,FN,incorrect_rejection,4.8,5.01,Similarity below threshold: 0.8947 < 0.9200.
+pos-dev-007,positive_paraphrase,development,True,0.9216,,TP,safe_reuse,5.04,5.18,
+pos-dev-008,positive_paraphrase,development,True,0.8519,,FN,incorrect_rejection,5.15,5.33,Similarity below threshold: 0.8519 < 0.9200.
+pos-dev-009,positive_paraphrase,development,True,0.9296,,TP,safe_reuse,4.81,5.25,
+pos-dev-010,positive_paraphrase,development,True,0.9438,,TP,safe_reuse,5.0,5.18,
+pos-dev-011,positive_paraphrase,development,True,0.8979,,FN,incorrect_rejection,5.64,5.49,Similarity below threshold: 0.8979 < 0.9200.
+pos-dev-012,positive_paraphrase,development,True,0.8976,,FN,incorrect_rejection,5.29,5.09,Similarity below threshold: 0.8976 < 0.9200.
+pos-dev-013,positive_paraphrase,development,True,0.8468,,FN,incorrect_rejection,5.13,5.53,Similarity below threshold: 0.8468 < 0.9200.
+pos-dev-014,positive_paraphrase,development,True,0.8926,,FN,incorrect_rejection,5.31,5.59,Similarity below threshold: 0.8926 < 0.9200.
+pos-dev-015,positive_paraphrase,development,True,0.853,,FN,incorrect_rejection,5.42,5.17,Similarity below threshold: 0.8530 < 0.9200.
+pos-dev-016,positive_paraphrase,development,True,0.8864,,FN,incorrect_rejection,5.04,4.99,Similarity below threshold: 0.8864 < 0.9200.
+pos-dev-017,positive_paraphrase,development,True,0.8907,,FN,incorrect_rejection,5.04,4.63,Similarity below threshold: 0.8907 < 0.9200.
+neg-lang-dev-001,different_language,development,False,0.9555,,FP,incorrect_reuse,4.53,4.67,
+neg-lang-dev-002,different_language,development,False,0.8836,,TN,safe_rejection,4.78,5.02,Similarity below threshold: 0.8836 < 0.9200.
+neg-lang-dev-003,different_language,development,False,0.8549,,TN,safe_rejection,4.78,4.4,Similarity below threshold: 0.8549 < 0.9200.
+neg-lang-dev-004,different_language,development,False,0.9431,,FP,incorrect_reuse,4.59,5.13,
+neg-lang-dev-005,different_language,development,False,0.9108,,TN,safe_rejection,5.04,4.97,Similarity below threshold: 0.9108 < 0.9200.
+neg-ver-dev-001,version_difference,development,False,0.8941,,TN,safe_rejection,4.87,5.26,Similarity below threshold: 0.8941 < 0.9200.
+neg-ver-dev-002,version_difference,development,False,0.9333,,FP,incorrect_reuse,5.4,5.01,
+neg-ver-dev-003,version_difference,development,False,0.7673,,TN,safe_rejection,4.59,4.35,Similarity below threshold: 0.7673 < 0.9200.
+neg-ver-dev-004,version_difference,development,False,0.7756,,TN,safe_rejection,4.62,4.65,Similarity below threshold: 0.7756 < 0.9200.
+neg-ver-dev-005,version_difference,development,False,0.776,,TN,safe_rejection,4.39,4.55,Similarity below threshold: 0.7760 < 0.9200.
+neg-err-dev-001,error_difference,development,False,0.7539,,TN,safe_rejection,4.78,5.33,Similarity below threshold: 0.7539 < 0.9200.
+neg-err-dev-002,error_difference,development,False,0.8242,,TN,safe_rejection,4.56,4.75,Similarity below threshold: 0.8242 < 0.9200.
+neg-err-dev-003,error_difference,development,False,0.8138,,TN,safe_rejection,4.94,4.95,Similarity below threshold: 0.8138 < 0.9200.
+neg-err-dev-004,error_difference,development,False,0.751,,TN,safe_rejection,4.75,5.14,Similarity below threshold: 0.7510 < 0.9200.
+neg-err-dev-005,error_difference,development,False,0.7865,,TN,safe_rejection,5.25,5.41,Similarity below threshold: 0.7865 < 0.9200.
+neg-con-dev-001,constraint_difference,development,False,0.8435,,TN,safe_rejection,6.35,6.15,Similarity below threshold: 0.8435 < 0.9200.
+neg-con-dev-002,constraint_difference,development,False,0.8515,,TN,safe_rejection,4.56,5.14,Similarity below threshold: 0.8515 < 0.9200.
+neg-con-dev-003,constraint_difference,development,False,0.9661,,FP,incorrect_reuse,5.02,4.8,
+neg-con-dev-004,constraint_difference,development,False,0.944,,FP,incorrect_reuse,4.8,4.59,
+neg-con-dev-005,constraint_difference,development,False,0.8374,,TN,safe_rejection,4.79,5.56,Similarity below threshold: 0.8374 < 0.9200.
+neg-rt-dev-001,runtime_difference,development,False,0.7634,,TN,safe_rejection,4.85,4.58,Similarity below threshold: 0.7634 < 0.9200.
+neg-rt-dev-002,runtime_difference,development,False,0.7402,,TN,safe_rejection,4.61,4.87,Similarity below threshold: 0.7402 < 0.9200.
+neg-rt-dev-003,runtime_difference,development,False,0.757,,TN,safe_rejection,4.52,5.35,Similarity below threshold: 0.7570 < 0.9200.
+neg-rt-dev-004,runtime_difference,development,False,0.7098,,TN,safe_rejection,22.24,5.85,Similarity below threshold: 0.7098 < 0.9200.
+neg-out-dev-001,output_difference,development,False,0.8985,,TN,safe_rejection,5.02,5.38,Similarity below threshold: 0.8985 < 0.9200.
+neg-out-dev-002,output_difference,development,False,0.7642,,TN,safe_rejection,5.07,5.94,Similarity below threshold: 0.7642 < 0.9200.
+neg-out-dev-003,output_difference,development,False,0.7408,,TN,safe_rejection,4.73,4.97,Similarity below threshold: 0.7408 < 0.9200.
+neg-out-dev-004,output_difference,development,False,0.771,,TN,safe_rejection,5.0,5.27,Similarity below threshold: 0.7710 < 0.9200.
+amb-dev-001,ambiguous_candidates,development,False,0.946,0.0093,TN,safe_rejection,11.92,5.29,Ambiguous candidate: nearest alternative candidate margin (0.0093) is below minimum margin (0.0300) with a different answer.
+amb-dev-002,ambiguous_candidates,development,False,0.8941,0.0295,TN,safe_rejection,10.35,4.87,Similarity below threshold: 0.8941 < 0.9200.
+amb-dev-003,ambiguous_candidates,development,False,0.8844,0.0132,TN,safe_rejection,11.84,4.58,Similarity below threshold: 0.8844 < 0.9200.
+amb-dev-004,ambiguous_candidates,development,False,0.891,0.1431,TN,safe_rejection,10.11,7.2,Similarity below threshold: 0.8910 < 0.9200.
+amb-dev-005,ambiguous_candidates,development,False,0.8659,0.0094,TN,safe_rejection,11.17,4.78,Similarity below threshold: 0.8659 < 0.9200.
+amb-dev-006,ambiguous_candidates,development,False,0.7632,0.0009,TN,safe_rejection,10.3,4.63,Similarity below threshold: 0.7632 < 0.9200.
+unr-dev-001,unrelated_technical,development,False,0.4566,,TN,safe_rejection,4.81,5.53,Similarity below threshold: 0.4566 < 0.9200.
+unr-dev-002,unrelated_technical,development,False,0.4076,,TN,safe_rejection,4.88,5.14,Similarity below threshold: 0.4076 < 0.9200.
+unr-dev-003,unrelated_technical,development,False,0.3827,,TN,safe_rejection,5.61,6.25,Similarity below threshold: 0.3827 < 0.9200.
+unr-dev-004,unrelated_technical,development,False,0.4947,,TN,safe_rejection,5.35,4.7,Similarity below threshold: 0.4947 < 0.9200.
+unr-dev-005,unrelated_technical,development,False,0.4668,,TN,safe_rejection,5.18,5.15,Similarity below threshold: 0.4668 < 0.9200.
+unr-dev-006,unrelated_technical,development,False,0.5396,,TN,safe_rejection,4.91,5.35,Similarity below threshold: 0.5396 < 0.9200.

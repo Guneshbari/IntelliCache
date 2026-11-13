@@ -147,11 +147,11 @@ class DeterministicAcceptanceEmbeddingProvider(EmbeddingProvider):
         }
 
     async def embed(self, text: str, task: EmbeddingTask | str = EmbeddingTask.QUERY) -> EmbeddingResult:
-        if self.fail_mode:
-            raise EmbeddingTimeoutError("Deterministic embedding timeout simulated")
-
         task_str = task.value if isinstance(task, EmbeddingTask) else str(task)
         self.embed_calls.append((text, task_str))
+
+        if self.fail_mode:
+            raise EmbeddingTimeoutError("Deterministic embedding timeout simulated")
 
         if text in self.vector_map:
             vec = list(self.vector_map[text])
@@ -181,8 +181,10 @@ class FailingVectorStore(InMemoryVectorStore):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.fail_search = False
+        self.search_call_count = 0
 
     async def search(self, *args, **kwargs):
+        self.search_call_count += 1
         if self.fail_search:
             raise VectorStoreError("Simulated internal vector store search corruption")
         return await super().search(*args, **kwargs)
@@ -435,13 +437,17 @@ class TestApiAcceptance(unittest.TestCase):
         self.assertEqual(data_para["response"], original_answer)
         self.assertEqual(self.mock_llm.call_count, 1, "Semantic hit must not invoke upstream LLM")
 
-    def test_06_empirical_hard_negative_rejection(self):
+    def test_06_deterministic_threshold_and_margin_rejection(self):
         """
-        Scenario 7:
+        Scenario 7 (Deterministic Policy Unit Validation):
         Seed query: 'Explain memory ownership in Rust'
-        Hard negative 1 (Language change): 'Explain memory ownership in C++' (cos sim ~0.80 < 0.92)
-        Hard negative 2 (Constraint change): 'Explain Rust ownership with unsafe pointers' (cos sim ~0.85 < 0.92)
-        Both queries must be rejected by the semantic cache policy and forwarded to upstream LLM.
+        Hard negative 1 (Language change synthetic vector): similarity 0.80 (< 0.92 threshold)
+        Hard negative 2 (Constraint change synthetic vector): similarity 0.85 (< 0.92 threshold)
+        Verifies that when similarity scores fall below the policy threshold,
+        the deterministic candidate evaluator safely rejects the cache candidate.
+        Note: Real dense embedding models without compatibility filters produce higher similarities
+        (e.g. 0.8923 - 0.9661) on cross-language and constraint inversions, which requires
+        future domain-level AST/metadata compatibility filters.
         """
         headers = {"X-Client-Token": "token-alpha"}
 
@@ -470,32 +476,50 @@ class TestApiAcceptance(unittest.TestCase):
         Scenario 8a:
         When embedding provider raises an error (e.g. timeout), the gateway fails open:
         logs warning and serves fresh response from upstream LLM with HTTP 200 and cached: false.
+        Uses an eligible technical query and asserts that embedding failure counter increments.
         """
         headers = {"X-Client-Token": "token-alpha"}
         self.embedding_provider.fail_mode = True
+        initial_embed_count = len(self.embedding_provider.embed_calls)
+        initial_failures = self.semantic_cache.stats.embedding_failures
 
-        resp = self.client.post("/query", json={"prompt": "Fail-open embedding test prompt"}, headers=headers)
+        # Eligible technical query that passes semantic cache policy check_eligibility
+        prompt = "How do I debug an embedding timeout in Python?"
+        resp = self.client.post("/query", json={"prompt": prompt}, headers=headers)
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
         self.assertFalse(data["cached"])
         self.assertEqual(data["cache_type"], "none")
         self.assertEqual(self.mock_llm.call_count, 1)
+
+        # Verify failure path was actually exercised
+        self.assertGreater(len(self.embedding_provider.embed_calls), initial_embed_count, "Embedding lookup must be attempted")
+        self.assertEqual(self.semantic_cache.stats.embedding_failures, initial_failures + 1, "Embedding failures counter must increment")
 
     def test_08_fail_open_on_vector_store_error(self):
         """
         Scenario 8b:
         When vector store raises a VectorStoreError during candidate retrieval, the gateway fails open:
         logs warning and serves fresh response from upstream LLM with HTTP 200 and cached: false.
+        Uses an eligible technical query and asserts that vector store failure counter increments.
         """
         headers = {"X-Client-Token": "token-alpha"}
         self.vector_store.fail_search = True
+        initial_search_count = self.vector_store.search_call_count
+        initial_failures = self.semantic_cache.stats.vector_store_failures
 
-        resp = self.client.post("/query", json={"prompt": "Fail-open vector store test prompt"}, headers=headers)
+        # Eligible technical query that passes semantic cache policy check_eligibility
+        prompt = "How do I debug a vector store search error in Python?"
+        resp = self.client.post("/query", json={"prompt": prompt}, headers=headers)
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
         self.assertFalse(data["cached"])
         self.assertEqual(data["cache_type"], "none")
         self.assertEqual(self.mock_llm.call_count, 1)
+
+        # Verify failure path was actually exercised
+        self.assertGreater(self.vector_store.search_call_count, initial_search_count, "Vector search must be attempted")
+        self.assertEqual(self.semantic_cache.stats.vector_store_failures, initial_failures + 1, "Vector store failures counter must increment")
 
     # -----------------------------------------------------------------------
     # Area 5: Context Safety & Multi-Turn Guardrails
@@ -504,12 +528,28 @@ class TestApiAcceptance(unittest.TestCase):
     def test_09_multi_turn_and_context_semantic_cache_bypass(self):
         """
         Scenario 9:
-        Multi-turn requests (multiple messages) or requests with conversation_id
-        must be deemed ineligible for semantic cache and bypass semantic lookup.
+        Multi-turn requests (multiple messages), requests with conversation_id, or system prompts
+        must be deemed ineligible for semantic cache and bypass semantic lookup completely.
         """
         headers = {"X-Client-Token": "token-alpha"}
 
-        # 1. Multi-turn messages payload
+        # 1. Explicit conversation_id payload (client-managed conversation turn)
+        initial_embeds = len(self.embedding_provider.embed_calls)
+        initial_searches = self.vector_store.search_call_count
+        conv_payload = {
+            "messages": [{"role": "user", "content": "How do I write a binary search in Python?"}],
+            "conversation_id": "conv-test-bypass-id-12345",
+        }
+        resp_conv = self.client.post("/query", json=conv_payload, headers=headers)
+        self.assertEqual(resp_conv.status_code, 200)
+        self.assertFalse(resp_conv.json()["cached"])
+        self.assertEqual(resp_conv.json()["cache_type"], "none")
+        self.assertEqual(len(self.embedding_provider.embed_calls), initial_embeds, "conversation_id must not invoke embedding generation")
+        self.assertEqual(self.vector_store.search_call_count, initial_searches, "conversation_id must not invoke vector search")
+
+        # 2. Multi-turn messages payload
+        initial_embeds = len(self.embedding_provider.embed_calls)
+        initial_searches = self.vector_store.search_call_count
         multi_msg_payload = {
             "messages": [
                 {"role": "user", "content": "Explain memory ownership in Rust"},
@@ -521,8 +561,12 @@ class TestApiAcceptance(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertFalse(resp.json()["cached"])
         self.assertEqual(resp.json()["cache_type"], "none")
+        self.assertEqual(len(self.embedding_provider.embed_calls), initial_embeds, "Multi-message request must not invoke embedding generation")
+        self.assertEqual(self.vector_store.search_call_count, initial_searches, "Multi-message request must not invoke vector search")
 
-        # 2. System prompt payload
+        # 3. System prompt payload
+        initial_embeds = len(self.embedding_provider.embed_calls)
+        initial_searches = self.vector_store.search_call_count
         system_payload = {
             "prompt": "How does Rust manage memory ownership?",
             "system_prompt": "You are a compiler tutor.",
@@ -530,6 +574,8 @@ class TestApiAcceptance(unittest.TestCase):
         resp_sys = self.client.post("/query", json=system_payload, headers=headers)
         self.assertEqual(resp_sys.status_code, 200)
         self.assertFalse(resp_sys.json()["cached"])
+        self.assertEqual(len(self.embedding_provider.embed_calls), initial_embeds, "System prompt request must not invoke embedding generation")
+        self.assertEqual(self.vector_store.search_call_count, initial_searches, "System prompt request must not invoke vector search")
 
     # -----------------------------------------------------------------------
     # Area 6: Streaming Request Isolation & SSE Framing
@@ -551,6 +597,8 @@ class TestApiAcceptance(unittest.TestCase):
         self.assertEqual(self.mock_llm.call_count, 1)
 
         # Send streaming request with paraphrased prompt -> should NOT hit semantic cache
+        initial_embeds = len(self.embedding_provider.embed_calls)
+        initial_searches = self.vector_store.search_call_count
         stream_payload = {
             "prompt": "How does Rust manage memory ownership?",
             "stream": True,
@@ -558,6 +606,8 @@ class TestApiAcceptance(unittest.TestCase):
         resp = self.client.post("/query", json=stream_payload, headers=headers)
         self.assertEqual(resp.status_code, 200)
         self.assertIn("text/event-stream", resp.headers["content-type"])
+        self.assertEqual(len(self.embedding_provider.embed_calls), initial_embeds, "Streaming request must not invoke semantic embedding generation")
+        self.assertEqual(self.vector_store.search_call_count, initial_searches, "Streaming request must not invoke vector store search")
 
         raw_text = resp.text
         lines = raw_text.split("\n")
@@ -602,17 +652,22 @@ class TestApiAcceptance(unittest.TestCase):
     def test_11_real_fastembed_e2e_semantic_cache_lifecycle(self):
         """
         Opt-in end-to-end acceptance test using real local FastEmbed CPU inference.
-        Verifies actual model weights download, ONNX execution, and live semantic cache hit over HTTP.
+        Verifies actual model weights download, ONNX execution, model identity/dimensions matching,
+        and live semantic cache hit over HTTP using the configured runtime threshold 0.92 and margin 0.03.
         """
         from app.embeddings.fastembed_adapter import FastEmbedProvider
 
         real_provider = FastEmbedProvider(model="BAAI/bge-small-en-v1.5")
         try:
+            # Verify provider model identity and dimensions
+            self.assertEqual(real_provider.model_name, "BAAI/bge-small-en-v1.5")
+            self.assertEqual(real_provider.dimensions, 384)
+
             real_semantic_cache = SemanticCacheService(
                 embedding_provider=real_provider,
                 vector_store=self.vector_store,
                 policy=SemanticCachePolicy(
-                    min_similarity=0.88,  # Using verified threshold for natural language paraphrase
+                    min_similarity=0.92,  # Configured runtime default
                     min_margin=0.03,
                     top_k=5,
                     configured_model="BAAI/bge-small-en-v1.5",
@@ -632,12 +687,12 @@ class TestApiAcceptance(unittest.TestCase):
             self.assertEqual(resp1.status_code, 200)
             self.assertFalse(resp1.json()["cached"])
 
-            # 2. Paraphrased query with real FastEmbed embeddings
+            # 2. Paraphrased query with real FastEmbed embeddings (real cosine sim ~ 0.9602 >= 0.92)
             para_prompt = "How does Rust manage memory ownership?"
             resp2 = self.client.post("/query", json={"prompt": para_prompt}, headers=headers)
             self.assertEqual(resp2.status_code, 200)
             data2 = resp2.json()
-            self.assertTrue(data2["cached"], "Real FastEmbed must match natural language paraphrase")
+            self.assertTrue(data2["cached"], "Real FastEmbed must match natural language paraphrase at runtime threshold 0.92")
             self.assertEqual(data2["cache_type"], "semantic")
         finally:
             asyncio.run(real_provider.close())

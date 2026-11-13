@@ -1021,8 +1021,17 @@ async def run_threshold_sweep(
                 "accuracy": metrics.accuracy,
             })
 
-    # Prioritize fewer false positives first, then higher recall, then higher F1 score
-    results.sort(key=lambda r: (r["fp"], -r["recall"], -r["f1_score"]))
+    # Prioritize fewer false positives first, then higher recall, then higher F1 score.
+    # In case of ties, prefer the margin closest to runtime default of 0.03, then higher threshold.
+    results.sort(
+        key=lambda r: (
+            r["fp"],
+            -r["recall"],
+            -r["f1_score"],
+            round(abs(r["margin"] - 0.03), 4),
+            -r["threshold"],
+        )
+    )
     return results
 
 
@@ -1430,6 +1439,32 @@ def save_reports(
                 o.rejection_reason or "",
             ])
 
+    # 3. Optional Sweep CSV Report
+    if sweep_results:
+        sweep_csv_path = out_dir / f"{prefix}_{timestamp}_sweep.csv"
+        with open(sweep_csv_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                "# IntelliCache Parameter Sweep Results",
+                f"DatasetHash: {metadata.get('dataset_hash')}",
+                f"Split: development",
+                f"Provider: {metadata.get('embedding_provider')}",
+                f"Model: {metadata.get('embedding_model')}",
+                f"Timestamp: {metadata.get('evaluation_timestamp')}",
+            ])
+            writer.writerow([
+                "threshold", "margin", "tp", "fp", "fn", "tn",
+                "precision", "recall", "f1_score", "false_positive_rate",
+                "rejection_rate", "accuracy"
+            ])
+            for r in sweep_results:
+                writer.writerow([
+                    r["threshold"], r["margin"], r["tp"], r["fp"], r["fn"], r["tn"],
+                    r["precision"], r["recall"], r["f1_score"], r["false_positive_rate"],
+                    r["rejection_rate"], r["accuracy"]
+                ])
+        logger.info("Saved parameter sweep CSV report to %s", sweep_csv_path)
+
     return json_path, csv_path
 
 
@@ -1739,6 +1774,8 @@ async def async_main() -> None:
                     f"{r['precision']:<10.4f} {r['recall']:<8.4f} {r['f1_score']:<8.4f} {r['false_positive_rate']:<8.4f} {r['rejection_rate']:<10.4f}"
                 )
             selected_config = sweep_results[0]
+            print(f"\n[SELECTED CONFIGURATION] Threshold = {selected_config['threshold']:.2f}, Margin = {selected_config['margin']:.2f} "
+                  f"(Dev Split: FP={selected_config['fp']}, Recall={selected_config['recall']:.4f}, F1={selected_config['f1_score']:.4f})")
             if selected_config["fp"] > 0:
                 print("\n[SAFETY NOTICE] Every evaluated configuration in the sweep produced false positives on development data.")
                 print(f"Lowest-FP configuration (th={selected_config['threshold']:.2f}, mg={selected_config['margin']:.2f}) produced {selected_config['fp']} FP(s).")

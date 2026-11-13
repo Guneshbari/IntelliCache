@@ -733,6 +733,27 @@ class TestSemanticEvaluation(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(passed_policy.configured_model, custom_model)
             self.assertEqual(passed_policy.configured_model, provider.model_name)
 
+    async def test_threshold_sweep_tie_breaker_prefers_runtime_default_margin_0_03(self) -> None:
+        """
+        Verifies that when multiple threshold/margin configurations tie on FP, recall, and F1,
+        the sweep ranking deterministically prefers the margin closest to the runtime default 0.03.
+        """
+        cases = [
+            EvaluationCase(
+                id="dev-c1", query="query text", category="positive_paraphrase", split="development",
+                expected_answer_label="l1", rationale="",
+                candidates=[CandidateData(id="c1", query_text="cand query", cached_response="resp", answer_label="l1")],
+            ),
+        ]
+        provider = DeterministicMockEmbeddingProvider()
+        # All margins produce identical metrics for a single threshold when ambiguity margin is not triggered
+        margins = [0.01, 0.02, 0.03, 0.05, 0.08]
+        results = await run_threshold_sweep(cases, provider, thresholds=[0.95], margins=margins, split="development")
+        self.assertEqual(len(results), 5)
+        # All 5 have identical tp, fp, fn, tn, recall, f1
+        self.assertEqual(results[0]["threshold"], 0.95)
+        self.assertEqual(results[0]["margin"], 0.03)
+
     async def test_savings_accounting_distinguishes_safe_and_hazardous_reuse(self) -> None:
         """Verifies that safe reuse (TP) and incorrect reuse (FP) are accounted separately."""
         cases = [

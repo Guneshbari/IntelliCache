@@ -8,3 +8,5 @@ evaluation/reports/*
 !evaluation/reports/iterative_hnsw_benchmark.json
 !evaluation/reports/step_2_controlled_evaluation_report.md
 !evaluation/reports/stage_2_2_0_acceptance_report.md
+!evaluation/reports/semantic_cache_eval_20261113_*.json
+!evaluation/reports/semantic_cache_eval_20261113_*.csv
