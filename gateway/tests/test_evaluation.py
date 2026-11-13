@@ -100,51 +100,66 @@ class TestSemanticEvaluation(unittest.IsolatedAsyncioTestCase):
 
     def test_compute_category_metrics_undefined_handling(self) -> None:
         """
-        Verifies that compute_category_metrics represents mathematically undefined metrics
-        (division by zero) as None (null in JSON / N/A in Markdown), while preserving 0.0
-        when the denominator is nonzero.
+        Verifies that compute_category_metrics calculates metrics directly from confusion
+        matrix counts, correctly representing mathematically undefined metrics (division by zero)
+        as None (null in JSON / N/A in Markdown), while preserving 0.0 when the denominator is nonzero.
         """
-        # 1. Negative-only category with zero false positives (TP=0, FP=0, FN=0, TN=5, total=5)
-        # Precision = 0 / 0 -> None (undefined)
-        # Recall = 0 / 0 -> None (undefined)
-        # F1 = None
-        # FPR = 0 / 5 -> 0.0 (valid zero because denominator is 5)
-        # Rejection = 5 / 5 -> 1.0
-        # Accuracy = 5 / 5 -> 1.0
+        # 1. Completely negative category without false positives (TP=0, FP=0, FN=0, TN=5, total=5)
+        # Precision: 0 / 0 -> None (undefined)
+        # Recall: 0 / 0 -> None (undefined)
+        # F1: 0 / (0 + 0 + 0) -> None (undefined denominator)
+        # FPR: 0 / 5 -> 0.0 (valid zero because denominator is 5)
+        # Rejection: 5 / 5 -> 1.0
+        # Accuracy: 5 / 5 -> 1.0
         m_neg_clean = compute_category_metrics(tp=0, fp=0, fn=0, tn=5, total=5)
         self.assertIsNone(m_neg_clean["precision"], "Precision must be None when TP+FP=0")
         self.assertIsNone(m_neg_clean["recall"], "Recall must be None when TP+FN=0")
-        self.assertIsNone(m_neg_clean["f1_score"], "F1 must be None when precision/recall is None")
+        self.assertIsNone(m_neg_clean["f1_score"], "F1 must be None when 2*TP+FP+FN=0")
         self.assertEqual(m_neg_clean["false_positive_rate"], 0.0, "FPR must be 0.0 when FP=0 and FP+TN>0")
         self.assertEqual(m_neg_clean["rejection_rate"], 1.0)
         self.assertEqual(m_neg_clean["accuracy"], 1.0)
 
         # 2. Negative-only category with false positives (TP=0, FP=2, FN=0, TN=3, total=5)
-        # Precision = 0 / 2 -> 0.0 (valid zero because denominator is 2)
-        # Recall = 0 / 0 -> None (undefined)
-        # F1 = None
-        # FPR = 2 / 5 -> 0.40
-        # Rejection = 3 / 5 -> 0.60
-        # Accuracy = 3 / 5 -> 0.60
+        # Precision: 0 / 2 -> 0.0 (valid zero because denominator is 2)
+        # Recall: 0 / 0 -> None (undefined)
+        # F1: 2*0 / (0 + 2 + 0) -> 0.0 (mathematically defined zero because denominator is 2)
+        # FPR: 2 / 5 -> 0.40
+        # Rejection: 3 / 5 -> 0.60
+        # Accuracy: 3 / 5 -> 0.60
         m_neg_fp = compute_category_metrics(tp=0, fp=2, fn=0, tn=3, total=5)
         self.assertEqual(m_neg_fp["precision"], 0.0, "Precision must be 0.0 when TP=0 and TP+FP>0")
         self.assertIsNone(m_neg_fp["recall"], "Recall must be None when TP+FN=0")
-        self.assertIsNone(m_neg_fp["f1_score"], "F1 must be None when recall is None")
+        self.assertEqual(m_neg_fp["f1_score"], 0.0, "F1 must be 0.0 when TP=0 and 2*TP+FP+FN>0")
         self.assertEqual(m_neg_fp["false_positive_rate"], 0.4)
         self.assertEqual(m_neg_fp["rejection_rate"], 0.6)
         self.assertEqual(m_neg_fp["accuracy"], 0.6)
 
-        # 3. Positive category with partial recall (TP=5, FP=0, FN=12, TN=0, total=17)
-        # Precision = 5 / 5 -> 1.0
-        # Recall = 5 / 17 -> 0.2941
-        # F1 = 2 * 1.0 * 0.2941 / (1.0 + 0.2941) -> 0.4545
-        # FPR = 0 / 0 -> None (undefined because FP+TN=0)
-        # Rejection = 12 / 17 -> 0.7059
-        # Accuracy = 5 / 17 -> 0.2941
+        # 3. No true positives but actual positive cases exist (TP=0, FP=0, FN=5, TN=5, total=10)
+        # Precision: 0 / 0 -> None (undefined)
+        # Recall: 0 / 5 -> 0.0 (valid zero because denominator is 5)
+        # F1: 2*0 / (0 + 0 + 5) -> 0.0 (mathematically defined zero because denominator is 5)
+        # FPR: 0 / 5 -> 0.0 (valid zero because denominator is 5)
+        # Rejection: 10 / 10 -> 1.0
+        # Accuracy: 5 / 10 -> 0.50
+        m_pos_miss = compute_category_metrics(tp=0, fp=0, fn=5, tn=5, total=10)
+        self.assertIsNone(m_pos_miss["precision"], "Precision must be None when TP+FP=0")
+        self.assertEqual(m_pos_miss["recall"], 0.0, "Recall must be 0.0 when TP=0 and TP+FN>0")
+        self.assertEqual(m_pos_miss["f1_score"], 0.0, "F1 must be 0.0 when TP=0 and 2*TP+FP+FN>0")
+        self.assertEqual(m_pos_miss["false_positive_rate"], 0.0, "FPR must be 0.0 when FP=0 and FP+TN>0")
+        self.assertEqual(m_pos_miss["rejection_rate"], 1.0)
+        self.assertEqual(m_pos_miss["accuracy"], 0.5)
+
+        # 4. Positive category with partial recall (TP=5, FP=0, FN=12, TN=0, total=17)
+        # Precision: 5 / 5 -> 1.0
+        # Recall: 5 / 17 -> 0.2941
+        # F1: 2 * 5 / (2*5 + 0 + 12) = 10 / 22 -> 0.4545
+        # FPR: 0 / 0 -> None (undefined because FP+TN=0)
+        # Rejection: 12 / 17 -> 0.7059
+        # Accuracy: 5 / 17 -> 0.2941
         m_pos = compute_category_metrics(tp=5, fp=0, fn=12, tn=0, total=17)
         self.assertEqual(m_pos["precision"], 1.0)
         self.assertEqual(m_pos["recall"], 0.2941)
-        self.assertIsNotNone(m_pos["f1_score"])
+        self.assertEqual(m_pos["f1_score"], 0.4545)
         self.assertIsNone(m_pos["false_positive_rate"], "FPR must be None when FP+TN=0")
         self.assertEqual(m_pos["rejection_rate"], round(12 / 17, 4))
         self.assertEqual(m_pos["accuracy"], round(5 / 17, 4))
@@ -1260,7 +1275,7 @@ class TestSemanticEvaluation(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(rep_meta["vector_index_used"])
             self.assertEqual(rep_meta["retrieval_method"], "HNSW approximate nearest-neighbour search")
             self.assertEqual(rep_meta["database_info"]["pgvector_version"], "0.8.7")
-            self.assertIn("Safe: Zero false positives", rep_meta["safety_status"])
+            self.assertIn("Zero false positives observed in this evaluation partition", rep_meta["safety_status"])
             self.assertEqual(data["outcomes"][0]["indexing_latency_ms"], 15.2)
             self.assertEqual(data["outcomes"][0]["lookup_latency_ms"], 6.8)
 

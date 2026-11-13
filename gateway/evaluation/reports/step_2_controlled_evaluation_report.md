@@ -30,17 +30,18 @@ This report documents the empirical evaluation of IntelliCache's semantic cachin
      5. Higher similarity threshold (`-r["threshold"]` descending)
    - When all margins tie at threshold 0.95, margin `0.03` is deterministically selected.
    - Added automated regression test `test_threshold_sweep_tie_breaker_prefers_runtime_default_margin_0_03` in [`gateway/tests/test_evaluation.py`](https://github.com/Guneshbari/IntelliCache/blob/main/gateway/tests/test_evaluation.py).
-3. **Category Breakdown Undefined Metric Handling**:
-   - Implemented `compute_category_metrics()` to represent mathematically undefined values ($0 / 0$ denominator) as `None` (`null` in JSON, rendered as `N/A` in Markdown) for precision ($TP+FP=0$), recall ($TP+FN=0$), and false-positive rate ($FP+TN=0$).
-   - Preserves `0.0000` when the denominator is non-zero and the numerator is zero (e.g. $\text{FPR} = \frac{0}{5} = 0.0000$ for negative-only categories).
+3. **Category Breakdown Undefined Metric Handling & Count-Based F1**:
+   - Implemented `compute_category_metrics()` to calculate category F1 score directly from confusion-matrix counts as $\frac{2TP}{2TP+FP+FN}$, returning `None` only when its own denominator is zero, thereby preserving valid $\text{F1}=0.0$ when $TP=0$ and $FP+FN>0$ (even if recall is undefined).
+   - Represents mathematically undefined values ($0 / 0$ denominator) as `None` (`null` in JSON, rendered as `N/A` in Markdown) for precision ($TP+FP=0$), recall ($TP+FN=0$), F1 ($2TP+FP+FN=0$), and false-positive rate ($FP+TN=0$).
+   - Preserves `0.0000` when the denominator is non-zero and the numerator is zero.
    - Added automated unit test `test_compute_category_metrics_undefined_handling` in [`gateway/tests/test_evaluation.py`](https://github.com/Guneshbari/IntelliCache/blob/main/gateway/tests/test_evaluation.py).
 4. **Canonical Report Export**:
    - Generated canonical sweep and evaluation artifacts:
-     - Development sweep CSV: [`semantic_cache_eval_20261113_170710_sweep.csv`](semantic_cache_eval_20261113_170710_sweep.csv)
-     - Development baseline JSON: [`semantic_cache_eval_20261113_170710.json`](semantic_cache_eval_20261113_170710.json)
-     - Development th=0.92 JSON: [`semantic_cache_eval_20261113_170724.json`](semantic_cache_eval_20261113_170724.json)
-     - Held-out test th=0.92 JSON: [`semantic_cache_eval_20261113_170730.json`](semantic_cache_eval_20261113_170730.json)
-     - Held-out test th=0.95 JSON: [`semantic_cache_eval_20261113_170736.json`](semantic_cache_eval_20261113_170736.json)
+     - Development sweep CSV: [`semantic_cache_eval_20261113_173032_sweep.csv`](semantic_cache_eval_20261113_173032_sweep.csv)
+     - Development baseline JSON: [`semantic_cache_eval_20261113_173032.json`](semantic_cache_eval_20261113_173032.json)
+     - Development th=0.92 JSON: [`semantic_cache_eval_20261113_173056.json`](semantic_cache_eval_20261113_173056.json)
+     - Held-out test th=0.92 JSON: [`semantic_cache_eval_20261113_173102.json`](semantic_cache_eval_20261113_173102.json)
+     - Held-out test th=0.95 JSON: [`semantic_cache_eval_20261113_173112.json`](semantic_cache_eval_20261113_173112.json)
 
 ---
 
@@ -143,9 +144,10 @@ Without tuning or modifying the selected parameters, the locked configuration wa
 ### Test Split Category Breakdown (`th=0.95, mg=0.03`)
 
 > [!NOTE]
-> Precision, Recall, and False-Positive Rate can be mathematically undefined ($0/0$) when their respective denominators are zero:
+> Precision, Recall, F1 Score, and False-Positive Rate can be mathematically undefined ($0/0$) when their respective denominators are zero:
 > - For **positive-only categories** (such as `positive_paraphrase`), the actual negative count ($FP+TN=0$) is zero, making the False-Positive Rate ($\text{FPR} = \frac{FP}{FP+TN}$) undefined; it is reported as **N/A** in Markdown and `null` in JSON.
-> - For **negative-only categories**, both positive actuals ($TP+FN=0$) and predicted positives ($TP+FP=0$) have zero denominators, so Precision and Recall are mathematically undefined and reported as **N/A** in Markdown (`null` in JSON).
+> - For **negative-only categories** without false positives ($TP=0, FP=0, FN=0$), positive actuals ($TP+FN=0$), predicted positives ($TP+FP=0$), and the F1 denominator ($2TP+FP+FN=0$) are zero, making Precision, Recall, and F1 mathematically undefined and reported as **N/A** in Markdown (`null` in JSON).
+> - When a negative-only category contains false positives ($TP=0, FP>0, FN=0$), the F1 denominator ($2TP+FP+FN=FP>0$) is non-zero, yielding a mathematically defined $\text{F1} = \frac{0}{FP} = 0.0000$ (and Precision = 0.0000), even while Recall remains undefined (N/A).
 > - Valid zero-valued metrics with non-zero denominators (e.g. $\text{FPR} = \frac{0}{5} = 0.0000$ for negative-only categories with no false positives) are strictly preserved as `0.0000`.
 
 | Category | Total | TP | FP | FN | TN | Precision | Recall | FPR |

@@ -551,16 +551,16 @@ def compute_category_metrics(
     tp: int, fp: int, fn: int, tn: int, total: int
 ) -> Dict[str, Any]:
     """
-    Computes category-specific metrics. When a metric is mathematically undefined
-    (zero denominator), it is represented as None (which serializes to null in JSON
-    and renders as N/A in Markdown), preserving 0.0 when the denominator is nonzero.
+    Computes category-specific metrics directly from confusion-matrix counts.
+    When a metric is mathematically undefined (zero denominator), it is represented
+    as None (which serializes to null in JSON and renders as N/A in Markdown),
+    preserving 0.0 when the denominator is nonzero. F1 score is calculated directly
+    as 2*TP / (2*TP + FP + FN), returning None only when its own denominator is zero.
     """
     precision = round(tp / (tp + fp), 4) if (tp + fp) > 0 else None
     recall = round(tp / (tp + fn), 4) if (tp + fn) > 0 else None
-    if precision is not None and recall is not None and (precision + recall) > 0:
-        f1_score = round(2 * precision * recall / (precision + recall), 4)
-    else:
-        f1_score = None
+    f1_denom = 2 * tp + fp + fn
+    f1_score = round(2 * tp / f1_denom, 4) if f1_denom > 0 else None
     false_positive_rate = round(fp / (fp + tn), 4) if (fp + tn) > 0 else None
     rejection_rate = round((tn + fn) / total, 4) if total > 0 else 0.0
     accuracy = round((tp + tn) / total, 4) if total > 0 else 0.0
@@ -1399,7 +1399,7 @@ def save_reports(
     if metrics.fp > 0:
         safety_status = f"WARNING: {metrics.fp} false positive(s) observed. Not zero-defect. Hazardous reuse occurred."
     else:
-        safety_status = "Safe: Zero false positives observed on this evaluation partition."
+        safety_status = "Zero false positives observed in this evaluation partition; production safety is not established."
 
     # 1. JSON Report
     json_payload = {

@@ -4,7 +4,7 @@
     "dataset_path": "gateway/evaluation/dataset.json",
     "dataset_split": "test",
     "case_count": 57,
-    "evaluation_timestamp": "2026-11-13T17:07:36.376297+00:00",
+    "evaluation_timestamp": "2026-11-13T17:31:12.418496+00:00",
     "embedding_provider": "FastEmbedProvider (BAAI/bge-small-en-v1.5)",
     "embedding_model": "BAAI/bge-small-en-v1.5",
     "embedding_dimensions": 384,
@@ -18,7 +18,7 @@
     "vector_index_used": false,
     "retrieval_method": "In-memory exact cosine similarity",
     "database_info": {},
-    "safety_status": "Safe: Zero false positives observed on this evaluation partition.",
+    "safety_status": "Zero false positives observed in this evaluation partition; production safety is not established.",
     "sample_size_note": "Evaluated 57 cases on split 'test'. Synthetic pilot dataset; labels require domain review."
   },
   "summary_metrics": {
@@ -158,7 +158,7 @@
     "hazardous_provider_calls_avoided": 0,
     "total_accepted_hits": 2,
     "safe_tokens_saved": 740,
-    "safe_latency_saved_ms": 2490.34,
+    "safe_latency_saved_ms": 2491.65,
     "hazardous_tokens_involved": 0
   },
   "sweep": [],
@@ -174,8 +174,8 @@
       "decision": "safe_reuse",
       "classification": "TP",
       "rejection_reason": null,
-      "indexing_latency_ms": 5.36,
-      "lookup_latency_ms": 4.96
+      "indexing_latency_ms": 5.41,
+      "lookup_latency_ms": 4.3
     },
     {
       "case_id": "pos-test-002",
@@ -187,8 +187,8 @@
       "decision": "incorrect_rejection",
       "classification": "FN",
       "rejection_reason": "Similarity below threshold: 0.8886 < 0.9500.",
-      "indexing_latency_ms": 4.4,
-      "lookup_latency_ms": 4.71
+      "indexing_latency_ms": 4.41,
+      "lookup_latency_ms": 4.42
     },
     {
       "case_id": "pos-test-003",
@@ -201,7 +201,7 @@
       "classification": "FN",
       "rejection_reason": "Similarity below threshold: 0.8179 < 0.9500.",
       "indexing_latency_ms": 4.54,
-      "lookup_latency_ms": 4.7
+      "lookup_latency_ms": 4.2
     },
     {
       "case_id": "pos-test-004",
@@ -213,8 +213,8 @@
       "decision": "incorrect_rejection",
       "classification": "FN",
       "rejection_reason": "Similarity below threshold: 0.9024 < 0.9500.",
-      "indexing_latency_ms": 5.03,
-      "lookup_latency_ms": 5.3
+      "indexing_latency_ms": 4.49,
+      "lookup_latency_ms": 4.27
     },
     {
       "case_id": "pos-test-005",
@@ -226,8 +226,8 @@
       "decision": "incorrect_rejection",
       "classification": "FN",
       "rejection_reason": "Similarity below threshold: 0.8094 < 0.9500.",
-      "indexing_latency_ms": 4.71,
-      "lookup_latency_ms": 5.22
+      "indexing_latency_ms": 4.87,
+      "lookup_latency_ms": 5.11
     },
     {
       "case_id": "pos-test-006",
@@ -239,8 +239,8 @@
       "decision": "incorrect_rejection",
       "classification": "FN",
       "rejection_reason": "Similarity below threshold: 0.9370 < 0.9500.",
-      "indexing_latency_ms": 4.4,
-      "lookup_latency_ms": 4.61
+      "indexing_latency_ms": 4.77,
+      "lookup_latency_ms": 4.48
     },
     {
       "case_id": "pos-test-007",
@@ -252,8 +252,8 @@
       "decision": "incorrect_rejection",
       "classification": "FN",
       "rejection_reason": "Similarity below threshold: 0.8192 < 0.9500.",
-      "indexing_latency_ms": 4.67,
-      "lookup_latency_ms": 4.63
+      "indexing_latency_ms": 4.1,
+      "lookup_latency_ms": 4.33
     },
     {
       "case_id": "pos-test-008",
@@ -265,8 +265,8 @@
       "decision": "incorrect_rejection",
       "classification": "FN",
       "rejection_reason": "Similarity below threshold: 0.9011 < 0.9500.",
-      "indexing_latency_ms": 4.73,
-      "lookup_latency_ms": 5.28
+      "indexing_latency_ms": 3.95,
+      "lookup_latency_ms": 4.95
     },
     {
       "case_id": "pos-test-009",
@@ -278,8 +278,8 @@
       "decision": "safe_reuse",
       "classification": "TP",
       "rejection_reason": null,
-      "indexing_latency_ms": 4.36,
-      "lookup_latency_ms": 4.7
+      "indexing_latency_ms": 4.03,
+      "lookup_latency_ms": 4.05
     },
     {
       "case_id": "pos-test-010",
@@ -291,8 +291,8 @@
       "decision": "incorrect_rejection",
       "classification": "FN",
       "rejection_reason": "Similarity below threshold: 0.8517 < 0.9500.",
-      "indexing_latency_ms": 4.29,
-      "lookup_latency_ms": 4.59
+      "indexing_latency_ms": 3.97,
+      "lookup_latency_ms": 4.54
     },
     {
       "case_id": "pos-test-011",
@@ -304,8 +304,8 @@
       "decision": "incorrect_rejection",
       "classification": "FN",
       "rejection_reason": "Similarity below threshold: 0.8231 < 0.9500.",
-      "indexing_latency_ms": 4.73,
-      "lookup_latency_ms": 4.8
+      "indexing_latency_ms": 4.64,
+      "lookup_latency_ms": 4.77
     },
     {
       "case_id": "pos-test-012",
@@ -317,8 +317,8 @@
       "decision": "incorrect_rejection",
       "classification": "FN",
       "rejection_reason": "Similarity below threshold: 0.8562 < 0.9500.",
-      "indexing_latency_ms": 5.28,
-      "lookup_latency_ms": 4.43
+      "indexing_latency_ms": 4.89,
+      "lookup_latency_ms": 4.16
     },
     {
       "case_id": "pos-test-013",
@@ -330,8 +330,8 @@
       "decision": "incorrect_rejection",
       "classification": "FN",
       "rejection_reason": "Similarity below threshold: 0.8889 < 0.9500.",
-      "indexing_latency_ms": 5.62,
-      "lookup_latency_ms": 4.86
+      "indexing_latency_ms": 4.95,
+      "lookup_latency_ms": 4.43
     },
     {
       "case_id": "pos-test-014",
@@ -343,8 +343,8 @@
       "decision": "incorrect_rejection",
       "classification": "FN",
       "rejection_reason": "Similarity below threshold: 0.8394 < 0.9500.",
-      "indexing_latency_ms": 4.06,
-      "lookup_latency_ms": 5.4
+      "indexing_latency_ms": 4.07,
+      "lookup_latency_ms": 4.23
     },
     {
       "case_id": "pos-test-015",
@@ -356,8 +356,8 @@
       "decision": "incorrect_rejection",
       "classification": "FN",
       "rejection_reason": "Similarity below threshold: 0.8343 < 0.9500.",
-      "indexing_latency_ms": 4.67,
-      "lookup_latency_ms": 5.23
+      "indexing_latency_ms": 3.95,
+      "lookup_latency_ms": 4.61
     },
     {
       "case_id": "pos-test-016",
@@ -369,8 +369,8 @@
       "decision": "incorrect_rejection",
       "classification": "FN",
       "rejection_reason": "Similarity below threshold: 0.7825 < 0.9500.",
-      "indexing_latency_ms": 5.2,
-      "lookup_latency_ms": 4.88
+      "indexing_latency_ms": 4.83,
+      "lookup_latency_ms": 5.21
     },
     {
       "case_id": "pos-test-017",
@@ -382,8 +382,8 @@
       "decision": "incorrect_rejection",
       "classification": "FN",
       "rejection_reason": "Similarity below threshold: 0.8612 < 0.9500.",
-      "indexing_latency_ms": 5.05,
-      "lookup_latency_ms": 4.63
+      "indexing_latency_ms": 5.23,
+      "lookup_latency_ms": 4.42
     },
     {
       "case_id": "neg-lang-test-001",
@@ -395,8 +395,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.9296 < 0.9500.",
-      "indexing_latency_ms": 5.11,
-      "lookup_latency_ms": 4.98
+      "indexing_latency_ms": 4.19,
+      "lookup_latency_ms": 4.19
     },
     {
       "case_id": "neg-lang-test-002",
@@ -408,8 +408,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.9068 < 0.9500.",
-      "indexing_latency_ms": 4.77,
-      "lookup_latency_ms": 4.85
+      "indexing_latency_ms": 4.21,
+      "lookup_latency_ms": 4.31
     },
     {
       "case_id": "neg-lang-test-003",
@@ -421,8 +421,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.8994 < 0.9500.",
-      "indexing_latency_ms": 4.2,
-      "lookup_latency_ms": 4.73
+      "indexing_latency_ms": 4.24,
+      "lookup_latency_ms": 4.36
     },
     {
       "case_id": "neg-lang-test-004",
@@ -434,8 +434,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.9100 < 0.9500.",
-      "indexing_latency_ms": 4.96,
-      "lookup_latency_ms": 5.02
+      "indexing_latency_ms": 4.26,
+      "lookup_latency_ms": 5.34
     },
     {
       "case_id": "neg-lang-test-005",
@@ -447,8 +447,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.9175 < 0.9500.",
-      "indexing_latency_ms": 4.68,
-      "lookup_latency_ms": 4.33
+      "indexing_latency_ms": 4.82,
+      "lookup_latency_ms": 4.64
     },
     {
       "case_id": "neg-ver-test-001",
@@ -460,8 +460,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.7837 < 0.9500.",
-      "indexing_latency_ms": 5.48,
-      "lookup_latency_ms": 4.84
+      "indexing_latency_ms": 4.95,
+      "lookup_latency_ms": 4.53
     },
     {
       "case_id": "neg-ver-test-002",
@@ -473,8 +473,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.8555 < 0.9500.",
-      "indexing_latency_ms": 4.79,
-      "lookup_latency_ms": 5.56
+      "indexing_latency_ms": 4.34,
+      "lookup_latency_ms": 4.98
     },
     {
       "case_id": "neg-ver-test-003",
@@ -486,8 +486,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.8735 < 0.9500.",
-      "indexing_latency_ms": 4.63,
-      "lookup_latency_ms": 5.45
+      "indexing_latency_ms": 4.68,
+      "lookup_latency_ms": 4.33
     },
     {
       "case_id": "neg-ver-test-004",
@@ -499,8 +499,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.9201 < 0.9500.",
-      "indexing_latency_ms": 4.61,
-      "lookup_latency_ms": 4.36
+      "indexing_latency_ms": 4.01,
+      "lookup_latency_ms": 4.29
     },
     {
       "case_id": "neg-ver-test-005",
@@ -512,8 +512,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.8369 < 0.9500.",
-      "indexing_latency_ms": 5.18,
-      "lookup_latency_ms": 4.75
+      "indexing_latency_ms": 4.65,
+      "lookup_latency_ms": 5.12
     },
     {
       "case_id": "neg-err-test-001",
@@ -525,8 +525,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.7568 < 0.9500.",
-      "indexing_latency_ms": 5.85,
-      "lookup_latency_ms": 5.17
+      "indexing_latency_ms": 5.53,
+      "lookup_latency_ms": 4.79
     },
     {
       "case_id": "neg-err-test-002",
@@ -538,8 +538,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.7293 < 0.9500.",
-      "indexing_latency_ms": 5.14,
-      "lookup_latency_ms": 5.32
+      "indexing_latency_ms": 4.71,
+      "lookup_latency_ms": 4.71
     },
     {
       "case_id": "neg-err-test-003",
@@ -551,8 +551,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.7358 < 0.9500.",
-      "indexing_latency_ms": 5.32,
-      "lookup_latency_ms": 5.57
+      "indexing_latency_ms": 4.67,
+      "lookup_latency_ms": 5.02
     },
     {
       "case_id": "neg-err-test-004",
@@ -564,8 +564,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.7586 < 0.9500.",
-      "indexing_latency_ms": 4.98,
-      "lookup_latency_ms": 6.23
+      "indexing_latency_ms": 4.77,
+      "lookup_latency_ms": 5.83
     },
     {
       "case_id": "neg-err-test-005",
@@ -577,8 +577,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.6774 < 0.9500.",
-      "indexing_latency_ms": 5.47,
-      "lookup_latency_ms": 5.03
+      "indexing_latency_ms": 5.48,
+      "lookup_latency_ms": 5.33
     },
     {
       "case_id": "neg-con-test-001",
@@ -590,8 +590,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.8756 < 0.9500.",
-      "indexing_latency_ms": 4.52,
-      "lookup_latency_ms": 4.44
+      "indexing_latency_ms": 4.49,
+      "lookup_latency_ms": 4.34
     },
     {
       "case_id": "neg-con-test-002",
@@ -603,8 +603,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.7775 < 0.9500.",
-      "indexing_latency_ms": 4.75,
-      "lookup_latency_ms": 5.15
+      "indexing_latency_ms": 4.34,
+      "lookup_latency_ms": 4.78
     },
     {
       "case_id": "neg-con-test-003",
@@ -616,8 +616,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.7824 < 0.9500.",
-      "indexing_latency_ms": 4.95,
-      "lookup_latency_ms": 5.06
+      "indexing_latency_ms": 4.46,
+      "lookup_latency_ms": 4.85
     },
     {
       "case_id": "neg-con-test-004",
@@ -629,8 +629,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.8731 < 0.9500.",
-      "indexing_latency_ms": 4.66,
-      "lookup_latency_ms": 5.01
+      "indexing_latency_ms": 4.33,
+      "lookup_latency_ms": 4.68
     },
     {
       "case_id": "neg-con-test-005",
@@ -642,8 +642,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.8104 < 0.9500.",
-      "indexing_latency_ms": 4.61,
-      "lookup_latency_ms": 5.01
+      "indexing_latency_ms": 4.86,
+      "lookup_latency_ms": 5.11
     },
     {
       "case_id": "neg-rt-test-001",
@@ -655,8 +655,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.7832 < 0.9500.",
-      "indexing_latency_ms": 4.95,
-      "lookup_latency_ms": 4.45
+      "indexing_latency_ms": 4.91,
+      "lookup_latency_ms": 4.36
     },
     {
       "case_id": "neg-rt-test-002",
@@ -668,8 +668,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.8106 < 0.9500.",
-      "indexing_latency_ms": 4.69,
-      "lookup_latency_ms": 5.02
+      "indexing_latency_ms": 4.03,
+      "lookup_latency_ms": 4.79
     },
     {
       "case_id": "neg-rt-test-003",
@@ -681,8 +681,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.7302 < 0.9500.",
-      "indexing_latency_ms": 4.66,
-      "lookup_latency_ms": 5.12
+      "indexing_latency_ms": 4.2,
+      "lookup_latency_ms": 4.68
     },
     {
       "case_id": "neg-rt-test-004",
@@ -694,8 +694,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.7655 < 0.9500.",
-      "indexing_latency_ms": 4.43,
-      "lookup_latency_ms": 4.94
+      "indexing_latency_ms": 4.12,
+      "lookup_latency_ms": 4.35
     },
     {
       "case_id": "neg-out-test-001",
@@ -707,8 +707,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.8353 < 0.9500.",
-      "indexing_latency_ms": 4.63,
-      "lookup_latency_ms": 5.31
+      "indexing_latency_ms": 5.1,
+      "lookup_latency_ms": 5.01
     },
     {
       "case_id": "neg-out-test-002",
@@ -720,8 +720,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.8308 < 0.9500.",
-      "indexing_latency_ms": 5.05,
-      "lookup_latency_ms": 5.23
+      "indexing_latency_ms": 5.18,
+      "lookup_latency_ms": 5.1
     },
     {
       "case_id": "neg-out-test-003",
@@ -733,8 +733,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.8723 < 0.9500.",
-      "indexing_latency_ms": 5.19,
-      "lookup_latency_ms": 5.02
+      "indexing_latency_ms": 4.66,
+      "lookup_latency_ms": 4.66
     },
     {
       "case_id": "neg-out-test-004",
@@ -746,8 +746,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.8107 < 0.9500.",
-      "indexing_latency_ms": 5.95,
-      "lookup_latency_ms": 4.71
+      "indexing_latency_ms": 4.63,
+      "lookup_latency_ms": 4.42
     },
     {
       "case_id": "amb-test-001",
@@ -759,8 +759,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.8523 < 0.9500.",
-      "indexing_latency_ms": 11.25,
-      "lookup_latency_ms": 4.81
+      "indexing_latency_ms": 9.92,
+      "lookup_latency_ms": 4.74
     },
     {
       "case_id": "amb-test-002",
@@ -772,8 +772,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.8577 < 0.9500.",
-      "indexing_latency_ms": 9.55,
-      "lookup_latency_ms": 4.86
+      "indexing_latency_ms": 9.75,
+      "lookup_latency_ms": 4.58
     },
     {
       "case_id": "amb-test-003",
@@ -785,8 +785,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.9449 < 0.9500.",
-      "indexing_latency_ms": 9.94,
-      "lookup_latency_ms": 4.46
+      "indexing_latency_ms": 9.32,
+      "lookup_latency_ms": 4.03
     },
     {
       "case_id": "amb-test-004",
@@ -798,8 +798,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.8175 < 0.9500.",
-      "indexing_latency_ms": 10.71,
-      "lookup_latency_ms": 4.64
+      "indexing_latency_ms": 10.07,
+      "lookup_latency_ms": 4.36
     },
     {
       "case_id": "amb-test-005",
@@ -811,8 +811,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.9032 < 0.9500.",
-      "indexing_latency_ms": 10.43,
-      "lookup_latency_ms": 4.56
+      "indexing_latency_ms": 9.62,
+      "lookup_latency_ms": 4.69
     },
     {
       "case_id": "amb-test-006",
@@ -824,8 +824,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.7754 < 0.9500.",
-      "indexing_latency_ms": 9.68,
-      "lookup_latency_ms": 4.58
+      "indexing_latency_ms": 10.25,
+      "lookup_latency_ms": 4.05
     },
     {
       "case_id": "unr-test-001",
@@ -837,8 +837,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.4789 < 0.9500.",
-      "indexing_latency_ms": 5.13,
-      "lookup_latency_ms": 4.9
+      "indexing_latency_ms": 4.86,
+      "lookup_latency_ms": 4.75
     },
     {
       "case_id": "unr-test-002",
@@ -850,8 +850,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.4742 < 0.9500.",
-      "indexing_latency_ms": 5.32,
-      "lookup_latency_ms": 4.93
+      "indexing_latency_ms": 4.59,
+      "lookup_latency_ms": 4.52
     },
     {
       "case_id": "unr-test-003",
@@ -863,8 +863,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.4913 < 0.9500.",
-      "indexing_latency_ms": 5.0,
-      "lookup_latency_ms": 5.0
+      "indexing_latency_ms": 4.3,
+      "lookup_latency_ms": 4.54
     },
     {
       "case_id": "unr-test-004",
@@ -876,8 +876,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.4882 < 0.9500.",
-      "indexing_latency_ms": 4.92,
-      "lookup_latency_ms": 6.12
+      "indexing_latency_ms": 4.93,
+      "lookup_latency_ms": 5.82
     },
     {
       "case_id": "unr-test-005",
@@ -889,8 +889,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.4406 < 0.9500.",
-      "indexing_latency_ms": 4.37,
-      "lookup_latency_ms": 4.91
+      "indexing_latency_ms": 4.63,
+      "lookup_latency_ms": 4.41
     },
     {
       "case_id": "unr-test-006",
@@ -902,8 +902,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.5248 < 0.9500.",
-      "indexing_latency_ms": 4.58,
-      "lookup_latency_ms": 4.89
+      "indexing_latency_ms": 4.43,
+      "lookup_latency_ms": 4.65
     }
   ]
 }
