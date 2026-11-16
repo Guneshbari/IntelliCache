@@ -1635,6 +1635,11 @@ async def async_main() -> None:
         default="evaluation/reports",
         help="Directory to save JSON and CSV reports.",
     )
+    parser.add_argument(
+        "--fail-on-fp",
+        action="store_true",
+        help="Exit with non-zero exit code if false positives (FP > 0) are observed during evaluation.",
+    )
 
     args = parser.parse_args()
 
@@ -2044,6 +2049,14 @@ async def async_main() -> None:
         )
         print(f"\nSaved JSON report: {json_path}")
         print(f"Saved CSV report:  {csv_path}")
+
+        if args.fail_on_fp and metrics.fp > 0:
+            logger.error(
+                "Safety Gate Failure: %d false positive(s) observed in partition '%s'. Failing CI acceptance gate.",
+                metrics.fp,
+                args.split,
+            )
+            sys.exit(1)
 
     finally:
         if db_pool is not None:

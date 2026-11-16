@@ -438,16 +438,18 @@ class CompatibilityExtractor:
 
         # 1. Thread safety (FIX-04)
         has_not_thread_safe = bool(re.search(
-            r"\b(?:non[\s\-]thread[\s\-]safe|not\s+thread[\s\-]safe|single[\s\-]threaded\s+only|"
+            r"\b(?:non[\s\-]thread[\s\-]safe|not[\s\-]thread[\s\-]safe|single[\s\-]threaded\s+only|"
             r"without\s+(?:a\s+)?(?:locks?|mutex(?:es)?|locking)|no\s+(?:locks?|mutex(?:es)?|locking)|"
             r"basic\s+singleton|naive\s+singleton)\b",
             lower,
         ))
+        # Strip negated thread-safe expressions before checking positive thread-safe
+        cleaned_for_positive = re.sub(r"\b(?:non|not)[\s\-]thread[\s\-]safe\b", "", lower)
         has_thread_safe = bool(re.search(
             r"\b(?:thread[\s\-]safe|threadsafe|multi[\s\-]threaded\s+safe|concurrency[\s\-]safe|"
             r"(?:with|using)\s+(?:a\s+)?(?:locks?|mutex(?:es)?|locking|threading\.lock)|"
             r"mutex\s+lock|double[\s\-]checked\s+locking)\b",
-            lower,
+            cleaned_for_positive,
         ))
         if has_thread_safe and has_not_thread_safe:
             return DimensionValue(status=MetadataStatus.UNKNOWN, value=None)
@@ -508,89 +510,98 @@ def _evaluate_constraint_compatibility(
 ) -> Tuple[bool, Optional[str]]:
     """
     Evaluates whether candidate constraint item satisfies the request constraint item.
-    Supports 'equals', 'not_equals', 'in', 'not_in'.
+    Supports all 16 combinations across 'equals', 'not_equals', 'in', 'not_in'.
     """
     r_op = req_item.operator
     c_op = cand_item.operator
-    r_val = req_item.value
-    c_val = cand_item.value
+    r_val = req_item.value.strip().lower()
+    c_val = cand_item.value.strip().lower()
 
     def _parse_set(val: str) -> Set[str]:
         return {x.strip().lower() for x in val.split(",") if x.strip()}
 
+    # Validate non-empty sets for set-based operators
+    if r_op in ("in", "not_in"):
+        r_set = _parse_set(r_val)
+        if not r_set:
+            return False, f"Request constraint '{req_item.key}' has empty set for operator '{r_op}'."
+    else:
+        r_set = set()
+
+    if c_op in ("in", "not_in"):
+        c_set = _parse_set(c_val)
+        if not c_set:
+            return False, f"Candidate constraint '{cand_item.key}' has empty set for operator '{c_op}'."
+    else:
+        c_set = set()
+
+    # 1. Request operator == 'equals' (Allowed(R) = {r_val})
     if r_op == "equals":
         if c_op == "equals":
-            if r_val.lower() != c_val.lower():
+            if c_val != r_val:
                 return False, f"Conflicting constraint for '{req_item.key}': candidate '{c_val}' != request '{r_val}'."
             return True, None
-        elif c_op == "not_equals":
-            if r_val.lower() == c_val.lower():
-                return False, f"Conflicting constraint for '{req_item.key}': candidate explicitly forbids '{c_val}' which request requires."
-            return False, f"Candidate has negative constraint '{cand_item.key} != {c_val}' but request requires explicit '{r_val}'."
         elif c_op == "in":
-            c_set = _parse_set(c_val)
-            if r_val.lower() not in c_set:
-                return False, f"Request requires '{req_item.key}={r_val}' which is not in candidate allowed set {sorted(c_set)}."
-            return True, None
-        elif c_op == "not_in":
-            c_set = _parse_set(c_val)
-            if r_val.lower() in c_set:
-                return False, f"Request requires '{req_item.key}={r_val}' which candidate explicitly excludes {sorted(c_set)}."
-            return False, f"Candidate has negative constraint '{cand_item.key} not_in {sorted(c_set)}' but request requires explicit '{r_val}'."
-
-    elif r_op == "not_equals":
-        if c_op == "equals":
-            if c_val.lower() == r_val.lower():
-                return False, f"Candidate enforces '{cand_item.key}={c_val}' which request explicitly forbids."
+            # For conservative reuse: candidate allowed set must be a subset of {r_val}, i.e. c_set == {r_val}
+            if c_set != {r_val}:
+                return False, f"Candidate allowed set {sorted(c_set)} permits values other than required exact '{r_val}'."
             return True, None
         elif c_op == "not_equals":
-            if c_val.lower() != r_val.lower():
-                return False, f"Request forbids '{req_item.key}={r_val}' but candidate only forbids '{c_val}'."
-            return True, None
-        elif c_op == "in":
-            c_set = _parse_set(c_val)
-            if r_val.lower() in c_set:
-                return False, f"Request forbids '{req_item.key}={r_val}' which is present in candidate allowed set {sorted(c_set)}."
-            return True, None
+            return False, f"Candidate has negative constraint '{cand_item.key} != {c_val}' which cannot guarantee required '{r_val}'."
         elif c_op == "not_in":
-            c_set = _parse_set(c_val)
-            if r_val.lower() not in c_set:
-                return False, f"Candidate does not forbid '{req_item.key}={r_val}'."
-            return True, None
+            return False, f"Candidate has negative constraint '{cand_item.key} not_in {sorted(c_set)}' which cannot guarantee required '{r_val}'."
 
+    # 2. Request operator == 'in' (Allowed(R) = r_set)
     elif r_op == "in":
-        r_set = _parse_set(r_val)
         if c_op == "equals":
-            if c_val.lower() not in r_set:
+            if c_val not in r_set:
                 return False, f"Candidate value '{c_val}' is not in request allowed set {sorted(r_set)}."
             return True, None
         elif c_op == "in":
-            c_set = _parse_set(c_val)
             if not c_set.issubset(r_set):
                 return False, f"Candidate allowed set {sorted(c_set)} is not a subset of request allowed set {sorted(r_set)}."
             return True, None
-        elif c_op in ("not_equals", "not_in"):
-            return False, f"Request requires '{req_item.key} in {sorted(r_set)}' but candidate specifies negative constraint '{c_op} {c_val}'."
-
-    elif r_op == "not_in":
-        r_set = _parse_set(r_val)
-        if c_op == "equals":
-            if c_val.lower() in r_set:
-                return False, f"Candidate value '{c_val}' is in request forbidden set {sorted(r_set)}."
-            return True, None
-        elif c_op == "not_in":
-            c_set = _parse_set(c_val)
-            if not r_set.issubset(c_set):
-                return False, f"Candidate does not forbid all values in request forbidden set (missing {sorted(r_set - c_set)})."
-            return True, None
         elif c_op == "not_equals":
-            if not (len(r_set) == 1 and c_val.lower() in r_set):
-                return False, f"Candidate only forbids '{c_val}', does not forbid complete request set {sorted(r_set)}."
+            return False, f"Candidate has negative constraint '{cand_item.key} != {c_val}' which cannot guarantee subset of {sorted(r_set)}."
+        elif c_op == "not_in":
+            return False, f"Candidate has negative constraint '{cand_item.key} not_in {sorted(c_set)}' which cannot guarantee subset of {sorted(r_set)}."
+
+    # 3. Request operator == 'not_equals' (Forbidden(R) = {r_val})
+    elif r_op == "not_equals":
+        if c_op == "equals":
+            if c_val == r_val:
+                return False, f"Candidate enforces '{cand_item.key}={c_val}' which request explicitly forbids."
             return True, None
         elif c_op == "in":
-            c_set = _parse_set(c_val)
-            if c_set.intersection(r_set):
+            if r_val in c_set:
+                return False, f"Candidate allowed set {sorted(c_set)} includes forbidden value '{r_val}'."
+            return True, None
+        elif c_op == "not_equals":
+            if c_val != r_val:
+                return False, f"Candidate only forbids '{c_val}', does not guarantee forbidding '{r_val}'."
+            return True, None
+        elif c_op == "not_in":
+            if r_val not in c_set:
+                return False, f"Candidate forbidden set {sorted(c_set)} does not include request forbidden value '{r_val}'."
+            return True, None
+
+    # 4. Request operator == 'not_in' (Forbidden(R) = r_set)
+    elif r_op == "not_in":
+        if c_op == "equals":
+            if c_val in r_set:
+                return False, f"Candidate value '{c_val}' is in request forbidden set {sorted(r_set)}."
+            return True, None
+        elif c_op == "in":
+            if not c_set.isdisjoint(r_set):
                 return False, f"Candidate allowed set {sorted(c_set)} overlaps with request forbidden set {sorted(r_set)}."
+            return True, None
+        elif c_op == "not_equals":
+            if r_set != {c_val}:
+                return False, f"Candidate only forbids '{c_val}', does not forbid complete request set {sorted(r_set)}."
+            return True, None
+        elif c_op == "not_in":
+            if not r_set.issubset(c_set):
+                return False, f"Candidate does not forbid all values in request forbidden set (missing {sorted(r_set - c_set)})."
             return True, None
 
     return False, f"Unsupported constraint comparison for '{req_item.key}': request '{r_op}' vs candidate '{c_op}'."

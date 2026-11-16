@@ -115,11 +115,11 @@ jobs:
         working-directory: gateway
         run: python -m unittest discover tests
 
-      - name: Verify Stage 3.1.1 semantic cache evaluation dataset integrity
+      - name: Verify Stage 3.1.1 semantic cache evaluation dataset integrity and zero-FP gate
         working-directory: gateway
         run: |
-          python scripts/evaluate_semantic_cache.py --dataset evaluation/dataset_stage3_1_1.json --split development --provider mock
-          python scripts/evaluate_semantic_cache.py --dataset evaluation/dataset_stage3_1_1.json --split test --provider mock
+          python scripts/evaluate_semantic_cache.py --dataset evaluation/dataset_stage3_1_1.json --split development --provider mock --fail-on-fp
+          python scripts/evaluate_semantic_cache.py --dataset evaluation/dataset_stage3_1_1.json --split test --provider mock --fail-on-fp
 
   gateway-postgres-integration:
     name: Gateway PostgreSQL & pgvector Integration Tests

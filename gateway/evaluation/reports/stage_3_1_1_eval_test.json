@@ -4,7 +4,7 @@
     "dataset_path": "gateway/evaluation/dataset_stage3_1_1.json",
     "dataset_split": "test",
     "case_count": 65,
-    "evaluation_timestamp": "2026-11-16T17:36:50.953234+00:00",
+    "evaluation_timestamp": "2026-11-16T18:10:32.785404+00:00",
     "embedding_provider": "DeterministicMockEmbeddingProvider",
     "embedding_model": "nomic-embed-text",
     "embedding_dimensions": 768,
@@ -158,7 +158,7 @@
     "hazardous_provider_calls_avoided": 0,
     "total_accepted_hits": 14,
     "safe_tokens_saved": 5180,
-    "safe_latency_saved_ms": 17490.52,
+    "safe_latency_saved_ms": 17490.44,
     "hazardous_tokens_involved": 0
   },
   "sweep": [],
@@ -174,8 +174,8 @@
       "decision": "incorrect_rejection",
       "classification": "FN",
       "rejection_reason": "No compatible candidates satisfied generation and domain requirements.",
-      "indexing_latency_ms": 0.51,
-      "lookup_latency_ms": 2.73
+      "indexing_latency_ms": 0.5,
+      "lookup_latency_ms": 2.88
     },
     {
       "case_id": "pos-test-002",
@@ -188,7 +188,7 @@
       "classification": "TP",
       "rejection_reason": null,
       "indexing_latency_ms": 0.5,
-      "lookup_latency_ms": 0.77
+      "lookup_latency_ms": 0.81
     },
     {
       "case_id": "pos-test-003",
@@ -200,7 +200,7 @@
       "decision": "safe_reuse",
       "classification": "TP",
       "rejection_reason": null,
-      "indexing_latency_ms": 0.7,
+      "indexing_latency_ms": 0.71,
       "lookup_latency_ms": 0.67
     },
     {
@@ -213,8 +213,8 @@
       "decision": "safe_reuse",
       "classification": "TP",
       "rejection_reason": null,
-      "indexing_latency_ms": 0.59,
-      "lookup_latency_ms": 0.76
+      "indexing_latency_ms": 0.58,
+      "lookup_latency_ms": 0.75
     },
     {
       "case_id": "pos-test-005",
@@ -227,7 +227,7 @@
       "classification": "FN",
       "rejection_reason": "No compatible candidates satisfied generation and domain requirements.",
       "indexing_latency_ms": 0.6,
-      "lookup_latency_ms": 0.55
+      "lookup_latency_ms": 0.57
     },
     {
       "case_id": "pos-test-006",
@@ -239,8 +239,8 @@
       "decision": "safe_reuse",
       "classification": "TP",
       "rejection_reason": null,
-      "indexing_latency_ms": 0.71,
-      "lookup_latency_ms": 0.87
+      "indexing_latency_ms": 0.7,
+      "lookup_latency_ms": 0.88
     },
     {
       "case_id": "pos-test-007",
@@ -252,8 +252,8 @@
       "decision": "incorrect_rejection",
       "classification": "FN",
       "rejection_reason": "Similarity below threshold: 0.8117 < 0.8200.",
-      "indexing_latency_ms": 0.8,
-      "lookup_latency_ms": 0.77
+      "indexing_latency_ms": 0.84,
+      "lookup_latency_ms": 0.78
     },
     {
       "case_id": "pos-test-008",
@@ -265,8 +265,8 @@
       "decision": "safe_reuse",
       "classification": "TP",
       "rejection_reason": null,
-      "indexing_latency_ms": 0.72,
-      "lookup_latency_ms": 1.0
+      "indexing_latency_ms": 0.71,
+      "lookup_latency_ms": 0.99
     },
     {
       "case_id": "pos-test-009",
@@ -278,8 +278,8 @@
       "decision": "safe_reuse",
       "classification": "TP",
       "rejection_reason": null,
-      "indexing_latency_ms": 0.39,
-      "lookup_latency_ms": 0.56
+      "indexing_latency_ms": 0.37,
+      "lookup_latency_ms": 0.57
     },
     {
       "case_id": "pos-test-010",
@@ -292,7 +292,7 @@
       "classification": "TP",
       "rejection_reason": null,
       "indexing_latency_ms": 0.59,
-      "lookup_latency_ms": 0.74
+      "lookup_latency_ms": 0.75
     },
     {
       "case_id": "pos-test-011",
@@ -304,8 +304,8 @@
       "decision": "safe_reuse",
       "classification": "TP",
       "rejection_reason": null,
-      "indexing_latency_ms": 0.59,
-      "lookup_latency_ms": 0.55
+      "indexing_latency_ms": 0.6,
+      "lookup_latency_ms": 0.54
     },
     {
       "case_id": "pos-test-012",
@@ -330,7 +330,7 @@
       "decision": "safe_reuse",
       "classification": "TP",
       "rejection_reason": null,
-      "indexing_latency_ms": 0.59,
+      "indexing_latency_ms": 0.6,
       "lookup_latency_ms": 0.77
     },
     {
@@ -344,7 +344,7 @@
       "classification": "TP",
       "rejection_reason": null,
       "indexing_latency_ms": 0.26,
-      "lookup_latency_ms": 0.56
+      "lookup_latency_ms": 0.55
     },
     {
       "case_id": "pos-test-015",
@@ -370,7 +370,7 @@
       "classification": "FN",
       "rejection_reason": "Similarity below threshold: 0.5286 < 0.8200.",
       "indexing_latency_ms": 0.48,
-      "lookup_latency_ms": 0.89
+      "lookup_latency_ms": 0.88
     },
     {
       "case_id": "pos-test-017",
@@ -382,7 +382,7 @@
       "decision": "safe_reuse",
       "classification": "TP",
       "rejection_reason": null,
-      "indexing_latency_ms": 0.39,
+      "indexing_latency_ms": 0.38,
       "lookup_latency_ms": 0.55
     },
     {
@@ -396,7 +396,7 @@
       "classification": "TN",
       "rejection_reason": "No compatible candidates satisfied generation and domain requirements.",
       "indexing_latency_ms": 0.27,
-      "lookup_latency_ms": 0.52
+      "lookup_latency_ms": 0.53
     },
     {
       "case_id": "neg-lang-test-002",
@@ -408,8 +408,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "No compatible candidates satisfied generation and domain requirements.",
-      "indexing_latency_ms": 0.5,
-      "lookup_latency_ms": 0.67
+      "indexing_latency_ms": 0.49,
+      "lookup_latency_ms": 0.68
     },
     {
       "case_id": "neg-lang-test-003",
@@ -421,7 +421,7 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "No compatible candidates satisfied generation and domain requirements.",
-      "indexing_latency_ms": 0.27,
+      "indexing_latency_ms": 0.26,
       "lookup_latency_ms": 0.5
     },
     {
@@ -434,8 +434,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "No compatible candidates satisfied generation and domain requirements.",
-      "indexing_latency_ms": 0.26,
-      "lookup_latency_ms": 0.55
+      "indexing_latency_ms": 0.27,
+      "lookup_latency_ms": 0.56
     },
     {
       "case_id": "neg-lang-test-005",
@@ -473,8 +473,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "No compatible candidates satisfied generation and domain requirements.",
-      "indexing_latency_ms": 0.26,
-      "lookup_latency_ms": 0.47
+      "indexing_latency_ms": 0.27,
+      "lookup_latency_ms": 0.46
     },
     {
       "case_id": "neg-ver-test-003",
@@ -486,8 +486,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "No compatible candidates satisfied generation and domain requirements.",
-      "indexing_latency_ms": 0.39,
-      "lookup_latency_ms": 0.76
+      "indexing_latency_ms": 0.37,
+      "lookup_latency_ms": 0.75
     },
     {
       "case_id": "neg-ver-test-004",
@@ -499,8 +499,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "No compatible candidates satisfied generation and domain requirements.",
-      "indexing_latency_ms": 0.27,
-      "lookup_latency_ms": 0.58
+      "indexing_latency_ms": 0.28,
+      "lookup_latency_ms": 0.59
     },
     {
       "case_id": "neg-ver-test-005",
@@ -512,8 +512,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "No compatible candidates satisfied generation and domain requirements.",
-      "indexing_latency_ms": 0.26,
-      "lookup_latency_ms": 0.51
+      "indexing_latency_ms": 0.27,
+      "lookup_latency_ms": 0.52
     },
     {
       "case_id": "neg-err-test-001",
@@ -538,8 +538,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "No compatible candidates satisfied generation and domain requirements.",
-      "indexing_latency_ms": 0.38,
-      "lookup_latency_ms": 0.46
+      "indexing_latency_ms": 0.37,
+      "lookup_latency_ms": 0.47
     },
     {
       "case_id": "neg-err-test-003",
@@ -551,8 +551,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.7197 < 0.8200.",
-      "indexing_latency_ms": 0.47,
-      "lookup_latency_ms": 0.77
+      "indexing_latency_ms": 0.48,
+      "lookup_latency_ms": 0.78
     },
     {
       "case_id": "neg-err-test-004",
@@ -565,7 +565,7 @@
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.4148 < 0.8200.",
       "indexing_latency_ms": 0.37,
-      "lookup_latency_ms": 0.66
+      "lookup_latency_ms": 0.67
     },
     {
       "case_id": "neg-err-test-005",
@@ -577,8 +577,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "No compatible candidates satisfied generation and domain requirements.",
-      "indexing_latency_ms": 0.28,
-      "lookup_latency_ms": 0.59
+      "indexing_latency_ms": 0.27,
+      "lookup_latency_ms": 0.6
     },
     {
       "case_id": "neg-con-test-001",
@@ -591,7 +591,7 @@
       "classification": "TN",
       "rejection_reason": "No compatible candidates satisfied generation and domain requirements.",
       "indexing_latency_ms": 0.38,
-      "lookup_latency_ms": 0.55
+      "lookup_latency_ms": 0.57
     },
     {
       "case_id": "neg-con-test-002",
@@ -604,7 +604,7 @@
       "classification": "TN",
       "rejection_reason": "No compatible candidates satisfied generation and domain requirements.",
       "indexing_latency_ms": 0.38,
-      "lookup_latency_ms": 0.7
+      "lookup_latency_ms": 0.71
     },
     {
       "case_id": "neg-con-test-003",
@@ -616,8 +616,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.5578 < 0.8200.",
-      "indexing_latency_ms": 0.47,
-      "lookup_latency_ms": 0.66
+      "indexing_latency_ms": 0.48,
+      "lookup_latency_ms": 0.67
     },
     {
       "case_id": "neg-con-test-004",
@@ -629,7 +629,7 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "No compatible candidates satisfied generation and domain requirements.",
-      "indexing_latency_ms": 0.49,
+      "indexing_latency_ms": 0.48,
       "lookup_latency_ms": 0.65
     },
     {
@@ -643,7 +643,7 @@
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.7706 < 0.8200.",
       "indexing_latency_ms": 0.48,
-      "lookup_latency_ms": 0.66
+      "lookup_latency_ms": 0.67
     },
     {
       "case_id": "neg-rt-test-001",
@@ -656,7 +656,7 @@
       "classification": "TN",
       "rejection_reason": "No compatible candidates satisfied generation and domain requirements.",
       "indexing_latency_ms": 0.16,
-      "lookup_latency_ms": 0.83
+      "lookup_latency_ms": 0.87
     },
     {
       "case_id": "neg-rt-test-002",
@@ -669,7 +669,7 @@
       "classification": "TN",
       "rejection_reason": "No compatible candidates satisfied generation and domain requirements.",
       "indexing_latency_ms": 0.27,
-      "lookup_latency_ms": 0.59
+      "lookup_latency_ms": 0.6
     },
     {
       "case_id": "neg-rt-test-003",
@@ -681,8 +681,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "No compatible candidates satisfied generation and domain requirements.",
-      "indexing_latency_ms": 0.36,
-      "lookup_latency_ms": 0.6
+      "indexing_latency_ms": 0.37,
+      "lookup_latency_ms": 0.62
     },
     {
       "case_id": "neg-rt-test-004",
@@ -694,8 +694,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "No compatible candidates satisfied generation and domain requirements.",
-      "indexing_latency_ms": 0.26,
-      "lookup_latency_ms": 0.57
+      "indexing_latency_ms": 0.27,
+      "lookup_latency_ms": 0.6
     },
     {
       "case_id": "neg-out-test-001",
@@ -707,8 +707,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.6574 < 0.8200.",
-      "indexing_latency_ms": 0.49,
-      "lookup_latency_ms": 0.8
+      "indexing_latency_ms": 0.48,
+      "lookup_latency_ms": 0.79
     },
     {
       "case_id": "neg-out-test-002",
@@ -746,8 +746,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: 0.6505 < 0.8200.",
-      "indexing_latency_ms": 0.8,
-      "lookup_latency_ms": 0.88
+      "indexing_latency_ms": 0.81,
+      "lookup_latency_ms": 0.89
     },
     {
       "case_id": "amb-test-001",
@@ -759,8 +759,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "No compatible candidates satisfied generation and domain requirements.",
-      "indexing_latency_ms": 0.75,
-      "lookup_latency_ms": 0.7
+      "indexing_latency_ms": 0.76,
+      "lookup_latency_ms": 0.68
     },
     {
       "case_id": "amb-test-002",
@@ -773,7 +773,7 @@
       "classification": "TN",
       "rejection_reason": "No compatible candidates satisfied generation and domain requirements.",
       "indexing_latency_ms": 0.53,
-      "lookup_latency_ms": 0.57
+      "lookup_latency_ms": 0.58
     },
     {
       "case_id": "amb-test-003",
@@ -785,7 +785,7 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "No compatible candidates satisfied generation and domain requirements.",
-      "indexing_latency_ms": 0.54,
+      "indexing_latency_ms": 0.55,
       "lookup_latency_ms": 0.44
     },
     {
@@ -811,8 +811,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Ambiguous candidate: nearest alternative candidate margin (0.0159) is below minimum margin (0.0300) with a different answer.",
-      "indexing_latency_ms": 0.74,
-      "lookup_latency_ms": 0.68
+      "indexing_latency_ms": 0.75,
+      "lookup_latency_ms": 0.67
     },
     {
       "case_id": "amb-test-006",
@@ -824,8 +824,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "Similarity below threshold: -0.0269 < 0.8200.",
-      "indexing_latency_ms": 0.42,
-      "lookup_latency_ms": 0.76
+      "indexing_latency_ms": 0.41,
+      "lookup_latency_ms": 0.73
     },
     {
       "case_id": "unr-test-001",
@@ -838,7 +838,7 @@
       "classification": "TN",
       "rejection_reason": "No compatible candidates satisfied generation and domain requirements.",
       "indexing_latency_ms": 0.16,
-      "lookup_latency_ms": 0.5
+      "lookup_latency_ms": 0.51
     },
     {
       "case_id": "unr-test-002",
@@ -851,7 +851,7 @@
       "classification": "TN",
       "rejection_reason": "No compatible candidates satisfied generation and domain requirements.",
       "indexing_latency_ms": 0.27,
-      "lookup_latency_ms": 0.35
+      "lookup_latency_ms": 0.34
     },
     {
       "case_id": "unr-test-003",
@@ -864,7 +864,7 @@
       "classification": "TN",
       "rejection_reason": "No compatible candidates satisfied generation and domain requirements.",
       "indexing_latency_ms": 0.27,
-      "lookup_latency_ms": 0.42
+      "lookup_latency_ms": 0.43
     },
     {
       "case_id": "unr-test-004",
@@ -876,7 +876,7 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "No compatible candidates satisfied generation and domain requirements.",
-      "indexing_latency_ms": 0.28,
+      "indexing_latency_ms": 0.27,
       "lookup_latency_ms": 0.37
     },
     {
@@ -889,8 +889,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "No compatible candidates satisfied generation and domain requirements.",
-      "indexing_latency_ms": 0.71,
-      "lookup_latency_ms": 0.36
+      "indexing_latency_ms": 0.7,
+      "lookup_latency_ms": 0.37
     },
     {
       "case_id": "unr-test-006",
@@ -903,7 +903,7 @@
       "classification": "TN",
       "rejection_reason": "No compatible candidates satisfied generation and domain requirements.",
       "indexing_latency_ms": 0.15,
-      "lookup_latency_ms": 0.36
+      "lookup_latency_ms": 0.37
     },
     {
       "case_id": "lang-test-006",
@@ -916,7 +916,7 @@
       "classification": "TN",
       "rejection_reason": "No compatible candidates satisfied generation and domain requirements.",
       "indexing_latency_ms": 0.27,
-      "lookup_latency_ms": 0.46
+      "lookup_latency_ms": 0.47
     },
     {
       "case_id": "ver-test-006",
@@ -928,7 +928,7 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "No compatible candidates satisfied generation and domain requirements.",
-      "indexing_latency_ms": 0.26,
+      "indexing_latency_ms": 0.27,
       "lookup_latency_ms": 0.48
     },
     {
@@ -941,8 +941,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "No compatible candidates satisfied generation and domain requirements.",
-      "indexing_latency_ms": 0.26,
-      "lookup_latency_ms": 0.44
+      "indexing_latency_ms": 0.27,
+      "lookup_latency_ms": 0.45
     },
     {
       "case_id": "con-test-007",
@@ -967,8 +967,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "No compatible candidates satisfied generation and domain requirements.",
-      "indexing_latency_ms": 0.58,
-      "lookup_latency_ms": 0.76
+      "indexing_latency_ms": 0.6,
+      "lookup_latency_ms": 0.79
     },
     {
       "case_id": "con-test-009",
@@ -980,8 +980,8 @@
       "decision": "safe_rejection",
       "classification": "TN",
       "rejection_reason": "No compatible candidates satisfied generation and domain requirements.",
-      "indexing_latency_ms": 0.38,
-      "lookup_latency_ms": 0.56
+      "indexing_latency_ms": 0.37,
+      "lookup_latency_ms": 0.57
     },
     {
       "case_id": "out-test-005",
@@ -1006,8 +1006,8 @@
       "decision": "safe_reuse",
       "classification": "TP",
       "rejection_reason": null,
-      "indexing_latency_ms": 0.26,
-      "lookup_latency_ms": 0.47
+      "indexing_latency_ms": 0.27,
+      "lookup_latency_ms": 0.48
     }
   ]
 }

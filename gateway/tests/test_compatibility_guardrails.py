@@ -293,6 +293,34 @@ class TestMetadataContractValidation(unittest.TestCase):
         with self.assertRaises(ValueError):
             SemanticCompatibilityMetadata.from_dict(data)
 
+        # 8. Missing or non-dict generation_contract in schema v2 rejected
+        data_no_gen = {
+            "schema_version": CURRENT_SCHEMA_VERSION,
+            "extractor_version": "extractor-v2",
+            "task_kind": {"status": "KNOWN", "value": "code_generation"},
+            "dimensions": {
+                k: asdict(DimensionValue(status=MetadataStatus.NOT_APPLICABLE, value=None))
+                for k in REQUIRED_DIMENSIONS
+            },
+            "embedding_contract": asdict(self.valid_emb_contract),
+        }
+        with self.assertRaises(ValueError):
+            SemanticCompatibilityMetadata.from_dict(data_no_gen)
+
+        # 9. Missing or non-dict embedding_contract in schema v2 rejected
+        data_no_emb = {
+            "schema_version": CURRENT_SCHEMA_VERSION,
+            "extractor_version": "extractor-v2",
+            "task_kind": {"status": "KNOWN", "value": "code_generation"},
+            "dimensions": {
+                k: asdict(DimensionValue(status=MetadataStatus.NOT_APPLICABLE, value=None))
+                for k in REQUIRED_DIMENSIONS
+            },
+            "generation_contract": asdict(self.valid_gen_contract),
+        }
+        with self.assertRaises(ValueError):
+            SemanticCompatibilityMetadata.from_dict(data_no_emb)
+
 
 class TestCompatibilityExtractor(unittest.TestCase):
     """Verifies deterministic extraction of language, versions, frameworks, constraints, and disambiguation."""
@@ -432,6 +460,10 @@ class TestCompatibilityExtractor(unittest.TestCase):
             "How to implement a basic singleton class in Python?",
             "How to implement a naive singleton in Python?",
             "How to write a simple singleton without locks in Python?",
+            "How to implement a not thread-safe singleton in Python?",
+            "How to implement a not-thread-safe singleton in Python?",
+            "How to implement a non-thread-safe singleton in Python?",
+            "How to implement a non thread safe singleton in Python?",
         ):
             meta = self.extractor.extract_from_text(q)
             const_dim = meta.dimensions["constraints"]
@@ -645,7 +677,7 @@ class TestCandidateCompatibilityRules(unittest.TestCase):
         self.assertIn(CompatibilityReasonCode.COMPATIBLE, reason)
 
     def test_constraint_operators_logical_evaluation(self):
-        """Stage 3.1.2: Constraint evaluation accurately respects equals, not_equals, in, not_in."""
+        """Stage 3.1.3: Complete 4x4 matrix and empty set tests for constraint operator evaluation."""
         def _make_meta_with_constraints(items: list[ConstraintItem]) -> SemanticCompatibilityMetadata:
             dims = dict(self.extractor.extract_from_text("How to sort in Python?").dimensions)
             dims["constraints"] = DimensionValue(status=MetadataStatus.KNOWN, value=items)
@@ -658,33 +690,128 @@ class TestCandidateCompatibilityRules(unittest.TestCase):
                 embedding_contract=EmbeddingContract(model="nomic-embed-text"),
             )
 
-        # 1. equals
-        req1 = _make_meta_with_constraints([ConstraintItem(key="mutation", operator="equals", value="in_place")])
-        cand1_match = _make_meta_with_constraints([ConstraintItem(key="mutation", operator="equals", value="in_place")])
-        cand1_mismatch = _make_meta_with_constraints([ConstraintItem(key="mutation", operator="equals", value="immutable")])
-        self.assertTrue(compare_compatibility(req1, cand1_match)[0])
-        self.assertFalse(compare_compatibility(req1, cand1_mismatch)[0])
+        # -------------------------------------------------------------
+        # 1. Request operator == 'equals' (4 candidate operator cases)
+        # -------------------------------------------------------------
+        req_eq = _make_meta_with_constraints([ConstraintItem(key="lib", operator="equals", value="httpx")])
 
-        # 2. not_equals
-        req2 = _make_meta_with_constraints([ConstraintItem(key="mutation", operator="not_equals", value="in_place")])
-        cand2_forbids_match = _make_meta_with_constraints([ConstraintItem(key="mutation", operator="equals", value="immutable")])
-        cand2_violates = _make_meta_with_constraints([ConstraintItem(key="mutation", operator="equals", value="in_place")])
-        self.assertTrue(compare_compatibility(req2, cand2_forbids_match)[0])
-        self.assertFalse(compare_compatibility(req2, cand2_violates)[0])
+        # 1a. vs candidate equals
+        cand_eq_match = _make_meta_with_constraints([ConstraintItem(key="lib", operator="equals", value="httpx")])
+        cand_eq_diff = _make_meta_with_constraints([ConstraintItem(key="lib", operator="equals", value="aiohttp")])
+        self.assertTrue(compare_compatibility(req_eq, cand_eq_match)[0])
+        self.assertFalse(compare_compatibility(req_eq, cand_eq_diff)[0])
 
-        # 3. in
-        req3 = _make_meta_with_constraints([ConstraintItem(key="lib", operator="in", value="requests,httpx,aiohttp")])
-        cand3_match = _make_meta_with_constraints([ConstraintItem(key="lib", operator="equals", value="httpx")])
-        cand3_mismatch = _make_meta_with_constraints([ConstraintItem(key="lib", operator="equals", value="urllib3")])
-        self.assertTrue(compare_compatibility(req3, cand3_match)[0])
-        self.assertFalse(compare_compatibility(req3, cand3_mismatch)[0])
+        # 1b. vs candidate in: multi-value MUST be rejected (P1 fix), exact single-value accepted
+        cand_in_multi = _make_meta_with_constraints([ConstraintItem(key="lib", operator="in", value="httpx,aiohttp")])
+        cand_in_single = _make_meta_with_constraints([ConstraintItem(key="lib", operator="in", value="httpx")])
+        self.assertFalse(compare_compatibility(req_eq, cand_in_multi)[0])
+        self.assertTrue(compare_compatibility(req_eq, cand_in_single)[0])
 
-        # 4. not_in
-        req4 = _make_meta_with_constraints([ConstraintItem(key="runtime", operator="not_in", value="browser,deno")])
-        cand4_match = _make_meta_with_constraints([ConstraintItem(key="runtime", operator="equals", value="node")])
-        cand4_violates = _make_meta_with_constraints([ConstraintItem(key="runtime", operator="equals", value="browser")])
-        self.assertTrue(compare_compatibility(req4, cand4_match)[0])
-        self.assertFalse(compare_compatibility(req4, cand4_violates)[0])
+        # 1c. vs candidate not_equals: negative cannot guarantee positive exact
+        cand_neq = _make_meta_with_constraints([ConstraintItem(key="lib", operator="not_equals", value="requests")])
+        self.assertFalse(compare_compatibility(req_eq, cand_neq)[0])
+
+        # 1d. vs candidate not_in: negative cannot guarantee positive exact
+        cand_nin = _make_meta_with_constraints([ConstraintItem(key="lib", operator="not_in", value="requests,urllib3")])
+        self.assertFalse(compare_compatibility(req_eq, cand_nin)[0])
+
+        # -------------------------------------------------------------
+        # 2. Request operator == 'in' (4 candidate operator cases)
+        # -------------------------------------------------------------
+        req_in = _make_meta_with_constraints([ConstraintItem(key="lib", operator="in", value="httpx,aiohttp,requests")])
+
+        # 2a. vs candidate equals: candidate value in request set
+        cand_eq_in_set = _make_meta_with_constraints([ConstraintItem(key="lib", operator="equals", value="httpx")])
+        cand_eq_not_in_set = _make_meta_with_constraints([ConstraintItem(key="lib", operator="equals", value="urllib3")])
+        self.assertTrue(compare_compatibility(req_in, cand_eq_in_set)[0])
+        self.assertFalse(compare_compatibility(req_in, cand_eq_not_in_set)[0])
+
+        # 2b. vs candidate in: candidate set is subset of request set
+        cand_in_subset = _make_meta_with_constraints([ConstraintItem(key="lib", operator="in", value="httpx,aiohttp")])
+        cand_in_not_subset = _make_meta_with_constraints([ConstraintItem(key="lib", operator="in", value="httpx,urllib3")])
+        self.assertTrue(compare_compatibility(req_in, cand_in_subset)[0])
+        self.assertFalse(compare_compatibility(req_in, cand_in_not_subset)[0])
+
+        # 2c. vs candidate not_equals
+        self.assertFalse(compare_compatibility(req_in, cand_neq)[0])
+
+        # 2d. vs candidate not_in
+        self.assertFalse(compare_compatibility(req_in, cand_nin)[0])
+
+        # -------------------------------------------------------------
+        # 3. Request operator == 'not_equals' (4 candidate operator cases)
+        # -------------------------------------------------------------
+        req_neq = _make_meta_with_constraints([ConstraintItem(key="lib", operator="not_equals", value="requests")])
+
+        # 3a. vs candidate equals
+        cand_eq_diff2 = _make_meta_with_constraints([ConstraintItem(key="lib", operator="equals", value="httpx")])
+        cand_eq_same = _make_meta_with_constraints([ConstraintItem(key="lib", operator="equals", value="requests")])
+        self.assertTrue(compare_compatibility(req_neq, cand_eq_diff2)[0])
+        self.assertFalse(compare_compatibility(req_neq, cand_eq_same)[0])
+
+        # 3b. vs candidate in: candidate allowed set does not contain forbidden requests
+        cand_in_clean = _make_meta_with_constraints([ConstraintItem(key="lib", operator="in", value="httpx,aiohttp")])
+        cand_in_tainted = _make_meta_with_constraints([ConstraintItem(key="lib", operator="in", value="httpx,requests")])
+        self.assertTrue(compare_compatibility(req_neq, cand_in_clean)[0])
+        self.assertFalse(compare_compatibility(req_neq, cand_in_tainted)[0])
+
+        # 3c. vs candidate not_equals
+        cand_neq_same = _make_meta_with_constraints([ConstraintItem(key="lib", operator="not_equals", value="requests")])
+        cand_neq_diff = _make_meta_with_constraints([ConstraintItem(key="lib", operator="not_equals", value="urllib3")])
+        self.assertTrue(compare_compatibility(req_neq, cand_neq_same)[0])
+        self.assertFalse(compare_compatibility(req_neq, cand_neq_diff)[0])
+
+        # 3d. vs candidate not_in: candidate forbids requests
+        cand_nin_includes = _make_meta_with_constraints([ConstraintItem(key="lib", operator="not_in", value="requests,urllib3")])
+        cand_nin_missing = _make_meta_with_constraints([ConstraintItem(key="lib", operator="not_in", value="urllib3,aiohttp")])
+        self.assertTrue(compare_compatibility(req_neq, cand_nin_includes)[0])
+        self.assertFalse(compare_compatibility(req_neq, cand_nin_missing)[0])
+
+        # -------------------------------------------------------------
+        # 4. Request operator == 'not_in' (4 candidate operator cases)
+        # -------------------------------------------------------------
+        req_nin = _make_meta_with_constraints([ConstraintItem(key="lib", operator="not_in", value="requests,urllib3")])
+
+        # 4a. vs candidate equals
+        cand_eq_safe = _make_meta_with_constraints([ConstraintItem(key="lib", operator="equals", value="httpx")])
+        cand_eq_forbidden = _make_meta_with_constraints([ConstraintItem(key="lib", operator="equals", value="requests")])
+        self.assertTrue(compare_compatibility(req_nin, cand_eq_safe)[0])
+        self.assertFalse(compare_compatibility(req_nin, cand_eq_forbidden)[0])
+
+        # 4b. vs candidate in
+        cand_in_disjoint = _make_meta_with_constraints([ConstraintItem(key="lib", operator="in", value="httpx,aiohttp")])
+        cand_in_overlap = _make_meta_with_constraints([ConstraintItem(key="lib", operator="in", value="httpx,requests")])
+        self.assertTrue(compare_compatibility(req_nin, cand_in_disjoint)[0])
+        self.assertFalse(compare_compatibility(req_nin, cand_in_overlap)[0])
+
+        # 4c. vs candidate not_equals
+        req_nin_single = _make_meta_with_constraints([ConstraintItem(key="lib", operator="not_in", value="requests")])
+        cand_neq_match2 = _make_meta_with_constraints([ConstraintItem(key="lib", operator="not_equals", value="requests")])
+        self.assertTrue(compare_compatibility(req_nin_single, cand_neq_match2)[0])
+        self.assertFalse(compare_compatibility(req_nin, cand_neq_match2)[0])  # req has urllib3 too
+
+        # 4d. vs candidate not_in
+        cand_nin_superset = _make_meta_with_constraints([ConstraintItem(key="lib", operator="not_in", value="requests,urllib3,aiohttp")])
+        cand_nin_subset = _make_meta_with_constraints([ConstraintItem(key="lib", operator="not_in", value="requests")])
+        self.assertTrue(compare_compatibility(req_nin, cand_nin_superset)[0])
+        self.assertFalse(compare_compatibility(req_nin, cand_nin_subset)[0])
+
+        # -------------------------------------------------------------
+        # 5. Empty set handling
+        # -------------------------------------------------------------
+        req_empty_in = _make_meta_with_constraints([ConstraintItem(key="lib", operator="in", value=",  , ")])
+        cand_valid_in = _make_meta_with_constraints([ConstraintItem(key="lib", operator="in", value="httpx")])
+        self.assertFalse(compare_compatibility(req_empty_in, cand_valid_in)[0])
+
+        req_valid_in = _make_meta_with_constraints([ConstraintItem(key="lib", operator="in", value="httpx")])
+        cand_empty_in = _make_meta_with_constraints([ConstraintItem(key="lib", operator="in", value=", ,")])
+        self.assertFalse(compare_compatibility(req_valid_in, cand_empty_in)[0])
+
+        req_empty_nin = _make_meta_with_constraints([ConstraintItem(key="lib", operator="not_in", value=",")])
+        self.assertFalse(compare_compatibility(req_empty_nin, cand_valid_in)[0])
+
+        cand_empty_nin = _make_meta_with_constraints([ConstraintItem(key="lib", operator="not_in", value=",,")])
+        self.assertFalse(compare_compatibility(req_valid_in, cand_empty_nin)[0])
 
     def test_case_sensitivity_mismatch_rejected(self):
         """Case-sensitive query cannot reuse case-insensitive candidate."""

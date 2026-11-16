@@ -1,67 +1,67 @@
-# IntelliCache Evaluation Report,DatasetHash: 36fea2717b0b4d38d98fae0a1b81f58f0ab78f5e917c88f6c85245aa1f497272,Split: development,Provider: DeterministicMockEmbeddingProvider,Model: nomic-embed-text,VectorIndex: none,IndexUsed: False,Timestamp: 2026-11-16T17:36:45.592122+00:00
+# IntelliCache Evaluation Report,DatasetHash: 36fea2717b0b4d38d98fae0a1b81f58f0ab78f5e917c88f6c85245aa1f497272,Split: development,Provider: DeterministicMockEmbeddingProvider,Model: nomic-embed-text,VectorIndex: none,IndexUsed: False,Timestamp: 2026-11-16T18:10:30.519150+00:00
 case_id,category,split,safe_reuse_expected,top_similarity,margin,classification,decision,indexing_latency_ms,lookup_latency_ms,rejection_reason
-pos-dev-001,positive_paraphrase,development,True,0.9995,,TP,safe_reuse,0.69,3.01,
-pos-dev-002,positive_paraphrase,development,True,0.9887,,TP,safe_reuse,0.42,0.6,
-pos-dev-003,positive_paraphrase,development,True,0.9912,,FN,incorrect_rejection,0.53,0.75,No compatible candidates satisfied generation and domain requirements.
-pos-dev-004,positive_paraphrase,development,True,0.9661,,TP,safe_reuse,0.88,1.01,
-pos-dev-005,positive_paraphrase,development,True,0.94,,TP,safe_reuse,0.5,0.8,
-pos-dev-006,positive_paraphrase,development,True,0.9842,,TP,safe_reuse,0.38,0.57,
-pos-dev-007,positive_paraphrase,development,True,0.9906,,TP,safe_reuse,0.37,0.56,
-pos-dev-008,positive_paraphrase,development,True,0.9483,,TP,safe_reuse,0.37,0.57,
-pos-dev-009,positive_paraphrase,development,True,0.9993,,TP,safe_reuse,0.48,0.67,
-pos-dev-010,positive_paraphrase,development,True,0.9917,,TP,safe_reuse,0.59,0.77,
-pos-dev-011,positive_paraphrase,development,True,0.9987,,FN,incorrect_rejection,0.28,0.92,No compatible candidates satisfied generation and domain requirements.
-pos-dev-012,positive_paraphrase,development,True,0.9834,,FN,incorrect_rejection,0.39,0.58,No compatible candidates satisfied generation and domain requirements.
-pos-dev-013,positive_paraphrase,development,True,0.9991,,TP,safe_reuse,0.39,0.57,
-pos-dev-014,positive_paraphrase,development,True,0.9868,,TP,safe_reuse,0.49,0.68,
-pos-dev-015,positive_paraphrase,development,True,0.7085,,FN,incorrect_rejection,0.38,0.45,No compatible candidates satisfied generation and domain requirements.
-pos-dev-016,positive_paraphrase,development,True,0.9981,,FN,incorrect_rejection,0.28,0.5,No compatible candidates satisfied generation and domain requirements.
-pos-dev-017,positive_paraphrase,development,True,0.4981,,FN,incorrect_rejection,0.38,0.54,No compatible candidates satisfied generation and domain requirements.
+pos-dev-001,positive_paraphrase,development,True,0.9995,,TP,safe_reuse,0.72,3.0,
+pos-dev-002,positive_paraphrase,development,True,0.9887,,TP,safe_reuse,0.4,0.61,
+pos-dev-003,positive_paraphrase,development,True,0.9912,,FN,incorrect_rejection,0.49,0.69,No compatible candidates satisfied generation and domain requirements.
+pos-dev-004,positive_paraphrase,development,True,0.9661,,TP,safe_reuse,0.81,0.97,
+pos-dev-005,positive_paraphrase,development,True,0.94,,TP,safe_reuse,0.49,0.79,
+pos-dev-006,positive_paraphrase,development,True,0.9842,,TP,safe_reuse,0.38,0.58,
+pos-dev-007,positive_paraphrase,development,True,0.9906,,TP,safe_reuse,0.39,0.57,
+pos-dev-008,positive_paraphrase,development,True,0.9483,,TP,safe_reuse,0.39,0.57,
+pos-dev-009,positive_paraphrase,development,True,0.9993,,TP,safe_reuse,0.51,0.69,
+pos-dev-010,positive_paraphrase,development,True,0.9917,,TP,safe_reuse,0.61,0.79,
+pos-dev-011,positive_paraphrase,development,True,0.9987,,FN,incorrect_rejection,0.28,0.93,No compatible candidates satisfied generation and domain requirements.
+pos-dev-012,positive_paraphrase,development,True,0.9834,,FN,incorrect_rejection,0.39,0.59,No compatible candidates satisfied generation and domain requirements.
+pos-dev-013,positive_paraphrase,development,True,0.9991,,TP,safe_reuse,0.39,0.58,
+pos-dev-014,positive_paraphrase,development,True,0.9868,,TP,safe_reuse,0.5,0.69,
+pos-dev-015,positive_paraphrase,development,True,0.7085,,FN,incorrect_rejection,0.39,0.45,No compatible candidates satisfied generation and domain requirements.
+pos-dev-016,positive_paraphrase,development,True,0.9981,,FN,incorrect_rejection,0.27,0.49,No compatible candidates satisfied generation and domain requirements.
+pos-dev-017,positive_paraphrase,development,True,0.4981,,FN,incorrect_rejection,0.37,0.55,No compatible candidates satisfied generation and domain requirements.
 neg-lang-dev-001,different_language,development,False,-0.0125,,TN,safe_rejection,0.37,0.43,No compatible candidates satisfied generation and domain requirements.
-neg-lang-dev-002,different_language,development,False,0.5049,,TN,safe_rejection,0.37,0.52,No compatible candidates satisfied generation and domain requirements.
+neg-lang-dev-002,different_language,development,False,0.5049,,TN,safe_rejection,0.37,0.53,No compatible candidates satisfied generation and domain requirements.
 neg-lang-dev-003,different_language,development,False,0.0033,,TN,safe_rejection,0.26,0.51,No compatible candidates satisfied generation and domain requirements.
-neg-lang-dev-004,different_language,development,False,-0.001,,TN,safe_rejection,0.26,0.55,No compatible candidates satisfied generation and domain requirements.
-neg-lang-dev-005,different_language,development,False,0.7421,,TN,safe_rejection,0.69,0.86,No compatible candidates satisfied generation and domain requirements.
-neg-ver-dev-001,version_difference,development,False,0.4056,,TN,safe_rejection,0.36,0.71,No compatible candidates satisfied generation and domain requirements.
-neg-ver-dev-002,version_difference,development,False,-0.0065,,TN,safe_rejection,0.27,0.47,No compatible candidates satisfied generation and domain requirements.
-neg-ver-dev-003,version_difference,development,False,-0.0079,,TN,safe_rejection,0.26,0.58,No compatible candidates satisfied generation and domain requirements.
-neg-ver-dev-004,version_difference,development,False,0.024,,TN,safe_rejection,0.26,0.53,No compatible candidates satisfied generation and domain requirements.
-neg-ver-dev-005,version_difference,development,False,0.0055,,TN,safe_rejection,0.26,0.65,No compatible candidates satisfied generation and domain requirements.
-neg-err-dev-001,error_difference,development,False,0.4537,,TN,safe_rejection,0.39,0.6,Similarity below threshold: 0.4537 < 0.8200.
-neg-err-dev-002,error_difference,development,False,0.4574,,TN,safe_rejection,0.37,0.67,Similarity below threshold: 0.4574 < 0.8200.
-neg-err-dev-003,error_difference,development,False,0.6628,,TN,safe_rejection,0.49,0.68,Similarity below threshold: 0.6628 < 0.8200.
-neg-err-dev-004,error_difference,development,False,0.007,,TN,safe_rejection,0.26,0.49,No compatible candidates satisfied generation and domain requirements.
-neg-err-dev-005,error_difference,development,False,0.4659,,TN,safe_rejection,0.37,0.68,No compatible candidates satisfied generation and domain requirements.
-neg-con-dev-001,constraint_difference,development,False,0.4741,,TN,safe_rejection,0.48,0.58,No compatible candidates satisfied generation and domain requirements.
-neg-con-dev-002,constraint_difference,development,False,0.8954,,TN,safe_rejection,0.37,0.45,No compatible candidates satisfied generation and domain requirements.
-neg-con-dev-003,constraint_difference,development,False,0.7103,,TN,safe_rejection,0.59,0.79,No compatible candidates satisfied generation and domain requirements.
-neg-con-dev-004,constraint_difference,development,False,0.6732,,TN,safe_rejection,0.47,0.65,Similarity below threshold: 0.6732 < 0.8200.
-neg-con-dev-005,constraint_difference,development,False,0.7223,,TN,safe_rejection,0.39,0.67,Similarity below threshold: 0.7223 < 0.8200.
-neg-rt-dev-001,runtime_difference,development,False,0.0296,,TN,safe_rejection,0.37,0.64,No compatible candidates satisfied generation and domain requirements.
-neg-rt-dev-002,runtime_difference,development,False,0.4824,,TN,safe_rejection,0.49,0.56,No compatible candidates satisfied generation and domain requirements.
-neg-rt-dev-003,runtime_difference,development,False,0.0059,,TN,safe_rejection,0.26,0.56,No compatible candidates satisfied generation and domain requirements.
+neg-lang-dev-004,different_language,development,False,-0.001,,TN,safe_rejection,0.26,0.56,No compatible candidates satisfied generation and domain requirements.
+neg-lang-dev-005,different_language,development,False,0.7421,,TN,safe_rejection,0.71,0.88,No compatible candidates satisfied generation and domain requirements.
+neg-ver-dev-001,version_difference,development,False,0.4056,,TN,safe_rejection,0.37,0.73,No compatible candidates satisfied generation and domain requirements.
+neg-ver-dev-002,version_difference,development,False,-0.0065,,TN,safe_rejection,0.27,0.48,No compatible candidates satisfied generation and domain requirements.
+neg-ver-dev-003,version_difference,development,False,-0.0079,,TN,safe_rejection,0.27,0.59,No compatible candidates satisfied generation and domain requirements.
+neg-ver-dev-004,version_difference,development,False,0.024,,TN,safe_rejection,0.26,0.52,No compatible candidates satisfied generation and domain requirements.
+neg-ver-dev-005,version_difference,development,False,0.0055,,TN,safe_rejection,0.27,0.64,No compatible candidates satisfied generation and domain requirements.
+neg-err-dev-001,error_difference,development,False,0.4537,,TN,safe_rejection,0.38,0.58,Similarity below threshold: 0.4537 < 0.8200.
+neg-err-dev-002,error_difference,development,False,0.4574,,TN,safe_rejection,0.38,0.68,Similarity below threshold: 0.4574 < 0.8200.
+neg-err-dev-003,error_difference,development,False,0.6628,,TN,safe_rejection,0.48,0.67,Similarity below threshold: 0.6628 < 0.8200.
+neg-err-dev-004,error_difference,development,False,0.007,,TN,safe_rejection,0.27,0.5,No compatible candidates satisfied generation and domain requirements.
+neg-err-dev-005,error_difference,development,False,0.4659,,TN,safe_rejection,0.37,0.67,No compatible candidates satisfied generation and domain requirements.
+neg-con-dev-001,constraint_difference,development,False,0.4741,,TN,safe_rejection,0.49,0.57,No compatible candidates satisfied generation and domain requirements.
+neg-con-dev-002,constraint_difference,development,False,0.8954,,TN,safe_rejection,0.38,0.44,No compatible candidates satisfied generation and domain requirements.
+neg-con-dev-003,constraint_difference,development,False,0.7103,,TN,safe_rejection,0.59,0.77,No compatible candidates satisfied generation and domain requirements.
+neg-con-dev-004,constraint_difference,development,False,0.6732,,TN,safe_rejection,0.48,0.66,Similarity below threshold: 0.6732 < 0.8200.
+neg-con-dev-005,constraint_difference,development,False,0.7223,,TN,safe_rejection,0.37,0.68,Similarity below threshold: 0.7223 < 0.8200.
+neg-rt-dev-001,runtime_difference,development,False,0.0296,,TN,safe_rejection,0.38,0.66,No compatible candidates satisfied generation and domain requirements.
+neg-rt-dev-002,runtime_difference,development,False,0.4824,,TN,safe_rejection,0.49,0.57,No compatible candidates satisfied generation and domain requirements.
+neg-rt-dev-003,runtime_difference,development,False,0.0059,,TN,safe_rejection,0.26,0.57,No compatible candidates satisfied generation and domain requirements.
 neg-rt-dev-004,runtime_difference,development,False,0.0668,,TN,safe_rejection,0.37,0.46,No compatible candidates satisfied generation and domain requirements.
-neg-out-dev-001,output_difference,development,False,0.5566,,TN,safe_rejection,0.48,0.64,Similarity below threshold: 0.5566 < 0.8200.
+neg-out-dev-001,output_difference,development,False,0.5566,,TN,safe_rejection,0.49,0.66,Similarity below threshold: 0.5566 < 0.8200.
 neg-out-dev-002,output_difference,development,False,0.479,,TN,safe_rejection,0.37,0.58,Similarity below threshold: 0.4790 < 0.8200.
-neg-out-dev-003,output_difference,development,False,0.414,,TN,safe_rejection,0.48,0.86,Similarity below threshold: 0.4140 < 0.8200.
-neg-out-dev-004,output_difference,development,False,0.4295,,TN,safe_rejection,0.58,0.77,Similarity below threshold: 0.4295 < 0.8200.
-amb-dev-001,ambiguous_candidates,development,False,0.6069,0.0053,TN,safe_rejection,0.75,0.58,No compatible candidates satisfied generation and domain requirements.
-amb-dev-002,ambiguous_candidates,development,False,0.0248,0.0281,TN,safe_rejection,0.64,0.67,No compatible candidates satisfied generation and domain requirements.
-amb-dev-003,ambiguous_candidates,development,False,0.9835,0.0001,TN,safe_rejection,0.79,0.66,Ambiguous candidate: nearest alternative candidate margin (0.0001) is below minimum margin (0.0300) with a different answer.
-amb-dev-004,ambiguous_candidates,development,False,0.9996,0.0153,TN,safe_rejection,0.74,0.77,No compatible candidates satisfied generation and domain requirements.
-amb-dev-005,ambiguous_candidates,development,False,0.3463,0.0002,TN,safe_rejection,0.77,0.69,No compatible candidates satisfied generation and domain requirements.
-amb-dev-006,ambiguous_candidates,development,False,0.2986,0.0377,TN,safe_rejection,1.18,0.63,No compatible candidates satisfied generation and domain requirements.
-unr-dev-001,unrelated_technical,development,False,0.035,,TN,safe_rejection,0.6,0.35,No compatible candidates satisfied generation and domain requirements.
-unr-dev-002,unrelated_technical,development,False,0.0,,TN,safe_rejection,0.15,0.36,No compatible candidates satisfied generation and domain requirements.
-unr-dev-003,unrelated_technical,development,False,0.0155,,TN,safe_rejection,0.16,0.47,No compatible candidates satisfied generation and domain requirements.
+neg-out-dev-003,output_difference,development,False,0.414,,TN,safe_rejection,0.5,0.88,Similarity below threshold: 0.4140 < 0.8200.
+neg-out-dev-004,output_difference,development,False,0.4295,,TN,safe_rejection,0.59,0.78,Similarity below threshold: 0.4295 < 0.8200.
+amb-dev-001,ambiguous_candidates,development,False,0.6069,0.0053,TN,safe_rejection,0.75,0.6,No compatible candidates satisfied generation and domain requirements.
+amb-dev-002,ambiguous_candidates,development,False,0.0248,0.0281,TN,safe_rejection,0.66,0.65,No compatible candidates satisfied generation and domain requirements.
+amb-dev-003,ambiguous_candidates,development,False,0.9835,0.0001,TN,safe_rejection,0.77,0.68,Ambiguous candidate: nearest alternative candidate margin (0.0001) is below minimum margin (0.0300) with a different answer.
+amb-dev-004,ambiguous_candidates,development,False,0.9996,0.0153,TN,safe_rejection,0.75,0.81,No compatible candidates satisfied generation and domain requirements.
+amb-dev-005,ambiguous_candidates,development,False,0.3463,0.0002,TN,safe_rejection,0.79,0.69,No compatible candidates satisfied generation and domain requirements.
+amb-dev-006,ambiguous_candidates,development,False,0.2986,0.0377,TN,safe_rejection,1.21,0.65,No compatible candidates satisfied generation and domain requirements.
+unr-dev-001,unrelated_technical,development,False,0.035,,TN,safe_rejection,0.61,0.37,No compatible candidates satisfied generation and domain requirements.
+unr-dev-002,unrelated_technical,development,False,0.0,,TN,safe_rejection,0.16,0.36,No compatible candidates satisfied generation and domain requirements.
+unr-dev-003,unrelated_technical,development,False,0.0155,,TN,safe_rejection,0.16,0.49,No compatible candidates satisfied generation and domain requirements.
 unr-dev-004,unrelated_technical,development,False,0.2236,,TN,safe_rejection,0.15,0.36,No compatible candidates satisfied generation and domain requirements.
-unr-dev-005,unrelated_technical,development,False,0.0307,,TN,safe_rejection,0.37,0.36,No compatible candidates satisfied generation and domain requirements.
-unr-dev-006,unrelated_technical,development,False,-0.0015,,TN,safe_rejection,0.26,0.44,No compatible candidates satisfied generation and domain requirements.
-lang-dev-006,different_language,development,False,0.0072,,TN,safe_rejection,0.26,0.45,No compatible candidates satisfied generation and domain requirements.
-ver-dev-006,version_difference,development,False,0.5189,,TN,safe_rejection,0.16,0.37,No compatible candidates satisfied generation and domain requirements.
-con-dev-006,constraint_difference,development,False,0.9993,,TN,safe_rejection,0.26,0.44,No compatible candidates satisfied generation and domain requirements.
-con-dev-007,constraint_difference,development,False,0.9994,,TN,safe_rejection,0.27,0.45,No compatible candidates satisfied generation and domain requirements.
-con-dev-008,constraint_difference,development,False,0.5213,,TN,safe_rejection,0.37,0.57,No compatible candidates satisfied generation and domain requirements.
-con-dev-009,constraint_difference,development,False,0.9996,,TN,safe_rejection,0.37,0.57,No compatible candidates satisfied generation and domain requirements.
-out-dev-005,output_difference,development,False,0.9434,,TN,safe_rejection,0.37,0.67,No compatible candidates satisfied generation and domain requirements.
-pos-dev-018,positive_paraphrase,development,True,0.9984,,TP,safe_reuse,0.26,0.47,
+unr-dev-005,unrelated_technical,development,False,0.0307,,TN,safe_rejection,0.36,0.36,No compatible candidates satisfied generation and domain requirements.
+unr-dev-006,unrelated_technical,development,False,-0.0015,,TN,safe_rejection,0.27,0.45,No compatible candidates satisfied generation and domain requirements.
+lang-dev-006,different_language,development,False,0.0072,,TN,safe_rejection,0.27,0.46,No compatible candidates satisfied generation and domain requirements.
+ver-dev-006,version_difference,development,False,0.5189,,TN,safe_rejection,0.16,0.38,No compatible candidates satisfied generation and domain requirements.
+con-dev-006,constraint_difference,development,False,0.9993,,TN,safe_rejection,0.27,0.44,No compatible candidates satisfied generation and domain requirements.
+con-dev-007,constraint_difference,development,False,0.9994,,TN,safe_rejection,0.27,0.46,No compatible candidates satisfied generation and domain requirements.
+con-dev-008,constraint_difference,development,False,0.5213,,TN,safe_rejection,0.38,0.6,No compatible candidates satisfied generation and domain requirements.
+con-dev-009,constraint_difference,development,False,0.9996,,TN,safe_rejection,0.38,0.59,No compatible candidates satisfied generation and domain requirements.
+out-dev-005,output_difference,development,False,0.9434,,TN,safe_rejection,0.39,0.69,No compatible candidates satisfied generation and domain requirements.
+pos-dev-018,positive_paraphrase,development,True,0.9984,,TP,safe_reuse,0.27,0.47,

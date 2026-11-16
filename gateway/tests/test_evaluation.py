@@ -1579,5 +1579,79 @@ class TestRealOllamaPgvectorIntegration(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(outcome.lookup_latency_ms, 0.0)
 
 
+class TestFailOnFalsePositiveGate(unittest.IsolatedAsyncioTestCase):
+    """Verifies that --fail-on-fp terminates with non-zero exit code on false positives."""
+
+    async def test_fail_on_fp_exits_when_fp_positive(self) -> None:
+        from scripts.evaluate_semantic_cache import async_main, EvaluationMetrics
+
+        mock_metrics = EvaluationMetrics(
+            total_cases=10,
+            tp=5,
+            fp=1,
+            fn=2,
+            tn=2,
+            precision=0.8333,
+            recall=0.7143,
+            f1_score=0.7692,
+            false_positive_rate=0.3333,
+            rejection_rate=0.4,
+            accuracy=0.7,
+            safe_reuse_count=5,
+            incorrect_reuse_count=1,
+            safe_tokens_saved=1000,
+            safe_latency_saved_ms=500.0,
+        )
+
+        test_args = [
+            "evaluate_semantic_cache.py",
+            "--dataset", "evaluation/dataset_stage3_1_1.json",
+            "--split", "development",
+            "--provider", "mock",
+            "--fail-on-fp",
+        ]
+
+        with patch("sys.argv", test_args), \
+             patch("scripts.evaluate_semantic_cache.evaluate_dataset", return_value=(mock_metrics, [])), \
+             patch("scripts.evaluate_semantic_cache.save_reports", return_value=(Path("/tmp/r.json"), Path("/tmp/r.csv"))):
+            with self.assertRaises(SystemExit) as ctx:
+                await async_main()
+            self.assertEqual(ctx.exception.code, 1)
+
+    async def test_fail_on_fp_passes_when_fp_zero(self) -> None:
+        from scripts.evaluate_semantic_cache import async_main, EvaluationMetrics
+
+        mock_metrics = EvaluationMetrics(
+            total_cases=10,
+            tp=5,
+            fp=0,
+            fn=2,
+            tn=3,
+            precision=1.0,
+            recall=0.7143,
+            f1_score=0.8333,
+            false_positive_rate=0.0,
+            rejection_rate=0.5,
+            accuracy=0.8,
+            safe_reuse_count=5,
+            incorrect_reuse_count=0,
+            safe_tokens_saved=1000,
+            safe_latency_saved_ms=500.0,
+        )
+
+        test_args = [
+            "evaluate_semantic_cache.py",
+            "--dataset", "evaluation/dataset_stage3_1_1.json",
+            "--split", "development",
+            "--provider", "mock",
+            "--fail-on-fp",
+        ]
+
+        with patch("sys.argv", test_args), \
+             patch("scripts.evaluate_semantic_cache.evaluate_dataset", return_value=(mock_metrics, [])), \
+             patch("scripts.evaluate_semantic_cache.save_reports", return_value=(Path("/tmp/r.json"), Path("/tmp/r.csv"))):
+            await async_main()
+
+
 if __name__ == "__main__":
     unittest.main()

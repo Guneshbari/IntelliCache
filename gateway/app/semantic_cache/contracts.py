@@ -369,18 +369,12 @@ class SemanticCompatibilityMetadata:
 
         raw_gen = data.get("generation_contract")
         if not isinstance(raw_gen, dict):
-            # Fall back to top-level legacy keys if present
-            raw_gen = {
-                "provider": data.get("llm_provider", ""),
-                "model": data.get("llm_model", ""),
-                "temperature": data.get("temperature", 0.0),
-                "max_tokens": data.get("max_tokens"),
-            }
+            raise ValueError("Missing or invalid 'generation_contract' in metadata dictionary.")
         generation_contract = GenerationContract.from_dict(raw_gen)
 
         raw_emb = data.get("embedding_contract")
         if not isinstance(raw_emb, dict):
-            raw_emb = {"model": data.get("embedding_model", data.get("model", ""))}
+            raise ValueError("Missing or invalid 'embedding_contract' in metadata dictionary.")
         embedding_contract = EmbeddingContract.from_dict(raw_emb)
 
         return cls(
