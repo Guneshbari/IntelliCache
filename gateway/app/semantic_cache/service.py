@@ -139,7 +139,11 @@ class SemanticCacheService(BaseSemanticCache):
         # 3. Evaluate candidates against policy
         eval_start = time.perf_counter()
         try:
-            winning_candidate, rejection_reason = self.policy.evaluate_candidates(candidates, request)
+            winning_candidate, rejection_reason = self.policy.evaluate_candidates(
+                candidates,
+                request,
+                request_metadata=eligibility.metadata,
+            )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -252,7 +256,7 @@ class SemanticCacheService(BaseSemanticCache):
 
         # 2. Prepare validated versioned compatibility metadata
         try:
-            meta_obj = self.policy.extractor.extract(request, self.policy.configured_model)
+            meta_obj = eligibility.metadata or self.policy.extractor.extract(request, self.policy.configured_model)
             meta_obj.validate()
             meta = meta_obj.to_dict()
         except Exception as exc:

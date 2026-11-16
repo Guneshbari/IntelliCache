@@ -5,6 +5,7 @@ Provides policy evaluation, candidate verification, and semantic cache orchestra
 
 from .compatibility import CompatibilityExtractor, compare_compatibility
 from .contracts import (
+    CURRENT_SCHEMA_VERSION,
     CompatibilityReasonCode,
     ConstraintItem,
     DimensionValue,
@@ -13,6 +14,7 @@ from .contracts import (
     GenerationContract,
     MetadataStatus,
     REQUIRED_DIMENSIONS,
+    SUPPORTED_SCHEMA_VERSIONS,
     SemanticCacheStats,
     SemanticCompatibilityMetadata,
     SemanticHit,
@@ -24,6 +26,7 @@ from .service import SemanticCacheService
 
 __all__ = [
     "BaseSemanticCache",
+    "CURRENT_SCHEMA_VERSION",
     "CompatibilityExtractor",
     "CompatibilityReasonCode",
     "ConstraintItem",
@@ -33,6 +36,7 @@ __all__ = [
     "GenerationContract",
     "MetadataStatus",
     "REQUIRED_DIMENSIONS",
+    "SUPPORTED_SCHEMA_VERSIONS",
     "SemanticCachePolicy",
     "SemanticCacheService",
     "SemanticCacheStats",

@@ -5,6 +5,7 @@ Isolated from FastAPI, Groq SDK, Ollama SDK, and database implementations.
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import math
 from typing import Any, Dict, List, Optional
 
 
@@ -22,6 +23,14 @@ class TaskKind:
     DEBUGGING_EXPLANATION = "debugging_explanation"
     REFACTORING = "refactoring"
     CONFIGURATION = "configuration"
+
+    ALL_VALUES = frozenset({
+        CODE_GENERATION,
+        CONCEPTUAL,
+        DEBUGGING_EXPLANATION,
+        REFACTORING,
+        CONFIGURATION,
+    })
 
 
 class CompatibilityReasonCode:
@@ -43,6 +52,7 @@ class CompatibilityReasonCode:
     FRAMEWORK_MISMATCH = "FRAMEWORK_MISMATCH"
     FRAMEWORK_VERSION_MISMATCH = "FRAMEWORK_VERSION_MISMATCH"
     RUNTIME_MISMATCH = "RUNTIME_MISMATCH"
+    RUNTIME_VERSION_MISMATCH = "RUNTIME_VERSION_MISMATCH"
     EXECUTION_MODEL_MISMATCH = "EXECUTION_MODEL_MISMATCH"
     OUTPUT_FORMAT_MISMATCH = "OUTPUT_FORMAT_MISMATCH"
     CONSTRAINT_MISMATCH = "CONSTRAINT_MISMATCH"
@@ -50,12 +60,16 @@ class CompatibilityReasonCode:
     VALIDATOR_EXCEPTION = "VALIDATOR_EXCEPTION"
 
 
+CURRENT_SCHEMA_VERSION = 2
+SUPPORTED_SCHEMA_VERSIONS = frozenset({2})
+
 REQUIRED_DIMENSIONS = frozenset({
     "language",
     "language_version",
     "framework",
     "framework_version",
     "runtime",
+    "runtime_version",
     "execution_model",
     "output_format",
     "constraints",
@@ -110,6 +124,8 @@ class DimensionValue:
 @dataclass(frozen=True)
 class ConstraintItem:
     """Normalized technical constraint specification (e.g. case_sensitivity=sensitive)."""
+    SUPPORTED_OPERATORS = frozenset({"equals", "not_equals", "in", "not_in"})
+
     key: str
     operator: str = "equals"
     value: str = ""
@@ -117,6 +133,8 @@ class ConstraintItem:
     def __post_init__(self) -> None:
         if not self.key or not str(self.key).strip():
             raise ValueError("Constraint key cannot be empty.")
+        if self.operator not in self.SUPPORTED_OPERATORS:
+            raise ValueError(f"Unsupported constraint operator: '{self.operator}'. Must be one of {sorted(self.SUPPORTED_OPERATORS)}")
         if not self.value or not str(self.value).strip():
             raise ValueError("Constraint value cannot be empty.")
 
@@ -147,6 +165,15 @@ class GenerationContract:
             raise ValueError("Generation provider cannot be empty.")
         if not self.model or not str(self.model).strip():
             raise ValueError("Generation model cannot be empty.")
+        if not isinstance(self.temperature, (int, float)) or isinstance(self.temperature, bool):
+            raise ValueError(f"Generation temperature must be a float, got {type(self.temperature).__name__}")
+        if not math.isfinite(self.temperature) or math.isnan(self.temperature):
+            raise ValueError(f"Generation temperature must be finite, got {self.temperature}")
+        if self.temperature < 0.0:
+            raise ValueError(f"Generation temperature cannot be negative, got {self.temperature}")
+        if self.max_tokens is not None:
+            if not isinstance(self.max_tokens, int) or isinstance(self.max_tokens, bool) or self.max_tokens <= 0:
+                raise ValueError(f"Generation max_tokens must be a positive integer, got {self.max_tokens}")
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -192,7 +219,7 @@ class EmbeddingContract:
 @dataclass(frozen=True)
 class SemanticCompatibilityMetadata:
     """
-    Validated, versioned semantic compatibility metadata contract (Stage 3.1).
+    Validated, versioned semantic compatibility metadata contract (Stage 3.1.1).
     Ensures that domain compatibility (language, framework, runtime, version,
     constraints, output format) is verified before semantic response reuse.
     """
@@ -209,15 +236,18 @@ class SemanticCompatibilityMetadata:
 
     def validate(self) -> None:
         """Enforces all schema integrity and field-state rules."""
-        if self.schema_version != 1:
-            raise ValueError(f"Unsupported schema_version: {self.schema_version}. Expected 1.")
+        if self.schema_version not in SUPPORTED_SCHEMA_VERSIONS:
+            raise ValueError(f"Unsupported schema_version: {self.schema_version}. Expected one of {sorted(SUPPORTED_SCHEMA_VERSIONS)}.")
         if not self.extractor_version or not str(self.extractor_version).strip():
             raise ValueError("extractor_version cannot be empty.")
 
         if not isinstance(self.task_kind, DimensionValue):
             raise ValueError(f"task_kind must be a DimensionValue, got {type(self.task_kind).__name__}")
-        if self.task_kind.status not in (MetadataStatus.KNOWN, MetadataStatus.UNKNOWN):
+        if self.task_kind.status == MetadataStatus.NOT_APPLICABLE:
             raise ValueError("task_kind cannot be NOT_APPLICABLE.")
+        if self.task_kind.status == MetadataStatus.KNOWN:
+            if self.task_kind.value not in TaskKind.ALL_VALUES:
+                raise ValueError(f"Unsupported task_kind value: '{self.task_kind.value}'. Must be one of {sorted(TaskKind.ALL_VALUES)}")
 
         if not isinstance(self.dimensions, dict):
             raise ValueError(f"dimensions must be a dictionary, got {type(self.dimensions).__name__}")
@@ -229,6 +259,16 @@ class SemanticCompatibilityMetadata:
         for dim_name, dim_val in self.dimensions.items():
             if not isinstance(dim_val, DimensionValue):
                 raise ValueError(f"Dimension '{dim_name}' must be DimensionValue, got {type(dim_val).__name__}")
+            if dim_val.status == MetadataStatus.KNOWN:
+                if dim_name == "constraints":
+                    if not isinstance(dim_val.value, list):
+                        raise ValueError(f"Dimension '{dim_name}' value must be a list of ConstraintItem, got {type(dim_val.value).__name__}")
+                    for c_item in dim_val.value:
+                        if not isinstance(c_item, ConstraintItem):
+                            raise ValueError(f"Constraints list item must be ConstraintItem, got {type(c_item).__name__}")
+                else:
+                    if not isinstance(dim_val.value, str):
+                        raise ValueError(f"Dimension '{dim_name}' value must be a string, got {type(dim_val.value).__name__}")
 
         if not isinstance(self.generation_contract, GenerationContract):
             raise ValueError(f"generation_contract must be GenerationContract, got {type(self.generation_contract).__name__}")
@@ -261,10 +301,9 @@ class SemanticCompatibilityMetadata:
         raw_ver = data.get("schema_version")
         if raw_ver is None:
             raise ValueError("Missing 'schema_version' in metadata.")
-        try:
-            ver = int(raw_ver)
-        except (ValueError, TypeError):
-            raise ValueError(f"Invalid 'schema_version': {raw_ver}")
+        if not isinstance(raw_ver, int) or isinstance(raw_ver, bool):
+            raise ValueError(f"Invalid 'schema_version': {raw_ver}. Must be an integer.")
+        ver = raw_ver
 
         raw_ext = str(data.get("extractor_version", "")).strip()
 
@@ -318,6 +357,7 @@ class EligibilityResult:
     """Result of checking a request's eligibility for semantic caching."""
     eligible: bool
     reason: str
+    metadata: Optional["SemanticCompatibilityMetadata"] = None
 
 
 @dataclass(frozen=True)

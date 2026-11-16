@@ -255,6 +255,7 @@ class EvaluationCase:
     expected_answer_label: Optional[str]
     rationale: str
     candidates: List[CandidateData]
+    problem_group_id: Optional[str] = None
 
 
 @dataclass
@@ -341,6 +342,9 @@ def load_dataset(dataset_path: str | Path) -> List[EvaluationCase]:
     seen_ids: Set[str] = set()
     dev_ids: Set[str] = set()
     test_ids: Set[str] = set()
+    dev_groups: Set[str] = set()
+    test_groups: Set[str] = set()
+    has_problem_groups = any("problem_group_id" in item for item in data)
 
     for idx, item in enumerate(data):
         if not isinstance(item, dict):
@@ -369,6 +373,17 @@ def load_dataset(dataset_path: str | Path) -> List[EvaluationCase]:
         query = item.get("query")
         if not query or not isinstance(query, str) or len(query.strip()) < 3:
             raise ValueError(f"Case '{cid}' must contain a non-empty 'query' string of at least 3 characters")
+
+        prob_group: Optional[str] = None
+        if has_problem_groups:
+            raw_group = item.get("problem_group_id")
+            if not raw_group or not isinstance(raw_group, str) or not raw_group.strip():
+                raise ValueError(f"Case '{cid}' is missing a non-empty string 'problem_group_id'")
+            prob_group = raw_group.strip()
+            if split == "development":
+                dev_groups.add(prob_group)
+            else:
+                test_groups.add(prob_group)
 
         raw_candidates = item.get("candidates")
         if not isinstance(raw_candidates, list) or len(raw_candidates) == 0:
@@ -442,6 +457,7 @@ def load_dataset(dataset_path: str | Path) -> List[EvaluationCase]:
                 expected_answer_label=expected_label,
                 rationale=str(item.get("rationale", "")).strip(),
                 candidates=candidates,
+                problem_group_id=prob_group,
             )
         )
 
@@ -449,6 +465,13 @@ def load_dataset(dataset_path: str | Path) -> List[EvaluationCase]:
     overlap = dev_ids.intersection(test_ids)
     if overlap:
         raise ValueError(f"Development and test splits must be strictly disjoint, but found overlapping IDs: {overlap}")
+
+    if has_problem_groups:
+        group_overlap = dev_groups.intersection(test_groups)
+        if group_overlap:
+            raise ValueError(
+                f"Partition leakage detected: problem groups appear in both development and test splits: {sorted(group_overlap)}"
+            )
 
     return cases
 

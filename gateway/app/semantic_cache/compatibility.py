@@ -1,5 +1,5 @@
 """
-Deterministic compatibility extraction and validation engine for IntelliCache (Stage 3.1).
+Deterministic compatibility extraction and validation engine for IntelliCache (Stage 3.1.1).
 Extracts, normalizes, and compares technical query requirements without external LLM calls.
 Enforces that domain incompatibility (language, framework, runtime, version, constraints,
 output format) cannot be overridden by dense vector similarity.
@@ -11,6 +11,7 @@ import re
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple
 
 from .contracts import (
+    CURRENT_SCHEMA_VERSION,
     CompatibilityReasonCode,
     ConstraintItem,
     DimensionValue,
@@ -33,19 +34,24 @@ class CompatibilityExtractor:
     Ensures identical text and extractor version always yield identical metadata.
     """
 
-    EXTRACTOR_VERSION = "compat-extractor-v1"
+    EXTRACTOR_VERSION = "compat-extractor-v2"
 
-    FRAMEWORK_DEFAULT_LANGUAGES: Dict[str, str] = {
-        "react": "javascript",
-        "vue": "javascript",
-        "angular": "typescript",
-        "next.js": "javascript",
-        "express": "javascript",
+    # Only frameworks with single, unambiguous implementation language associations
+    FRAMEWORK_UNAMBIGUOUS_LANGUAGES: Dict[str, str] = {
         "fastapi": "python",
         "flask": "python",
         "django": "python",
         "spring": "java",
     }
+
+    # Frameworks supporting both JavaScript and TypeScript requiring explicit evidence for code generation
+    MULTI_LANGUAGE_FRAMEWORKS = frozenset({
+        "react",
+        "vue",
+        "angular",
+        "next.js",
+        "express",
+    })
 
     def extract(self, request: GenerationRequest, configured_model: str) -> SemanticCompatibilityMetadata:
         """Extracts complete versioned metadata from a GenerationRequest."""
@@ -79,8 +85,10 @@ class CompatibilityExtractor:
         language = self._detect_language(text, task_kind.value, framework_val)
         language_val = language.value if language.status == MetadataStatus.KNOWN else None
 
-        lang_ver, fw_ver = self._detect_versions(text, language_val, framework_val)
         runtime = self._detect_runtime(text)
+        runtime_val = runtime.value if runtime.status == MetadataStatus.KNOWN else None
+
+        lang_ver, fw_ver, runtime_ver = self._detect_versions(text, language_val, framework_val, runtime_val)
         execution_model = self._detect_execution_model(text)
         output_format = self._detect_output_format(text)
         constraints = self._detect_constraints(text)
@@ -91,6 +99,7 @@ class CompatibilityExtractor:
             "framework": framework,
             "framework_version": fw_ver,
             "runtime": runtime,
+            "runtime_version": runtime_ver,
             "execution_model": execution_model,
             "output_format": output_format,
             "constraints": constraints,
@@ -108,7 +117,7 @@ class CompatibilityExtractor:
         )
 
         return SemanticCompatibilityMetadata(
-            schema_version=1,
+            schema_version=CURRENT_SCHEMA_VERSION,
             extractor_version=self.EXTRACTOR_VERSION,
             task_kind=task_kind,
             dimensions=dimensions,
@@ -148,24 +157,49 @@ class CompatibilityExtractor:
 
     def _detect_framework(self, text: str) -> DimensionValue:
         lower = text.lower()
-        if re.search(r"\breact(?:\.js|js)?\b", lower):
-            return DimensionValue(status=MetadataStatus.KNOWN, value="react")
+
+        # React: guard against ordinary English ("people react", "chemical reaction", "body reacts")
+        if re.search(r"\breact(?:\.js|js)\b", lower) or re.search(
+            r"\breact\s+(?:component|components|hook|hooks|router|app|native|jsx|tsx|render|vdom|virtual\s+dom|props|state|context|query|element|elements|dev|developer)\b|\b(?:in|using|with)\s+react\b|\breact\s+1[6-9]\b",
+            lower,
+        ):
+            if not re.search(r"\b(?:people|body|skin|chemicals?|how\s+will\s+they|users?)\s+react\b", lower):
+                return DimensionValue(status=MetadataStatus.KNOWN, value="react")
+
+        # Vue
         if re.search(r"\bvue(?:\.js|js)?\b", lower):
             return DimensionValue(status=MetadataStatus.KNOWN, value="vue")
+
+        # Angular
         if re.search(r"\bangular(?:\.js|js)?\b", lower):
             return DimensionValue(status=MetadataStatus.KNOWN, value="angular")
-        if re.search(r"\bnext(?:\.js|js)?\b", lower):
+
+        # Next.js: guard against ordinary English ("next step", "next time", "next line", "what is next")
+        if re.search(r"\bnext(?:\.js|js)\b|\bnext\s+(?:1[3-5]|app\s+router|pages\s+router|router|server\s+action|server\s+component|auth)\b", lower):
             return DimensionValue(status=MetadataStatus.KNOWN, value="next.js")
+
+        # FastAPI
         if re.search(r"\bfastapi\b", lower):
             return DimensionValue(status=MetadataStatus.KNOWN, value="fastapi")
+
+        # Flask
         if re.search(r"\bflask\b", lower):
             return DimensionValue(status=MetadataStatus.KNOWN, value="flask")
+
+        # Django
         if re.search(r"\bdjango\b", lower):
             return DimensionValue(status=MetadataStatus.KNOWN, value="django")
-        if re.search(r"\bexpress(?:\.js|js)?\b", lower):
-            return DimensionValue(status=MetadataStatus.KNOWN, value="express")
-        if re.search(r"\bspring(?:\s+boot)?\b", lower):
+
+        # Express: guard against ordinary English ("express intent", "express my opinion", "express feeling", "express train")
+        if re.search(r"\bexpress(?:\.js|js)\b|\bexpress\s+(?:app|server|router|middleware|route|routes|endpoint|endpoints)\b|\b(?:in|using|with)\s+express\b", lower):
+            if not re.search(r"\b(?:express\s+(?:intent|opinion|feeling|feelings|gratitude|train|bus|delivery))\b", lower):
+                return DimensionValue(status=MetadataStatus.KNOWN, value="express")
+
+        # Spring: guard against ordinary English ("spring season", "spring cleaning", "spring into action")
+        if re.search(r"\bspring\s+(?:boot|framework|security|data|mvc|cloud|batch|context|bean|beans)\b|\b@spring\b", lower):
             return DimensionValue(status=MetadataStatus.KNOWN, value="spring")
+
+        # Container runtimes / frameworks
         if re.search(r"\bdocker(?:file)?\b", lower):
             return DimensionValue(status=MetadataStatus.KNOWN, value="docker")
         if re.search(r"\b(?:kubernetes|k8s)\b", lower):
@@ -226,10 +260,13 @@ class CompatibilityExtractor:
             return DimensionValue(status=MetadataStatus.KNOWN, value="css")
 
         # 5. Distinct code syntax patterns in text
-        if re.search(r"\bdef\s+[a-zA-Z_][a-zA-Z0-9_]*\s*\(", text) or ("import " in text and not "const " in text):
+        if re.search(r"\bdef\s+[a-zA-Z_][a-zA-Z0-9_]*\s*\(", text) or ("import " in text and not "const " in text and not "from '" in text and not "from \"" in text):
             if not ("fn " in text or "pub fn " in text):
                 return DimensionValue(status=MetadataStatus.KNOWN, value="python")
         if re.search(r"\b(?:const|let|var)\s+[a-zA-Z_][a-zA-Z0-9_]*\s*=", text) or "console.log" in text or re.search(r"\bfunction(?:\s+[a-zA-Z_$][a-zA-Z0-9_$]*)?\s*\(", text):
+            # Check for TypeScript type annotations
+            if re.search(r":\s*(?:string|number|boolean|any|void|never|unknown|Promise<.+>)\b", text):
+                return DimensionValue(status=MetadataStatus.KNOWN, value="typescript")
             return DimensionValue(status=MetadataStatus.KNOWN, value="javascript")
         if re.search(r"\bfn\s+[a-zA-Z_][a-zA-Z0-9_]*\s*\(", text) or "pub fn " in text:
             return DimensionValue(status=MetadataStatus.KNOWN, value="rust")
@@ -238,15 +275,23 @@ class CompatibilityExtractor:
         if "public static void main" in text or "System.out.println" in text:
             return DimensionValue(status=MetadataStatus.KNOWN, value="java")
 
-        # 5. If framework is present, infer canonical ecosystem language
-        if framework and framework in self.FRAMEWORK_DEFAULT_LANGUAGES:
-            return DimensionValue(status=MetadataStatus.KNOWN, value=self.FRAMEWORK_DEFAULT_LANGUAGES[framework])
+        # 6. Unambiguous single-ecosystem frameworks (FastAPI -> Python, Spring -> Java)
+        if framework and framework in self.FRAMEWORK_UNAMBIGUOUS_LANGUAGES:
+            return DimensionValue(status=MetadataStatus.KNOWN, value=self.FRAMEWORK_UNAMBIGUOUS_LANGUAGES[framework])
 
-        # 6. Conceptual query without explicit language: NOT_APPLICABLE
+        # 7. Multi-language frameworks (React, Vue, Next.js, Express, Angular):
+        # Do NOT silently assume JavaScript for code generation without explicit evidence!
+        if framework and framework in self.MULTI_LANGUAGE_FRAMEWORKS:
+            if task_kind == TaskKind.CODE_GENERATION:
+                return DimensionValue(status=MetadataStatus.UNKNOWN, value=None)
+            if task_kind == TaskKind.CONCEPTUAL:
+                return DimensionValue(status=MetadataStatus.NOT_APPLICABLE, value=None)
+
+        # 8. Conceptual query without explicit language: NOT_APPLICABLE
         if task_kind == TaskKind.CONCEPTUAL:
             return DimensionValue(status=MetadataStatus.NOT_APPLICABLE, value=None)
 
-        # 7. Code generation without language: UNKNOWN (material dimension fails closed)
+        # 9. Code generation without language: UNKNOWN (material dimension fails closed)
         return DimensionValue(status=MetadataStatus.UNKNOWN, value=None)
 
     def _detect_versions(
@@ -254,27 +299,47 @@ class CompatibilityExtractor:
         text: str,
         language: Optional[str],
         framework: Optional[str],
-    ) -> Tuple[DimensionValue, DimensionValue]:
+        runtime: Optional[str],
+    ) -> Tuple[DimensionValue, DimensionValue, DimensionValue]:
         lower = text.lower()
 
-        # Language version
+        # 1. Language version (captures full patch version like 3.12.1, 3.12.9)
         lang_ver: Optional[str] = None
         if language == "python":
-            m_py = re.search(r"\bpython\s*([23](?:\.[0-9]+)?)\b", lower)
+            m_py = re.search(r"\bpython\s*([23](?:\.[0-9]+)+|[23])\b", lower)
             if m_py:
                 lang_ver = m_py.group(1)
-        elif language in ("javascript", "typescript"):
-            m_node = re.search(r"\bnode(?:\.js)?\s*([0-9]{1,2}(?:\.[0-9]+)?)\b", lower)
-            if m_node:
-                lang_ver = m_node.group(1)
+        elif language == "java":
+            m_java = re.search(r"\bjava\s*([0-9]+(?:\.[0-9]+)*)\b", lower)
+            if m_java:
+                lang_ver = m_java.group(1)
+        elif language == "c++":
+            m_cpp = re.search(r"\bc\+\+\s*(11|14|17|20|23)\b", lower)
+            if m_cpp:
+                lang_ver = m_cpp.group(1)
 
-        # Framework version
+        # 2. Framework version (captures full patch version like 18.2.1, 18.2.4)
         fw_ver: Optional[str] = None
         if framework:
             escaped_fw = re.escape(framework)
-            m_fw = re.search(rf"\b{escaped_fw}\s*([0-9]+(?:\.[0-9]+)?)\b", lower)
+            m_fw = re.search(rf"\b{escaped_fw}\s*([0-9]+(?:\.[0-9]+)*)\b", lower)
             if m_fw:
                 fw_ver = m_fw.group(1)
+
+        # 3. Runtime version (Node.js, Bun, Deno) - separated from language_version
+        runtime_ver: Optional[str] = None
+        if runtime == "node" or "node" in lower:
+            m_node = re.search(r"\bnode(?:\.js)?\s*([0-9]+(?:\.[0-9]+)*)\b", lower)
+            if m_node:
+                runtime_ver = m_node.group(1)
+        elif runtime == "bun" or "bun" in lower:
+            m_bun = re.search(r"\bbun\s*([0-9]+(?:\.[0-9]+)*)\b", lower)
+            if m_bun:
+                runtime_ver = m_bun.group(1)
+        elif runtime == "deno" or "deno" in lower:
+            m_deno = re.search(r"\bdeno\s*([0-9]+(?:\.[0-9]+)*)\b", lower)
+            if m_deno:
+                runtime_ver = m_deno.group(1)
 
         lang_dim = (
             DimensionValue(status=MetadataStatus.KNOWN, value=lang_ver)
@@ -286,7 +351,12 @@ class CompatibilityExtractor:
             if fw_ver
             else DimensionValue(status=MetadataStatus.NOT_APPLICABLE, value=None)
         )
-        return lang_dim, fw_dim
+        runtime_dim = (
+            DimensionValue(status=MetadataStatus.KNOWN, value=runtime_ver)
+            if runtime_ver
+            else DimensionValue(status=MetadataStatus.NOT_APPLICABLE, value=None)
+        )
+        return lang_dim, fw_dim, runtime_dim
 
     def _detect_runtime(self, text: str) -> DimensionValue:
         lower = text.lower()
@@ -295,6 +365,7 @@ class CompatibilityExtractor:
         has_deno = bool(re.search(r"\bdeno\b", lower))
         has_cpython = bool(re.search(r"\bcpython\b", lower))
         has_pypy = bool(re.search(r"\bpypy\b", lower))
+        has_browser = bool(re.search(r"\b(?:browser|client[\s\-]side|dom|window\.document)\b", lower))
 
         matches = []
         if has_node:
@@ -307,6 +378,8 @@ class CompatibilityExtractor:
             matches.append("cpython")
         if has_pypy:
             matches.append("pypy")
+        if has_browser:
+            matches.append("browser")
 
         if len(matches) > 1:
             return DimensionValue(status=MetadataStatus.UNKNOWN, value=None)
@@ -363,7 +436,17 @@ class CompatibilityExtractor:
         lower = text.lower()
         items: List[ConstraintItem] = []
 
-        # 1. Case sensitivity
+        # 1. Thread safety (FIX-04)
+        has_thread_safe = bool(re.search(r"\b(?:thread[\s\-]safe|threadsafe|multi[\s\-]threaded\s+safe|concurrency[\s\-]safe)\b", lower))
+        has_not_thread_safe = bool(re.search(r"\b(?:non[\s\-]thread[\s\-]safe|not\s+thread[\s\-]safe|single[\s\-]threaded\s+only|basic\s+singleton)\b", lower))
+        if has_thread_safe and has_not_thread_safe:
+            return DimensionValue(status=MetadataStatus.UNKNOWN, value=None)
+        if has_thread_safe:
+            items.append(ConstraintItem(key="thread_safety", operator="equals", value="thread_safe"))
+        elif has_not_thread_safe:
+            items.append(ConstraintItem(key="thread_safety", operator="equals", value="not_thread_safe"))
+
+        # 2. Case sensitivity
         has_cs = bool(re.search(r"\b(?:case[\s\-]sensitive|match\s+case|sensitive\s+to\s+case)\b", lower))
         has_ci = bool(re.search(r"\b(?:case[\s\-]insensitive|ignore\s+case|insensitive\s+to\s+case)\b", lower))
         if has_cs and has_ci:
@@ -373,7 +456,7 @@ class CompatibilityExtractor:
         elif has_ci:
             items.append(ConstraintItem(key="case_sensitivity", operator="equals", value="insensitive"))
 
-        # 2. Hidden items (include vs exclude)
+        # 3. Hidden items (include vs exclude)
         has_inc_hid = bool(re.search(r"\b(?:includ(?:e|ing)|show)\s+(?:\w+\s+)*hidden\b", lower))
         has_exc_hid = bool(re.search(r"\b(?:exclud(?:e|ing)|ignore|no|without)\s+(?:\w+\s+)*hidden\b", lower))
         if has_inc_hid and has_exc_hid:
@@ -383,7 +466,7 @@ class CompatibilityExtractor:
         elif has_exc_hid:
             items.append(ConstraintItem(key="hidden_items", operator="equals", value="exclude"))
 
-        # 3. Traversal (recursive vs flat)
+        # 4. Traversal (recursive vs flat)
         has_rec = bool(re.search(r"\brecursive(?:ly)?\b", lower))
         has_flat = bool(re.search(r"\b(?:non[\s\-]recursive|flat|shallow)\b", lower))
         if has_rec and has_flat:
@@ -393,7 +476,7 @@ class CompatibilityExtractor:
         elif has_flat:
             items.append(ConstraintItem(key="traversal", operator="equals", value="flat"))
 
-        # 4. Mutation (in-place vs immutable)
+        # 5. Mutation (in-place vs immutable)
         has_in_place = bool(re.search(r"\bin[\s\-]place\b", lower))
         has_negated_copy = bool(re.search(r"\b(?:without|no|not)\s+(?:creating|allocating|making)?\s*(?:a\s+)?new\s+(?:copy|list|array)\b", lower))
         has_immutable = bool(re.search(r"\b(?:out[\s\-]of[\s\-]place|new\s+(?:copy|list|array)|immutable)\b", lower)) and not has_negated_copy
@@ -415,22 +498,36 @@ def compare_compatibility(
 ) -> Tuple[bool, str, str]:
     """
     Compares two SemanticCompatibilityMetadata instances deterministically.
+    Enforces symmetric dimension-state comparison: no material dimension is treated
+    as an automatic wildcard when one side has KNOWN and the other has NOT_APPLICABLE.
+
     Returns:
         (is_compatible, reason_code, diagnostic_message)
     """
-    # 1. Compare task kinds
-    if req_meta.task_kind.status == MetadataStatus.KNOWN and cand_meta.task_kind.status == MetadataStatus.KNOWN:
-        if req_meta.task_kind.value != cand_meta.task_kind.value:
-            code = CompatibilityReasonCode.INCOMPATIBLE_TASK_KIND
-            return False, code, f"{code}: Task kind mismatch: candidate '{cand_meta.task_kind.value}' != request '{req_meta.task_kind.value}'."
+    # 1. Compare task kinds (candidate task_kind MUST be KNOWN and valid)
+    if cand_meta.task_kind.status != MetadataStatus.KNOWN:
+        code = CompatibilityReasonCode.INCOMPATIBLE_TASK_KIND
+        return False, code, f"{code}: Candidate task kind must be KNOWN, got {cand_meta.task_kind.status}."
+    if cand_meta.task_kind.value not in TaskKind.ALL_VALUES:
+        code = CompatibilityReasonCode.INVALID_METADATA_FORMAT
+        return False, code, f"{code}: Unsupported candidate task kind value: '{cand_meta.task_kind.value}'."
 
-    # 2. Check dimensions
+    if req_meta.task_kind.status == MetadataStatus.UNKNOWN:
+        code = CompatibilityReasonCode.UNKNOWN_MATERIAL_DIMENSION
+        return False, code, f"{code}: Request task kind is UNKNOWN."
+
+    if req_meta.task_kind.value != cand_meta.task_kind.value:
+        code = CompatibilityReasonCode.INCOMPATIBLE_TASK_KIND
+        return False, code, f"{code}: Task kind mismatch: candidate '{cand_meta.task_kind.value}' != request '{req_meta.task_kind.value}'."
+
+    # 2. Check material dimensions (symmetric NOT_APPLICABLE vs KNOWN policy)
     dims_to_check = [
         ("language", CompatibilityReasonCode.LANGUAGE_MISMATCH),
         ("language_version", CompatibilityReasonCode.LANGUAGE_VERSION_MISMATCH),
         ("framework", CompatibilityReasonCode.FRAMEWORK_MISMATCH),
         ("framework_version", CompatibilityReasonCode.FRAMEWORK_VERSION_MISMATCH),
         ("runtime", CompatibilityReasonCode.RUNTIME_MISMATCH),
+        ("runtime_version", CompatibilityReasonCode.RUNTIME_VERSION_MISMATCH),
         ("execution_model", CompatibilityReasonCode.EXECUTION_MODEL_MISMATCH),
         ("output_format", CompatibilityReasonCode.OUTPUT_FORMAT_MISMATCH),
     ]
@@ -443,7 +540,7 @@ def compare_compatibility(
             code = CompatibilityReasonCode.INVALID_METADATA_FORMAT
             return False, code, f"{code}: Missing dimension '{dim_name}' in metadata."
 
-        # UNKNOWN check for material dimensions:
+        # UNKNOWN check: if either side has UNKNOWN state, fail closed
         if r_dim.status == MetadataStatus.UNKNOWN or c_dim.status == MetadataStatus.UNKNOWN:
             code = CompatibilityReasonCode.UNKNOWN_MATERIAL_DIMENSION
             return False, code, f"{code}: Dimension '{dim_name}' has UNKNOWN state and cannot be established."
@@ -453,16 +550,13 @@ def compare_compatibility(
             if str(r_dim.value).lower().strip() != str(c_dim.value).lower().strip():
                 return False, mismatch_code, f"{mismatch_code}: Candidate {dim_name} '{c_dim.value}' != request '{r_dim.value}'."
 
-        # KNOWN vs NOT_APPLICABLE
+        # KNOWN vs NOT_APPLICABLE (request specifies dimension, candidate does not satisfy it)
         elif r_dim.status == MetadataStatus.KNOWN and c_dim.status == MetadataStatus.NOT_APPLICABLE:
             return False, mismatch_code, f"{mismatch_code}: Request requires {dim_name}='{r_dim.value}' but candidate has NOT_APPLICABLE."
 
+        # NOT_APPLICABLE vs KNOWN (candidate specifies a material dimension not requested by request)
         elif r_dim.status == MetadataStatus.NOT_APPLICABLE and c_dim.status == MetadataStatus.KNOWN:
-            # If candidate specifies a concrete dimension and request did not:
-            # For language, if request task_kind is CODE_GENERATION, language must be KNOWN anyway.
-            # If request task_kind is CONCEPTUAL and candidate specifies a language, candidate is over-specialized:
-            if dim_name in ("language", "execution_model", "output_format"):
-                return False, mismatch_code, f"{mismatch_code}: Candidate specifies {dim_name}='{c_dim.value}' not required by request."
+            return False, mismatch_code, f"{mismatch_code}: Candidate specifies {dim_name}='{c_dim.value}' not requested by request."
 
     # 3. Compare constraints
     r_const = req_meta.dimensions.get("constraints")
@@ -486,7 +580,7 @@ def compare_compatibility(
                 v = it.value if hasattr(it, "value") else it.get("value")
                 c_items[k] = v
 
-        # Check for conflicting constraint keys
+        # Check for conflicting or missing constraints
         all_keys = set(r_items.keys()).union(set(c_items.keys()))
         for k in all_keys:
             r_val = r_items.get(k)
@@ -503,3 +597,4 @@ def compare_compatibility(
                 return False, code, f"{code}: Candidate enforces constraint '{k}={c_val}' not requested."
 
     return True, CompatibilityReasonCode.COMPATIBLE, f"{CompatibilityReasonCode.COMPATIBLE}: Candidate satisfied all domain requirements."
+

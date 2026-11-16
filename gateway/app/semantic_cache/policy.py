@@ -14,9 +14,11 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from .compatibility import CompatibilityExtractor, compare_compatibility
 from .contracts import (
+    CURRENT_SCHEMA_VERSION,
     CompatibilityReasonCode,
     EligibilityResult,
     MetadataStatus,
+    SUPPORTED_SCHEMA_VERSIONS,
     SemanticCompatibilityMetadata,
     TaskKind,
 )
@@ -204,7 +206,7 @@ class SemanticCachePolicy:
                     f"Query contains ambiguous or contradictory technical requirements for '{dim_name}'.",
                 )
 
-        return EligibilityResult(True, "Eligible for semantic caching.")
+        return EligibilityResult(True, "Eligible for semantic caching.", metadata=req_meta)
 
     def _is_technical_query(self, text: str) -> bool:
         """Determines if query contains technical markers, keywords, or code structures."""
@@ -230,6 +232,7 @@ class SemanticCachePolicy:
         self,
         candidate: VectorSearchResult,
         request: GenerationRequest,
+        request_metadata: Optional[SemanticCompatibilityMetadata] = None,
     ) -> Tuple[bool, str]:
         """
         Verifies that a nearest-neighbour vector candidate matches all required
@@ -252,7 +255,7 @@ class SemanticCachePolicy:
         if "schema_version" not in meta_dict:
             return False, f"{CompatibilityReasonCode.LEGACY_METADATA_MISSING}: Candidate lacks versioned semantic metadata (legacy record)."
 
-        if meta_dict["schema_version"] != 1:
+        if meta_dict["schema_version"] not in SUPPORTED_SCHEMA_VERSIONS:
             return False, f"{CompatibilityReasonCode.UNSUPPORTED_SCHEMA_VERSION}: Unsupported metadata schema version {meta_dict['schema_version']}."
 
         try:
@@ -277,11 +280,14 @@ class SemanticCachePolicy:
         if gen_cand.max_tokens != request.max_tokens:
             return False, f"{CompatibilityReasonCode.GENERATION_MAX_TOKENS_MISMATCH}: max_tokens mismatch: candidate {gen_cand.max_tokens} != request {request.max_tokens}."
 
-        # Extract incoming request metadata
-        try:
-            req_meta = self.extractor.extract(request, self.configured_model)
-        except Exception as exc:
-            return False, f"{CompatibilityReasonCode.INVALID_METADATA_FORMAT}: Failed to extract request metadata: {exc}."
+        # Extract incoming request metadata once if not pre-extracted
+        if request_metadata is not None:
+            req_meta = request_metadata
+        else:
+            try:
+                req_meta = self.extractor.extract(request, self.configured_model)
+            except Exception as exc:
+                return False, f"{CompatibilityReasonCode.INVALID_METADATA_FORMAT}: Failed to extract request metadata: {exc}."
 
         # Deterministic domain compatibility comparison
         is_compat, reason_code, message = compare_compatibility(req_meta, cand_meta)
@@ -294,6 +300,7 @@ class SemanticCachePolicy:
         self,
         candidates: List[VectorSearchResult],
         request: GenerationRequest,
+        request_metadata: Optional[SemanticCompatibilityMetadata] = None,
     ) -> Tuple[Optional[VectorSearchResult], Optional[str]]:
         """
         Evaluates nearest-neighbour candidates in order of similarity.
@@ -307,10 +314,19 @@ class SemanticCachePolicy:
         if not candidates:
             return None, "No vector candidates retrieved."
 
+        # Extract request metadata once across all candidate comparisons if not provided
+        req_meta = request_metadata
+        if req_meta is None:
+            try:
+                req_meta = self.extractor.extract(request, self.configured_model)
+            except Exception as exc:
+                logger.debug("Failed to extract request metadata in evaluate_candidates: %s", exc)
+                req_meta = None
+
         # 1. Filter candidates by deterministic compatibility
         compatible_candidates: List[VectorSearchResult] = []
         for cand in candidates:
-            is_compat, reason = self.is_candidate_compatible(cand, request)
+            is_compat, reason = self.is_candidate_compatible(cand, request, request_metadata=req_meta)
             if is_compat:
                 compatible_candidates.append(cand)
             else:
