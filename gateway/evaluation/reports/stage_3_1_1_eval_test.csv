@@ -1,0 +1,67 @@
+# IntelliCache Evaluation Report,DatasetHash: 36fea2717b0b4d38d98fae0a1b81f58f0ab78f5e917c88f6c85245aa1f497272,Split: test,Provider: DeterministicMockEmbeddingProvider,Model: nomic-embed-text,VectorIndex: none,IndexUsed: False,Timestamp: 2026-11-16T17:36:50.953234+00:00
+case_id,category,split,safe_reuse_expected,top_similarity,margin,classification,decision,indexing_latency_ms,lookup_latency_ms,rejection_reason
+pos-test-001,positive_paraphrase,test,True,0.9993,,FN,incorrect_rejection,0.51,2.73,No compatible candidates satisfied generation and domain requirements.
+pos-test-002,positive_paraphrase,test,True,0.9634,,TP,safe_reuse,0.5,0.77,
+pos-test-003,positive_paraphrase,test,True,0.8224,,TP,safe_reuse,0.7,0.67,
+pos-test-004,positive_paraphrase,test,True,0.9997,,TP,safe_reuse,0.59,0.76,
+pos-test-005,positive_paraphrase,test,True,0.5869,,FN,incorrect_rejection,0.6,0.55,No compatible candidates satisfied generation and domain requirements.
+pos-test-006,positive_paraphrase,test,True,0.9996,,TP,safe_reuse,0.71,0.87,
+pos-test-007,positive_paraphrase,test,True,0.8117,,FN,incorrect_rejection,0.8,0.77,Similarity below threshold: 0.8117 < 0.8200.
+pos-test-008,positive_paraphrase,test,True,0.8482,,TP,safe_reuse,0.72,1.0,
+pos-test-009,positive_paraphrase,test,True,0.9994,,TP,safe_reuse,0.39,0.56,
+pos-test-010,positive_paraphrase,test,True,0.9745,,TP,safe_reuse,0.59,0.74,
+pos-test-011,positive_paraphrase,test,True,0.896,,TP,safe_reuse,0.59,0.55,
+pos-test-012,positive_paraphrase,test,True,0.9825,,TP,safe_reuse,0.39,0.56,
+pos-test-013,positive_paraphrase,test,True,0.8978,,TP,safe_reuse,0.59,0.77,
+pos-test-014,positive_paraphrase,test,True,0.8919,,TP,safe_reuse,0.26,0.56,
+pos-test-015,positive_paraphrase,test,True,0.9478,,TP,safe_reuse,0.59,0.66,
+pos-test-016,positive_paraphrase,test,True,0.5286,,FN,incorrect_rejection,0.48,0.89,Similarity below threshold: 0.5286 < 0.8200.
+pos-test-017,positive_paraphrase,test,True,0.9835,,TP,safe_reuse,0.39,0.55,
+neg-lang-test-001,different_language,test,False,0.0369,,TN,safe_rejection,0.27,0.52,No compatible candidates satisfied generation and domain requirements.
+neg-lang-test-002,different_language,test,False,0.3976,,TN,safe_rejection,0.5,0.67,No compatible candidates satisfied generation and domain requirements.
+neg-lang-test-003,different_language,test,False,-0.0131,,TN,safe_rejection,0.27,0.5,No compatible candidates satisfied generation and domain requirements.
+neg-lang-test-004,different_language,test,False,-0.0179,,TN,safe_rejection,0.26,0.55,No compatible candidates satisfied generation and domain requirements.
+neg-lang-test-005,different_language,test,False,0.014,,TN,safe_rejection,0.26,0.45,No compatible candidates satisfied generation and domain requirements.
+neg-ver-test-001,version_difference,test,False,0.4863,,TN,safe_rejection,0.37,0.61,No compatible candidates satisfied generation and domain requirements.
+neg-ver-test-002,version_difference,test,False,0.9987,,TN,safe_rejection,0.26,0.47,No compatible candidates satisfied generation and domain requirements.
+neg-ver-test-003,version_difference,test,False,-0.0008,,TN,safe_rejection,0.39,0.76,No compatible candidates satisfied generation and domain requirements.
+neg-ver-test-004,version_difference,test,False,-0.0147,,TN,safe_rejection,0.27,0.58,No compatible candidates satisfied generation and domain requirements.
+neg-ver-test-005,version_difference,test,False,0.0265,,TN,safe_rejection,0.26,0.51,No compatible candidates satisfied generation and domain requirements.
+neg-err-test-001,error_difference,test,False,0.5018,,TN,safe_rejection,0.38,0.57,Similarity below threshold: 0.5018 < 0.8200.
+neg-err-test-002,error_difference,test,False,-0.0451,,TN,safe_rejection,0.38,0.46,No compatible candidates satisfied generation and domain requirements.
+neg-err-test-003,error_difference,test,False,0.7197,,TN,safe_rejection,0.47,0.77,Similarity below threshold: 0.7197 < 0.8200.
+neg-err-test-004,error_difference,test,False,0.4148,,TN,safe_rejection,0.37,0.66,Similarity below threshold: 0.4148 < 0.8200.
+neg-err-test-005,error_difference,test,False,0.7015,,TN,safe_rejection,0.28,0.59,No compatible candidates satisfied generation and domain requirements.
+neg-con-test-001,constraint_difference,test,False,0.9998,,TN,safe_rejection,0.38,0.55,No compatible candidates satisfied generation and domain requirements.
+neg-con-test-002,constraint_difference,test,False,0.1473,,TN,safe_rejection,0.38,0.7,No compatible candidates satisfied generation and domain requirements.
+neg-con-test-003,constraint_difference,test,False,0.5578,,TN,safe_rejection,0.47,0.66,Similarity below threshold: 0.5578 < 0.8200.
+neg-con-test-004,constraint_difference,test,False,0.6689,,TN,safe_rejection,0.49,0.65,No compatible candidates satisfied generation and domain requirements.
+neg-con-test-005,constraint_difference,test,False,0.7706,,TN,safe_rejection,0.48,0.66,Similarity below threshold: 0.7706 < 0.8200.
+neg-rt-test-001,runtime_difference,test,False,0.0379,,TN,safe_rejection,0.16,0.83,No compatible candidates satisfied generation and domain requirements.
+neg-rt-test-002,runtime_difference,test,False,0.0048,,TN,safe_rejection,0.27,0.59,No compatible candidates satisfied generation and domain requirements.
+neg-rt-test-003,runtime_difference,test,False,0.0062,,TN,safe_rejection,0.36,0.6,No compatible candidates satisfied generation and domain requirements.
+neg-rt-test-004,runtime_difference,test,False,0.7249,,TN,safe_rejection,0.26,0.57,No compatible candidates satisfied generation and domain requirements.
+neg-out-test-001,output_difference,test,False,0.6574,,TN,safe_rejection,0.49,0.8,Similarity below threshold: 0.6574 < 0.8200.
+neg-out-test-002,output_difference,test,False,0.547,,TN,safe_rejection,0.48,0.68,Similarity below threshold: 0.5470 < 0.8200.
+neg-out-test-003,output_difference,test,False,0.7247,,TN,safe_rejection,0.81,0.78,Similarity below threshold: 0.7247 < 0.8200.
+neg-out-test-004,output_difference,test,False,0.6505,,TN,safe_rejection,0.8,0.88,Similarity below threshold: 0.6505 < 0.8200.
+amb-test-001,ambiguous_candidates,test,False,0.9897,0.0001,TN,safe_rejection,0.75,0.7,No compatible candidates satisfied generation and domain requirements.
+amb-test-002,ambiguous_candidates,test,False,0.9971,0.0005,TN,safe_rejection,0.53,0.57,No compatible candidates satisfied generation and domain requirements.
+amb-test-003,ambiguous_candidates,test,False,0.0382,0.0,TN,safe_rejection,0.54,0.44,No compatible candidates satisfied generation and domain requirements.
+amb-test-004,ambiguous_candidates,test,False,-0.0056,0.0166,TN,safe_rejection,0.42,0.67,No compatible candidates satisfied generation and domain requirements.
+amb-test-005,ambiguous_candidates,test,False,0.9993,0.0159,TN,safe_rejection,0.74,0.68,Ambiguous candidate: nearest alternative candidate margin (0.0159) is below minimum margin (0.0300) with a different answer.
+amb-test-006,ambiguous_candidates,test,False,-0.0183,0.0086,TN,safe_rejection,0.42,0.76,Similarity below threshold: -0.0269 < 0.8200.
+unr-test-001,unrelated_technical,test,False,-0.0062,,TN,safe_rejection,0.16,0.5,No compatible candidates satisfied generation and domain requirements.
+unr-test-002,unrelated_technical,test,False,0.0226,,TN,safe_rejection,0.27,0.35,No compatible candidates satisfied generation and domain requirements.
+unr-test-003,unrelated_technical,test,False,-0.0353,,TN,safe_rejection,0.27,0.42,No compatible candidates satisfied generation and domain requirements.
+unr-test-004,unrelated_technical,test,False,0.0132,,TN,safe_rejection,0.28,0.37,No compatible candidates satisfied generation and domain requirements.
+unr-test-005,unrelated_technical,test,False,-0.019,,TN,safe_rejection,0.71,0.36,No compatible candidates satisfied generation and domain requirements.
+unr-test-006,unrelated_technical,test,False,0.1826,,TN,safe_rejection,0.15,0.36,No compatible candidates satisfied generation and domain requirements.
+lang-test-006,different_language,test,False,0.0115,,TN,safe_rejection,0.27,0.46,No compatible candidates satisfied generation and domain requirements.
+ver-test-006,version_difference,test,False,-0.0058,,TN,safe_rejection,0.26,0.48,No compatible candidates satisfied generation and domain requirements.
+con-test-006,constraint_difference,test,False,0.9995,,TN,safe_rejection,0.26,0.44,No compatible candidates satisfied generation and domain requirements.
+con-test-007,constraint_difference,test,False,0.9997,,TN,safe_rejection,0.48,0.67,No compatible candidates satisfied generation and domain requirements.
+con-test-008,constraint_difference,test,False,0.7103,,TN,safe_rejection,0.58,0.76,No compatible candidates satisfied generation and domain requirements.
+con-test-009,constraint_difference,test,False,0.9999,,TN,safe_rejection,0.38,0.56,No compatible candidates satisfied generation and domain requirements.
+out-test-005,output_difference,test,False,0.8147,,TN,safe_rejection,0.49,0.58,No compatible candidates satisfied generation and domain requirements.
+pos-test-018,positive_paraphrase,test,True,0.9984,,TP,safe_reuse,0.26,0.47,

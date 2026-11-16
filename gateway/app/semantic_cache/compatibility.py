@@ -8,7 +8,7 @@ output format) cannot be overridden by dense vector similarity.
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from .contracts import (
     CURRENT_SCHEMA_VERSION,
@@ -437,8 +437,18 @@ class CompatibilityExtractor:
         items: List[ConstraintItem] = []
 
         # 1. Thread safety (FIX-04)
-        has_thread_safe = bool(re.search(r"\b(?:thread[\s\-]safe|threadsafe|multi[\s\-]threaded\s+safe|concurrency[\s\-]safe)\b", lower))
-        has_not_thread_safe = bool(re.search(r"\b(?:non[\s\-]thread[\s\-]safe|not\s+thread[\s\-]safe|single[\s\-]threaded\s+only|basic\s+singleton)\b", lower))
+        has_not_thread_safe = bool(re.search(
+            r"\b(?:non[\s\-]thread[\s\-]safe|not\s+thread[\s\-]safe|single[\s\-]threaded\s+only|"
+            r"without\s+(?:a\s+)?(?:locks?|mutex(?:es)?|locking)|no\s+(?:locks?|mutex(?:es)?|locking)|"
+            r"basic\s+singleton|naive\s+singleton)\b",
+            lower,
+        ))
+        has_thread_safe = bool(re.search(
+            r"\b(?:thread[\s\-]safe|threadsafe|multi[\s\-]threaded\s+safe|concurrency[\s\-]safe|"
+            r"(?:with|using)\s+(?:a\s+)?(?:locks?|mutex(?:es)?|locking|threading\.lock)|"
+            r"mutex\s+lock|double[\s\-]checked\s+locking)\b",
+            lower,
+        ))
         if has_thread_safe and has_not_thread_safe:
             return DimensionValue(status=MetadataStatus.UNKNOWN, value=None)
         if has_thread_safe:
@@ -490,6 +500,100 @@ class CompatibilityExtractor:
         if items:
             return DimensionValue(status=MetadataStatus.KNOWN, value=items)
         return DimensionValue(status=MetadataStatus.NOT_APPLICABLE, value=None)
+
+
+def _evaluate_constraint_compatibility(
+    req_item: ConstraintItem,
+    cand_item: ConstraintItem,
+) -> Tuple[bool, Optional[str]]:
+    """
+    Evaluates whether candidate constraint item satisfies the request constraint item.
+    Supports 'equals', 'not_equals', 'in', 'not_in'.
+    """
+    r_op = req_item.operator
+    c_op = cand_item.operator
+    r_val = req_item.value
+    c_val = cand_item.value
+
+    def _parse_set(val: str) -> Set[str]:
+        return {x.strip().lower() for x in val.split(",") if x.strip()}
+
+    if r_op == "equals":
+        if c_op == "equals":
+            if r_val.lower() != c_val.lower():
+                return False, f"Conflicting constraint for '{req_item.key}': candidate '{c_val}' != request '{r_val}'."
+            return True, None
+        elif c_op == "not_equals":
+            if r_val.lower() == c_val.lower():
+                return False, f"Conflicting constraint for '{req_item.key}': candidate explicitly forbids '{c_val}' which request requires."
+            return False, f"Candidate has negative constraint '{cand_item.key} != {c_val}' but request requires explicit '{r_val}'."
+        elif c_op == "in":
+            c_set = _parse_set(c_val)
+            if r_val.lower() not in c_set:
+                return False, f"Request requires '{req_item.key}={r_val}' which is not in candidate allowed set {sorted(c_set)}."
+            return True, None
+        elif c_op == "not_in":
+            c_set = _parse_set(c_val)
+            if r_val.lower() in c_set:
+                return False, f"Request requires '{req_item.key}={r_val}' which candidate explicitly excludes {sorted(c_set)}."
+            return False, f"Candidate has negative constraint '{cand_item.key} not_in {sorted(c_set)}' but request requires explicit '{r_val}'."
+
+    elif r_op == "not_equals":
+        if c_op == "equals":
+            if c_val.lower() == r_val.lower():
+                return False, f"Candidate enforces '{cand_item.key}={c_val}' which request explicitly forbids."
+            return True, None
+        elif c_op == "not_equals":
+            if c_val.lower() != r_val.lower():
+                return False, f"Request forbids '{req_item.key}={r_val}' but candidate only forbids '{c_val}'."
+            return True, None
+        elif c_op == "in":
+            c_set = _parse_set(c_val)
+            if r_val.lower() in c_set:
+                return False, f"Request forbids '{req_item.key}={r_val}' which is present in candidate allowed set {sorted(c_set)}."
+            return True, None
+        elif c_op == "not_in":
+            c_set = _parse_set(c_val)
+            if r_val.lower() not in c_set:
+                return False, f"Candidate does not forbid '{req_item.key}={r_val}'."
+            return True, None
+
+    elif r_op == "in":
+        r_set = _parse_set(r_val)
+        if c_op == "equals":
+            if c_val.lower() not in r_set:
+                return False, f"Candidate value '{c_val}' is not in request allowed set {sorted(r_set)}."
+            return True, None
+        elif c_op == "in":
+            c_set = _parse_set(c_val)
+            if not c_set.issubset(r_set):
+                return False, f"Candidate allowed set {sorted(c_set)} is not a subset of request allowed set {sorted(r_set)}."
+            return True, None
+        elif c_op in ("not_equals", "not_in"):
+            return False, f"Request requires '{req_item.key} in {sorted(r_set)}' but candidate specifies negative constraint '{c_op} {c_val}'."
+
+    elif r_op == "not_in":
+        r_set = _parse_set(r_val)
+        if c_op == "equals":
+            if c_val.lower() in r_set:
+                return False, f"Candidate value '{c_val}' is in request forbidden set {sorted(r_set)}."
+            return True, None
+        elif c_op == "not_in":
+            c_set = _parse_set(c_val)
+            if not r_set.issubset(c_set):
+                return False, f"Candidate does not forbid all values in request forbidden set (missing {sorted(r_set - c_set)})."
+            return True, None
+        elif c_op == "not_equals":
+            if not (len(r_set) == 1 and c_val.lower() in r_set):
+                return False, f"Candidate only forbids '{c_val}', does not forbid complete request set {sorted(r_set)}."
+            return True, None
+        elif c_op == "in":
+            c_set = _parse_set(c_val)
+            if c_set.intersection(r_set):
+                return False, f"Candidate allowed set {sorted(c_set)} overlaps with request forbidden set {sorted(r_set)}."
+            return True, None
+
+    return False, f"Unsupported constraint comparison for '{req_item.key}': request '{r_op}' vs candidate '{c_op}'."
 
 
 def compare_compatibility(
@@ -566,35 +670,34 @@ def compare_compatibility(
             code = CompatibilityReasonCode.UNKNOWN_MATERIAL_DIMENSION
             return False, code, f"{code}: Constraints dimension has UNKNOWN state."
 
-        r_items: Dict[str, str] = {}
+        r_items: Dict[str, ConstraintItem] = {}
         if r_const.status == MetadataStatus.KNOWN and isinstance(r_const.value, list):
             for it in r_const.value:
-                k = it.key if hasattr(it, "key") else it.get("key")
-                v = it.value if hasattr(it, "value") else it.get("value")
-                r_items[k] = v
+                item_obj = it if isinstance(it, ConstraintItem) else ConstraintItem.from_dict(it)
+                r_items[item_obj.key] = item_obj
 
-        c_items: Dict[str, str] = {}
+        c_items: Dict[str, ConstraintItem] = {}
         if c_const.status == MetadataStatus.KNOWN and isinstance(c_const.value, list):
             for it in c_const.value:
-                k = it.key if hasattr(it, "key") else it.get("key")
-                v = it.value if hasattr(it, "value") else it.get("value")
-                c_items[k] = v
+                item_obj = it if isinstance(it, ConstraintItem) else ConstraintItem.from_dict(it)
+                c_items[item_obj.key] = item_obj
 
         # Check for conflicting or missing constraints
         all_keys = set(r_items.keys()).union(set(c_items.keys()))
         for k in all_keys:
-            r_val = r_items.get(k)
-            c_val = c_items.get(k)
-            if r_val is not None and c_val is not None:
-                if r_val != c_val:
+            r_item = r_items.get(k)
+            c_item = c_items.get(k)
+            if r_item is not None and c_item is not None:
+                compat, err = _evaluate_constraint_compatibility(r_item, c_item)
+                if not compat:
                     code = CompatibilityReasonCode.CONSTRAINT_MISMATCH
-                    return False, code, f"{code}: Conflicting constraint for '{k}': candidate '{c_val}' != request '{r_val}'."
-            elif r_val is not None and c_val is None:
+                    return False, code, f"{code}: {err}"
+            elif r_item is not None and c_item is None:
                 code = CompatibilityReasonCode.CONSTRAINT_MISMATCH
-                return False, code, f"{code}: Request requires constraint '{k}={r_val}' not satisfied by candidate."
-            elif r_val is None and c_val is not None:
+                return False, code, f"{code}: Request requires constraint '{k} {r_item.operator} {r_item.value}' not satisfied by candidate."
+            elif r_item is None and c_item is not None:
                 code = CompatibilityReasonCode.CONSTRAINT_MISMATCH
-                return False, code, f"{code}: Candidate enforces constraint '{k}={c_val}' not requested."
+                return False, code, f"{code}: Candidate enforces constraint '{k} {c_item.operator} {c_item.value}' not requested."
 
     return True, CompatibilityReasonCode.COMPATIBLE, f"{CompatibilityReasonCode.COMPATIBLE}: Candidate satisfied all domain requirements."
 

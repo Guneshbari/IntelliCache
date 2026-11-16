@@ -108,17 +108,22 @@ class DimensionValue:
     def from_dict(cls, data: Dict[str, Any]) -> "DimensionValue":
         if not isinstance(data, dict):
             raise ValueError(f"Expected dict for DimensionValue, got {type(data).__name__}")
+        raw_status = data.get("status")
+        if not isinstance(raw_status, str) or not raw_status.strip():
+            raise ValueError(f"DimensionValue 'status' must be a non-empty string, got {raw_status} ({type(raw_status).__name__})")
         raw_val = data.get("value")
         # Handle list of constraint items if present
         if isinstance(raw_val, list):
             parsed_list = []
             for item in raw_val:
-                if isinstance(item, dict) and "key" in item:
+                if isinstance(item, dict):
                     parsed_list.append(ConstraintItem.from_dict(item))
-                else:
+                elif isinstance(item, ConstraintItem):
                     parsed_list.append(item)
+                else:
+                    raise ValueError(f"Expected dict or ConstraintItem in constraints list, got {type(item).__name__}")
             raw_val = parsed_list
-        return cls(status=str(data.get("status", "")), value=raw_val)
+        return cls(status=raw_status.strip(), value=raw_val)
 
 
 @dataclass(frozen=True)
@@ -145,10 +150,22 @@ class ConstraintItem:
     def from_dict(cls, data: Dict[str, Any]) -> "ConstraintItem":
         if not isinstance(data, dict):
             raise ValueError(f"Expected dict for ConstraintItem, got {type(data).__name__}")
+        raw_key = data.get("key")
+        if not isinstance(raw_key, str) or not raw_key.strip():
+            raise ValueError(f"ConstraintItem 'key' must be a non-empty string, got {raw_key} ({type(raw_key).__name__})")
+
+        raw_op = data.get("operator", "equals")
+        if not isinstance(raw_op, str) or not raw_op.strip():
+            raise ValueError(f"ConstraintItem 'operator' must be a non-empty string, got {raw_op} ({type(raw_op).__name__})")
+
+        raw_val = data.get("value")
+        if not isinstance(raw_val, str) or not raw_val.strip():
+            raise ValueError(f"ConstraintItem 'value' must be a non-empty string, got {raw_val} ({type(raw_val).__name__})")
+
         return cls(
-            key=str(data.get("key", "")).strip(),
-            operator=str(data.get("operator", "equals")).strip(),
-            value=str(data.get("value", "")).strip(),
+            key=raw_key.strip(),
+            operator=raw_op.strip(),
+            value=raw_val.strip(),
         )
 
 
@@ -187,12 +204,31 @@ class GenerationContract:
     def from_dict(cls, data: Dict[str, Any]) -> "GenerationContract":
         if not isinstance(data, dict):
             raise ValueError(f"Expected dict for GenerationContract, got {type(data).__name__}")
+
+        raw_provider = data.get("provider")
+        if not isinstance(raw_provider, str) or not raw_provider.strip():
+            raise ValueError(f"GenerationContract 'provider' must be a non-empty string, got {raw_provider} ({type(raw_provider).__name__})")
+
+        raw_model = data.get("model")
+        if not isinstance(raw_model, str) or not raw_model.strip():
+            raise ValueError(f"GenerationContract 'model' must be a non-empty string, got {raw_model} ({type(raw_model).__name__})")
+
+        raw_temp = data.get("temperature")
+        if raw_temp is None or not isinstance(raw_temp, (int, float)) or isinstance(raw_temp, bool):
+            raise ValueError(f"GenerationContract 'temperature' must be a float, got {raw_temp} ({type(raw_temp).__name__})")
+
         raw_max = data.get("max_tokens")
-        max_tok = int(raw_max) if raw_max is not None else None
+        if raw_max is not None:
+            if not isinstance(raw_max, int) or isinstance(raw_max, bool) or raw_max <= 0:
+                raise ValueError(f"GenerationContract 'max_tokens' must be a positive integer, got {raw_max} ({type(raw_max).__name__})")
+            max_tok = raw_max
+        else:
+            max_tok = None
+
         return cls(
-            provider=str(data.get("provider", "")).strip(),
-            model=str(data.get("model", "")).strip(),
-            temperature=float(data.get("temperature", 0.0)),
+            provider=raw_provider.strip(),
+            model=raw_model.strip(),
+            temperature=float(raw_temp),
             max_tokens=max_tok,
         )
 
@@ -213,7 +249,10 @@ class EmbeddingContract:
     def from_dict(cls, data: Dict[str, Any]) -> "EmbeddingContract":
         if not isinstance(data, dict):
             raise ValueError(f"Expected dict for EmbeddingContract, got {type(data).__name__}")
-        return cls(model=str(data.get("model", "")).strip())
+        raw_model = data.get("model")
+        if not isinstance(raw_model, str) or not raw_model.strip():
+            raise ValueError(f"EmbeddingContract 'model' must be a non-empty string, got {raw_model} ({type(raw_model).__name__})")
+        return cls(model=raw_model.strip())
 
 
 @dataclass(frozen=True)
@@ -305,7 +344,10 @@ class SemanticCompatibilityMetadata:
             raise ValueError(f"Invalid 'schema_version': {raw_ver}. Must be an integer.")
         ver = raw_ver
 
-        raw_ext = str(data.get("extractor_version", "")).strip()
+        raw_ext = data.get("extractor_version")
+        if not isinstance(raw_ext, str) or not raw_ext.strip():
+            raise ValueError(f"extractor_version must be a non-empty string, got {raw_ext} ({type(raw_ext).__name__})")
+        ext_ver = raw_ext.strip()
 
         raw_task = data.get("task_kind")
         if not isinstance(raw_task, dict):
@@ -343,7 +385,7 @@ class SemanticCompatibilityMetadata:
 
         return cls(
             schema_version=ver,
-            extractor_version=raw_ext,
+            extractor_version=ext_ver,
             task_kind=task_kind,
             dimensions=dimensions,
             generation_contract=generation_contract,

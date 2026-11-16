@@ -18,7 +18,7 @@
         }
       }
     ],
-    "problem_group_id": "grp-dev-pos-dev-001-reverse-a-string-in-python-u"
+    "problem_group_id": "grp-dev-py-sequence-reversal"
   },
   {
     "id": "pos-dev-002",
@@ -123,7 +123,7 @@
         }
       }
     ],
-    "problem_group_id": "grp-dev-pos-dev-006-remove-duplicates-from-a-lis"
+    "problem_group_id": "grp-dev-py-list-dedup"
   },
   {
     "id": "pos-dev-007",
@@ -291,7 +291,7 @@
         }
       }
     ],
-    "problem_group_id": "grp-dev-pos-dev-014-sort-a-list-of-dicts-by-a-sp"
+    "problem_group_id": "grp-dev-py-sorting"
   },
   {
     "id": "pos-dev-015",
@@ -459,7 +459,7 @@
         }
       }
     ],
-    "problem_group_id": "grp-test-pos-test-005-pretty-print-a-dictionary-as"
+    "problem_group_id": "grp-test-py-nested-dict-operations"
   },
   {
     "id": "pos-test-006",
@@ -627,7 +627,7 @@
         }
       }
     ],
-    "problem_group_id": "grp-test-pos-test-013-split-a-string-by-delimiter"
+    "problem_group_id": "grp-test-py-string-transforms"
   },
   {
     "id": "pos-test-014",
@@ -669,7 +669,7 @@
         }
       }
     ],
-    "problem_group_id": "grp-test-pos-test-015-remove-whitespace-from-both"
+    "problem_group_id": "grp-test-py-string-transforms"
   },
   {
     "id": "pos-test-016",
@@ -1362,7 +1362,7 @@
         }
       }
     ],
-    "problem_group_id": "grp-dev-neg-con-dev-001-sort-a-list-in-python-in-pla"
+    "problem_group_id": "grp-dev-py-sorting"
   },
   {
     "id": "neg-con-dev-002",
@@ -1383,7 +1383,7 @@
         }
       }
     ],
-    "problem_group_id": "grp-dev-neg-con-dev-002-reverse-a-list-in-python-in"
+    "problem_group_id": "grp-dev-py-sequence-reversal"
   },
   {
     "id": "neg-con-dev-003",
@@ -1404,7 +1404,7 @@
         }
       }
     ],
-    "problem_group_id": "grp-dev-neg-con-dev-003-perform-case-sensitive-strin"
+    "problem_group_id": "grp-dev-py-case-sensitivity"
   },
   {
     "id": "neg-con-dev-004",
@@ -1425,7 +1425,7 @@
         }
       }
     ],
-    "problem_group_id": "grp-dev-neg-con-dev-004-sort-numbers-in-descending-o"
+    "problem_group_id": "grp-dev-py-sorting"
   },
   {
     "id": "neg-con-dev-005",
@@ -1446,7 +1446,7 @@
         }
       }
     ],
-    "problem_group_id": "grp-dev-neg-con-dev-005-remove-duplicates-from-a-lis"
+    "problem_group_id": "grp-dev-py-list-dedup"
   },
   {
     "id": "neg-con-test-001",
@@ -1656,7 +1656,7 @@
         }
       }
     ],
-    "problem_group_id": "grp-test-neg-rt-test-001-access-query-string-paramete"
+    "problem_group_id": "grp-test-browser-client-apis"
   },
   {
     "id": "neg-rt-test-002",
@@ -1719,7 +1719,7 @@
         }
       }
     ],
-    "problem_group_id": "grp-test-neg-rt-test-004-set-http-cookies-on-client-s"
+    "problem_group_id": "grp-test-browser-client-apis"
   },
   {
     "id": "neg-out-dev-001",
@@ -2658,7 +2658,7 @@
         }
       }
     ],
-    "problem_group_id": "grp-dev-con-dev-007-list-directory-contents-recu"
+    "problem_group_id": "grp-dev-py-filesystem-listing"
   },
   {
     "id": "con-test-007",
@@ -2679,7 +2679,7 @@
         }
       }
     ],
-    "problem_group_id": "grp-test-con-test-007-recursively-traverse-nested"
+    "problem_group_id": "grp-test-py-nested-dict-operations"
   },
   {
     "id": "con-dev-008",
@@ -2700,7 +2700,7 @@
         }
       }
     ],
-    "problem_group_id": "grp-dev-con-dev-008-search-regex-pattern-in-pyth"
+    "problem_group_id": "grp-dev-py-case-sensitivity"
   },
   {
     "id": "con-test-008",
@@ -2742,7 +2742,7 @@
         }
       }
     ],
-    "problem_group_id": "grp-dev-con-dev-009-list-all-directory-items-in"
+    "problem_group_id": "grp-dev-py-filesystem-listing"
   },
   {
     "id": "con-test-009",

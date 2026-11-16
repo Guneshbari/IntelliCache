@@ -228,6 +228,71 @@ class TestMetadataContractValidation(unittest.TestCase):
             with self.assertRaises(ValueError):
                 SemanticCompatibilityMetadata.from_dict(data)
 
+    def test_strict_raw_metadata_type_validation_rejected(self):
+        """Stage 3.1.2: Validate raw JSON types before coercion to prevent type loopholes."""
+        # 1. Boolean temperature rejected
+        with self.assertRaises(ValueError):
+            GenerationContract.from_dict({
+                "provider": "groq",
+                "model": "llama-3.3-70b-versatile",
+                "temperature": True,
+                "max_tokens": 1000,
+            })
+
+        # 2. String temperature rejected
+        with self.assertRaises(ValueError):
+            GenerationContract.from_dict({
+                "provider": "groq",
+                "model": "llama-3.3-70b-versatile",
+                "temperature": "0.7",
+                "max_tokens": 1000,
+            })
+
+        # 3. Float max_tokens rejected
+        with self.assertRaises(ValueError):
+            GenerationContract.from_dict({
+                "provider": "groq",
+                "model": "llama-3.3-70b-versatile",
+                "temperature": 0.7,
+                "max_tokens": 1000.9,
+            })
+
+        # 4. String max_tokens rejected
+        with self.assertRaises(ValueError):
+            GenerationContract.from_dict({
+                "provider": "groq",
+                "model": "llama-3.3-70b-versatile",
+                "temperature": 0.7,
+                "max_tokens": "1000",
+            })
+
+        # 5. Boolean max_tokens rejected
+        with self.assertRaises(ValueError):
+            GenerationContract.from_dict({
+                "provider": "groq",
+                "model": "llama-3.3-70b-versatile",
+                "temperature": 0.7,
+                "max_tokens": True,
+            })
+
+        # 6. Non-string ConstraintItem fields rejected
+        with self.assertRaises(ValueError):
+            ConstraintItem.from_dict({"key": 123, "operator": "equals", "value": "x"})
+        with self.assertRaises(ValueError):
+            ConstraintItem.from_dict({"key": "thread_safety", "operator": "equals", "value": True})
+
+        # 7. Non-string extractor_version rejected
+        data = {
+            "schema_version": CURRENT_SCHEMA_VERSION,
+            "extractor_version": 123,
+            "task_kind": {"status": "KNOWN", "value": "code_generation"},
+            "dimensions": {},
+            "generation_contract": asdict(self.valid_gen_contract),
+            "embedding_contract": asdict(self.valid_emb_contract),
+        }
+        with self.assertRaises(ValueError):
+            SemanticCompatibilityMetadata.from_dict(data)
+
 
 class TestCompatibilityExtractor(unittest.TestCase):
     """Verifies deterministic extraction of language, versions, frameworks, constraints, and disambiguation."""
@@ -346,17 +411,41 @@ class TestCompatibilityExtractor(unittest.TestCase):
         self.assertEqual(meta_node.dimensions["language_version"].status, MetadataStatus.NOT_APPLICABLE)
 
     def test_thread_safety_constraint_extraction(self):
-        """FIX-04: Extracts thread-safety constraints accurately."""
-        meta_ts = self.extractor.extract_from_text("How to implement a thread-safe singleton in Python?")
-        const_dim = meta_ts.dimensions["constraints"]
-        self.assertEqual(const_dim.status, MetadataStatus.KNOWN)
-        self.assertTrue(any(c.key == "thread_safety" and c.value == "thread_safe" for c in const_dim.value))
+        """FIX-04: Extracts thread-safety constraints accurately across explicit patterns."""
+        # Positive thread-safe patterns
+        for q in (
+            "How to implement a thread-safe singleton in Python?",
+            "How to implement a singleton using locks in Python?",
+            "How to implement a singleton with a mutex in Python?",
+            "How to design a thread-safe cache with double-checked locking?",
+        ):
+            meta = self.extractor.extract_from_text(q)
+            const_dim = meta.dimensions["constraints"]
+            self.assertEqual(const_dim.status, MetadataStatus.KNOWN, f"Failed for {q}")
+            self.assertTrue(
+                any(c.key == "thread_safety" and c.value == "thread_safe" for c in const_dim.value),
+                f"Missing thread_safe in {q}",
+            )
 
-        meta_naive = self.extractor.extract_from_text("How to implement a basic singleton class in Python?")
-        const_dim2 = meta_naive.dimensions["constraints"]
-        self.assertEqual(const_dim2.status, MetadataStatus.KNOWN)
-        self.assertTrue(any(c.key == "thread_safety" and c.value == "not_thread_safe" for c in const_dim2.value))
+        # Negative non-thread-safe patterns
+        for q in (
+            "How to implement a basic singleton class in Python?",
+            "How to implement a naive singleton in Python?",
+            "How to write a simple singleton without locks in Python?",
+        ):
+            meta = self.extractor.extract_from_text(q)
+            const_dim = meta.dimensions["constraints"]
+            self.assertEqual(const_dim.status, MetadataStatus.KNOWN, f"Failed for {q}")
+            self.assertTrue(
+                any(c.key == "thread_safety" and c.value == "not_thread_safe" for c in const_dim.value),
+                f"Missing not_thread_safe in {q}",
+            )
 
+        # Contradictory patterns fail closed to UNKNOWN
+        meta_contra = self.extractor.extract_from_text("Implement a thread-safe singleton without locks in Python")
+        self.assertEqual(meta_contra.dimensions["constraints"].status, MetadataStatus.UNKNOWN)
+
+        # Non-concurrency query has NOT_APPLICABLE
         meta_plain = self.extractor.extract_from_text("How to reverse a string in Python?")
         self.assertEqual(meta_plain.dimensions["constraints"].status, MetadataStatus.NOT_APPLICABLE)
 
@@ -554,6 +643,48 @@ class TestCandidateCompatibilityRules(unittest.TestCase):
         is_compat, reason = self.policy.is_candidate_compatible(cand, req)
         self.assertTrue(is_compat)
         self.assertIn(CompatibilityReasonCode.COMPATIBLE, reason)
+
+    def test_constraint_operators_logical_evaluation(self):
+        """Stage 3.1.2: Constraint evaluation accurately respects equals, not_equals, in, not_in."""
+        def _make_meta_with_constraints(items: list[ConstraintItem]) -> SemanticCompatibilityMetadata:
+            dims = dict(self.extractor.extract_from_text("How to sort in Python?").dimensions)
+            dims["constraints"] = DimensionValue(status=MetadataStatus.KNOWN, value=items)
+            return SemanticCompatibilityMetadata(
+                schema_version=CURRENT_SCHEMA_VERSION,
+                extractor_version="compat-extractor-v2",
+                task_kind=DimensionValue(status=MetadataStatus.KNOWN, value=TaskKind.CODE_GENERATION),
+                dimensions=dims,
+                generation_contract=GenerationContract(provider="groq", model="llama-3.3-70b-versatile", temperature=0.7),
+                embedding_contract=EmbeddingContract(model="nomic-embed-text"),
+            )
+
+        # 1. equals
+        req1 = _make_meta_with_constraints([ConstraintItem(key="mutation", operator="equals", value="in_place")])
+        cand1_match = _make_meta_with_constraints([ConstraintItem(key="mutation", operator="equals", value="in_place")])
+        cand1_mismatch = _make_meta_with_constraints([ConstraintItem(key="mutation", operator="equals", value="immutable")])
+        self.assertTrue(compare_compatibility(req1, cand1_match)[0])
+        self.assertFalse(compare_compatibility(req1, cand1_mismatch)[0])
+
+        # 2. not_equals
+        req2 = _make_meta_with_constraints([ConstraintItem(key="mutation", operator="not_equals", value="in_place")])
+        cand2_forbids_match = _make_meta_with_constraints([ConstraintItem(key="mutation", operator="equals", value="immutable")])
+        cand2_violates = _make_meta_with_constraints([ConstraintItem(key="mutation", operator="equals", value="in_place")])
+        self.assertTrue(compare_compatibility(req2, cand2_forbids_match)[0])
+        self.assertFalse(compare_compatibility(req2, cand2_violates)[0])
+
+        # 3. in
+        req3 = _make_meta_with_constraints([ConstraintItem(key="lib", operator="in", value="requests,httpx,aiohttp")])
+        cand3_match = _make_meta_with_constraints([ConstraintItem(key="lib", operator="equals", value="httpx")])
+        cand3_mismatch = _make_meta_with_constraints([ConstraintItem(key="lib", operator="equals", value="urllib3")])
+        self.assertTrue(compare_compatibility(req3, cand3_match)[0])
+        self.assertFalse(compare_compatibility(req3, cand3_mismatch)[0])
+
+        # 4. not_in
+        req4 = _make_meta_with_constraints([ConstraintItem(key="runtime", operator="not_in", value="browser,deno")])
+        cand4_match = _make_meta_with_constraints([ConstraintItem(key="runtime", operator="equals", value="node")])
+        cand4_violates = _make_meta_with_constraints([ConstraintItem(key="runtime", operator="equals", value="browser")])
+        self.assertTrue(compare_compatibility(req4, cand4_match)[0])
+        self.assertFalse(compare_compatibility(req4, cand4_violates)[0])
 
     def test_case_sensitivity_mismatch_rejected(self):
         """Case-sensitive query cannot reuse case-insensitive candidate."""
@@ -803,8 +934,9 @@ class TestProblemGroupPartitionValidation(unittest.TestCase):
 
         dev_groups = {c.problem_group_id for c in dev_cases}
         test_groups = {c.problem_group_id for c in test_cases}
-        self.assertEqual(len(dev_groups), 65)
-        self.assertEqual(len(test_groups), 65)
+        # Clustered intra-partition problem groups verify that family grouping works while disjoint
+        self.assertEqual(len(dev_groups), 59)
+        self.assertEqual(len(test_groups), 62)
         self.assertEqual(dev_groups.intersection(test_groups), set())
 
 
@@ -813,7 +945,6 @@ class TestValidatorFallbackE2E(unittest.IsolatedAsyncioTestCase):
 
     async def test_validator_exception_core_pipeline_fallback(self):
         """FIX-08: Validator exception in semantic cache causes IntelliCacheCore to fall back
-
         to calling the upstream LLM provider exactly once, returning cached=False.
         """
         exact_cache = ExactCache(max_entries=100, ttl_seconds=3600)
@@ -881,17 +1012,79 @@ class TestValidatorFallbackE2E(unittest.IsolatedAsyncioTestCase):
         snap = metrics.get_namespace_snapshot("default")
         self.assertEqual(snap.semantic.validator_failures, 1)
 
-    async def test_validator_cancellation_propagates_in_core(self):
-        """FIX-08: asyncio.CancelledError during semantic candidate evaluation is not swallowed."""
-        exact_cache = ExactCache(max_entries=100, ttl_seconds=3600)
+    async def test_candidate_evaluation_cancellation_propagates_in_lookup(self):
+        """Stage 3.1.2: asyncio.CancelledError during candidate evaluation propagates out of lookup without recording validator failure."""
         mock_embedder = AsyncMock()
-        mock_vector_store = AsyncMock()
-        policy = SemanticCachePolicy()
+        mock_embedder.model_name = "nomic-embed-text"
+        mock_embedder.dimensions = 768
+        mock_embedder.embed.return_value = MagicMock(vector=tuple([0.1] * 768), model="nomic-embed-text", dimensions=768)
 
+        mock_vector_store = AsyncMock()
+        mock_cand = VectorSearchResult(
+            cache_namespace="default",
+            fingerprint="fp_123",
+            query_text="How to reverse a string in Python?",
+            model="nomic-embed-text",
+            distance=0.01,
+            similarity=0.99,
+            cached_response="s[::-1]",
+            metadata={"schema_version": CURRENT_SCHEMA_VERSION},
+        )
+        mock_vector_store.search.return_value = [mock_cand]
+
+        policy = SemanticCachePolicy()
+        metrics = RuntimeMetricsCollector()
         semantic_service = SemanticCacheService(
             embedding_provider=mock_embedder,
             vector_store=mock_vector_store,
             policy=policy,
+            metrics_collector=metrics,
+        )
+
+        req = GenerationRequest(
+            messages=[ChatMessage(role="user", content="How do I reverse a string in Python?")],
+            provider="groq",
+            model="llama-3.3-70b-versatile",
+            temperature=0.7,
+            max_tokens=1000,
+        )
+
+        with patch.object(policy, "evaluate_candidates", side_effect=asyncio.CancelledError()):
+            with self.assertRaises(asyncio.CancelledError):
+                await semantic_service.lookup(req)
+
+        # Cancellation must NOT count as a validator failure
+        snap = metrics.get_namespace_snapshot("default")
+        self.assertEqual(snap.semantic.validator_failures, 0)
+
+    async def test_candidate_evaluation_cancellation_propagates_in_core(self):
+        """Stage 3.1.2: asyncio.CancelledError during candidate evaluation propagates through core and skips provider."""
+        exact_cache = ExactCache(max_entries=100, ttl_seconds=3600)
+        mock_embedder = AsyncMock()
+        mock_embedder.model_name = "nomic-embed-text"
+        mock_embedder.dimensions = 768
+        mock_embedder.embed.return_value = MagicMock(vector=tuple([0.1] * 768), model="nomic-embed-text", dimensions=768)
+
+        mock_vector_store = AsyncMock()
+        mock_cand = VectorSearchResult(
+            cache_namespace="default",
+            fingerprint="fp_123",
+            query_text="How to reverse a string in Python?",
+            model="nomic-embed-text",
+            distance=0.01,
+            similarity=0.99,
+            cached_response="s[::-1]",
+            metadata={"schema_version": CURRENT_SCHEMA_VERSION},
+        )
+        mock_vector_store.search.return_value = [mock_cand]
+
+        policy = SemanticCachePolicy()
+        metrics = RuntimeMetricsCollector()
+        semantic_service = SemanticCacheService(
+            embedding_provider=mock_embedder,
+            vector_store=mock_vector_store,
+            policy=policy,
+            metrics_collector=metrics,
         )
 
         core = IntelliCacheCore(
@@ -909,12 +1102,13 @@ class TestValidatorFallbackE2E(unittest.IsolatedAsyncioTestCase):
             max_tokens=1000,
         )
 
-        # Inject CancelledError in embedding
-        with patch.object(mock_embedder, "embed", side_effect=asyncio.CancelledError()):
+        with patch.object(policy, "evaluate_candidates", side_effect=asyncio.CancelledError()):
             with self.assertRaises(asyncio.CancelledError):
                 await core.execute_query(req, upstream_provider)
 
         upstream_provider.generate.assert_not_called()
+        snap = metrics.get_namespace_snapshot("default")
+        self.assertEqual(snap.semantic.validator_failures, 0)
 
 
 if __name__ == "__main__":
