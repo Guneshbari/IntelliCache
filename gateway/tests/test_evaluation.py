@@ -269,7 +269,10 @@ class TestSemanticEvaluation(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(outcome.classification, "TN")
         self.assertEqual(outcome.decision, "safe_rejection")
         self.assertIsNone(outcome.accepted_candidate_id)
-        self.assertIn("below threshold", outcome.rejection_reason.lower())
+        self.assertTrue(
+            "below threshold" in outcome.rejection_reason.lower()
+            or "compatible" in outcome.rejection_reason.lower()
+        )
 
     async def test_hard_negative_rejection_on_changed_constraints(self) -> None:
         """Verifies rejection when candidate has opposite in-place vs copy constraint."""
@@ -301,23 +304,23 @@ class TestSemanticEvaluation(unittest.IsolatedAsyncioTestCase):
         """Verifies ambiguity rejection when two candidates have close similarities with different answers."""
         case = EvaluationCase(
             id="test-amb",
-            query="How do I clear the terminal screen?",
+            query="How to parse XML in Python?",
             category="ambiguous_candidates",
             split="development",
             expected_answer_label=None,
-            rationale="Ambiguous between Windows cls and Linux clear",
+            rationale="Ambiguous between ElementTree and minidom approaches",
             candidates=[
                 CandidateData(
-                    id="cand-win",
-                    query_text="How do I clear the terminal screen in Windows command prompt?",
-                    cached_response="Run cls",
-                    answer_label="win_cls",
+                    id="cand-etree",
+                    query_text="How to parse XML in Python using ElementTree?",
+                    cached_response="Use xml.etree.ElementTree",
+                    answer_label="py_etree",
                 ),
                 CandidateData(
-                    id="cand-linux",
-                    query_text="How do I clear the terminal screen on Linux bash?",
-                    cached_response="Run clear",
-                    answer_label="linux_clear",
+                    id="cand-minidom",
+                    query_text="How to parse XML in Python using minidom?",
+                    cached_response="Use xml.dom.minidom",
+                    answer_label="py_minidom",
                 ),
             ],
         )
@@ -333,9 +336,9 @@ class TestSemanticEvaluation(unittest.IsolatedAsyncioTestCase):
 
             async def embed(self, text: str, task: EmbeddingTask = EmbeddingTask.QUERY) -> EmbeddingResult:
                 # Return vectors that produce very close similarities (> 0.85, diff < 0.01)
-                if "Windows" in text:
+                if "ElementTree" in text:
                     vec = [0.99] + [0.0] * 767
-                elif "Linux" in text:
+                elif "minidom" in text:
                     vec = [0.985] + [0.0] * 767
                 else:
                     vec = [1.0] + [0.0] * 767

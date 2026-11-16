@@ -630,6 +630,17 @@ async def evaluate_single_case(
                 meta.setdefault("temperature", 0.7)
                 meta.setdefault("max_tokens", 1000)
 
+                if "schema_version" not in meta:
+                    extracted_meta = policy.extractor.extract_from_text(
+                        text=cand.query_text,
+                        provider=meta["llm_provider"],
+                        model=meta["llm_model"],
+                        temperature=float(meta["temperature"]),
+                        max_tokens=meta["max_tokens"],
+                        configured_model=policy.configured_model,
+                    )
+                    meta = extracted_meta.to_dict()
+
                 cache_entry = CacheEntry(
                     response=cand.cached_response,
                     model=meta["llm_model"],
@@ -784,6 +795,17 @@ async def evaluate_single_case(
             meta.setdefault("llm_model", "llama-3.3-70b-versatile")
             meta.setdefault("temperature", 0.7)
             meta.setdefault("max_tokens", 1000)
+
+            if "schema_version" not in meta:
+                extracted_meta = policy.extractor.extract_from_text(
+                    text=cand.query_text,
+                    provider=meta["llm_provider"],
+                    model=meta["llm_model"],
+                    temperature=float(meta["temperature"]),
+                    max_tokens=meta["max_tokens"],
+                    configured_model=policy.configured_model,
+                )
+                meta = extracted_meta.to_dict()
 
             vs_res = VectorSearchResult(
                 cache_namespace="default",
@@ -1118,6 +1140,17 @@ async def run_benchmark(
                     meta.setdefault("llm_model", "llama-3.3-70b-versatile")
                     meta.setdefault("temperature", 0.7)
                     meta.setdefault("max_tokens", 1000)
+
+                    if "schema_version" not in meta:
+                        extracted_meta = policy.extractor.extract_from_text(
+                            text=cand.query_text,
+                            provider=meta["llm_provider"],
+                            model=meta["llm_model"],
+                            temperature=float(meta["temperature"]),
+                            max_tokens=meta["max_tokens"],
+                            configured_model=policy.configured_model,
+                        )
+                        meta = extracted_meta.to_dict()
 
                     # Order: exact-cache entry FIRST
                     cache_entry = CacheEntry(

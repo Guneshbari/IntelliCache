@@ -3,11 +3,15 @@ Provider-independent interface for semantic caching.
 Can be injected into IntelliCacheCore without importing FastAPI or SDK classes.
 """
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
-from typing import Dict, Optional
+from typing import TYPE_CHECKING, Dict, Optional
 
 from .contracts import EligibilityResult, SemanticHit
-from ..core.contracts import GenerationRequest, GenerationResult
+
+if TYPE_CHECKING:
+    from ..core.contracts import GenerationRequest, GenerationResult
 
 
 class BaseSemanticCache(ABC):

@@ -4,6 +4,7 @@ Coordinates query eligibility, embedding generation, vector retrieval, candidate
 safe failure fallbacks, and vector indexing.
 """
 
+import asyncio
 from datetime import datetime, timezone
 import logging
 import time
@@ -137,7 +138,24 @@ class SemanticCacheService(BaseSemanticCache):
 
         # 3. Evaluate candidates against policy
         eval_start = time.perf_counter()
-        winning_candidate, rejection_reason = self.policy.evaluate_candidates(candidates, request)
+        try:
+            winning_candidate, rejection_reason = self.policy.evaluate_candidates(candidates, request)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            eval_lat_ms = (time.perf_counter() - eval_start) * 1000.0
+            sem_lat_ms = (time.perf_counter() - lookup_start) * 1000.0
+            collector.record_latency(ns, "candidate_policy_latency_ms", eval_lat_ms)
+            collector.record_latency(ns, "semantic_lookup_latency_ms", sem_lat_ms)
+            self.stats.validator_failures += 1
+            collector.record_validator_failure(ns)
+            logger.warning(
+                "Semantic candidate validation failed (%s): %s",
+                type(exc).__name__,
+                sanitize_error_message(str(exc)),
+            )
+            return None
+
         eval_lat_ms = (time.perf_counter() - eval_start) * 1000.0
         collector.record_latency(ns, "candidate_policy_latency_ms", eval_lat_ms)
         sem_lat_ms = (time.perf_counter() - lookup_start) * 1000.0
@@ -232,14 +250,22 @@ class SemanticCacheService(BaseSemanticCache):
             )
             return False
 
-        # 2. Prepare generation compatibility metadata
-        meta = {
-            "llm_provider": request.provider,
-            "llm_model": request.model,
-            "temperature": request.temperature,
-            "max_tokens": request.max_tokens,
-            "indexed_at": datetime.now(timezone.utc).isoformat(),
-        }
+        # 2. Prepare validated versioned compatibility metadata
+        try:
+            meta_obj = self.policy.extractor.extract(request, self.policy.configured_model)
+            meta_obj.validate()
+            meta = meta_obj.to_dict()
+        except Exception as exc:
+            self.stats.indexing_failures += 1
+            collector.record_indexing_failure(ns)
+            idx_lat_ms = (time.perf_counter() - embed_start) * 1000.0
+            collector.record_latency(ns, "vector_indexing_latency_ms", idx_lat_ms)
+            logger.warning(
+                "Vector indexing aborted due to metadata validation failure (%s): %s",
+                type(exc).__name__,
+                sanitize_error_message(str(exc)),
+            )
+            return False
 
         record = VectorRecord(
             cache_namespace=ns,

@@ -114,6 +114,7 @@ class _NamespaceData:
         self.vector_store_failures = 0
         self.indexing_successes = 0
         self.indexing_failures = 0
+        self.validator_failures = 0
 
         # Bounded Latency Samples
         self.latency_samples: Dict[str, Deque[float]] = {
@@ -240,6 +241,10 @@ class _NamespaceData:
         with self.lock:
             self.vector_store_failures += 1
 
+    def record_validator_failure(self) -> None:
+        with self.lock:
+            self.validator_failures += 1
+
     def record_indexing_success(self, latency_ms: Optional[float] = None) -> None:
         with self.lock:
             self.indexing_successes += 1
@@ -330,6 +335,7 @@ class _NamespaceData:
                 vector_store_failures=self.vector_store_failures,
                 indexing_successes=self.indexing_successes,
                 indexing_failures=self.indexing_failures,
+                validator_failures=self.validator_failures,
             )
 
             # Rates
@@ -573,6 +579,13 @@ class RuntimeMetricsCollector:
         except Exception as e:
             logger.debug("Metrics record_vector_store_failure failed: %s", e)
 
+    def record_validator_failure(self, namespace: str) -> None:
+        try:
+            ns_data = self.get_or_create_namespace(namespace)
+            ns_data.record_validator_failure()
+        except Exception as e:
+            logger.debug("Metrics record_validator_failure failed: %s", e)
+
     def record_indexing_success(self, namespace: str, latency_ms: Optional[float] = None) -> None:
         try:
             ns_data = self.get_or_create_namespace(namespace)
@@ -709,6 +722,7 @@ class RuntimeMetricsCollector:
             agg_sem.vector_store_failures += s.vector_store_failures
             agg_sem.indexing_successes += s.indexing_successes
             agg_sem.indexing_failures += s.indexing_failures
+            agg_sem.validator_failures += s.validator_failures
 
         # Merge raw samples from ns_data
         for ns_data in all_namespaces:

@@ -238,12 +238,9 @@ class TestSemanticCachePolicy(unittest.TestCase):
             distance=0.02,
             similarity=0.98,
             cached_response="Use sorted()",
-            metadata={
-                "llm_provider": "groq",
-                "llm_model": "llama-3",
-                "temperature": 0.7,
-                "max_tokens": 500,
-            },
+            metadata=self.policy.extractor.extract_from_text(
+                "How to sort in Python?", "groq", "llama-3", 0.7, 500, "nomic-embed-text"
+            ).to_dict(),
         )
         compat, reason = self.policy.is_candidate_compatible(valid_cand, req)
         self.assertTrue(compat)
@@ -257,7 +254,9 @@ class TestSemanticCachePolicy(unittest.TestCase):
             distance=0.02,
             similarity=0.98,
             cached_response="resp",
-            metadata={"llm_provider": "openai", "llm_model": "llama-3", "temperature": 0.7, "max_tokens": 500},
+            metadata=self.policy.extractor.extract_from_text(
+                "How to sort in Python?", "openai", "llama-3", 0.7, 500, "nomic-embed-text"
+            ).to_dict(),
         )
         self.assertFalse(self.policy.is_candidate_compatible(bad_prov, req)[0])
 
@@ -270,7 +269,9 @@ class TestSemanticCachePolicy(unittest.TestCase):
             distance=0.02,
             similarity=0.98,
             cached_response="resp",
-            metadata={"llm_provider": "groq", "llm_model": "mistral-7b", "temperature": 0.7, "max_tokens": 500},
+            metadata=self.policy.extractor.extract_from_text(
+                "How to sort in Python?", "groq", "mistral-7b", 0.7, 500, "nomic-embed-text"
+            ).to_dict(),
         )
         self.assertFalse(self.policy.is_candidate_compatible(bad_model, req)[0])
 
@@ -283,7 +284,9 @@ class TestSemanticCachePolicy(unittest.TestCase):
             distance=0.02,
             similarity=0.98,
             cached_response="resp",
-            metadata={"llm_provider": "groq", "llm_model": "llama-3", "temperature": 0.2, "max_tokens": 500},
+            metadata=self.policy.extractor.extract_from_text(
+                "How to sort in Python?", "groq", "llama-3", 0.2, 500, "nomic-embed-text"
+            ).to_dict(),
         )
         self.assertFalse(self.policy.is_candidate_compatible(bad_temp, req)[0])
 
@@ -322,7 +325,9 @@ class TestSemanticCachePolicy(unittest.TestCase):
             provider="groq",
             namespace="default",
         )
-        meta = {"llm_provider": "groq", "llm_model": "llama-3", "temperature": 0.7, "max_tokens": None}
+        meta = self.policy.extractor.extract_from_text(
+            "How to sort in Python?", "groq", "llama-3", 0.7, None, "nomic-embed-text"
+        ).to_dict()
 
         # Case 1: Below minimum similarity (0.89 < 0.92) -> Rejected
         cand_low = VectorSearchResult(
@@ -455,12 +460,9 @@ class TestCoreSemanticCachePipeline(unittest.IsolatedAsyncioTestCase):
 
     async def test_semantic_hit_returns_cached_response_without_llm(self):
         """Semantic hit returns candidate response with cache_type='semantic' without calling LLM."""
-        meta = {
-            "llm_provider": "groq",
-            "llm_model": "llama-3",
-            "temperature": 0.7,
-            "max_tokens": None,
-        }
+        meta = self.core.semantic_cache.policy.extractor.extract_from_text(
+            "How to do binary search in Python?", "groq", "llama-3", 0.7, None, "nomic-embed-text"
+        ).to_dict()
         cand = VectorSearchResult(
             cache_namespace="default",
             fingerprint="fp_semantic_source",
@@ -558,12 +560,9 @@ class TestCoreSemanticCachePipeline(unittest.IsolatedAsyncioTestCase):
 
     async def test_single_flight_follower_receives_semantic_hit(self):
         """Single-flight follower receives the leader's semantic hit correctly."""
-        meta = {
-            "llm_provider": "groq",
-            "llm_model": "llama-3",
-            "temperature": 0.7,
-            "max_tokens": None,
-        }
+        meta = self.core.semantic_cache.policy.extractor.extract_from_text(
+            "How to do binary search in Python?", "groq", "llama-3", 0.7, None, "nomic-embed-text"
+        ).to_dict()
         cand = VectorSearchResult(
             cache_namespace="default",
             fingerprint="fp_shared",

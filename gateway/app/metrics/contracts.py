@@ -57,6 +57,7 @@ class SemanticMetrics(BaseModel):
     vector_store_failures: int = 0
     indexing_successes: int = 0
     indexing_failures: int = 0
+    validator_failures: int = 0
 
 
 class LatencySummary(BaseModel):

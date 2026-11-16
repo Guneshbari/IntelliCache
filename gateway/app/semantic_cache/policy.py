@@ -1,17 +1,31 @@
 """
-Deterministic semantic cache policy and candidate evaluation engine.
+Deterministic semantic cache policy and candidate evaluation engine (Stage 3.1).
 Enforces query eligibility, technical/programming query classification,
-credential detection, candidate compatibility, similarity thresholds, and ambiguity rejection.
-No LLM calls are made for eligibility or classification.
+credential detection, validated compatibility metadata, deterministic domain guardrails,
+candidate similarity thresholds, and ambiguity rejection.
+No LLM calls are made for eligibility, classification, or compatibility.
 """
 
-import re
-from typing import Any, Dict, List, Optional, Tuple
+from __future__ import annotations
 
-from .contracts import EligibilityResult
-from ..core.contracts import GenerationRequest
+import logging
+import re
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+
+from .compatibility import CompatibilityExtractor, compare_compatibility
+from .contracts import (
+    CompatibilityReasonCode,
+    EligibilityResult,
+    MetadataStatus,
+    SemanticCompatibilityMetadata,
+    TaskKind,
+)
 from ..vector_store.contracts import VectorSearchResult
 
+if TYPE_CHECKING:
+    from ..core.contracts import GenerationRequest
+
+logger = logging.getLogger("intellicache.gateway.semantic_cache.policy")
 
 # Regex patterns for detecting credentials, keys, tokens, and private material
 _SENSITIVE_PATTERNS = [
@@ -86,7 +100,7 @@ _CODE_SYNTAX_MARKERS = [
 
 class SemanticCachePolicy:
     """
-    Evaluates request eligibility and candidate compatibility.
+    Evaluates request eligibility, deterministic metadata extraction, and candidate compatibility.
     Deterministic, zero external network calls.
     """
 
@@ -96,16 +110,19 @@ class SemanticCachePolicy:
         min_margin: float = 0.03,
         top_k: int = 5,
         configured_model: str = "nomic-embed-text",
+        extractor: Optional[CompatibilityExtractor] = None,
     ):
         self.min_similarity = float(min_similarity)
         self.min_margin = float(min_margin)
         self.top_k = int(top_k)
         self.configured_model = str(configured_model).strip()
+        self.extractor = extractor or CompatibilityExtractor()
 
     def check_eligibility(self, request: GenerationRequest) -> EligibilityResult:
         """
         Determines if an incoming GenerationRequest is eligible for semantic caching.
-        Permits only single-turn user programming/technical queries without secrets or context dependencies.
+        Permits only single-turn user programming/technical queries without secrets or context dependencies,
+        with established material domain requirements.
         """
         if request.stream:
             return EligibilityResult(False, "Streaming requests are not eligible for semantic caching.")
@@ -153,6 +170,40 @@ class SemanticCachePolicy:
                 "Query does not match technical or programming criteria.",
             )
 
+        # Stage 3.1: Deterministic requirement extraction and materiality validation
+        try:
+            req_meta = self.extractor.extract(request, self.configured_model)
+        except Exception as exc:
+            return EligibilityResult(
+                False,
+                f"Compatibility metadata extraction failed: {exc}",
+            )
+
+        # 1. Task kind must be known
+        if req_meta.task_kind.status == MetadataStatus.UNKNOWN:
+            return EligibilityResult(
+                False,
+                "Query task kind could not be determined deterministically.",
+            )
+
+        # 2. Material dimension requirements:
+        # A code-generation request without an established programming language is ineligible
+        if req_meta.task_kind.value == TaskKind.CODE_GENERATION:
+            lang_dim = req_meta.dimensions.get("language")
+            if not lang_dim or lang_dim.status != MetadataStatus.KNOWN:
+                return EligibilityResult(
+                    False,
+                    "Code-generation request without an established programming language is ineligible for semantic caching.",
+                )
+
+        # 3. Check for contradictory or ambiguous dimensions
+        for dim_name, dim_val in req_meta.dimensions.items():
+            if dim_val.status == MetadataStatus.UNKNOWN:
+                return EligibilityResult(
+                    False,
+                    f"Query contains ambiguous or contradictory technical requirements for '{dim_name}'.",
+                )
+
         return EligibilityResult(True, "Eligible for semantic caching.")
 
     def _is_technical_query(self, text: str) -> bool:
@@ -183,43 +234,61 @@ class SemanticCachePolicy:
         """
         Verifies that a nearest-neighbour vector candidate matches all required
         compatibility criteria: namespace, embedding model, LLM provider, LLM model,
-        temperature, max_tokens, and valid cached response.
+        temperature, max_tokens, validated metadata schema, and all domain dimensions.
         """
         if not candidate.cached_response or not candidate.cached_response.strip():
-            return False, "Candidate has no associated active exact-cache response."
+            return False, f"{CompatibilityReasonCode.NO_ASSOCIATED_RESPONSE}: Candidate has no associated active exact-cache response."
 
         if candidate.cache_namespace != request.namespace:
-            return False, f"Namespace mismatch: candidate '{candidate.cache_namespace}' != request '{request.namespace}'."
+            return False, f"{CompatibilityReasonCode.NAMESPACE_MISMATCH}: Namespace mismatch: candidate '{candidate.cache_namespace}' != request '{request.namespace}'."
 
         if candidate.model != self.configured_model:
-            return False, f"Embedding model mismatch: candidate '{candidate.model}' != configured '{self.configured_model}'."
+            return False, f"{CompatibilityReasonCode.EMBEDDING_MODEL_MISMATCH}: Embedding model mismatch: candidate '{candidate.model}' != configured '{self.configured_model}'."
 
-        meta = candidate.metadata or {}
-        if not meta:
-            return False, "Candidate is missing required generation compatibility metadata."
+        meta_dict = candidate.metadata or {}
+        if not meta_dict:
+            return False, f"{CompatibilityReasonCode.LEGACY_METADATA_MISSING}: Candidate is missing semantic compatibility metadata."
 
-        llm_provider = meta.get("llm_provider")
-        if not llm_provider or llm_provider != request.provider:
-            return False, f"LLM provider mismatch: candidate '{llm_provider}' != request '{request.provider}'."
+        if "schema_version" not in meta_dict:
+            return False, f"{CompatibilityReasonCode.LEGACY_METADATA_MISSING}: Candidate lacks versioned semantic metadata (legacy record)."
 
-        llm_model = meta.get("llm_model")
-        if not llm_model or llm_model != request.model:
-            return False, f"LLM model mismatch: candidate '{llm_model}' != request '{request.model}'."
+        if meta_dict["schema_version"] != 1:
+            return False, f"{CompatibilityReasonCode.UNSUPPORTED_SCHEMA_VERSION}: Unsupported metadata schema version {meta_dict['schema_version']}."
 
-        cand_temp = meta.get("temperature")
-        if cand_temp is None:
-            return False, "Candidate metadata missing temperature configuration."
         try:
-            if abs(float(cand_temp) - float(request.temperature)) > 1e-4:
-                return False, f"Temperature mismatch: candidate {cand_temp} != request {request.temperature}."
+            cand_meta = SemanticCompatibilityMetadata.from_dict(meta_dict)
+        except Exception as exc:
+            return False, f"{CompatibilityReasonCode.INVALID_METADATA_FORMAT}: Candidate metadata malformed: {exc}."
+
+        # Generation contract validation
+        gen_cand = cand_meta.generation_contract
+        if gen_cand.provider != request.provider:
+            return False, f"{CompatibilityReasonCode.GENERATION_PROVIDER_MISMATCH}: Provider mismatch: candidate '{gen_cand.provider}' != request '{request.provider}'."
+
+        if gen_cand.model != request.model:
+            return False, f"{CompatibilityReasonCode.GENERATION_MODEL_MISMATCH}: Model mismatch: candidate '{gen_cand.model}' != request '{request.model}'."
+
+        try:
+            if abs(float(gen_cand.temperature) - float(request.temperature)) > 1e-4:
+                return False, f"{CompatibilityReasonCode.GENERATION_TEMPERATURE_MISMATCH}: Temperature mismatch: candidate {gen_cand.temperature} != request {request.temperature}."
         except (ValueError, TypeError):
-            return False, "Candidate has invalid temperature in metadata."
+            return False, f"{CompatibilityReasonCode.GENERATION_TEMPERATURE_MISMATCH}: Candidate has invalid temperature configuration."
 
-        cand_max_tokens = meta.get("max_tokens")
-        if cand_max_tokens != request.max_tokens:
-            return False, f"max_tokens mismatch: candidate {cand_max_tokens} != request {request.max_tokens}."
+        if gen_cand.max_tokens != request.max_tokens:
+            return False, f"{CompatibilityReasonCode.GENERATION_MAX_TOKENS_MISMATCH}: max_tokens mismatch: candidate {gen_cand.max_tokens} != request {request.max_tokens}."
 
-        return True, "Compatible"
+        # Extract incoming request metadata
+        try:
+            req_meta = self.extractor.extract(request, self.configured_model)
+        except Exception as exc:
+            return False, f"{CompatibilityReasonCode.INVALID_METADATA_FORMAT}: Failed to extract request metadata: {exc}."
+
+        # Deterministic domain compatibility comparison
+        is_compat, reason_code, message = compare_compatibility(req_meta, cand_meta)
+        if not is_compat:
+            return False, message
+
+        return True, f"{CompatibilityReasonCode.COMPATIBLE}: Candidate satisfied all generation and domain requirements."
 
     def evaluate_candidates(
         self,
@@ -228,7 +297,8 @@ class SemanticCachePolicy:
     ) -> Tuple[Optional[VectorSearchResult], Optional[str]]:
         """
         Evaluates nearest-neighbour candidates in order of similarity.
-        Applies compatibility checks, minimum similarity threshold, and ambiguity margin.
+        Applies mandatory compatibility checks before similarity thresholding, ensuring
+        high dense similarity cannot override domain incompatibility.
 
         Returns:
             (winning_candidate, None) on successful match, or
@@ -237,26 +307,34 @@ class SemanticCachePolicy:
         if not candidates:
             return None, "No vector candidates retrieved."
 
-        # Filter candidates by compatibility
+        # 1. Filter candidates by deterministic compatibility
         compatible_candidates: List[VectorSearchResult] = []
         for cand in candidates:
             is_compat, reason = self.is_candidate_compatible(cand, request)
             if is_compat:
                 compatible_candidates.append(cand)
+            else:
+                logger.debug(
+                    "Candidate fingerprint='%s...' rejected for compatibility: %s",
+                    cand.fingerprint[:12],
+                    reason,
+                )
 
         if not compatible_candidates:
-            return None, "No compatible candidates satisfied generation metadata requirements."
+            return None, "No compatible candidates satisfied generation and domain requirements."
 
+        # Ensure candidates are sorted descending by similarity / ascending by distance
+        compatible_candidates.sort(key=lambda c: c.similarity, reverse=True)
         top_cand = compatible_candidates[0]
 
-        # 1. Minimum similarity threshold check
+        # 2. Minimum similarity threshold check on top compatible candidate
         if top_cand.similarity < self.min_similarity:
             return (
                 None,
                 f"Similarity below threshold: {top_cand.similarity:.4f} < {self.min_similarity:.4f}.",
             )
 
-        # 2. Ambiguity check: if top candidate is too close to another candidate with a different answer
+        # 3. Ambiguity check: check top candidate against other compatible candidates
         top_response = (top_cand.cached_response or "").strip()
         for other in compatible_candidates[1:]:
             margin = top_cand.similarity - other.similarity
