@@ -316,14 +316,17 @@ class TestPostgresVectorStoreIntegration(unittest.IsolatedAsyncioTestCase):
         namespace: str,
         model: str,
         top_k: int,
+        extra_boundary: int = 1,
     ) -> tuple[list[dict], list[str]]:
         """
         Executes a controlled exact nearest-neighbour baseline query inside a transaction.
         Enforces SET LOCAL enable_indexscan = off and SET LOCAL enable_bitmapscan = off,
         ensuring an exact sequential scan over filtered records.
         Uses bound SQL parameters and verifies via EXPLAIN that HNSW index scan is absent.
+        Retrieves (top_k + extra_boundary) records so boundary distance ties at rank k can be evaluated.
         Returns (records, plan_lines) where records is a list of dicts with 'fingerprint' and 'distance'.
         """
+        fetch_limit = top_k + max(0, extra_boundary)
         async with conn.transaction():
             await conn.execute("SET LOCAL enable_indexscan = off;")
             await conn.execute("SET LOCAL enable_bitmapscan = off;")
@@ -342,7 +345,7 @@ class TestPostgresVectorStoreIntegration(unittest.IsolatedAsyncioTestCase):
                 query_vector_str,
                 namespace,
                 model,
-                top_k,
+                fetch_limit,
             )
             plan_lines = [r[0] for r in plan_rows]
             plan_text = " ".join(plan_lines)
@@ -362,7 +365,7 @@ class TestPostgresVectorStoreIntegration(unittest.IsolatedAsyncioTestCase):
                 query_vector_str,
                 namespace,
                 model,
-                top_k,
+                fetch_limit,
             )
             return [dict(r) for r in rows], plan_lines
 
@@ -375,16 +378,19 @@ class TestPostgresVectorStoreIntegration(unittest.IsolatedAsyncioTestCase):
         """
         Calculates Recall@k, overlap@k, and boundary tie metrics according to Stage 3.2.3 definition:
         recall@k = len(ann[:k] ∩ exact[:k]) / min(k, len(exact_records)).
-        Detects ties at the k-th distance boundary and calculates tie_aware_recall.
+        Detects ties at the k-th distance boundary using the extra (k+1)-th exact candidate
+        and calculates tie_aware_recall.
         """
+        max_k = max(k_values) if k_values else len(exact_records)
+        effective_exact_count = min(len(exact_records), max_k)
         metrics: dict = {
-            "exact_count": len(exact_records),
+            "exact_count": effective_exact_count,
             "ann_count": len(ann_fingerprints),
             "boundary_ties": {},
             "tie_aware_recall": {},
         }
         for k in k_values:
-            eligible_k = min(k, len(exact_records))
+            eligible_k = min(k, effective_exact_count)
             if eligible_k == 0:
                 metrics[f"recall_at_{k}"] = 1.0
                 metrics[f"overlap_at_{k}"] = 0
@@ -942,7 +948,7 @@ class TestPostgresVectorStoreIntegration(unittest.IsolatedAsyncioTestCase):
                     idx_scan_status = await conn.fetchval("SHOW enable_indexscan;")
                     self.assertEqual(idx_scan_status, "on", "enable_indexscan leaked outside transaction")
 
-                self.assertEqual(len(exact_records), 10)
+                self.assertGreaterEqual(len(exact_records), 10)
 
                 # 8. Calculate Recall@1, Recall@5 and Recall@10 using standardized helper
                 metrics = self.compute_recall_metrics(ann_fps, exact_records, k_values=(1, 5, 10))
@@ -1258,7 +1264,7 @@ class TestPostgresVectorStoreIntegration(unittest.IsolatedAsyncioTestCase):
                 exact_records, exact_plan_lines = await self.fetch_exact_baseline(
                     conn, q_str, ns_target, model, 10
                 )
-            exact_fps = [r["fingerprint"] for r in exact_records]
+            exact_fps = [r["fingerprint"] for r in exact_records[:10]]
             self.assertEqual(len(exact_fps), 10, f"Expected 10 exact matches, got {len(exact_fps)}")
 
             # 3. Compare Default (off), strict_order and relaxed_order across ef_search in [10, 40, 100, 200]
@@ -1543,7 +1549,7 @@ class TestPostgresVectorStoreIntegration(unittest.IsolatedAsyncioTestCase):
                 run1_records, run1_plan = await self.fetch_exact_baseline(conn, q_str, ns, model, top_k=10)
                 # Verify no HNSW index used
                 self.assertNotIn("idx_vector_records_embedding_hnsw", " ".join(run1_plan))
-                self.assertEqual(len(run1_records), 10)
+                self.assertGreaterEqual(len(run1_records), 10)
 
                 # 2. Check no setting leakage
                 idx_scan = await conn.fetchval("SHOW enable_indexscan;")

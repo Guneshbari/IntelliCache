@@ -1,6 +1,6 @@
 # IntelliCache Stage 3.2.3 — HNSW vs Exact Retrieval Benchmark Report
 
-**Generated:** `2026-11-17T21:56:50.143160+00:00`  
+**Generated:** `2026-11-17T22:48:38.760544+00:00`  
 **PostgreSQL Version:** `16.16 (Debian 16.16-1.pgdg12+1)`  
 **pgvector Extension:** `v0.8.7`  
 **Embedding Model:** `BAAI/bge-small-en-v1.5` (`384` dimensions)  
@@ -24,14 +24,24 @@
 | `selective_partition_10pct` | 10.0% | 200 | 10 | `Exact filtered vector search (B-tree index / sequential scan with exact distance sort)` | 1.00 | 1.00 | 1.00 | NS: 0, Model: 0 |
 | `highly_selective_1pct` | 1.0% | 20 | 10 | `Exact filtered vector search (B-tree index / sequential scan with exact distance sort)` | 1.00 | 1.00 | 1.00 | NS: 0, Model: 0 |
 
-## 3. Database-Only Retrieval Latency Benchmarks (>= 30 samples)
+> [!NOTE]
+> **Planner Execution Path & Selectivity Analysis:**
+> - At 70% and 20% selectivity (`large_partition_70pct`, `moderate_partition_20pct`), the planner selects `HNSW approximate nearest-neighbour search` with index filter pushdown.
+> - At 10% and 1% selectivity (`selective_partition_10pct`, `highly_selective_1pct`), the PostgreSQL cost model selects `Exact filtered vector search` (sequential / B-tree scan with exact distance sort) as the cheaper execution path. 100% recall at 10% and 1% reflects exact retrieval, not HNSW graph recall.
+> - **Model Isolation:** Evaluated with `BAAI/bge-small-en-v1.5` across all 4 partitions. Cross-model isolation across distinct models is verified in dedicated vector store tests (`test_embedding_model_isolation`).
+> - **Orphan Records:** Protected structurally by foreign key referential integrity (`ON DELETE CASCADE`) and inner joins in retrieval queries.
 
-| Retrieval Configuration | p50 Latency (ms) | p95 Latency (ms) | Mean Latency (ms) | Sample Count |
-| :--- | :---: | :---: | :---: | :---: |
-| `exact_sequential_scan` | **5.54 ms** | 7.53 ms | 5.64 ms | 30 |
-| `hnsw_default` | **1.75 ms** | 2.22 ms | 1.80 ms | 30 |
-| `hnsw_iterative_strict_order` | **0.67 ms** | 0.92 ms | 0.63 ms | 30 |
-| `hnsw_iterative_relaxed_order` | **0.52 ms** | 1.07 ms | 0.59 ms | 30 |
+## 3. Retrieval Latency Benchmarks (>= 30 samples, Apples-to-Apples)
+
+All database-only modes execute the identical SQL query, returning identical 13 columns, identical JOINs, and identical parameters, with execution-plan inspection strictly excluded from timing.
+
+| Retrieval Configuration | Scope | p50 Latency (ms) | p95 Latency (ms) | Mean Latency (ms) | Sample Count |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| `exact_sequential_scan` | `database_only` | **1.92 ms** | 2.28 ms | 1.97 ms | 30 |
+| `hnsw_default` | `database_only` | **1.86 ms** | 2.14 ms | 1.89 ms | 30 |
+| `hnsw_iterative_strict_order` | `database_only` | **2.19 ms** | 3.16 ms | 2.33 ms | 30 |
+| `hnsw_iterative_relaxed_order` | `database_only` | **2.10 ms** | 3.01 ms | 2.18 ms | 30 |
+| `application_level_store_search` | `application_level` | **1.61 ms** | 2.12 ms | 1.68 ms | 30 |
 
 ## 4. Query-by-Query Real FastEmbed Evaluation
 

@@ -81,15 +81,19 @@ def compute_recall_metrics(
     """
     Computes Recall@k, overlap@k, and boundary tie metrics according to Stage 3.2.3 definition:
     recall@k = len(ann[:k] ∩ exact[:k]) / min(k, len(exact_records)).
+    Detects ties at the k-th distance boundary using the extra (k+1)-th exact candidate
+    and calculates tie_aware_recall.
     """
+    max_k = max(k_values) if k_values else len(exact_records)
+    effective_exact_count = min(len(exact_records), max_k)
     metrics: Dict[str, Any] = {
-        "exact_count": len(exact_records),
+        "exact_count": effective_exact_count,
         "ann_count": len(ann_fingerprints),
         "boundary_ties": {},
         "tie_aware_recall": {},
     }
     for k in k_values:
-        eligible_k = min(k, len(exact_records))
+        eligible_k = min(k, effective_exact_count)
         if eligible_k == 0:
             metrics[f"recall_at_{k}"] = 1.0
             metrics[f"overlap_at_{k}"] = 0
@@ -135,12 +139,15 @@ async def fetch_exact_baseline(
     namespace: str,
     model: str,
     top_k: int,
+    extra_boundary: int = 1,
 ) -> Tuple[List[Dict[str, Any]], List[str]]:
     """
     Executes a controlled exact nearest-neighbour baseline query inside a transaction.
     Enforces SET LOCAL enable_indexscan = off and SET LOCAL enable_bitmapscan = off.
     Uses bound SQL parameters and verifies via EXPLAIN that HNSW index scan is absent.
+    Retrieves (top_k + extra_boundary) records so boundary distance ties at rank k can be evaluated.
     """
+    fetch_limit = top_k + max(0, extra_boundary)
     async with conn.transaction():
         await conn.execute("SET LOCAL enable_indexscan = off;")
         await conn.execute("SET LOCAL enable_bitmapscan = off;")
@@ -159,7 +166,7 @@ async def fetch_exact_baseline(
             query_vector_str,
             namespace,
             model,
-            top_k,
+            fetch_limit,
         )
         plan_lines = [r[0] for r in plan_rows]
         plan_text = " ".join(plan_lines)
@@ -179,7 +186,7 @@ async def fetch_exact_baseline(
             query_vector_str,
             namespace,
             model,
-            top_k,
+            fetch_limit,
         )
         return [dict(r) for r in rows], plan_lines
 
@@ -323,7 +330,7 @@ async def run_stage3_2_3_benchmark(
             # Exact baseline
             async with pool.acquire() as conn:
                 exact_records, exact_plan_lines = await fetch_exact_baseline(
-                    conn, q_str, ns_base, model_name, top_k=10
+                    conn, q_str, ns_base, model_name, top_k=10, extra_boundary=1
                 )
 
             metrics = compute_recall_metrics(ann_fps, exact_records, k_values=(1, 5, 10))
@@ -427,7 +434,7 @@ async def run_stage3_2_3_benchmark(
 
             async with pool.acquire() as conn:
                 f_exact, f_exact_plan = await fetch_exact_baseline(
-                    conn, f_q_str, f_ns, model_name, top_k=10
+                    conn, f_q_str, f_ns, model_name, top_k=10, extra_boundary=1
                 )
 
             # Namespace leakage check
@@ -461,79 +468,102 @@ async def run_stage3_2_3_benchmark(
                 await conn.execute("DELETE FROM vector_records WHERE cache_namespace = $1", ns_f)
                 await conn.execute("DELETE FROM cache_entries WHERE cache_namespace = $1", ns_f)
 
-        # 10. Database Latency Measurements (>= 30 iterations per configuration)
+        # 10. Database-Only vs Application-Level Latency Benchmarks (>= 30 iterations per configuration)
+        # Apples-to-apples comparison:
+        # All database-only modes execute the IDENTICAL SQL query, fetching the identical 13 columns,
+        # identical JOINs, and identical parameters ($1, $2, $3, $4).
+        # Timer strictly wraps query execution (await conn.fetch), excluding EXPLAIN or setup.
+        # Transaction boundaries and connection acquisition are identical.
+        retrieval_sql = """
+            SELECT
+                v.id,
+                v.cache_namespace,
+                v.fingerprint,
+                v.query_text,
+                v.model,
+                v.metadata,
+                v.created_at,
+                (v.vector <=> $1::vector) AS distance,
+                c.response AS cached_response,
+                c.prompt_tokens,
+                c.completion_tokens,
+                c.total_tokens,
+                c.latency_ms AS original_latency_ms
+            FROM vector_records v
+            JOIN cache_entries c
+                ON v.cache_namespace = c.cache_namespace
+               AND v.fingerprint = c.fingerprint
+               AND (c.expires_at IS NULL OR c.expires_at > NOW())
+            WHERE v.cache_namespace = $2
+              AND v.model = $3
+            ORDER BY (v.vector <=> $1::vector) ASC
+            LIMIT $4;
+        """
+
         latency_results: Dict[str, Dict[str, Any]] = {}
         sample_count = 30
         q_bench_vec = query_embeddings[0].to_list()
         q_bench_str = format_pgvector(q_bench_vec)
+        top_k_bench = 10
 
-        # A. Exact sequential scan latency
+        # A. Exact sequential scan latency (Database-only)
         exact_lats: List[float] = []
         async with pool.acquire() as conn:
             for _ in range(5):  # Warmup
-                await fetch_exact_baseline(conn, q_bench_str, ns_base, model_name, 10)
+                async with conn.transaction():
+                    await conn.execute("SET LOCAL enable_indexscan = off;")
+                    await conn.execute("SET LOCAL enable_bitmapscan = off;")
+                    await conn.fetch(retrieval_sql, q_bench_str, ns_base, model_name, top_k_bench)
             for _ in range(sample_count):
-                t0 = time.perf_counter()
-                await fetch_exact_baseline(conn, q_bench_str, ns_base, model_name, 10)
-                exact_lats.append((time.perf_counter() - t0) * 1000.0)
+                async with conn.transaction():
+                    await conn.execute("SET LOCAL enable_indexscan = off;")
+                    await conn.execute("SET LOCAL enable_bitmapscan = off;")
+                    t0 = time.perf_counter()
+                    await conn.fetch(retrieval_sql, q_bench_str, ns_base, model_name, top_k_bench)
+                    exact_lats.append((time.perf_counter() - t0) * 1000.0)
         m_ex, p50_ex, p95_ex = compute_percentiles(exact_lats)
         latency_results["exact_sequential_scan"] = {
             "mean_ms": m_ex,
             "p50_ms": p50_ex,
             "p95_ms": p95_ex,
             "samples": len(exact_lats),
+            "scope": "database_only",
+            "query_identical": True,
         }
 
-        # B. HNSW Default latency (ef_search=40, iterative_scan=off)
+        # B. HNSW Default latency (Database-only: ef_search=40, iterative_scan=off)
         hnsw_lats: List[float] = []
-        for _ in range(5):  # Warmup
-            await store.search(q_bench_vec, top_k=10, namespace=ns_base)
-        for _ in range(sample_count):
-            t0 = time.perf_counter()
-            await store.search(q_bench_vec, top_k=10, namespace=ns_base)
-            hnsw_lats.append((time.perf_counter() - t0) * 1000.0)
+        async with pool.acquire() as conn:
+            for _ in range(5):  # Warmup
+                async with conn.transaction():
+                    await conn.fetch(retrieval_sql, q_bench_str, ns_base, model_name, top_k_bench)
+            for _ in range(sample_count):
+                async with conn.transaction():
+                    t0 = time.perf_counter()
+                    await conn.fetch(retrieval_sql, q_bench_str, ns_base, model_name, top_k_bench)
+                    hnsw_lats.append((time.perf_counter() - t0) * 1000.0)
         m_hnsw, p50_hnsw, p95_hnsw = compute_percentiles(hnsw_lats)
         latency_results["hnsw_default"] = {
             "mean_ms": m_hnsw,
             "p50_ms": p50_hnsw,
             "p95_ms": p95_hnsw,
             "samples": len(hnsw_lats),
+            "scope": "database_only",
+            "query_identical": True,
         }
 
-        # C. HNSW Iterative strict_order latency
+        # C. HNSW Iterative strict_order latency (Database-only)
         strict_lats: List[float] = []
         async with pool.acquire() as conn:
             for _ in range(5):  # Warmup
                 async with conn.transaction():
                     await conn.execute("SET LOCAL hnsw.iterative_scan = 'strict_order';")
-                    await conn.fetch(
-                        """
-                        SELECT v.fingerprint
-                        FROM vector_records v
-                        JOIN cache_entries c ON v.cache_namespace = c.cache_namespace AND v.fingerprint = c.fingerprint
-                        WHERE v.cache_namespace = $1 AND v.model = $2
-                          AND (c.expires_at IS NULL OR c.expires_at > NOW())
-                        ORDER BY (v.vector <=> $3::vector) ASC
-                        LIMIT $4;
-                        """,
-                        ns_base, model_name, q_bench_str, 10
-                    )
+                    await conn.fetch(retrieval_sql, q_bench_str, ns_base, model_name, top_k_bench)
             for _ in range(sample_count):
                 async with conn.transaction():
                     await conn.execute("SET LOCAL hnsw.iterative_scan = 'strict_order';")
                     t0 = time.perf_counter()
-                    await conn.fetch(
-                        """
-                        SELECT v.fingerprint
-                        FROM vector_records v
-                        JOIN cache_entries c ON v.cache_namespace = c.cache_namespace AND v.fingerprint = c.fingerprint
-                        WHERE v.cache_namespace = $1 AND v.model = $2
-                          AND (c.expires_at IS NULL OR c.expires_at > NOW())
-                        ORDER BY (v.vector <=> $3::vector) ASC
-                        LIMIT $4;
-                        """,
-                        ns_base, model_name, q_bench_str, 10
-                    )
+                    await conn.fetch(retrieval_sql, q_bench_str, ns_base, model_name, top_k_bench)
                     strict_lats.append((time.perf_counter() - t0) * 1000.0)
         m_str, p50_str, p95_str = compute_percentiles(strict_lats)
         latency_results["hnsw_iterative_strict_order"] = {
@@ -541,42 +571,22 @@ async def run_stage3_2_3_benchmark(
             "p50_ms": p50_str,
             "p95_ms": p95_str,
             "samples": len(strict_lats),
+            "scope": "database_only",
+            "query_identical": True,
         }
 
-        # D. HNSW Iterative relaxed_order latency
+        # D. HNSW Iterative relaxed_order latency (Database-only)
         relaxed_lats: List[float] = []
         async with pool.acquire() as conn:
             for _ in range(5):  # Warmup
                 async with conn.transaction():
                     await conn.execute("SET LOCAL hnsw.iterative_scan = 'relaxed_order';")
-                    await conn.fetch(
-                        """
-                        SELECT v.fingerprint
-                        FROM vector_records v
-                        JOIN cache_entries c ON v.cache_namespace = c.cache_namespace AND v.fingerprint = c.fingerprint
-                        WHERE v.cache_namespace = $1 AND v.model = $2
-                          AND (c.expires_at IS NULL OR c.expires_at > NOW())
-                        ORDER BY (v.vector <=> $3::vector) ASC
-                        LIMIT $4;
-                        """,
-                        ns_base, model_name, q_bench_str, 10
-                    )
+                    await conn.fetch(retrieval_sql, q_bench_str, ns_base, model_name, top_k_bench)
             for _ in range(sample_count):
                 async with conn.transaction():
                     await conn.execute("SET LOCAL hnsw.iterative_scan = 'relaxed_order';")
                     t0 = time.perf_counter()
-                    await conn.fetch(
-                        """
-                        SELECT v.fingerprint
-                        FROM vector_records v
-                        JOIN cache_entries c ON v.cache_namespace = c.cache_namespace AND v.fingerprint = c.fingerprint
-                        WHERE v.cache_namespace = $1 AND v.model = $2
-                          AND (c.expires_at IS NULL OR c.expires_at > NOW())
-                        ORDER BY (v.vector <=> $3::vector) ASC
-                        LIMIT $4;
-                        """,
-                        ns_base, model_name, q_bench_str, 10
-                    )
+                    await conn.fetch(retrieval_sql, q_bench_str, ns_base, model_name, top_k_bench)
                     relaxed_lats.append((time.perf_counter() - t0) * 1000.0)
         m_rel, p50_rel, p95_rel = compute_percentiles(relaxed_lats)
         latency_results["hnsw_iterative_relaxed_order"] = {
@@ -584,6 +594,28 @@ async def run_stage3_2_3_benchmark(
             "p50_ms": p50_rel,
             "p95_ms": p95_rel,
             "samples": len(relaxed_lats),
+            "scope": "database_only",
+            "query_identical": True,
+        }
+
+        # E. Application-Level PostgresVectorStore.search() latency
+        # Measures end-to-end Python method execution (pool checkout, query, row parsing,
+        # VectorSearchResult construction, and distance sorting).
+        app_hnsw_lats: List[float] = []
+        for _ in range(5):  # Warmup
+            await store.search(q_bench_vec, top_k=top_k_bench, namespace=ns_base)
+        for _ in range(sample_count):
+            t0 = time.perf_counter()
+            await store.search(q_bench_vec, top_k=top_k_bench, namespace=ns_base)
+            app_hnsw_lats.append((time.perf_counter() - t0) * 1000.0)
+        m_app, p50_app, p95_app = compute_percentiles(app_hnsw_lats)
+        latency_results["application_level_store_search"] = {
+            "mean_ms": m_app,
+            "p50_ms": p50_app,
+            "p95_ms": p95_app,
+            "samples": len(app_hnsw_lats),
+            "scope": "application_level",
+            "query_identical": False,
         }
 
         # Construct final benchmark payload
@@ -702,14 +734,24 @@ def generate_markdown_report(data: Dict[str, Any]) -> str:
 
     lines.extend([
         "",
-        "## 3. Database-Only Retrieval Latency Benchmarks (>= 30 samples)",
+        "> [!NOTE]",
+        "> **Planner Execution Path & Selectivity Analysis:**",
+        "> - At 70% and 20% selectivity (`large_partition_70pct`, `moderate_partition_20pct`), the planner selects `HNSW approximate nearest-neighbour search` with index filter pushdown.",
+        "> - At 10% and 1% selectivity (`selective_partition_10pct`, `highly_selective_1pct`), the PostgreSQL cost model selects `Exact filtered vector search` (sequential / B-tree scan with exact distance sort) as the cheaper execution path. 100% recall at 10% and 1% reflects exact retrieval, not HNSW graph recall.",
+        "> - **Model Isolation:** Evaluated with `BAAI/bge-small-en-v1.5` across all 4 partitions. Cross-model isolation across distinct models is verified in dedicated vector store tests (`test_embedding_model_isolation`).",
+        "> - **Orphan Records:** Protected structurally by foreign key referential integrity (`ON DELETE CASCADE`) and inner joins in retrieval queries.",
         "",
-        "| Retrieval Configuration | p50 Latency (ms) | p95 Latency (ms) | Mean Latency (ms) | Sample Count |",
-        "| :--- | :---: | :---: | :---: | :---: |",
+        "## 3. Retrieval Latency Benchmarks (>= 30 samples, Apples-to-Apples)",
+        "",
+        "All database-only modes execute the identical SQL query, returning identical 13 columns, identical JOINs, and identical parameters, with execution-plan inspection strictly excluded from timing.",
+        "",
+        "| Retrieval Configuration | Scope | p50 Latency (ms) | p95 Latency (ms) | Mean Latency (ms) | Sample Count |",
+        "| :--- | :---: | :---: | :---: | :---: | :---: |",
     ])
 
     for k, v in lats.items():
-        lines.append(f"| `{k}` | **{v['p50_ms']:.2f} ms** | {v['p95_ms']:.2f} ms | {v['mean_ms']:.2f} ms | {v['samples']} |")
+        scope = v.get("scope", "database_only")
+        lines.append(f"| `{k}` | `{scope}` | **{v['p50_ms']:.2f} ms** | {v['p95_ms']:.2f} ms | {v['mean_ms']:.2f} ms | {v['samples']} |")
 
     lines.extend([
         "",
