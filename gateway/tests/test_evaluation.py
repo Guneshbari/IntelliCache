@@ -1579,6 +1579,152 @@ class TestRealOllamaPgvectorIntegration(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(outcome.lookup_latency_ms, 0.0)
 
 
+class TestRealFastEmbedPgvectorIntegration(unittest.IsolatedAsyncioTestCase):
+    """
+    Opt-in end-to-end integration tests using real FastEmbedProvider with BAAI/bge-small-en-v1.5
+    against live PostgreSQL/pgvector database.
+    Guarded by environment variable: RUN_FASTEMBED_PGVECTOR_TEST=1 or RUN_FASTEMBED_SMOKE=1.
+    Requires TEST_DATABASE_URL with a pgvector-enabled PostgreSQL instance.
+    If database or pgvector is unavailable, skips cleanly.
+    """
+
+    async def asyncSetUp(self) -> None:
+        enabled = os.environ.get("RUN_FASTEMBED_PGVECTOR_TEST") == "1" or os.environ.get("RUN_FASTEMBED_SMOKE") == "1"
+        if not enabled:
+            self.skipTest("Opt-in test: set RUN_FASTEMBED_PGVECTOR_TEST=1 to run real FastEmbed pgvector integration.")
+
+        raw_url = os.environ.get("TEST_DATABASE_URL")
+        if not raw_url:
+            self.skipTest("TEST_DATABASE_URL is not set; skipping live pgvector integration test.")
+
+        try:
+            self.db_url = validate_test_database_url(raw_url)
+        except ValueError as exc:
+            self.skipTest(f"Invalid TEST_DATABASE_URL: {exc}")
+
+        from app.embeddings.fastembed_adapter import FastEmbedProvider
+        self.model_name = "BAAI/bge-small-en-v1.5"
+        self.dimensions = 384
+        self.provider = FastEmbedProvider(model=self.model_name, dimensions=self.dimensions)
+        try:
+            ping_res = await self.provider.embed("ping", task=EmbeddingTask.QUERY)
+            self.assertEqual(ping_res.dimensions, self.dimensions)
+        except Exception as exc:
+            await self.provider.close()
+            self.skipTest(f"FastEmbed provider failed to initialize: {exc}")
+
+        safe_url = redact_database_url(self.db_url)
+        try:
+            self.pool = await asyncpg.create_pool(self.db_url, min_size=1, max_size=5)
+            async with self.pool.acquire() as conn:
+                has_vector = await check_pgvector_available(conn)
+                if not has_vector:
+                    self.skipTest(f"pgvector extension 'vector' is not available at {safe_url}")
+
+            await run_migrations(self.pool)
+            await run_vector_migrations(self.pool, dimensions=self.dimensions)
+
+            self.cache = PostgresCache(pool=self.pool, default_namespace="test_fastembed_eval_ns")
+            self.store = PostgresVectorStore(
+                pool=self.pool,
+                default_namespace="test_fastembed_eval_ns",
+                default_model=self.model_name,
+                dimensions=self.dimensions,
+            )
+            await self.store.verify_schema()
+        except Exception as exc:
+            if hasattr(self, "pool") and self.pool:
+                await self.pool.close()
+            self.skipTest(f"Real FastEmbed pgvector setup failed for TEST_DATABASE_URL ({safe_url}): {exc}")
+
+    async def asyncTearDown(self) -> None:
+        if hasattr(self, "provider") and self.provider is not None:
+            await self.provider.close()
+        if hasattr(self, "pool") and self.pool is not None:
+            await self.pool.close()
+
+    async def test_real_fastembed_pgvector_retrieval_and_decision(self) -> None:
+        """Verifies genuine FastEmbed 384-dim embeddings against PostgreSQL vector store."""
+        case = EvaluationCase(
+            id="fe-pos-test",
+            query="Explain memory ownership in Rust",
+            category="positive_paraphrase",
+            split="development",
+            expected_answer_label="rust_ownership",
+            rationale="Identical semantic intent with real FastEmbed embeddings",
+            candidates=[
+                CandidateData(
+                    id="cand-fe-1",
+                    query_text="How does Rust manage memory ownership?",
+                    cached_response="Rust manages memory through ownership, borrows, and lifetimes.",
+                    answer_label="rust_ownership",
+                    prompt_tokens=50,
+                    completion_tokens=100,
+                    total_tokens=150,
+                    original_latency_ms=900.0,
+                )
+            ],
+        )
+        policy = SemanticCachePolicy(min_similarity=0.90, configured_model=self.model_name)
+
+        outcome = await evaluate_single_case(
+            case,
+            policy,
+            self.provider,
+            cache=self.cache,
+            vector_store=self.store,
+            dataset_hash="fe_real_model_hash",
+            run_id="fe_test_run",
+        )
+
+        self.assertEqual(outcome.classification, "TP")
+        self.assertEqual(outcome.decision, "safe_reuse")
+        self.assertEqual(outcome.accepted_answer_label, "rust_ownership")
+        self.assertGreaterEqual(outcome.top_similarity, 0.90)
+        self.assertGreater(outcome.indexing_latency_ms, 0.0)
+        self.assertGreater(outcome.lookup_latency_ms, 0.0)
+
+
+class TestEvaluationCliValidation(unittest.IsolatedAsyncioTestCase):
+    """Tests evaluation CLI argument validation and benchmark mode compatibility."""
+
+    async def test_cli_accepts_fastembed_in_pgvector_mode(self) -> None:
+        """FastEmbed is accepted when pgvector benchmark mode is selected."""
+        import argparse
+        from scripts.evaluate_semantic_cache import async_main
+
+        # Test with invalid DB URL to reach pgvector check without running full evaluation
+        with patch("sys.argv", [
+            "evaluate_semantic_cache.py",
+            "--provider", "fastembed",
+            "--benchmark-mode", "pgvector",
+            "--test-database-url", "postgresql://invalid_host:9999/test_db",
+        ]):
+            with patch("scripts.evaluate_semantic_cache.load_dataset", return_value=[]):
+                with patch("scripts.evaluate_semantic_cache.get_dataset_hash", return_value="fake_hash"):
+                    with patch("asyncpg.create_pool", side_effect=ConnectionRefusedError("Test connection failure")):
+                        with self.assertRaises(SystemExit) as ctx:
+                            await async_main()
+                        # Should exit with code 1 due to connection failure, NOT due to provider rejection
+                        self.assertEqual(ctx.exception.code, 1)
+
+    async def test_cli_rejects_mock_in_pgvector_mode(self) -> None:
+        """Mock provider in pgvector benchmark mode is rejected with exit code 1."""
+        from scripts.evaluate_semantic_cache import async_main
+
+        with patch("sys.argv", [
+            "evaluate_semantic_cache.py",
+            "--provider", "mock",
+            "--benchmark-mode", "pgvector",
+            "--test-database-url", "postgresql://user:pass@localhost:5432/intellicache_test",
+        ]):
+            with patch("scripts.evaluate_semantic_cache.load_dataset", return_value=[]):
+                with patch("scripts.evaluate_semantic_cache.get_dataset_hash", return_value="fake_hash"):
+                    with self.assertRaises(SystemExit) as ctx:
+                        await async_main()
+                    self.assertEqual(ctx.exception.code, 1)
+
+
 class TestFailOnFalsePositiveGate(unittest.IsolatedAsyncioTestCase):
     """Verifies that --fail-on-fp terminates with non-zero exit code on false positives."""
 

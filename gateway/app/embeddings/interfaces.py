@@ -3,7 +3,7 @@ Abstract interface for provider-independent embedding implementations.
 """
 
 from abc import ABC, abstractmethod
-from typing import Union
+from typing import List, Sequence, Union
 from .contracts import EmbeddingResult, EmbeddingTask
 
 
@@ -35,6 +35,38 @@ class EmbeddingProvider(ABC):
             EmbeddingResponseError: Malformed response, invalid vectors, or HTTP error.
         """
         pass
+
+    async def embed_batch(
+        self,
+        texts: Sequence[str],
+        task: Union[EmbeddingTask, str] = EmbeddingTask.QUERY,
+    ) -> List[EmbeddingResult]:
+        """
+        Generates vector embeddings for a sequence of input texts.
+        Preserves input ordering and guarantees len(results) == len(texts).
+        Default implementation calls embed() sequentially. Subclasses may override
+        with native batch execution.
+
+        Args:
+            texts: Sequence of raw input strings to embed.
+            task: Explicit task: 'query' or 'document'.
+
+        Returns:
+            List of EmbeddingResult objects corresponding to each input text in order.
+            Returns an empty list immediately without calling embed() if texts is empty.
+
+        Raises:
+            EmbeddingConnectionError: Network / connection failure.
+            EmbeddingTimeoutError: Request exceeded configured timeout.
+            EmbeddingResponseError: Malformed response, invalid vectors, or HTTP error.
+        """
+        if not texts:
+            return []
+        results: List[EmbeddingResult] = []
+        for text in texts:
+            res = await self.embed(text, task=task)
+            results.append(res)
+        return results
 
     @abstractmethod
     async def close(self) -> None:

@@ -249,8 +249,8 @@ class InMemoryVectorStore(BaseVectorStore):
                         self._record_timestamps.pop(ok, None)
                         self._record_versions.pop(ok, None)
 
-        # Order by cosine distance ascending (closest / highest similarity first)
-        scored_candidates.sort(key=lambda c: c.distance)
+        # Order by cosine distance ascending (closest / highest similarity first), with deterministic tie-breaking on fingerprint
+        scored_candidates.sort(key=lambda c: (c.distance, c.fingerprint))
         return scored_candidates[:top_k]
 
     async def delete(self, fingerprint: str, namespace: Optional[str] = None) -> bool:

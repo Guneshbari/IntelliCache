@@ -26,6 +26,54 @@ async def check_pgvector_available(conn: asyncpg.Connection) -> bool:
     return row is not None
 
 
+async def verify_vector_schema(
+    target: Union[asyncpg.Pool, asyncpg.Connection],
+    dimensions: int,
+) -> bool:
+    """
+    Verifies that the vector_records table exists in PostgreSQL and matches the configured vector dimensions.
+
+    Args:
+        target: asyncpg Connection or Pool instance.
+        dimensions: Configured vector dimensionality (e.g. 384 for FastEmbed, 768 for Nomic).
+
+    Returns:
+        True if the table exists and dimensions match.
+        False if the table does not exist yet.
+
+    Raises:
+        VectorDimensionMismatchError: If the table exists but column dimension does not match.
+    """
+    if dimensions <= 0:
+        raise VectorDimensionMismatchError(
+            f"Configured vector dimensions must be positive, got {dimensions}."
+        )
+
+    query = """
+        SELECT atttypmod FROM pg_attribute
+        WHERE attrelid = 'vector_records'::regclass AND attname = 'vector'
+    """
+
+    async def _check(conn: asyncpg.Connection) -> bool:
+        try:
+            existing_dim = await conn.fetchval(query)
+            if existing_dim is not None and existing_dim > 0 and existing_dim != dimensions:
+                raise VectorDimensionMismatchError(
+                    f"Existing vector_records table dimension is {existing_dim}, which does not match "
+                    f"configured dimension {dimensions}. Changing embedding models or vector dimensions "
+                    f"requires a deliberate migration or re-embedding strategy."
+                )
+            return existing_dim is not None
+        except asyncpg.UndefinedTableError:
+            return False
+
+    if isinstance(target, asyncpg.Pool):
+        async with target.acquire() as conn:
+            return await _check(conn)
+    else:
+        return await _check(target)
+
+
 async def run_vector_migrations(
     target: Union[asyncpg.Pool, asyncpg.Connection],
     dimensions: int = 768,

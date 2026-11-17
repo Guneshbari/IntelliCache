@@ -316,6 +316,19 @@ class TestInMemoryVectorStore(unittest.IsolatedAsyncioTestCase):
 
         await store.close()
 
+    async def test_deterministic_tie_breaking_on_equal_distances(self):
+        """When multiple records have identical cosine distance, tie-breaking on fingerprint is deterministic."""
+        store = InMemoryVectorStore(dimensions=2, default_model="m")
+        # Insert fp_z, fp_a, fp_m with identical vectors
+        await store.upsert(VectorRecord(cache_namespace="default", fingerprint="fp_z", query_text="Z", vector=[1.0, 0.0], model="m"))
+        await store.upsert(VectorRecord(cache_namespace="default", fingerprint="fp_a", query_text="A", vector=[1.0, 0.0], model="m"))
+        await store.upsert(VectorRecord(cache_namespace="default", fingerprint="fp_m", query_text="M", vector=[1.0, 0.0], model="m"))
+
+        results = await store.search(query_vector=[1.0, 0.0], top_k=3, namespace="default", model="m")
+        fps = [r.fingerprint for r in results]
+        self.assertEqual(fps, ["fp_a", "fp_m", "fp_z"])
+        await store.close()
+
     async def test_orphaned_pruning_on_search(self):
         """Expired or deleted exact cache records are actively pruned during search."""
         exact_cache = ExactCache(max_entries=10, ttl_seconds=3600)

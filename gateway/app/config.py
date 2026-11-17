@@ -237,6 +237,22 @@ class Settings(BaseModel):
                 object.__setattr__(self, "vector_dimensions", 384)
             else:
                 object.__setattr__(self, "vector_dimensions", 768)
+        else:
+            if self.vector_dimensions <= 0:
+                raise ValueError("VECTOR_DIMENSIONS must be positive.")
+            # Enforce that explicit vector_dimensions does not conflict with well-known model dimensions
+            if self.embedding_provider in ("fastembed", "local"):
+                if self.embedding_model == "BAAI/bge-small-en-v1.5" and self.vector_dimensions != 384:
+                    raise ValueError(
+                        f"Explicit VECTOR_DIMENSIONS ({self.vector_dimensions}) conflicts with FastEmbed model "
+                        f"'{self.embedding_model}' (requires 384 dimensions)."
+                    )
+            elif self.embedding_provider == "ollama":
+                if self.embedding_model == "nomic-embed-text" and self.vector_dimensions != 768:
+                    raise ValueError(
+                        f"Explicit VECTOR_DIMENSIONS ({self.vector_dimensions}) conflicts with Ollama model "
+                        f"'{self.embedding_model}' (requires 768 dimensions)."
+                    )
 
         return self
 

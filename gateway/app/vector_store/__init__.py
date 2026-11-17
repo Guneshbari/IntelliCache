@@ -18,7 +18,7 @@ from .errors import (
 )
 from .interfaces import BaseVectorStore
 from .in_memory_store import InMemoryVectorStore
-from .migration import check_pgvector_available, run_vector_migrations
+from .migration import check_pgvector_available, run_vector_migrations, verify_vector_schema
 from .postgres_store import PostgresVectorStore
 
 __all__ = [
@@ -35,4 +35,5 @@ __all__ = [
     "check_pgvector_available",
     "cosine_distance_to_similarity",
     "run_vector_migrations",
+    "verify_vector_schema",
 ]

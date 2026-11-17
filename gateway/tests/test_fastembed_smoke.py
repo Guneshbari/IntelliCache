@@ -180,6 +180,32 @@ class TestFastEmbedSmoke(unittest.IsolatedAsyncioTestCase):
 
         await store.close()
 
+    async def test_fastembed_embed_batch_unmocked(self):
+        """Verifies unmocked CPU batch inference, cardinality, ordering, and finite vectors."""
+        texts = [
+            "How does memory ownership work in Rust?",
+            "Python reference counting garbage collection.",
+            "Baking chocolate chip cookies in an oven.",
+        ]
+        t0 = time.perf_counter()
+        batch_results = await self.provider.embed_batch(texts, task=EmbeddingTask.QUERY)
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+
+        self.assertEqual(len(batch_results), 3)
+        for i, res in enumerate(batch_results):
+            self.assertEqual(res.dimensions, self.dimensions)
+            self.assertEqual(res.model, self.model_name)
+            self.assertEqual(len(res.vector), self.dimensions)
+            for v in res.vector:
+                self.assertTrue(math.isfinite(v))
+
+        # Check that individual embed of first text matches batch result 0 closely
+        single_res = await self.provider.embed(texts[0], task=EmbeddingTask.QUERY)
+        dot = sum(a * b for a, b in zip(single_res.vector, batch_results[0].vector))
+        self.assertAlmostEqual(dot, 1.0, places=4)
+
+        print(f"[FastEmbed Smoke Batch] Embedded 3 texts in {elapsed_ms:.2f}ms (unmocked ONNX)")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,5 +1,10 @@
 -- Migration 001 (Vector Store): Create vector_records table with pgvector support
 -- Persists vector embeddings linked to exact cache entries with ON DELETE CASCADE
+-- NOTE: Vector dimension defaults to 768 (nomic-embed-text) in raw SQL.
+-- When applied via the IntelliCache migration runner (run_vector_migrations),
+-- the vector(768) type is dynamically replaced with vector({dimensions}) matching
+-- the configured embedding model (e.g. vector(384) for FastEmbed).
+-- For manual psql execution with non-768 models, replace vector(768) with vector({dimensions}).
 
 CREATE EXTENSION IF NOT EXISTS vector;
 

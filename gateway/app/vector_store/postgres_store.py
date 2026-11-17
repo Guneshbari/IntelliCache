@@ -198,7 +198,7 @@ class PostgresVectorStore(BaseVectorStore):
                AND (c.expires_at IS NULL OR c.expires_at > NOW())
             WHERE v.cache_namespace = $2
               AND v.model = $3
-            ORDER BY distance ASC
+            ORDER BY distance ASC, v.fingerprint ASC
             LIMIT $4;
         """
 
@@ -236,6 +236,7 @@ class PostgresVectorStore(BaseVectorStore):
                     )
                 )
 
+            results.sort(key=lambda r: (r.distance, r.fingerprint))
             logger.debug(
                 "Vector search completed: namespace='%s', model='%s', top_k=%d, found=%d",
                 ns,
@@ -338,6 +339,16 @@ class PostgresVectorStore(BaseVectorStore):
         except Exception as e:
             raise VectorStoreConnectionError(f"Connection failure during namespace clear: {e}") from e
 
+    async def verify_schema(self) -> bool:
+        """
+        Verifies that the vector_records table in PostgreSQL matches the configured store dimension.
+
+        Raises:
+            VectorDimensionMismatchError: If table exists with conflicting dimensions.
+        """
+        from .migration import verify_vector_schema
+        return await verify_vector_schema(self.pool, self.dimensions)
+
     async def get_index_info(self) -> Dict[str, Any]:
         """
         Inspects whether vector indexes (e.g. HNSW) are present on the vector_records table.
@@ -407,7 +418,7 @@ class PostgresVectorStore(BaseVectorStore):
                AND (c.expires_at IS NULL OR c.expires_at > NOW())
             WHERE v.cache_namespace = $2
               AND v.model = $3
-            ORDER BY distance ASC
+            ORDER BY distance ASC, v.fingerprint ASC
             LIMIT $4;
         """
         try:

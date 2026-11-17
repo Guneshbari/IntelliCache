@@ -6,11 +6,12 @@ Applies task-specific prefixes for asymmetric embedding models (e.g., Nomic Embe
 
 import json
 import logging
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Sequence, Union
 import httpx
 
 from .contracts import EmbeddingResult, EmbeddingTask
 from .errors import (
+    EmbeddingConfigurationError,
     EmbeddingConnectionError,
     EmbeddingResponseError,
     EmbeddingTimeoutError,
@@ -178,6 +179,119 @@ class OllamaEmbeddingProvider(EmbeddingProvider):
             model=model_name,
             dimensions=len(vector),
         )
+
+    async def embed_batch(
+        self,
+        texts: Sequence[str],
+        task: Union[EmbeddingTask, str] = EmbeddingTask.QUERY,
+    ) -> List[EmbeddingResult]:
+        """
+        Generates normalized vector embeddings for a sequence of texts using Ollama's POST /api/embed endpoint.
+        Sends batched inputs in bounded chunks (up to 64 items per request).
+        Preserves input order, applies model-specific task prefixes to each item, and validates result cardinality.
+        """
+        if not texts:
+            return []
+
+        cleaned_texts: List[str] = []
+        for i, t in enumerate(texts):
+            if not isinstance(t, str) or not t.strip():
+                raise EmbeddingResponseError(
+                    f"Input text at index {i} in batch cannot be empty or blank.",
+                    provider="ollama",
+                )
+            cleaned_texts.append(t.strip())
+
+        client = self._get_client()
+
+        chunk_size = 64
+        all_results: List[EmbeddingResult] = []
+
+        for offset in range(0, len(cleaned_texts), chunk_size):
+            chunk = cleaned_texts[offset : offset + chunk_size]
+            formatted_chunk = [self._format_input(t, task) for t in chunk]
+
+            request_payload = {
+                "model": self.model,
+                "input": formatted_chunk,
+            }
+
+            try:
+                response = await client.post("/api/embed", json=request_payload)
+            except httpx.TimeoutException as exc:
+                raise EmbeddingTimeoutError(
+                    f"Ollama batch embedding request timed out after {self.timeout_seconds}s: {exc}",
+                    provider="ollama",
+                ) from exc
+            except (httpx.ConnectError, httpx.NetworkError) as exc:
+                raise EmbeddingConnectionError(
+                    f"Failed to connect to Ollama at {self.base_url}: {exc}",
+                    provider="ollama",
+                ) from exc
+            except httpx.HTTPError as exc:
+                raise EmbeddingResponseError(
+                    f"HTTP transport failure communicating with Ollama: {exc}",
+                    provider="ollama",
+                ) from exc
+
+            if response.status_code != 200:
+                error_preview = response.text[:200] if response.text else "No error details"
+                raise EmbeddingResponseError(
+                    f"Ollama returned HTTP {response.status_code}: {error_preview}",
+                    provider="ollama",
+                )
+
+            try:
+                data: Dict[str, Any] = response.json()
+            except (json.JSONDecodeError, ValueError) as exc:
+                raise EmbeddingResponseError(
+                    f"Malformed JSON response received from Ollama: {exc}",
+                    provider="ollama",
+                ) from exc
+
+            if not isinstance(data, dict):
+                raise EmbeddingResponseError(
+                    f"Expected JSON object from Ollama, received {type(data).__name__}",
+                    provider="ollama",
+                )
+
+            embeddings = data.get("embeddings")
+            if not isinstance(embeddings, list):
+                raise EmbeddingResponseError(
+                    "Ollama response missing 'embeddings' array.",
+                    provider="ollama",
+                )
+
+            if len(embeddings) != len(chunk):
+                raise EmbeddingResponseError(
+                    f"Expected exactly {len(chunk)} vectors in Ollama response for chunk, received {len(embeddings)}.",
+                    provider="ollama",
+                )
+
+            model_name = data.get("model") or self.model
+            for idx, vec in enumerate(embeddings):
+                if not isinstance(vec, list) or len(vec) == 0:
+                    raise EmbeddingResponseError(
+                        f"Vector returned in Ollama embeddings[{idx}] is not a valid non-empty array of numbers.",
+                        provider="ollama",
+                    )
+                if self._dimensions is None:
+                    self._dimensions = len(vec)
+                all_results.append(
+                    EmbeddingResult(
+                        vector=vec,
+                        model=model_name,
+                        dimensions=len(vec),
+                    )
+                )
+
+        if len(all_results) != len(texts):
+            raise EmbeddingResponseError(
+                f"Ollama batch returned {len(all_results)} total vectors, expected {len(texts)}.",
+                provider="ollama",
+            )
+
+        return all_results
 
     async def close(self) -> None:
         """Closes the HTTP client if owned by this provider instance."""

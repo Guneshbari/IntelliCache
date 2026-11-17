@@ -521,5 +521,304 @@ class TestEmbeddingArchitectureBoundaries(unittest.TestCase):
                         )
 
 
+class TestEmbeddingProviderBaseBatch(unittest.IsolatedAsyncioTestCase):
+    """Tests default sequential embed_batch implementation on Base EmbeddingProvider."""
+
+    class SimpleMockProvider(EmbeddingProvider):
+        def __init__(self):
+            self.embed_calls = []
+
+        async def embed(self, text: str, task: EmbeddingTask = EmbeddingTask.QUERY) -> EmbeddingResult:
+            self.embed_calls.append((text, task))
+            if text == "fail_me":
+                raise EmbeddingResponseError("Simulated failure")
+            return EmbeddingResult(vector=[0.1, 0.2], model="simple-model", dimensions=2)
+
+        async def close(self) -> None:
+            pass
+
+    async def test_embed_batch_empty_input(self):
+        """Empty input list returns an empty list immediately without calling embed."""
+        provider = self.SimpleMockProvider()
+        res = await provider.embed_batch([])
+        self.assertEqual(res, [])
+        self.assertEqual(len(provider.embed_calls), 0)
+
+    async def test_embed_batch_sequential_delegation_and_ordering(self):
+        """Default embed_batch calls embed() sequentially and preserves order."""
+        provider = self.SimpleMockProvider()
+        inputs = ["first", "second", "third"]
+        res = await provider.embed_batch(inputs, task=EmbeddingTask.DOCUMENT)
+        self.assertEqual(len(res), 3)
+        self.assertEqual(len(provider.embed_calls), 3)
+        self.assertEqual(provider.embed_calls[0], ("first", EmbeddingTask.DOCUMENT))
+        self.assertEqual(provider.embed_calls[1], ("second", EmbeddingTask.DOCUMENT))
+        self.assertEqual(provider.embed_calls[2], ("third", EmbeddingTask.DOCUMENT))
+        for r in res:
+            self.assertEqual(r.dimensions, 2)
+            self.assertEqual(r.model, "simple-model")
+
+    async def test_embed_batch_error_propagation(self):
+        """Errors in embed() during sequential batch are propagated cleanly."""
+        provider = self.SimpleMockProvider()
+        with self.assertRaises(EmbeddingResponseError) as ctx:
+            await provider.embed_batch(["ok", "fail_me", "after"])
+        self.assertIn("Simulated failure", str(ctx.exception))
+
+
+class TestFastEmbedProviderBatch(unittest.IsolatedAsyncioTestCase):
+    """Tests FastEmbedProvider native batch execution."""
+
+    async def test_fastembed_batch_empty_input(self):
+        """Empty input sequence returns empty list immediately."""
+        from app.embeddings.fastembed_adapter import FastEmbedProvider
+
+        provider = FastEmbedProvider(model="custom-test", dimensions=2)
+        res = await provider.embed_batch([])
+        self.assertEqual(res, [])
+        await provider.close()
+
+    async def test_fastembed_batch_empty_text_rejected(self):
+        """Batch containing empty or whitespace-only text raises EmbeddingResponseError."""
+        from app.embeddings.fastembed_adapter import FastEmbedProvider
+
+        provider = FastEmbedProvider(model="custom-test", dimensions=2)
+        with self.assertRaises(EmbeddingResponseError) as ctx:
+            await provider.embed_batch(["valid", "   ", "another"])
+        self.assertIn("Input text at index 1 in batch cannot be empty or blank", str(ctx.exception))
+        await provider.close()
+
+    async def test_fastembed_batch_query_routing_and_ordering(self):
+        """Batch query task routes to model.query_embed and preserves ordering."""
+        from app.embeddings.fastembed_adapter import FastEmbedProvider
+        from unittest.mock import MagicMock
+
+        provider = FastEmbedProvider(model="custom-test", dimensions=3)
+        mock_model = MagicMock()
+        mock_model.query_embed.return_value = [
+            [0.1, 0.2, 0.3],
+            [0.4, 0.5, 0.6],
+        ]
+
+        with patch.object(provider, "_get_model", return_value=mock_model):
+            res = await provider.embed_batch(["query 1", "query 2"], task=EmbeddingTask.QUERY)
+            self.assertEqual(len(res), 2)
+            self.assertEqual(res[0].to_list(), [0.1, 0.2, 0.3])
+            self.assertEqual(res[1].to_list(), [0.4, 0.5, 0.6])
+            mock_model.query_embed.assert_called_once_with(["query 1", "query 2"])
+            mock_model.passage_embed.assert_not_called()
+        await provider.close()
+
+    async def test_fastembed_batch_passage_routing(self):
+        """Batch document task routes to model.passage_embed."""
+        from app.embeddings.fastembed_adapter import FastEmbedProvider
+        from unittest.mock import MagicMock
+
+        provider = FastEmbedProvider(model="custom-test", dimensions=2)
+        mock_model = MagicMock()
+        mock_model.passage_embed.return_value = [
+            [0.7, 0.8],
+            [0.9, 1.0],
+        ]
+
+        with patch.object(provider, "_get_model", return_value=mock_model):
+            res = await provider.embed_batch(["doc 1", "doc 2"], task=EmbeddingTask.DOCUMENT)
+            self.assertEqual(len(res), 2)
+            self.assertEqual(res[0].to_list(), [0.7, 0.8])
+            self.assertEqual(res[1].to_list(), [0.9, 1.0])
+            mock_model.passage_embed.assert_called_once_with(["doc 1", "doc 2"])
+            mock_model.query_embed.assert_not_called()
+        await provider.close()
+
+    async def test_fastembed_batch_cardinality_mismatch(self):
+        """When FastEmbed returns unexpected number of vectors, raises EmbeddingResponseError."""
+        from app.embeddings.fastembed_adapter import FastEmbedProvider
+        from unittest.mock import MagicMock
+
+        provider = FastEmbedProvider(model="custom-test", dimensions=2)
+        mock_model = MagicMock()
+        # Returns 1 vector for 2 inputs
+        mock_model.query_embed.return_value = [[0.1, 0.2]]
+
+        with patch.object(provider, "_get_model", return_value=mock_model):
+            with self.assertRaises(EmbeddingResponseError) as ctx:
+                await provider.embed_batch(["q1", "q2"])
+            self.assertIn("vectors for chunk of 2 inputs", str(ctx.exception))
+        await provider.close()
+
+    async def test_fastembed_batch_chunking(self):
+        """Batches larger than chunk_size (64) are processed in chunks and stitched in order."""
+        from app.embeddings.fastembed_adapter import FastEmbedProvider
+        from unittest.mock import MagicMock
+
+        provider = FastEmbedProvider(model="custom-test", dimensions=2)
+        mock_model = MagicMock()
+
+        # 70 inputs: chunk 1 has 64, chunk 2 has 6
+        def fake_query_embed(chunk):
+            return [[float(i), float(i)] for i in range(len(chunk))]
+
+        mock_model.query_embed.side_effect = fake_query_embed
+
+        inputs = [f"text_{i}" for i in range(70)]
+        with patch.object(provider, "_get_model", return_value=mock_model):
+            res = await provider.embed_batch(inputs)
+            self.assertEqual(len(res), 70)
+            self.assertEqual(mock_model.query_embed.call_count, 2)
+            self.assertEqual(len(mock_model.query_embed.call_args_list[0][0][0]), 64)
+            self.assertEqual(len(mock_model.query_embed.call_args_list[1][0][0]), 6)
+        await provider.close()
+
+
+class TestOllamaEmbeddingProviderBatch(unittest.IsolatedAsyncioTestCase):
+    """Tests OllamaEmbeddingProvider native batch execution."""
+
+    async def test_ollama_batch_empty_input(self):
+        """Empty input sequence returns empty list immediately."""
+        provider = OllamaEmbeddingProvider(model="nomic-embed-text")
+        res = await provider.embed_batch([])
+        self.assertEqual(res, [])
+        await provider.close()
+
+    async def test_ollama_batch_request_payload_and_ordering(self):
+        """Batch embed sends formatted inputs in single request and preserves order."""
+        captured_payload = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured_payload["body"] = json.loads(request.content.decode("utf-8"))
+            return httpx.Response(
+                200,
+                json={
+                    "model": "nomic-embed-text",
+                    "embeddings": [
+                        [0.11, 0.22],
+                        [0.33, 0.44],
+                    ],
+                },
+            )
+
+        mock_transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(transport=mock_transport, base_url="http://127.0.0.1:11434") as client:
+            provider = OllamaEmbeddingProvider(
+                model="nomic-embed-text",
+                client=client,
+            )
+            res = await provider.embed_batch(["apple", "banana"], task=EmbeddingTask.QUERY)
+            self.assertEqual(len(res), 2)
+            self.assertEqual(res[0].to_list(), [0.11, 0.22])
+            self.assertEqual(res[1].to_list(), [0.33, 0.44])
+
+            # Check Nomic query prefix was applied to both items
+            self.assertEqual(
+                captured_payload["body"]["input"],
+                ["search_query: apple", "search_query: banana"],
+            )
+            await provider.close()
+
+    async def test_ollama_batch_document_prefix(self):
+        """Batch document task applies search_document: prefix to every input."""
+        captured_payload = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured_payload["body"] = json.loads(request.content.decode("utf-8"))
+            return httpx.Response(
+                200,
+                json={
+                    "model": "nomic-embed-text",
+                    "embeddings": [[0.1, 0.2]],
+                },
+            )
+
+        mock_transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(transport=mock_transport, base_url="http://127.0.0.1:11434") as client:
+            provider = OllamaEmbeddingProvider(
+                model="nomic-embed-text",
+                client=client,
+            )
+            res = await provider.embed_batch(["my doc"], task=EmbeddingTask.DOCUMENT)
+            self.assertEqual(len(res), 1)
+            self.assertEqual(
+                captured_payload["body"]["input"],
+                ["search_document: my doc"],
+            )
+            await provider.close()
+
+    async def test_ollama_batch_cardinality_mismatch(self):
+        """When Ollama returns fewer vectors than requested in batch, raises EmbeddingResponseError."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "model": "nomic-embed-text",
+                    "embeddings": [[0.1, 0.2]],  # only 1 vector for 2 inputs
+                },
+            )
+
+        mock_transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(transport=mock_transport, base_url="http://127.0.0.1:11434") as client:
+            provider = OllamaEmbeddingProvider(
+                model="nomic-embed-text",
+                client=client,
+            )
+            with self.assertRaises(EmbeddingResponseError) as ctx:
+                await provider.embed_batch(["in1", "in2"])
+            self.assertIn("Expected exactly 2 vectors", str(ctx.exception))
+            await provider.close()
+
+
+class TestEmbeddingDimensionValidation(unittest.TestCase):
+    """Tests dimension conflict rejection in Settings and EmbeddingProviderFactory."""
+
+    def test_factory_rejects_conflicting_dimensions_for_fastembed(self):
+        """EmbeddingProviderFactory rejects explicit dimensions conflicting with FastEmbed BGE-small."""
+        with self.assertRaises(EmbeddingConfigurationError) as ctx:
+            EmbeddingProviderFactory.create(provider_name="fastembed", dimensions=768)
+        self.assertIn("requires 384 dimensions", str(ctx.exception))
+
+    def test_factory_rejects_conflicting_dimensions_for_ollama_nomic(self):
+        """EmbeddingProviderFactory rejects explicit dimensions conflicting with Ollama nomic."""
+        with self.assertRaises(EmbeddingConfigurationError) as ctx:
+            EmbeddingProviderFactory.create(provider_name="ollama", dimensions=384)
+        self.assertIn("requires 768 dimensions", str(ctx.exception))
+
+    def test_factory_resolves_coherent_defaults(self):
+        """EmbeddingProviderFactory resolves provider-aware defaults when dimensions are omitted."""
+        fe_p = EmbeddingProviderFactory.create(provider_name="fastembed")
+        self.assertEqual(fe_p.dimensions, 384)
+        self.assertEqual(fe_p.model_name, "BAAI/bge-small-en-v1.5")
+
+        ol_p = EmbeddingProviderFactory.create(provider_name="ollama")
+        self.assertEqual(ol_p.dimensions, 768)
+        self.assertEqual(ol_p.model_name, "nomic-embed-text")
+
+    def test_settings_rejects_conflicting_dimensions_for_fastembed(self):
+        """Settings schema rejects explicit VECTOR_DIMENSIONS conflicting with FastEmbed."""
+        with self.assertRaises(ValueError) as ctx:
+            Settings(
+                embedding_provider="fastembed",
+                vector_dimensions=768,
+            )
+        self.assertIn("conflicts with FastEmbed model", str(ctx.exception))
+
+    def test_settings_rejects_conflicting_dimensions_for_ollama(self):
+        """Settings schema rejects explicit VECTOR_DIMENSIONS conflicting with Ollama nomic."""
+        with self.assertRaises(ValueError) as ctx:
+            Settings(
+                embedding_provider="ollama",
+                vector_dimensions=384,
+            )
+        self.assertIn("conflicts with Ollama model", str(ctx.exception))
+
+    def test_settings_resolves_authoritative_defaults(self):
+        """Settings resolves single authoritative dimension for FastEmbed and Ollama."""
+        s_fe = Settings(embedding_provider="fastembed")
+        self.assertEqual(s_fe.vector_dimensions, 384)
+        self.assertEqual(s_fe.embedding_model, "BAAI/bge-small-en-v1.5")
+
+        s_ol = Settings(embedding_provider="ollama")
+        self.assertEqual(s_ol.vector_dimensions, 768)
+        self.assertEqual(s_ol.embedding_model, "nomic-embed-text")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -61,12 +61,22 @@ class EmbeddingProviderFactory:
                 provider=raw_name,
             )
 
-        # Provider-aware defaults
+        # Provider-aware defaults and dimension conflict validation
         if key in ("fastembed", "local"):
             resolved_model = (model or "BAAI/bge-small-en-v1.5").strip()
+            if resolved_model == "BAAI/bge-small-en-v1.5" and dimensions is not None and dimensions > 0 and dimensions != 384:
+                raise EmbeddingConfigurationError(
+                    f"Configured dimensions ({dimensions}) conflict with FastEmbed model '{resolved_model}' (requires 384 dimensions).",
+                    provider="fastembed",
+                )
             resolved_dimensions = int(dimensions) if dimensions is not None and dimensions > 0 else 384
         else:  # ollama or other
             resolved_model = (model or "nomic-embed-text").strip()
+            if "nomic" in resolved_model.lower() and dimensions is not None and dimensions > 0 and dimensions != 768:
+                raise EmbeddingConfigurationError(
+                    f"Configured dimensions ({dimensions}) conflict with Ollama model '{resolved_model}' (requires 768 dimensions).",
+                    provider="ollama",
+                )
             resolved_dimensions = int(dimensions) if dimensions is not None and dimensions > 0 else 768
 
         provider_cls = cls._registry[key]

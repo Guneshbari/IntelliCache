@@ -1288,7 +1288,7 @@ async def run_benchmark(
 
         disclaimer = (
             f"Measured using real {provider_name} and live PostgreSQL/pgvector. "
-            f"Captures real HTTP embedding requests, {scan_detail}, "
+            f"Captures real embedding requests ({provider_name}), {scan_detail}, "
             f"exact-cache JOIN, and policy candidate evaluation. Does NOT include LLM generation latency."
         )
 
@@ -1675,10 +1675,10 @@ async def async_main() -> None:
     db_info: Dict[str, Any] = {}
 
     if effective_benchmark_mode == "pgvector":
-        if args.provider != "ollama":
+        if args.provider not in ("ollama", "fastembed"):
             logger.error(
-                "Benchmark mode 'pgvector' strictly requires '--provider ollama'. "
-                "Synthetic mock embeddings cannot be used for genuine pgvector evaluation."
+                "Benchmark mode 'pgvector' requires a real embedding provider ('ollama' or 'fastembed'). "
+                f"Unsupported provider '{args.provider}'. Synthetic mock embeddings cannot be used for genuine pgvector evaluation."
             )
             sys.exit(1)
 
@@ -1785,7 +1785,14 @@ async def async_main() -> None:
             mock_fallback_occurred = False
         except Exception as exc:
             await temp_provider.close()
-            if not args.allow_mock_fallback:
+            if effective_benchmark_mode == "pgvector":
+                logger.error(
+                    "FastEmbed embedding provider failed to initialize for pgvector mode: %s\n"
+                    "Failing clearly without silent fallback. Mock fallback is not permitted in pgvector mode.",
+                    exc,
+                )
+                sys.exit(1)
+            elif not args.allow_mock_fallback:
                 logger.error(
                     "Requested embedding provider 'fastembed' failed to initialize: %s\n"
                     "Failing clearly without silent fallback. To explicitly permit offline mock fallback, re-run with --allow-mock-fallback.",
