@@ -198,7 +198,7 @@ class PostgresVectorStore(BaseVectorStore):
                AND (c.expires_at IS NULL OR c.expires_at > NOW())
             WHERE v.cache_namespace = $2
               AND v.model = $3
-            ORDER BY distance ASC, v.fingerprint ASC
+            ORDER BY distance ASC
             LIMIT $4;
         """
 
@@ -418,7 +418,7 @@ class PostgresVectorStore(BaseVectorStore):
                AND (c.expires_at IS NULL OR c.expires_at > NOW())
             WHERE v.cache_namespace = $2
               AND v.model = $3
-            ORDER BY distance ASC, v.fingerprint ASC
+            ORDER BY distance ASC
             LIMIT $4;
         """
         try:

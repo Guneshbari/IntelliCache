@@ -206,6 +206,68 @@ class TestFastEmbedSmoke(unittest.IsolatedAsyncioTestCase):
 
         print(f"[FastEmbed Smoke Batch] Embedded 3 texts in {elapsed_ms:.2f}ms (unmocked ONNX)")
 
+    async def test_fastembed_repeated_warm_batch_benchmarks(self):
+        """
+        Measures repeatable warm batch performance across multiple batch sizes (1, 4, 8, 16, 32).
+        Verifies throughput scaling and confirms batch inference throughput exceeds single-item throughput.
+        """
+        sample_corpus = [
+            f"Technical document sample {i} detailing distributed consensus, replication, and concurrency control in modern databases."
+            for i in range(32)
+        ]
+        # Pre-warm both query and passage execution
+        await self.provider.embed("warmup query text", task=EmbeddingTask.QUERY)
+        await self.provider.embed("warmup document text", task=EmbeddingTask.DOCUMENT)
+
+        batch_sizes = [1, 4, 8, 16, 32]
+        benchmark_results = {}
+
+        for bsz in batch_sizes:
+            slice_texts = sample_corpus[:bsz]
+            # Warm-up run for this batch size
+            await self.provider.embed_batch(slice_texts, task=EmbeddingTask.QUERY)
+
+            # 5 repeated measurement iterations
+            timings = []
+            for _ in range(5):
+                t0 = time.perf_counter()
+                res = await self.provider.embed_batch(slice_texts, task=EmbeddingTask.QUERY)
+                timings.append((time.perf_counter() - t0) * 1000.0)
+                self.assertEqual(len(res), bsz)
+
+            avg_total_ms = sum(timings) / len(timings)
+            per_item_ms = avg_total_ms / bsz
+            throughput = 1000.0 / per_item_ms if per_item_ms > 0 else 0.0
+            benchmark_results[bsz] = {
+                "avg_total_ms": avg_total_ms,
+                "per_item_ms": per_item_ms,
+                "throughput": throughput,
+            }
+
+        # Compare sequential vs batch for 16 items
+        seq_timings = []
+        for _ in range(3):
+            t0 = time.perf_counter()
+            for t in sample_corpus[:16]:
+                await self.provider.embed(t, task=EmbeddingTask.QUERY)
+            seq_timings.append((time.perf_counter() - t0) * 1000.0)
+        avg_seq_ms = sum(seq_timings) / len(seq_timings)
+        speedup = avg_seq_ms / benchmark_results[16]["avg_total_ms"]
+
+        print("\n[FastEmbed Batch Benchmark Summary]")
+        print(f"  {'Batch Size':<12} | {'Avg Latency (ms)':<18} | {'Per-Item (ms)':<15} | {'Throughput (items/s)'}")
+        print(f"  {'-'*65}")
+        for bsz, data in benchmark_results.items():
+            print(f"  {bsz:<12} | {data['avg_total_ms']:<18.2f} | {data['per_item_ms']:<15.2f} | {data['throughput']:.1f}")
+        print(f"  Sequential 16-item baseline: {avg_seq_ms:.2f}ms ({avg_seq_ms/16:.2f}ms/item)")
+        print(f"  Batch 16-item speedup:       {speedup:.2f}x\n")
+
+        # Assertions
+        # 1. Per-item latency for batch size 16 or 32 should be lower than single-item latency (bsz=1)
+        self.assertLess(benchmark_results[16]["per_item_ms"], benchmark_results[1]["per_item_ms"])
+        # 2. Batching 16 items should be faster than sequential execution of 16 items
+        self.assertGreater(speedup, 1.5)
+
 
 if __name__ == "__main__":
     unittest.main()

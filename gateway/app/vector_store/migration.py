@@ -16,6 +16,7 @@ from .errors import (
 logger = logging.getLogger("intellicache.gateway.vector_migration")
 
 VECTOR_MIGRATIONS_DIR = Path(__file__).resolve().parent.parent.parent / "migrations" / "vector"
+VECTOR_DIMENSION_PLACEHOLDER = "{{VECTOR_DIMENSIONS}}"
 
 
 async def check_pgvector_available(conn: asyncpg.Connection) -> bool:
@@ -143,11 +144,22 @@ async def _apply_migrations(conn: asyncpg.Connection, dimensions: int) -> None:
         logger.info("Applying vector migration: %s (dimensions=%d)", sql_file.name, dimensions)
         sql_content = sql_file.read_text(encoding="utf-8")
 
-        # Replace default 768 dimension with configured dimension if different
-        if dimensions != 768:
+        # Explicitly substitute dedicated placeholder or legacy vector(768)
+        if VECTOR_DIMENSION_PLACEHOLDER in sql_content:
+            sql_content = sql_content.replace(VECTOR_DIMENSION_PLACEHOLDER, str(dimensions))
+        elif "vector(768)" in sql_content and dimensions != 768:
             sql_content = sql_content.replace("vector(768)", f"vector({dimensions})")
+
+        # Explicit validation: ensure no unresolved placeholder remains
+        if VECTOR_DIMENSION_PLACEHOLDER in sql_content:
+            raise VectorStoreConfigurationError(
+                f"Failed to substitute placeholder '{VECTOR_DIMENSION_PLACEHOLDER}' in vector migration {sql_file.name}."
+            )
 
         async with conn.transaction():
             await conn.execute(sql_content)
 
         logger.info("Successfully applied vector migration: %s", sql_file.name)
+
+    # Post-migration schema verification: verify vector column dimension in PostgreSQL matches configured dimensions
+    await verify_vector_schema(conn, dimensions)

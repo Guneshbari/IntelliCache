@@ -6,12 +6,15 @@ model-identity validation, and savings accounting.
 import asyncio
 from dataclasses import dataclass
 import json
+import logging
 import os
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
+
+logger = logging.getLogger(__name__)
 
 import asyncpg
 
@@ -1593,9 +1596,33 @@ class TestRealFastEmbedPgvectorIntegration(unittest.IsolatedAsyncioTestCase):
         if not enabled:
             self.skipTest("Opt-in test: set RUN_FASTEMBED_PGVECTOR_TEST=1 to run real FastEmbed pgvector integration.")
 
-        raw_url = os.environ.get("TEST_DATABASE_URL")
+        raw_url = os.environ.get("TEST_FASTEMBED_DATABASE_URL")
         if not raw_url:
-            self.skipTest("TEST_DATABASE_URL is not set; skipping live pgvector integration test.")
+            base_url = os.environ.get("TEST_DATABASE_URL")
+            if not base_url:
+                self.skipTest("Neither TEST_FASTEMBED_DATABASE_URL nor TEST_DATABASE_URL is set; skipping live pgvector integration test.")
+
+            # Isolate FastEmbed 384-d tests into an isolated test database (e.g. intellicache_fastembed_test)
+            parsed = urlsplit(base_url)
+            db_name = (parsed.path or "").lstrip("/")
+            if "fastembed" not in db_name.lower():
+                try:
+                    admin_url = urlunsplit((parsed.scheme, parsed.netloc, "/postgres", "", ""))
+                    admin_conn = await asyncpg.connect(admin_url)
+                    exists = await admin_conn.fetchval(
+                        "SELECT 1 FROM pg_database WHERE datname = $1", "intellicache_fastembed_test"
+                    )
+                    if not exists:
+                        await admin_conn.execute("CREATE DATABASE intellicache_fastembed_test")
+                    await admin_conn.close()
+                    raw_url = urlunsplit(
+                        (parsed.scheme, parsed.netloc, "/intellicache_fastembed_test", parsed.query, parsed.fragment)
+                    )
+                except Exception as ex:
+                    logger.warning("Failed to auto-create isolated database: %s", ex)
+                    raw_url = base_url
+            else:
+                raw_url = base_url
 
         try:
             self.db_url = validate_test_database_url(raw_url)
@@ -1632,6 +1659,8 @@ class TestRealFastEmbedPgvectorIntegration(unittest.IsolatedAsyncioTestCase):
                 dimensions=self.dimensions,
             )
             await self.store.verify_schema()
+            await self.cache.clear("test_fastembed_eval_ns")
+            await self.store.clear("test_fastembed_eval_ns")
         except Exception as exc:
             if hasattr(self, "pool") and self.pool:
                 await self.pool.close()
@@ -1683,6 +1712,152 @@ class TestRealFastEmbedPgvectorIntegration(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(outcome.top_similarity, 0.90)
         self.assertGreater(outcome.indexing_latency_ms, 0.0)
         self.assertGreater(outcome.lookup_latency_ms, 0.0)
+
+    async def test_real_fastembed_pgvector_end_to_end_pipeline_and_semantic_lookup(self) -> None:
+        """
+        Tests complete real pipeline:
+        FastEmbed -> 384-d vector -> PostgreSQL storage -> pgvector search -> compatibility validation -> semantic hit.
+        Also validates that technically incompatible queries are rejected.
+        """
+        from app.cache.interfaces import CacheEntry
+        from app.semantic_cache.service import SemanticCacheService
+
+        policy = SemanticCachePolicy(
+            min_similarity=0.85,
+            min_margin=0.03,
+            top_k=5,
+            configured_model=self.model_name,
+        )
+        service = SemanticCacheService(
+            embedding_provider=self.provider,
+            vector_store=self.store,
+            policy=policy,
+            default_namespace="test_fastembed_eval_ns",
+        )
+
+        # 1. Populate exact cache and vector store with an initial Rust candidate
+        fp_rust = "fp_rust_binsearch_384"
+        query_rust_orig = "How do I implement binary search in Rust?"
+        resp_rust = "pub fn binary_search<T: Ord>(slice: &[T], target: &T) -> Option<usize> { ... }"
+
+        req_rust = GenerationRequest(
+            messages=[ChatMessage(role="user", content=query_rust_orig)],
+            model="llama-3",
+            namespace="test_fastembed_eval_ns",
+            temperature=0.0,
+        )
+        res_rust = GenerationResult(
+            text=resp_rust,
+            model="llama-3",
+            usage=UsageMetrics(prompt_tokens=40, completion_tokens=80, total_tokens=120),
+            latency_ms=850.0,
+            cached=False,
+            fingerprint=fp_rust,
+            cache_type="none",
+        )
+
+        await self.cache.set(
+            fp_rust,
+            CacheEntry(
+                response=res_rust.text,
+                model=res_rust.model,
+                usage=res_rust.usage,
+                latency_ms=res_rust.latency_ms,
+            ),
+            namespace="test_fastembed_eval_ns",
+        )
+        indexed = await service.index(req_rust, res_rust)
+        self.assertTrue(indexed, "Real FastEmbed embedding and PostgreSQL upsert should succeed")
+
+        # 2. Query with semantically equivalent paraphrase in Rust
+        query_rust_search = "How to write a binary search algorithm in Rust?"
+        req_search = GenerationRequest(
+            messages=[ChatMessage(role="user", content=query_rust_search)],
+            model="llama-3",
+            namespace="test_fastembed_eval_ns",
+            temperature=0.0,
+        )
+        lookup_hit = await service.lookup(req_search)
+
+        self.assertIsNotNone(lookup_hit, "Semantically equivalent Rust query should result in a semantic cache hit")
+        self.assertEqual(lookup_hit.cached_response, resp_rust)
+        self.assertGreaterEqual(lookup_hit.similarity, 0.85)
+        self.assertLess(lookup_hit.distance, 0.15)
+
+        # 3. Query with semantically close query but for a DIFFERENT language (Python)
+        query_py_search = "How to write a binary search algorithm in Python?"
+        req_incompat = GenerationRequest(
+            messages=[ChatMessage(role="user", content=query_py_search)],
+            model="llama-3",
+            namespace="test_fastembed_eval_ns",
+            temperature=0.0,
+        )
+        lookup_miss = await service.lookup(req_incompat)
+        self.assertIsNone(lookup_miss, "Cross-language query must be rejected by candidate compatibility validator despite high textual similarity")
+
+    async def test_real_fastembed_pgvector_batch_embedding_and_retrieval(self) -> None:
+        """Verifies embed_batch integration with live pgvector storage and retrieval."""
+        from app.cache.interfaces import CacheEntry
+
+        texts = [
+            "Quick sort algorithm in Rust",
+            "Merge sort algorithm in Rust",
+            "Bubble sort algorithm in Rust",
+            "How to bake chocolate chip cookies",
+        ]
+        batch_results = await self.provider.embed_batch(texts, task=EmbeddingTask.DOCUMENT)
+        self.assertEqual(len(batch_results), 4)
+
+        for i, (text, emb) in enumerate(zip(texts, batch_results)):
+            fp = f"fp_batch_{i}"
+            await self.cache.set(
+                fp,
+                CacheEntry(
+                    response=f"Response for {text}",
+                    model="llama-3",
+                    usage=UsageMetrics(prompt_tokens=10, completion_tokens=20, total_tokens=30),
+                    latency_ms=100.0,
+                ),
+                namespace="test_fastembed_eval_ns",
+            )
+            await self.store.upsert(
+                VectorRecord(
+                    cache_namespace="test_fastembed_eval_ns",
+                    fingerprint=fp,
+                    query_text=text,
+                    vector=emb.to_list(),
+                    model=self.model_name,
+                )
+            )
+
+        # Search for "sorting algorithms in Rust"
+        query_res = await self.provider.embed("sorting algorithms in Rust", task=EmbeddingTask.QUERY)
+        search_results = await self.store.search(
+            query_vector=query_res.to_list(),
+            top_k=4,
+            namespace="test_fastembed_eval_ns",
+            model=self.model_name,
+        )
+
+        self.assertEqual(len(search_results), 4)
+        # All Rust sort results should have lower distance (higher similarity) than the cookie baking text
+        cookie_dist = next(r.distance for r in search_results if "cookies" in r.query_text)
+        for r in search_results:
+            if "Rust" in r.query_text:
+                self.assertLess(r.distance, cookie_dist)
+
+    async def test_real_fastembed_pgvector_schema_verification(self) -> None:
+        """Verifies verify_vector_schema accurately identifies 384-d and rejects 768-d."""
+        from app.vector_store.migration import verify_vector_schema
+        from app.vector_store.errors import VectorDimensionMismatchError
+
+        # Correct dimension matches
+        self.assertTrue(await verify_vector_schema(self.pool, dimensions=384))
+
+        # Incorrect dimension raises VectorDimensionMismatchError
+        with self.assertRaises(VectorDimensionMismatchError) as ctx:
+            await verify_vector_schema(self.pool, dimensions=768)
+        self.assertIn("Existing vector_records table dimension is 384", str(ctx.exception))
 
 
 class TestEvaluationCliValidation(unittest.IsolatedAsyncioTestCase):
