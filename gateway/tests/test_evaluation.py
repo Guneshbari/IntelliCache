@@ -1592,7 +1592,15 @@ class TestRealFastEmbedPgvectorIntegration(unittest.IsolatedAsyncioTestCase):
     """
 
     async def asyncSetUp(self) -> None:
-        enabled = os.environ.get("RUN_FASTEMBED_PGVECTOR_TEST") == "1" or os.environ.get("RUN_FASTEMBED_SMOKE") == "1"
+        strict = os.environ.get("REQUIRE_FASTEMBED_PGVECTOR_TEST") == "1"
+
+        def _abort(msg: str) -> None:
+            if strict:
+                self.fail(f"Required FastEmbed pgvector integration setup failure: {msg}")
+            else:
+                self.skipTest(msg)
+
+        enabled = os.environ.get("RUN_FASTEMBED_PGVECTOR_TEST") == "1" or os.environ.get("RUN_FASTEMBED_SMOKE") == "1" or strict
         if not enabled:
             self.skipTest("Opt-in test: set RUN_FASTEMBED_PGVECTOR_TEST=1 to run real FastEmbed pgvector integration.")
 
@@ -1600,7 +1608,8 @@ class TestRealFastEmbedPgvectorIntegration(unittest.IsolatedAsyncioTestCase):
         if not raw_url:
             base_url = os.environ.get("TEST_DATABASE_URL")
             if not base_url:
-                self.skipTest("Neither TEST_FASTEMBED_DATABASE_URL nor TEST_DATABASE_URL is set; skipping live pgvector integration test.")
+                _abort("Neither TEST_FASTEMBED_DATABASE_URL nor TEST_DATABASE_URL is set; live pgvector database required.")
+                return
 
             # Isolate FastEmbed 384-d tests into an isolated test database (e.g. intellicache_fastembed_test)
             parsed = urlsplit(base_url)
@@ -1627,7 +1636,8 @@ class TestRealFastEmbedPgvectorIntegration(unittest.IsolatedAsyncioTestCase):
         try:
             self.db_url = validate_test_database_url(raw_url)
         except ValueError as exc:
-            self.skipTest(f"Invalid TEST_DATABASE_URL: {exc}")
+            _abort(f"Invalid TEST_DATABASE_URL: {exc}")
+            return
 
         from app.embeddings.fastembed_adapter import FastEmbedProvider
         self.model_name = "BAAI/bge-small-en-v1.5"
@@ -1638,7 +1648,8 @@ class TestRealFastEmbedPgvectorIntegration(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(ping_res.dimensions, self.dimensions)
         except Exception as exc:
             await self.provider.close()
-            self.skipTest(f"FastEmbed provider failed to initialize: {exc}")
+            _abort(f"FastEmbed provider failed to initialize: {exc}")
+            return
 
         safe_url = redact_database_url(self.db_url)
         try:
@@ -1646,7 +1657,8 @@ class TestRealFastEmbedPgvectorIntegration(unittest.IsolatedAsyncioTestCase):
             async with self.pool.acquire() as conn:
                 has_vector = await check_pgvector_available(conn)
                 if not has_vector:
-                    self.skipTest(f"pgvector extension 'vector' is not available at {safe_url}")
+                    _abort(f"pgvector extension 'vector' is not available at {safe_url}")
+                    return
 
             await run_migrations(self.pool)
             await run_vector_migrations(self.pool, dimensions=self.dimensions)
@@ -1664,7 +1676,8 @@ class TestRealFastEmbedPgvectorIntegration(unittest.IsolatedAsyncioTestCase):
         except Exception as exc:
             if hasattr(self, "pool") and self.pool:
                 await self.pool.close()
-            self.skipTest(f"Real FastEmbed pgvector setup failed for TEST_DATABASE_URL ({safe_url}): {exc}")
+            _abort(f"Real FastEmbed pgvector setup failed for TEST_DATABASE_URL ({safe_url}): {exc}")
+            return
 
     async def asyncTearDown(self) -> None:
         if hasattr(self, "provider") and self.provider is not None:
@@ -1858,6 +1871,76 @@ class TestRealFastEmbedPgvectorIntegration(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(VectorDimensionMismatchError) as ctx:
             await verify_vector_schema(self.pool, dimensions=768)
         self.assertIn("Existing vector_records table dimension is 384", str(ctx.exception))
+
+    async def test_real_fastembed_384d_hnsw_ann_retrieval_and_exact_baseline(self) -> None:
+        """
+        Stage 3.2.3: Validates PostgreSQL pgvector HNSW approximate nearest-neighbour retrieval
+        against an exact nearest-neighbour baseline using genuine 384-dimensional FastEmbed embeddings
+        (BAAI/bge-small-en-v1.5) over a 2,000-document deterministic technical corpus and 20 queries.
+        Verifies:
+        1. Genuine 384-dimensional embeddings generated with FastEmbedProvider.
+        2. Average Recall@1 >= 0.85, Recall@5 >= 0.90, Recall@10 >= 0.90.
+        3. HNSW index scan (idx_vector_records_embedding_hnsw) naturally selected in execution plans.
+        4. Exact baseline plan excludes HNSW via planner controls (enable_indexscan=off, enable_bitmapscan=off).
+        5. Zero namespace and zero model leakage across all selectivity levels (~70%, ~20%, ~10%, ~1%).
+        6. Exclusion of expired and orphan records.
+        7. Database-only retrieval latency benchmarking (>= 30 iterations for exact and HNSW).
+        8. Generation of reproducible JSON and Markdown reports.
+        """
+        from evaluation.hnsw_benchmarks import run_stage3_2_3_benchmark
+
+        async with self.pool.acquire() as conn:
+            await conn.execute("TRUNCATE TABLE cache_entries, vector_records CASCADE;")
+
+        reports_dir = Path(__file__).resolve().parent.parent / "evaluation" / "reports"
+        benchmark_payload = await run_stage3_2_3_benchmark(
+            database_url=self.db_url,
+            output_dir=reports_dir,
+            total_docs=2000,
+        )
+
+        env = benchmark_payload["environment"]
+        self.assertEqual(env["vector_dimensions"], 384)
+        self.assertEqual(env["embedding_model"], self.model_name)
+        self.assertEqual(env["corpus_document_count"], 2000)
+        self.assertEqual(env["corpus_query_count"], 20)
+
+        # 1. Retrieval quality gates
+        agg = benchmark_payload["real_fastembed_384d_evaluation"]["aggregate_metrics"]
+        self.assertGreaterEqual(agg["avg_recall_at_1"], 0.85, f"Avg Recall@1 too low: {agg['avg_recall_at_1']}")
+        self.assertGreaterEqual(agg["avg_recall_at_5"], 0.90, f"Avg Recall@5 too low: {agg['avg_recall_at_5']}")
+        self.assertGreaterEqual(agg["avg_recall_at_10"], 0.90, f"Avg Recall@10 too low: {agg['avg_recall_at_10']}")
+
+        # 2. HNSW execution plan verification across all 20 queries
+        queries = benchmark_payload["real_fastembed_384d_evaluation"]["queries"]
+        self.assertEqual(len(queries), 20)
+        for q in queries:
+            self.assertTrue(q["hnsw_used"], f"Query {q['query_id']} did not use HNSW index: {q['execution_plan_summary']}")
+            self.assertGreaterEqual(q["recall_at_1"], 0.80)
+
+        # 3. Filtering and isolation verification
+        filtering_results = benchmark_payload["filtering_and_selectivity"]
+        self.assertEqual(len(filtering_results), 4)
+        for f in filtering_results:
+            self.assertEqual(f["namespace_leakage_count"], 0, f"Namespace leakage in {f['scenario']}")
+            self.assertEqual(f["model_leakage_count"], 0, f"Model filter leakage in {f['scenario']}")
+            self.assertEqual(f["expired_records_leaked"], 0, f"Expired cache record leaked in {f['scenario']}")
+            self.assertGreaterEqual(f["recall_at_1"], 0.80)
+
+        # 4. Latency measurements verification
+        lats = benchmark_payload["database_latency_benchmarks"]
+        self.assertIn("exact_sequential_scan", lats)
+        self.assertIn("hnsw_default", lats)
+        self.assertEqual(lats["exact_sequential_scan"]["samples"], 30)
+        self.assertEqual(lats["hnsw_default"]["samples"], 30)
+        self.assertGreater(lats["exact_sequential_scan"]["p50_ms"], 0.0)
+        self.assertGreater(lats["hnsw_default"]["p50_ms"], 0.0)
+
+        # 5. Generated report file existence
+        json_file = reports_dir / "stage3_2_3_hnsw_ann_retrieval.json"
+        md_file = reports_dir / "stage3_2_3_hnsw_ann_retrieval.md"
+        self.assertTrue(json_file.exists(), f"Missing JSON report at {json_file}")
+        self.assertTrue(md_file.exists(), f"Missing Markdown report at {md_file}")
 
 
 class TestEvaluationCliValidation(unittest.IsolatedAsyncioTestCase):

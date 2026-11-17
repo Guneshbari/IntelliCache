@@ -239,9 +239,15 @@ jobs:
         working-directory: gateway
         env:
           RUN_FASTEMBED_PGVECTOR_TEST: '1'
+          REQUIRE_FASTEMBED_PGVECTOR_TEST: '1'
           TEST_DATABASE_URL: 'postgresql://postgres:postgres@localhost:5432/intellicache_fastembed_test'
         run: |
           python -m unittest -v tests.test_evaluation.TestRealFastEmbedPgvectorIntegration
+
+      - name: Run Stage 3.2.3 HNSW vs exact retrieval benchmark runner
+        working-directory: gateway
+        run: |
+          python scripts/benchmark_hnsw.py --test-database-url postgresql://postgres:postgres@localhost:5432/intellicache_fastembed_test --total-docs 2000
 
       - name: Verify real FastEmbed evaluation harness execution
         working-directory: gateway

@@ -1,0 +1,1020 @@
+{
+  "schema_version": "1.0",
+  "benchmark_stage": "Stage 3.2.3 - HNSW vs Exact Retrieval Validation",
+  "generated_at": "2026-11-17T21:56:50.143160+00:00",
+  "environment": {
+    "postgres_version": "16.16 (Debian 16.16-1.pgdg12+1)",
+    "pgvector_version": "0.8.7",
+    "vector_dimensions": 384,
+    "embedding_model": "BAAI/bge-small-en-v1.5",
+    "corpus_document_count": 2000,
+    "corpus_query_count": 20,
+    "corpus_sha256": "4b8300fdbdc62939fe82a816562f2685a8c98a1346c66b6cfdfb50f84269655d",
+    "embedding_duration_sec": 9.479
+  },
+  "index_parameters": {
+    "index_name": "idx_vector_records_embedding_hnsw",
+    "index_type": "hnsw",
+    "distance_metric": "cosine (<=>)",
+    "m": 16,
+    "ef_construction": 64
+  },
+  "exact_baseline_methodology": {
+    "planner_controls": "SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off;",
+    "distance_operator": "<=> (cosine)",
+    "parameterized_queries": true,
+    "tie_breaker": "v.fingerprint ASC",
+    "hnsw_exclusion_confirmed": true
+  },
+  "real_fastembed_384d_evaluation": {
+    "aggregate_metrics": {
+      "avg_recall_at_1": 1.0,
+      "min_recall_at_1": 1.0,
+      "avg_recall_at_5": 1.0,
+      "min_recall_at_5": 1.0,
+      "avg_recall_at_10": 1.0,
+      "min_recall_at_10": 1.0,
+      "queries_evaluated": 20
+    },
+    "queries": [
+      {
+        "query_id": 1,
+        "query": "How does Rust manage memory ownership and borrowing without a garbage collector?",
+        "category": "programming_languages",
+        "subtopic": "Rust",
+        "intent": "Rust ownership, borrow checker and lifetimes",
+        "hnsw_used": true,
+        "execution_plan_summary": [
+          "Limit  (cost=448.10..470.67 rows=10 width=363) (actual time=0.253..0.283 rows=10 loops=1)",
+          "  Buffers: shared hit=411",
+          "  ->  Nested Loop  (cost=448.10..4962.82 rows=2000 width=363) (actual time=0.252..0.281 rows=10 loops=1)",
+          "        Buffers: shared hit=411",
+          "        ->  Index Scan using idx_vector_records_embedding_hnsw on vector_records v  (cost=447.82..4049.00 rows=2000 width=1774) (actual time=0.241..0.247 rows=10 loops=1)",
+          "              Order By: (vector <=> [vector(...)])",
+          "              Filter: (((cache_namespace)::text = 'stage3_2_3_eval_ns'::text) AND ((model)::text = 'BAAI/bge-small-en-v1.5'::text))",
+          "              Buffers: shared hit=381",
+          "        ->  Index Scan using idx_cache_lookup on cache_entries c  (cost=0.28..0.45 rows=1 width=153) (actual time=0.003..0.003 rows=1 loops=10)",
+          "              Index Cond: (((cache_namespace)::text = 'stage3_2_3_eval_ns'::text) AND ((fingerprint)::text = (v.fingerprint)::text))",
+          "              Filter: ((expires_at IS NULL) OR (expires_at > now()))",
+          "              Buffers: shared hit=30"
+        ],
+        "ann_count": 10,
+        "exact_count": 10,
+        "recall_at_1": 1.0,
+        "recall_at_5": 1.0,
+        "recall_at_10": 1.0,
+        "overlap_at_1": 1,
+        "overlap_at_5": 5,
+        "overlap_at_10": 10,
+        "boundary_ties": {
+          "1": false,
+          "5": false,
+          "10": false
+        },
+        "tie_aware_recall": {
+          "1": 1.0,
+          "5": 1.0,
+          "10": 1.0
+        },
+        "top_match_fingerprint": "doc_0014",
+        "exact_top_fingerprint": "doc_0014"
+      },
+      {
+        "query_id": 2,
+        "query": "Explain Python asyncio event loop tasks and non-blocking I/O operations.",
+        "category": "programming_languages",
+        "subtopic": "Python",
+        "intent": "Python asyncio event loop and tasks",
+        "hnsw_used": true,
+        "execution_plan_summary": [
+          "Limit  (cost=448.10..470.67 rows=10 width=363) (actual time=0.271..0.296 rows=10 loops=1)",
+          "  Buffers: shared hit=614",
+          "  ->  Nested Loop  (cost=448.10..4962.82 rows=2000 width=363) (actual time=0.271..0.295 rows=10 loops=1)",
+          "        Buffers: shared hit=614",
+          "        ->  Index Scan using idx_vector_records_embedding_hnsw on vector_records v  (cost=447.82..4049.00 rows=2000 width=1774) (actual time=0.260..0.263 rows=10 loops=1)",
+          "              Order By: (vector <=> [vector(...)])",
+          "              Filter: (((cache_namespace)::text = 'stage3_2_3_eval_ns'::text) AND ((model)::text = 'BAAI/bge-small-en-v1.5'::text))",
+          "              Buffers: shared hit=584",
+          "        ->  Index Scan using idx_cache_lookup on cache_entries c  (cost=0.28..0.45 rows=1 width=153) (actual time=0.003..0.003 rows=1 loops=10)",
+          "              Index Cond: (((cache_namespace)::text = 'stage3_2_3_eval_ns'::text) AND ((fingerprint)::text = (v.fingerprint)::text))",
+          "              Filter: ((expires_at IS NULL) OR (expires_at > now()))",
+          "              Buffers: shared hit=30"
+        ],
+        "ann_count": 10,
+        "exact_count": 10,
+        "recall_at_1": 1.0,
+        "recall_at_5": 1.0,
+        "recall_at_10": 1.0,
+        "overlap_at_1": 1,
+        "overlap_at_5": 5,
+        "overlap_at_10": 10,
+        "boundary_ties": {
+          "1": false,
+          "5": false,
+          "10": false
+        },
+        "tie_aware_recall": {
+          "1": 1.0,
+          "5": 1.0,
+          "10": 1.0
+        },
+        "top_match_fingerprint": "doc_0101",
+        "exact_top_fingerprint": "doc_0101"
+      },
+      {
+        "query_id": 3,
+        "query": "How do Go channels and goroutines implement concurrent communication?",
+        "category": "programming_languages",
+        "subtopic": "Go",
+        "intent": "Go goroutines, channels and select synchronization",
+        "hnsw_used": true,
+        "execution_plan_summary": [
+          "Limit  (cost=448.10..470.67 rows=10 width=363) (actual time=0.218..0.243 rows=10 loops=1)",
+          "  Buffers: shared hit=520",
+          "  ->  Nested Loop  (cost=448.10..4962.82 rows=2000 width=363) (actual time=0.218..0.242 rows=10 loops=1)",
+          "        Buffers: shared hit=520",
+          "        ->  Index Scan using idx_vector_records_embedding_hnsw on vector_records v  (cost=447.82..4049.00 rows=2000 width=1774) (actual time=0.210..0.213 rows=10 loops=1)",
+          "              Order By: (vector <=> [vector(...)])",
+          "              Filter: (((cache_namespace)::text = 'stage3_2_3_eval_ns'::text) AND ((model)::text = 'BAAI/bge-small-en-v1.5'::text))",
+          "              Buffers: shared hit=490",
+          "        ->  Index Scan using idx_cache_lookup on cache_entries c  (cost=0.28..0.45 rows=1 width=153) (actual time=0.002..0.002 rows=1 loops=10)",
+          "              Index Cond: (((cache_namespace)::text = 'stage3_2_3_eval_ns'::text) AND ((fingerprint)::text = (v.fingerprint)::text))",
+          "              Filter: ((expires_at IS NULL) OR (expires_at > now()))",
+          "              Buffers: shared hit=30"
+        ],
+        "ann_count": 10,
+        "exact_count": 10,
+        "recall_at_1": 1.0,
+        "recall_at_5": 1.0,
+        "recall_at_10": 1.0,
+        "overlap_at_1": 1,
+        "overlap_at_5": 5,
+        "overlap_at_10": 10,
+        "boundary_ties": {
+          "1": false,
+          "5": false,
+          "10": false
+        },
+        "tie_aware_recall": {
+          "1": 1.0,
+          "5": 1.0,
+          "10": 1.0
+        },
+        "top_match_fingerprint": "doc_0215",
+        "exact_top_fingerprint": "doc_0215"
+      },
+      {
+        "query_id": 4,
+        "query": "How to use TypeScript discriminated unions for exhaustive type checking?",
+        "category": "programming_languages",
+        "subtopic": "TypeScript",
+        "intent": "TypeScript discriminated unions and narrowing",
+        "hnsw_used": true,
+        "execution_plan_summary": [
+          "Limit  (cost=448.10..470.67 rows=10 width=363) (actual time=0.142..0.168 rows=10 loops=1)",
+          "  Buffers: shared hit=315",
+          "  ->  Nested Loop  (cost=448.10..4962.82 rows=2000 width=363) (actual time=0.141..0.167 rows=10 loops=1)",
+          "        Buffers: shared hit=315",
+          "        ->  Index Scan using idx_vector_records_embedding_hnsw on vector_records v  (cost=447.82..4049.00 rows=2000 width=1774) (actual time=0.131..0.134 rows=10 loops=1)",
+          "              Order By: (vector <=> [vector(...)])",
+          "              Filter: (((cache_namespace)::text = 'stage3_2_3_eval_ns'::text) AND ((model)::text = 'BAAI/bge-small-en-v1.5'::text))",
+          "              Buffers: shared hit=285",
+          "        ->  Index Scan using idx_cache_lookup on cache_entries c  (cost=0.28..0.45 rows=1 width=153) (actual time=0.003..0.003 rows=1 loops=10)",
+          "              Index Cond: (((cache_namespace)::text = 'stage3_2_3_eval_ns'::text) AND ((fingerprint)::text = (v.fingerprint)::text))",
+          "              Filter: ((expires_at IS NULL) OR (expires_at > now()))",
+          "              Buffers: shared hit=30"
+        ],
+        "ann_count": 10,
+        "exact_count": 10,
+        "recall_at_1": 1.0,
+        "recall_at_5": 1.0,
+        "recall_at_10": 1.0,
+        "overlap_at_1": 1,
+        "overlap_at_5": 5,
+        "overlap_at_10": 10,
+        "boundary_ties": {
+          "1": false,
+          "5": false,
+          "10": false
+        },
+        "tie_aware_recall": {
+          "1": 1.0,
+          "5": 1.0,
+          "10": 1.0
+        },
+        "top_match_fingerprint": "doc_0306",
+        "exact_top_fingerprint": "doc_0306"
+      },
+      {
+        "query_id": 5,
+        "query": "FastAPI dependency injection with Depends and asynchronous path operations.",
+        "category": "frameworks_and_libraries",
+        "subtopic": "FastAPI",
+        "intent": "FastAPI dependency injection and async handlers",
+        "hnsw_used": true,
+        "execution_plan_summary": [
+          "Limit  (cost=448.10..470.67 rows=10 width=363) (actual time=0.188..0.212 rows=10 loops=1)",
+          "  Buffers: shared hit=468",
+          "  ->  Nested Loop  (cost=448.10..4962.82 rows=2000 width=363) (actual time=0.188..0.211 rows=10 loops=1)",
+          "        Buffers: shared hit=468",
+          "        ->  Index Scan using idx_vector_records_embedding_hnsw on vector_records v  (cost=447.82..4049.00 rows=2000 width=1774) (actual time=0.180..0.182 rows=10 loops=1)",
+          "              Order By: (vector <=> [vector(...)])",
+          "              Filter: (((cache_namespace)::text = 'stage3_2_3_eval_ns'::text) AND ((model)::text = 'BAAI/bge-small-en-v1.5'::text))",
+          "              Buffers: shared hit=438",
+          "        ->  Index Scan using idx_cache_lookup on cache_entries c  (cost=0.28..0.45 rows=1 width=153) (actual time=0.002..0.002 rows=1 loops=10)",
+          "              Index Cond: (((cache_namespace)::text = 'stage3_2_3_eval_ns'::text) AND ((fingerprint)::text = (v.fingerprint)::text))",
+          "              Filter: ((expires_at IS NULL) OR (expires_at > now()))",
+          "              Buffers: shared hit=30"
+        ],
+        "ann_count": 10,
+        "exact_count": 10,
+        "recall_at_1": 1.0,
+        "recall_at_5": 1.0,
+        "recall_at_10": 1.0,
+        "overlap_at_1": 1,
+        "overlap_at_5": 5,
+        "overlap_at_10": 10,
+        "boundary_ties": {
+          "1": false,
+          "5": false,
+          "10": false
+        },
+        "tie_aware_recall": {
+          "1": 1.0,
+          "5": 1.0,
+          "10": 1.0
+        },
+        "top_match_fingerprint": "doc_0411",
+        "exact_top_fingerprint": "doc_0411"
+      },
+      {
+        "query_id": 6,
+        "query": "How does React concurrent rendering and Server Components streaming work?",
+        "category": "frameworks_and_libraries",
+        "subtopic": "React",
+        "intent": "React Server Components and concurrent rendering",
+        "hnsw_used": true,
+        "execution_plan_summary": [
+          "Limit  (cost=448.10..470.67 rows=10 width=363) (actual time=0.148..0.173 rows=10 loops=1)",
+          "  Buffers: shared hit=389",
+          "  ->  Nested Loop  (cost=448.10..4962.82 rows=2000 width=363) (actual time=0.148..0.172 rows=10 loops=1)",
+          "        Buffers: shared hit=389",
+          "        ->  Index Scan using idx_vector_records_embedding_hnsw on vector_records v  (cost=447.82..4049.00 rows=2000 width=1774) (actual time=0.140..0.143 rows=10 loops=1)",
+          "              Order By: (vector <=> [vector(...)])",
+          "              Filter: (((cache_namespace)::text = 'stage3_2_3_eval_ns'::text) AND ((model)::text = 'BAAI/bge-small-en-v1.5'::text))",
+          "              Buffers: shared hit=359",
+          "        ->  Index Scan using idx_cache_lookup on cache_entries c  (cost=0.28..0.45 rows=1 width=153) (actual time=0.002..0.002 rows=1 loops=10)",
+          "              Index Cond: (((cache_namespace)::text = 'stage3_2_3_eval_ns'::text) AND ((fingerprint)::text = (v.fingerprint)::text))",
+          "              Filter: ((expires_at IS NULL) OR (expires_at > now()))",
+          "              Buffers: shared hit=30"
+        ],
+        "ann_count": 10,
+        "exact_count": 10,
+        "recall_at_1": 1.0,
+        "recall_at_5": 1.0,
+        "recall_at_10": 1.0,
+        "overlap_at_1": 1,
+        "overlap_at_5": 5,
+        "overlap_at_10": 10,
+        "boundary_ties": {
+          "1": false,
+          "5": false,
+          "10": false
+        },
+        "tie_aware_recall": {
+          "1": 1.0,
+          "5": 1.0,
+          "10": 1.0
+        },
+        "top_match_fingerprint": "doc_0505",
+        "exact_top_fingerprint": "doc_0505"
+      },
+      {
+        "query_id": 7,
+        "query": "PyTorch autograd dynamic computation graph and tensor backward pass.",
+        "category": "frameworks_and_libraries",
+        "subtopic": "PyTorch",
+        "intent": "PyTorch autograd and tensor backward propagation",
+        "hnsw_used": true,
+        "execution_plan_summary": [
+          "Limit  (cost=448.10..470.67 rows=10 width=363) (actual time=0.140..0.166 rows=10 loops=1)",
+          "  Buffers: shared hit=316",
+          "  ->  Nested Loop  (cost=448.10..4962.82 rows=2000 width=363) (actual time=0.139..0.165 rows=10 loops=1)",
+          "        Buffers: shared hit=316",
+          "        ->  Index Scan using idx_vector_records_embedding_hnsw on vector_records v  (cost=447.82..4049.00 rows=2000 width=1774) (actual time=0.130..0.133 rows=10 loops=1)",
+          "              Order By: (vector <=> [vector(...)])",
+          "              Filter: (((cache_namespace)::text = 'stage3_2_3_eval_ns'::text) AND ((model)::text = 'BAAI/bge-small-en-v1.5'::text))",
+          "              Buffers: shared hit=286",
+          "        ->  Index Scan using idx_cache_lookup on cache_entries c  (cost=0.28..0.45 rows=1 width=153) (actual time=0.003..0.003 rows=1 loops=10)",
+          "              Index Cond: (((cache_namespace)::text = 'stage3_2_3_eval_ns'::text) AND ((fingerprint)::text = (v.fingerprint)::text))",
+          "              Filter: ((expires_at IS NULL) OR (expires_at > now()))",
+          "              Buffers: shared hit=30"
+        ],
+        "ann_count": 10,
+        "exact_count": 10,
+        "recall_at_1": 1.0,
+        "recall_at_5": 1.0,
+        "recall_at_10": 1.0,
+        "overlap_at_1": 1,
+        "overlap_at_5": 5,
+        "overlap_at_10": 10,
+        "boundary_ties": {
+          "1": false,
+          "5": false,
+          "10": false
+        },
+        "tie_aware_recall": {
+          "1": 1.0,
+          "5": 1.0,
+          "10": 1.0
+        },
+        "top_match_fingerprint": "doc_0607",
+        "exact_top_fingerprint": "doc_0607"
+      },
+      {
+        "query_id": 8,
+        "query": "How does Tokio work-stealing runtime schedule asynchronous tasks in Rust?",
+        "category": "frameworks_and_libraries",
+        "subtopic": "Tokio",
+        "intent": "Tokio work-stealing async runtime scheduler",
+        "hnsw_used": true,
+        "execution_plan_summary": [
+          "Limit  (cost=448.10..470.67 rows=10 width=363) (actual time=0.189..0.216 rows=10 loops=1)",
+          "  Buffers: shared hit=471",
+          "  ->  Nested Loop  (cost=448.10..4962.82 rows=2000 width=363) (actual time=0.189..0.214 rows=10 loops=1)",
+          "        Buffers: shared hit=471",
+          "        ->  Index Scan using idx_vector_records_embedding_hnsw on vector_records v  (cost=447.82..4049.00 rows=2000 width=1774) (actual time=0.180..0.183 rows=10 loops=1)",
+          "              Order By: (vector <=> [vector(...)])",
+          "              Filter: (((cache_namespace)::text = 'stage3_2_3_eval_ns'::text) AND ((model)::text = 'BAAI/bge-small-en-v1.5'::text))",
+          "              Buffers: shared hit=441",
+          "        ->  Index Scan using idx_cache_lookup on cache_entries c  (cost=0.28..0.45 rows=1 width=153) (actual time=0.003..0.003 rows=1 loops=10)",
+          "              Index Cond: (((cache_namespace)::text = 'stage3_2_3_eval_ns'::text) AND ((fingerprint)::text = (v.fingerprint)::text))",
+          "              Filter: ((expires_at IS NULL) OR (expires_at > now()))",
+          "              Buffers: shared hit=30"
+        ],
+        "ann_count": 10,
+        "exact_count": 10,
+        "recall_at_1": 1.0,
+        "recall_at_5": 1.0,
+        "recall_at_10": 1.0,
+        "overlap_at_1": 1,
+        "overlap_at_5": 5,
+        "overlap_at_10": 10,
+        "boundary_ties": {
+          "1": false,
+          "5": false,
+          "10": false
+        },
+        "tie_aware_recall": {
+          "1": 1.0,
+          "5": 1.0,
+          "10": 1.0
+        },
+        "top_match_fingerprint": "doc_0095",
+        "exact_top_fingerprint": "doc_0095"
+      },
+      {
+        "query_id": 9,
+        "query": "PostgreSQL write-ahead logging WAL crash recovery and checkpoint mechanism.",
+        "category": "databases_and_vector_search",
+        "subtopic": "PostgreSQL",
+        "intent": "PostgreSQL WAL and LSN crash recovery",
+        "hnsw_used": true,
+        "execution_plan_summary": [
+          "Limit  (cost=448.10..470.67 rows=10 width=363) (actual time=0.163..0.187 rows=10 loops=1)",
+          "  Buffers: shared hit=422",
+          "  ->  Nested Loop  (cost=448.10..4962.82 rows=2000 width=363) (actual time=0.163..0.186 rows=10 loops=1)",
+          "        Buffers: shared hit=422",
+          "        ->  Index Scan using idx_vector_records_embedding_hnsw on vector_records v  (cost=447.82..4049.00 rows=2000 width=1774) (actual time=0.154..0.157 rows=10 loops=1)",
+          "              Order By: (vector <=> [vector(...)])",
+          "              Filter: (((cache_namespace)::text = 'stage3_2_3_eval_ns'::text) AND ((model)::text = 'BAAI/bge-small-en-v1.5'::text))",
+          "              Buffers: shared hit=392",
+          "        ->  Index Scan using idx_cache_lookup on cache_entries c  (cost=0.28..0.45 rows=1 width=153) (actual time=0.002..0.002 rows=1 loops=10)",
+          "              Index Cond: (((cache_namespace)::text = 'stage3_2_3_eval_ns'::text) AND ((fingerprint)::text = (v.fingerprint)::text))",
+          "              Filter: ((expires_at IS NULL) OR (expires_at > now()))",
+          "              Buffers: shared hit=30"
+        ],
+        "ann_count": 10,
+        "exact_count": 10,
+        "recall_at_1": 1.0,
+        "recall_at_5": 1.0,
+        "recall_at_10": 1.0,
+        "overlap_at_1": 1,
+        "overlap_at_5": 5,
+        "overlap_at_10": 10,
+        "boundary_ties": {
+          "1": false,
+          "5": false,
+          "10": false
+        },
+        "tie_aware_recall": {
+          "1": 1.0,
+          "5": 1.0,
+          "10": 1.0
+        },
+        "top_match_fingerprint": "doc_0812",
+        "exact_top_fingerprint": "doc_0812"
+      },
+      {
+        "query_id": 10,
+        "query": "pgvector HNSW index tuning with ef_search and m parameters.",
+        "category": "databases_and_vector_search",
+        "subtopic": "pgvector",
+        "intent": "pgvector HNSW index configuration and tuning",
+        "hnsw_used": true,
+        "execution_plan_summary": [
+          "Limit  (cost=448.10..470.67 rows=10 width=363) (actual time=0.162..0.188 rows=10 loops=1)",
+          "  Buffers: shared hit=352",
+          "  ->  Nested Loop  (cost=448.10..4962.82 rows=2000 width=363) (actual time=0.161..0.187 rows=10 loops=1)",
+          "        Buffers: shared hit=352",
+          "        ->  Index Scan using idx_vector_records_embedding_hnsw on vector_records v  (cost=447.82..4049.00 rows=2000 width=1774) (actual time=0.151..0.155 rows=10 loops=1)",
+          "              Order By: (vector <=> [vector(...)])",
+          "              Filter: (((cache_namespace)::text = 'stage3_2_3_eval_ns'::text) AND ((model)::text = 'BAAI/bge-small-en-v1.5'::text))",
+          "              Buffers: shared hit=322",
+          "        ->  Index Scan using idx_cache_lookup on cache_entries c  (cost=0.28..0.45 rows=1 width=153) (actual time=0.003..0.003 rows=1 loops=10)",
+          "              Index Cond: (((cache_namespace)::text = 'stage3_2_3_eval_ns'::text) AND ((fingerprint)::text = (v.fingerprint)::text))",
+          "              Filter: ((expires_at IS NULL) OR (expires_at > now()))",
+          "              Buffers: shared hit=30"
+        ],
+        "ann_count": 10,
+        "exact_count": 10,
+        "recall_at_1": 1.0,
+        "recall_at_5": 1.0,
+        "recall_at_10": 1.0,
+        "overlap_at_1": 1,
+        "overlap_at_5": 5,
+        "overlap_at_10": 10,
+        "boundary_ties": {
+          "1": false,
+          "5": false,
+          "10": false
+        },
+        "tie_aware_recall": {
+          "1": 1.0,
+          "5": 1.0,
+          "10": 1.0
+        },
+        "top_match_fingerprint": "doc_0911",
+        "exact_top_fingerprint": "doc_0911"
+      },
+      {
+        "query_id": 11,
+        "query": "How does SQLite write-ahead logging handle concurrent readers and writers?",
+        "category": "databases_and_vector_search",
+        "subtopic": "SQLite",
+        "intent": "SQLite WAL concurrent readers and single writer",
+        "hnsw_used": true,
+        "execution_plan_summary": [
+          "Limit  (cost=448.10..470.67 rows=10 width=363) (actual time=0.174..0.202 rows=10 loops=1)",
+          "  Buffers: shared hit=405",
+          "  ->  Nested Loop  (cost=448.10..4962.82 rows=2000 width=363) (actual time=0.174..0.201 rows=10 loops=1)",
+          "        Buffers: shared hit=405",
+          "        ->  Index Scan using idx_vector_records_embedding_hnsw on vector_records v  (cost=447.82..4049.00 rows=2000 width=1774) (actual time=0.164..0.167 rows=10 loops=1)",
+          "              Order By: (vector <=> [vector(...)])",
+          "              Filter: (((cache_namespace)::text = 'stage3_2_3_eval_ns'::text) AND ((model)::text = 'BAAI/bge-small-en-v1.5'::text))",
+          "              Buffers: shared hit=375",
+          "        ->  Index Scan using idx_cache_lookup on cache_entries c  (cost=0.28..0.45 rows=1 width=153) (actual time=0.003..0.003 rows=1 loops=10)",
+          "              Index Cond: (((cache_namespace)::text = 'stage3_2_3_eval_ns'::text) AND ((fingerprint)::text = (v.fingerprint)::text))",
+          "              Filter: ((expires_at IS NULL) OR (expires_at > now()))",
+          "              Buffers: shared hit=30"
+        ],
+        "ann_count": 10,
+        "exact_count": 10,
+        "recall_at_1": 1.0,
+        "recall_at_5": 1.0,
+        "recall_at_10": 1.0,
+        "overlap_at_1": 1,
+        "overlap_at_5": 5,
+        "overlap_at_10": 10,
+        "boundary_ties": {
+          "1": false,
+          "5": false,
+          "10": false
+        },
+        "tie_aware_recall": {
+          "1": 1.0,
+          "5": 1.0,
+          "10": 1.0
+        },
+        "top_match_fingerprint": "doc_1005",
+        "exact_top_fingerprint": "doc_1005"
+      },
+      {
+        "query_id": 12,
+        "query": "LSM-tree compaction and SSTable storage in distributed databases.",
+        "category": "databases_and_vector_search",
+        "subtopic": "DistributedStorage",
+        "intent": "LSM-tree compaction and SSTables in storage engines",
+        "hnsw_used": true,
+        "execution_plan_summary": [
+          "Limit  (cost=448.10..470.67 rows=10 width=363) (actual time=0.174..0.199 rows=10 loops=1)",
+          "  Buffers: shared hit=407",
+          "  ->  Nested Loop  (cost=448.10..4962.82 rows=2000 width=363) (actual time=0.174..0.198 rows=10 loops=1)",
+          "        Buffers: shared hit=407",
+          "        ->  Index Scan using idx_vector_records_embedding_hnsw on vector_records v  (cost=447.82..4049.00 rows=2000 width=1774) (actual time=0.164..0.167 rows=10 loops=1)",
+          "              Order By: (vector <=> [vector(...)])",
+          "              Filter: (((cache_namespace)::text = 'stage3_2_3_eval_ns'::text) AND ((model)::text = 'BAAI/bge-small-en-v1.5'::text))",
+          "              Buffers: shared hit=377",
+          "        ->  Index Scan using idx_cache_lookup on cache_entries c  (cost=0.28..0.45 rows=1 width=153) (actual time=0.003..0.003 rows=1 loops=10)",
+          "              Index Cond: (((cache_namespace)::text = 'stage3_2_3_eval_ns'::text) AND ((fingerprint)::text = (v.fingerprint)::text))",
+          "              Filter: ((expires_at IS NULL) OR (expires_at > now()))",
+          "              Buffers: shared hit=30"
+        ],
+        "ann_count": 10,
+        "exact_count": 10,
+        "recall_at_1": 1.0,
+        "recall_at_5": 1.0,
+        "recall_at_10": 1.0,
+        "overlap_at_1": 1,
+        "overlap_at_5": 5,
+        "overlap_at_10": 10,
+        "boundary_ties": {
+          "1": false,
+          "5": false,
+          "10": false
+        },
+        "tie_aware_recall": {
+          "1": 1.0,
+          "5": 1.0,
+          "10": 1.0
+        },
+        "top_match_fingerprint": "doc_1101",
+        "exact_top_fingerprint": "doc_1101"
+      },
+      {
+        "query_id": 13,
+        "query": "Raft consensus leader election randomized timers and log entry replication.",
+        "category": "concurrency_and_distributed_systems",
+        "subtopic": "Raft",
+        "intent": "Raft leader election and log entry replication",
+        "hnsw_used": true,
+        "execution_plan_summary": [
+          "Limit  (cost=448.10..470.67 rows=10 width=363) (actual time=0.247..0.274 rows=10 loops=1)",
+          "  Buffers: shared hit=483",
+          "  ->  Nested Loop  (cost=448.10..4962.82 rows=2000 width=363) (actual time=0.247..0.272 rows=10 loops=1)",
+          "        Buffers: shared hit=483",
+          "        ->  Index Scan using idx_vector_records_embedding_hnsw on vector_records v  (cost=447.82..4049.00 rows=2000 width=1774) (actual time=0.235..0.239 rows=10 loops=1)",
+          "              Order By: (vector <=> [vector(...)])",
+          "              Filter: (((cache_namespace)::text = 'stage3_2_3_eval_ns'::text) AND ((model)::text = 'BAAI/bge-small-en-v1.5'::text))",
+          "              Buffers: shared hit=453",
+          "        ->  Index Scan using idx_cache_lookup on cache_entries c  (cost=0.28..0.45 rows=1 width=153) (actual time=0.003..0.003 rows=1 loops=10)",
+          "              Index Cond: (((cache_namespace)::text = 'stage3_2_3_eval_ns'::text) AND ((fingerprint)::text = (v.fingerprint)::text))",
+          "              Filter: ((expires_at IS NULL) OR (expires_at > now()))",
+          "              Buffers: shared hit=30"
+        ],
+        "ann_count": 10,
+        "exact_count": 10,
+        "recall_at_1": 1.0,
+        "recall_at_5": 1.0,
+        "recall_at_10": 1.0,
+        "overlap_at_1": 1,
+        "overlap_at_5": 5,
+        "overlap_at_10": 10,
+        "boundary_ties": {
+          "1": false,
+          "5": false,
+          "10": false
+        },
+        "tie_aware_recall": {
+          "1": 1.0,
+          "5": 1.0,
+          "10": 1.0
+        },
+        "top_match_fingerprint": "doc_1235",
+        "exact_top_fingerprint": "doc_1235"
+      },
+      {
+        "query_id": 14,
+        "query": "SingleFlight pattern for suppressing duplicate concurrent function executions.",
+        "category": "concurrency_and_distributed_systems",
+        "subtopic": "SingleFlight",
+        "intent": "SingleFlight duplicate call suppression and cache stampede prevention",
+        "hnsw_used": true,
+        "execution_plan_summary": [
+          "Limit  (cost=448.10..470.67 rows=10 width=363) (actual time=0.170..0.197 rows=10 loops=1)",
+          "  Buffers: shared hit=375",
+          "  ->  Nested Loop  (cost=448.10..4962.82 rows=2000 width=363) (actual time=0.169..0.196 rows=10 loops=1)",
+          "        Buffers: shared hit=375",
+          "        ->  Index Scan using idx_vector_records_embedding_hnsw on vector_records v  (cost=447.82..4049.00 rows=2000 width=1774) (actual time=0.159..0.163 rows=10 loops=1)",
+          "              Order By: (vector <=> [vector(...)])",
+          "              Filter: (((cache_namespace)::text = 'stage3_2_3_eval_ns'::text) AND ((model)::text = 'BAAI/bge-small-en-v1.5'::text))",
+          "              Buffers: shared hit=345",
+          "        ->  Index Scan using idx_cache_lookup on cache_entries c  (cost=0.28..0.45 rows=1 width=153) (actual time=0.003..0.003 rows=1 loops=10)",
+          "              Index Cond: (((cache_namespace)::text = 'stage3_2_3_eval_ns'::text) AND ((fingerprint)::text = (v.fingerprint)::text))",
+          "              Filter: ((expires_at IS NULL) OR (expires_at > now()))",
+          "              Buffers: shared hit=30"
+        ],
+        "ann_count": 10,
+        "exact_count": 10,
+        "recall_at_1": 1.0,
+        "recall_at_5": 1.0,
+        "recall_at_10": 1.0,
+        "overlap_at_1": 1,
+        "overlap_at_5": 5,
+        "overlap_at_10": 10,
+        "boundary_ties": {
+          "1": false,
+          "5": false,
+          "10": false
+        },
+        "tie_aware_recall": {
+          "1": 1.0,
+          "5": 1.0,
+          "10": 1.0
+        },
+        "top_match_fingerprint": "doc_1305",
+        "exact_top_fingerprint": "doc_1305"
+      },
+      {
+        "query_id": 15,
+        "query": "Distributed lock implementation using Redlock vs ZooKeeper ephemeral nodes.",
+        "category": "concurrency_and_distributed_systems",
+        "subtopic": "DistributedLocks",
+        "intent": "Distributed locks with Redis Redlock and ZooKeeper recipes",
+        "hnsw_used": true,
+        "execution_plan_summary": [
+          "Limit  (cost=448.10..470.67 rows=10 width=363) (actual time=0.142..0.166 rows=10 loops=1)",
+          "  Buffers: shared hit=375",
+          "  ->  Nested Loop  (cost=448.10..4962.82 rows=2000 width=363) (actual time=0.142..0.165 rows=10 loops=1)",
+          "        Buffers: shared hit=375",
+          "        ->  Index Scan using idx_vector_records_embedding_hnsw on vector_records v  (cost=447.82..4049.00 rows=2000 width=1774) (actual time=0.133..0.136 rows=10 loops=1)",
+          "              Order By: (vector <=> [vector(...)])",
+          "              Filter: (((cache_namespace)::text = 'stage3_2_3_eval_ns'::text) AND ((model)::text = 'BAAI/bge-small-en-v1.5'::text))",
+          "              Buffers: shared hit=345",
+          "        ->  Index Scan using idx_cache_lookup on cache_entries c  (cost=0.28..0.45 rows=1 width=153) (actual time=0.002..0.002 rows=1 loops=10)",
+          "              Index Cond: (((cache_namespace)::text = 'stage3_2_3_eval_ns'::text) AND ((fingerprint)::text = (v.fingerprint)::text))",
+          "              Filter: ((expires_at IS NULL) OR (expires_at > now()))",
+          "              Buffers: shared hit=30"
+        ],
+        "ann_count": 10,
+        "exact_count": 10,
+        "recall_at_1": 1.0,
+        "recall_at_5": 1.0,
+        "recall_at_10": 1.0,
+        "overlap_at_1": 1,
+        "overlap_at_5": 5,
+        "overlap_at_10": 10,
+        "boundary_ties": {
+          "1": false,
+          "5": false,
+          "10": false
+        },
+        "tie_aware_recall": {
+          "1": 1.0,
+          "5": 1.0,
+          "10": 1.0
+        },
+        "top_match_fingerprint": "doc_1415",
+        "exact_top_fingerprint": "doc_1415"
+      },
+      {
+        "query_id": 16,
+        "query": "Event-driven architecture with Kafka message ordering and consumer group rebalancing.",
+        "category": "concurrency_and_distributed_systems",
+        "subtopic": "EventDriven",
+        "intent": "Kafka partitioning, consumer groups and event-driven architectures",
+        "hnsw_used": true,
+        "execution_plan_summary": [
+          "Limit  (cost=448.10..470.67 rows=10 width=363) (actual time=0.288..0.315 rows=10 loops=1)",
+          "  Buffers: shared hit=510",
+          "  ->  Nested Loop  (cost=448.10..4962.82 rows=2000 width=363) (actual time=0.287..0.314 rows=10 loops=1)",
+          "        Buffers: shared hit=510",
+          "        ->  Index Scan using idx_vector_records_embedding_hnsw on vector_records v  (cost=447.82..4049.00 rows=2000 width=1774) (actual time=0.275..0.279 rows=10 loops=1)",
+          "              Order By: (vector <=> [vector(...)])",
+          "              Filter: (((cache_namespace)::text = 'stage3_2_3_eval_ns'::text) AND ((model)::text = 'BAAI/bge-small-en-v1.5'::text))",
+          "              Buffers: shared hit=480",
+          "        ->  Index Scan using idx_cache_lookup on cache_entries c  (cost=0.28..0.45 rows=1 width=153) (actual time=0.003..0.003 rows=1 loops=10)",
+          "              Index Cond: (((cache_namespace)::text = 'stage3_2_3_eval_ns'::text) AND ((fingerprint)::text = (v.fingerprint)::text))",
+          "              Filter: ((expires_at IS NULL) OR (expires_at > now()))",
+          "              Buffers: shared hit=30"
+        ],
+        "ann_count": 10,
+        "exact_count": 10,
+        "recall_at_1": 1.0,
+        "recall_at_5": 1.0,
+        "recall_at_10": 1.0,
+        "overlap_at_1": 1,
+        "overlap_at_5": 5,
+        "overlap_at_10": 10,
+        "boundary_ties": {
+          "1": false,
+          "5": false,
+          "10": false
+        },
+        "tie_aware_recall": {
+          "1": 1.0,
+          "5": 1.0,
+          "10": 1.0
+        },
+        "top_match_fingerprint": "doc_1511",
+        "exact_top_fingerprint": "doc_1511"
+      },
+      {
+        "query_id": 17,
+        "query": "HTTP/2 multiplexed streams and HPACK header compression.",
+        "category": "protocols_and_networking",
+        "subtopic": "HTTP2",
+        "intent": "HTTP/2 binary framing, multiplexing and HPACK",
+        "hnsw_used": true,
+        "execution_plan_summary": [
+          "Limit  (cost=448.10..470.67 rows=10 width=363) (actual time=0.171..0.197 rows=10 loops=1)",
+          "  Buffers: shared hit=431",
+          "  ->  Nested Loop  (cost=448.10..4962.82 rows=2000 width=363) (actual time=0.171..0.195 rows=10 loops=1)",
+          "        Buffers: shared hit=431",
+          "        ->  Index Scan using idx_vector_records_embedding_hnsw on vector_records v  (cost=447.82..4049.00 rows=2000 width=1774) (actual time=0.164..0.167 rows=10 loops=1)",
+          "              Order By: (vector <=> [vector(...)])",
+          "              Filter: (((cache_namespace)::text = 'stage3_2_3_eval_ns'::text) AND ((model)::text = 'BAAI/bge-small-en-v1.5'::text))",
+          "              Buffers: shared hit=401",
+          "        ->  Index Scan using idx_cache_lookup on cache_entries c  (cost=0.28..0.45 rows=1 width=153) (actual time=0.002..0.002 rows=1 loops=10)",
+          "              Index Cond: (((cache_namespace)::text = 'stage3_2_3_eval_ns'::text) AND ((fingerprint)::text = (v.fingerprint)::text))",
+          "              Filter: ((expires_at IS NULL) OR (expires_at > now()))",
+          "              Buffers: shared hit=30"
+        ],
+        "ann_count": 10,
+        "exact_count": 10,
+        "recall_at_1": 1.0,
+        "recall_at_5": 1.0,
+        "recall_at_10": 1.0,
+        "overlap_at_1": 1,
+        "overlap_at_5": 5,
+        "overlap_at_10": 10,
+        "boundary_ties": {
+          "1": false,
+          "5": false,
+          "10": false
+        },
+        "tie_aware_recall": {
+          "1": 1.0,
+          "5": 1.0,
+          "10": 1.0
+        },
+        "top_match_fingerprint": "doc_1618",
+        "exact_top_fingerprint": "doc_1618"
+      },
+      {
+        "query_id": 18,
+        "query": "WebSockets bidirectional full-duplex TCP communication and frame masking.",
+        "category": "protocols_and_networking",
+        "subtopic": "WebSockets",
+        "intent": "WebSockets 101 Switching Protocols and duplex frame masking",
+        "hnsw_used": true,
+        "execution_plan_summary": [
+          "Limit  (cost=448.10..470.67 rows=10 width=363) (actual time=0.145..0.170 rows=10 loops=1)",
+          "  Buffers: shared hit=369",
+          "  ->  Nested Loop  (cost=448.10..4962.82 rows=2000 width=363) (actual time=0.144..0.169 rows=10 loops=1)",
+          "        Buffers: shared hit=369",
+          "        ->  Index Scan using idx_vector_records_embedding_hnsw on vector_records v  (cost=447.82..4049.00 rows=2000 width=1774) (actual time=0.135..0.138 rows=10 loops=1)",
+          "              Order By: (vector <=> [vector(...)])",
+          "              Filter: (((cache_namespace)::text = 'stage3_2_3_eval_ns'::text) AND ((model)::text = 'BAAI/bge-small-en-v1.5'::text))",
+          "              Buffers: shared hit=339",
+          "        ->  Index Scan using idx_cache_lookup on cache_entries c  (cost=0.28..0.45 rows=1 width=153) (actual time=0.002..0.002 rows=1 loops=10)",
+          "              Index Cond: (((cache_namespace)::text = 'stage3_2_3_eval_ns'::text) AND ((fingerprint)::text = (v.fingerprint)::text))",
+          "              Filter: ((expires_at IS NULL) OR (expires_at > now()))",
+          "              Buffers: shared hit=30"
+        ],
+        "ann_count": 10,
+        "exact_count": 10,
+        "recall_at_1": 1.0,
+        "recall_at_5": 1.0,
+        "recall_at_10": 1.0,
+        "overlap_at_1": 1,
+        "overlap_at_5": 5,
+        "overlap_at_10": 10,
+        "boundary_ties": {
+          "1": false,
+          "5": false,
+          "10": false
+        },
+        "tie_aware_recall": {
+          "1": 1.0,
+          "5": 1.0,
+          "10": 1.0
+        },
+        "top_match_fingerprint": "doc_1727",
+        "exact_top_fingerprint": "doc_1727"
+      },
+      {
+        "query_id": 19,
+        "query": "Server-Sent Events SSE unidirectional streaming with Last-Event-ID reconnection.",
+        "category": "protocols_and_networking",
+        "subtopic": "SSE",
+        "intent": "Server-Sent Events text-event-stream and reconnection",
+        "hnsw_used": true,
+        "execution_plan_summary": [
+          "Limit  (cost=448.10..470.67 rows=10 width=363) (actual time=0.230..0.255 rows=10 loops=1)",
+          "  Buffers: shared hit=521",
+          "  ->  Nested Loop  (cost=448.10..4962.82 rows=2000 width=363) (actual time=0.229..0.254 rows=10 loops=1)",
+          "        Buffers: shared hit=521",
+          "        ->  Index Scan using idx_vector_records_embedding_hnsw on vector_records v  (cost=447.82..4049.00 rows=2000 width=1774) (actual time=0.220..0.223 rows=10 loops=1)",
+          "              Order By: (vector <=> [vector(...)])",
+          "              Filter: (((cache_namespace)::text = 'stage3_2_3_eval_ns'::text) AND ((model)::text = 'BAAI/bge-small-en-v1.5'::text))",
+          "              Buffers: shared hit=491",
+          "        ->  Index Scan using idx_cache_lookup on cache_entries c  (cost=0.28..0.45 rows=1 width=153) (actual time=0.003..0.003 rows=1 loops=10)",
+          "              Index Cond: (((cache_namespace)::text = 'stage3_2_3_eval_ns'::text) AND ((fingerprint)::text = (v.fingerprint)::text))",
+          "              Filter: ((expires_at IS NULL) OR (expires_at > now()))",
+          "              Buffers: shared hit=30"
+        ],
+        "ann_count": 10,
+        "exact_count": 10,
+        "recall_at_1": 1.0,
+        "recall_at_5": 1.0,
+        "recall_at_10": 1.0,
+        "overlap_at_1": 1,
+        "overlap_at_5": 5,
+        "overlap_at_10": 10,
+        "boundary_ties": {
+          "1": false,
+          "5": false,
+          "10": false
+        },
+        "tie_aware_recall": {
+          "1": 1.0,
+          "5": 1.0,
+          "10": 1.0
+        },
+        "top_match_fingerprint": "doc_1815",
+        "exact_top_fingerprint": "doc_1815"
+      },
+      {
+        "query_id": 20,
+        "query": "TLS 1.3 cryptographic handshake latency reduction and forward secrecy.",
+        "category": "protocols_and_networking",
+        "subtopic": "TLS13",
+        "intent": "TLS 1.3 1-RTT handshake and forward secrecy",
+        "hnsw_used": true,
+        "execution_plan_summary": [
+          "Limit  (cost=448.10..470.67 rows=10 width=363) (actual time=0.121..0.144 rows=10 loops=1)",
+          "  Buffers: shared hit=343",
+          "  ->  Nested Loop  (cost=448.10..4962.82 rows=2000 width=363) (actual time=0.120..0.143 rows=10 loops=1)",
+          "        Buffers: shared hit=343",
+          "        ->  Index Scan using idx_vector_records_embedding_hnsw on vector_records v  (cost=447.82..4049.00 rows=2000 width=1774) (actual time=0.114..0.117 rows=10 loops=1)",
+          "              Order By: (vector <=> [vector(...)])",
+          "              Filter: (((cache_namespace)::text = 'stage3_2_3_eval_ns'::text) AND ((model)::text = 'BAAI/bge-small-en-v1.5'::text))",
+          "              Buffers: shared hit=313",
+          "        ->  Index Scan using idx_cache_lookup on cache_entries c  (cost=0.28..0.45 rows=1 width=153) (actual time=0.002..0.002 rows=1 loops=10)",
+          "              Index Cond: (((cache_namespace)::text = 'stage3_2_3_eval_ns'::text) AND ((fingerprint)::text = (v.fingerprint)::text))",
+          "              Filter: ((expires_at IS NULL) OR (expires_at > now()))",
+          "              Buffers: shared hit=30"
+        ],
+        "ann_count": 10,
+        "exact_count": 10,
+        "recall_at_1": 1.0,
+        "recall_at_5": 1.0,
+        "recall_at_10": 1.0,
+        "overlap_at_1": 1,
+        "overlap_at_5": 5,
+        "overlap_at_10": 10,
+        "boundary_ties": {
+          "1": false,
+          "5": false,
+          "10": false
+        },
+        "tie_aware_recall": {
+          "1": 1.0,
+          "5": 1.0,
+          "10": 1.0
+        },
+        "top_match_fingerprint": "doc_1901",
+        "exact_top_fingerprint": "doc_1901"
+      }
+    ]
+  },
+  "filtering_and_selectivity": [
+    {
+      "scenario": "large_partition_70pct",
+      "namespace": "stage3_2_3_eval_ns_f_large",
+      "selectivity_pct": 70.0,
+      "eligible_candidates": 1400,
+      "returned_count": 10,
+      "exact_count": 10,
+      "vector_index_used": true,
+      "retrieval_method": "HNSW approximate nearest-neighbour search",
+      "execution_plan_summary": [
+        "Limit  (cost=243.83..292.60 rows=10 width=321) (actual time=0.215..0.254 rows=10 loops=1)",
+        "  Buffers: shared hit=427",
+        "  ->  Nested Loop  (cost=243.83..7077.28 rows=1401 width=321) (actual time=0.214..0.252 rows=10 loops=1)",
+        "        Buffers: shared hit=427",
+        "        ->  Index Scan using idx_vector_records_embedding_hnsw on vector_records v  (cost=243.55..6118.47 rows=1401 width=1778) (actual time=0.204..0.216 rows=10 loops=1)",
+        "              Order By: (vector <=> [vector(...)])",
+        "              Filter: (((cache_namespace)::text = 'stage3_2_3_eval_ns_f_large'::text) AND ((model)::text = 'BAAI/bge-small-en-v1.5'::text))",
+        "              Rows Removed by Filter: 16"
+      ],
+      "recall_at_1": 1.0,
+      "recall_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "namespace_leakage_count": 0,
+      "model_leakage_count": 0,
+      "expired_records_leaked": 0
+    },
+    {
+      "scenario": "moderate_partition_20pct",
+      "namespace": "stage3_2_3_eval_ns_f_mod",
+      "selectivity_pct": 20.0,
+      "eligible_candidates": 400,
+      "returned_count": 10,
+      "exact_count": 10,
+      "vector_index_used": true,
+      "retrieval_method": "HNSW approximate nearest-neighbour search",
+      "execution_plan_summary": [
+        "Limit  (cost=243.83..406.97 rows=10 width=321) (actual time=0.227..0.280 rows=10 loops=1)",
+        "  Buffers: shared hit=386",
+        "  ->  Nested Loop  (cost=243.83..6769.48 rows=400 width=321) (actual time=0.227..0.278 rows=10 loops=1)",
+        "        Buffers: shared hit=386",
+        "        ->  Index Scan using idx_vector_records_embedding_hnsw on vector_records v  (cost=243.55..6118.47 rows=400 width=1778) (actual time=0.213..0.221 rows=10 loops=1)",
+        "              Order By: (vector <=> [vector(...)])",
+        "              Filter: (((cache_namespace)::text = 'stage3_2_3_eval_ns_f_mod'::text) AND ((model)::text = 'BAAI/bge-small-en-v1.5'::text))",
+        "              Rows Removed by Filter: 9"
+      ],
+      "recall_at_1": 1.0,
+      "recall_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "namespace_leakage_count": 0,
+      "model_leakage_count": 0,
+      "expired_records_leaked": 0
+    },
+    {
+      "scenario": "selective_partition_10pct",
+      "namespace": "stage3_2_3_eval_ns_f_sel",
+      "selectivity_pct": 10.0,
+      "eligible_candidates": 200,
+      "returned_count": 10,
+      "exact_count": 10,
+      "vector_index_used": false,
+      "retrieval_method": "Exact filtered vector search (B-tree index / sequential scan with exact distance sort)",
+      "execution_plan_summary": [
+        "Limit  (cost=482.48..482.51 rows=10 width=321) (actual time=0.243..0.245 rows=10 loops=1)",
+        "  Buffers: shared hit=59",
+        "  ->  Sort  (cost=482.48..482.98 rows=200 width=321) (actual time=0.243..0.244 rows=10 loops=1)",
+        "        Sort Key: ((v.vector <=> [vector(...)]))",
+        "        Sort Method: top-N heapsort  Memory: 34kB",
+        "        Buffers: shared hit=59",
+        "        ->  Hash Join  (cost=114.60..478.16 rows=200 width=321) (actual time=0.080..0.199 rows=200 loops=1)",
+        "              Hash Cond: ((v.fingerprint)::text = (c.fingerprint)::text)"
+      ],
+      "recall_at_1": 1.0,
+      "recall_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "namespace_leakage_count": 0,
+      "model_leakage_count": 0,
+      "expired_records_leaked": 0
+    },
+    {
+      "scenario": "highly_selective_1pct",
+      "namespace": "stage3_2_3_eval_ns_f_high",
+      "selectivity_pct": 1.0,
+      "eligible_candidates": 20,
+      "returned_count": 10,
+      "exact_count": 10,
+      "vector_index_used": false,
+      "retrieval_method": "Exact filtered vector search (B-tree index / sequential scan with exact distance sort)",
+      "execution_plan_summary": [
+        "Limit  (cost=87.00..87.02 rows=10 width=321) (actual time=0.045..0.046 rows=10 loops=1)",
+        "  Buffers: shared hit=10",
+        "  ->  Sort  (cost=87.00..87.05 rows=20 width=321) (actual time=0.045..0.045 rows=10 loops=1)",
+        "        Sort Key: ((v.vector <=> [vector(...)]))",
+        "        Sort Method: quicksort  Memory: 34kB",
+        "        Buffers: shared hit=10",
+        "        ->  Merge Join  (cost=0.56..86.56 rows=20 width=321) (actual time=0.017..0.037 rows=20 loops=1)",
+        "              Merge Cond: ((v.fingerprint)::text = (c.fingerprint)::text)"
+      ],
+      "recall_at_1": 1.0,
+      "recall_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "namespace_leakage_count": 0,
+      "model_leakage_count": 0,
+      "expired_records_leaked": 0
+    }
+  ],
+  "database_latency_benchmarks": {
+    "exact_sequential_scan": {
+      "mean_ms": 5.636,
+      "p50_ms": 5.538,
+      "p95_ms": 7.527,
+      "samples": 30
+    },
+    "hnsw_default": {
+      "mean_ms": 1.805,
+      "p50_ms": 1.748,
+      "p95_ms": 2.221,
+      "samples": 30
+    },
+    "hnsw_iterative_strict_order": {
+      "mean_ms": 0.629,
+      "p50_ms": 0.671,
+      "p95_ms": 0.923,
+      "samples": 30
+    },
+    "hnsw_iterative_relaxed_order": {
+      "mean_ms": 0.588,
+      "p50_ms": 0.519,
+      "p95_ms": 1.07,
+      "samples": 30
+    }
+  },
+  "guardrail_status": {
+    "semantic_cache_enabled": false,
+    "runtime_similarity_threshold": 0.92,
+    "runtime_ambiguity_margin": 0.03,
+    "guardrails_unmodified": true
+  }
+}
