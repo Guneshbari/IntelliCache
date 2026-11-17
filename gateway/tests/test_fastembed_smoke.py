@@ -27,6 +27,14 @@ class TestFastEmbedSmoke(unittest.IsolatedAsyncioTestCase):
     """Opt-in unmocked smoke tests for FastEmbed embedding provider."""
 
     async def asyncSetUp(self):
+        try:
+            import fastembed  # noqa: F401
+        except ImportError:
+            self.skipTest(
+                "fastembed package is not installed; install via requirements-fastembed.txt "
+                "(or pip install fastembed) to run unmocked smoke tests."
+            )
+
         self.model_name = "BAAI/bge-small-en-v1.5"
         self.dimensions = 384
         self.provider = FastEmbedProvider(
