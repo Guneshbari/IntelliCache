@@ -1,0 +1,26 @@
+{
+  "model_name": "BAAI/bge-small-en-v1.5",
+  "dimensions": 384,
+  "provider": "FastEmbed",
+  "normalization": "L2 normalized",
+  "dataset_sha256": "b13d69c9024246136f69b189d3f0801a4e71de1d1f9362761faa943a7a913da5",
+  "query_corpus_sha256": "ce2d4acfcd6433861974e418771bce39bbe8d0c6a053e2d9285ce87ac91cbb60",
+  "embedding_count": 1514,
+  "cache_sha256": "de7515fa572e8dc901ce6175067bec9b14b664495f3b8b08f528a440cc7d04bb",
+  "package_versions": {
+    "fastembed": "0.9.1",
+    "onnxruntime": "1.31.1",
+    "pydantic": "2.14.1"
+  },
+  "validation_summary": {
+    "total_vectors": 1514,
+    "dimension_matches": 1514,
+    "finite_vectors": 1514,
+    "normalized_vectors": 1514,
+    "zero_vectors": 0,
+    "nan_vectors": 0,
+    "inf_vectors": 0,
+    "all_queries_covered": true
+  },
+  "generated_at": "2026-11-18T10:57:18.934298+00:00"
+}
