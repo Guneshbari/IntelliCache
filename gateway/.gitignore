@@ -12,3 +12,4 @@ evaluation/reports/*
 !evaluation/reports/semantic_cache_eval_20261113_*.csv
 !evaluation/reports/stage_3_1_1_*
 !evaluation/reports/stage3_2_3_*
+!evaluation/reports/stage3_2_4_*

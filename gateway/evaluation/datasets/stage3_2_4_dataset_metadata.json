@@ -1,0 +1,59 @@
+{
+  "dataset_name": "Stage 3.2.4 Semantic Similarity and Threshold Calibration Dataset",
+  "version": "1.0.0",
+  "sha256": "70e278f4ed4373860996905ab8efbe864794919c8e046dcd15e84f1388cb85c0",
+  "seed": 42,
+  "embedding_model": "BAAI/bge-small-en-v1.5",
+  "embedding_dimensions": 384,
+  "intent_groups_total": 210,
+  "intent_group_split_counts": {
+    "train": 126,
+    "calibration": 42,
+    "test": 42
+  },
+  "pairs_total": 1320,
+  "compatible_pairs_total": 1260,
+  "positive_pairs_total": 420,
+  "negative_pairs_total": 840,
+  "incompatible_pairs_total": 60,
+  "split_counts": {
+    "train": 806,
+    "calibration": 255,
+    "test": 259
+  },
+  "label_counts": {
+    "positive": 420,
+    "negative": 840,
+    "incompatible": 60
+  },
+  "domain_counts": {
+    "programming_languages": 132,
+    "frameworks_and_libraries": 132,
+    "databases_and_vector_search": 132,
+    "concurrency_and_distributed_systems": 132,
+    "protocols_and_networking": 132,
+    "api_design": 132,
+    "software_debugging": 132,
+    "system_configuration": 132,
+    "data_processing": 132,
+    "infrastructure_deployment": 132
+  },
+  "split_label_breakdown": {
+    "train": {
+      "positive": 252,
+      "negative": 504,
+      "incompatible": 50
+    },
+    "calibration": {
+      "positive": 84,
+      "negative": 168,
+      "incompatible": 3
+    },
+    "test": {
+      "positive": 84,
+      "negative": 168,
+      "incompatible": 7
+    }
+  },
+  "leakage_check_passed": true
+}

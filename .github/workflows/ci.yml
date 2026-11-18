@@ -249,6 +249,11 @@ jobs:
         run: |
           python scripts/benchmark_hnsw.py --test-database-url postgresql://postgres:postgres@localhost:5432/intellicache_fastembed_test --total-docs 2000
 
+      - name: Run Stage 3.2.4 threshold calibration and distributional analysis
+        working-directory: gateway
+        run: |
+          python scripts/calibrate_semantic_threshold.py
+
       - name: Verify real FastEmbed evaluation harness execution
         working-directory: gateway
         run: |
