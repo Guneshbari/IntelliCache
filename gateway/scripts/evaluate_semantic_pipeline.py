@@ -1100,37 +1100,37 @@ def main():
     )
     parser.add_argument(
         "--scenarios",
-        default="gateway/evaluation/datasets/stage3_2_5_scenarios.json",
+        default=str(GATEWAY_ROOT / "evaluation" / "datasets" / "stage3_2_5_scenarios.json"),
         help="Path to scenarios JSON file",
     )
     parser.add_argument(
         "--dataset",
-        default="gateway/evaluation/datasets/stage3_2_4_semantic_pairs.json",
+        default=str(GATEWAY_ROOT / "evaluation" / "datasets" / "stage3_2_4_semantic_pairs.json"),
         help="Path to semantic pairs JSON dataset",
     )
     parser.add_argument(
         "--dataset-metadata",
-        default="gateway/evaluation/datasets/stage3_2_5_dataset_metadata.json",
+        default=str(GATEWAY_ROOT / "evaluation" / "datasets" / "stage3_2_5_dataset_metadata.json"),
         help="Path to scenario dataset metadata JSON",
     )
     parser.add_argument(
         "--manifest",
-        default="gateway/evaluation/datasets/embeddings/stage3_2_5_embedding_manifest.json",
+        default=str(GATEWAY_ROOT / "evaluation" / "datasets" / "embeddings" / "stage3_2_5_embedding_manifest.json"),
         help="Path to embedding manifest JSON",
     )
     parser.add_argument(
         "--embeddings-cache",
-        default="gateway/evaluation/datasets/embeddings/bge_small_en_v1_5_cache.json",
+        default=str(GATEWAY_ROOT / "evaluation" / "datasets" / "embeddings" / "bge_small_en_v1_5_cache.json"),
         help="Path to cached embeddings JSON",
     )
     parser.add_argument(
         "--output-json",
-        default="gateway/evaluation/reports/stage3_2_5_end_to_end_evaluation.json",
+        default=str(GATEWAY_ROOT / "evaluation" / "reports" / "stage3_2_5_end_to_end_evaluation.json"),
         help="Path to output JSON evaluation report",
     )
     parser.add_argument(
         "--output-md",
-        default="gateway/evaluation/reports/stage3_2_5_end_to_end_evaluation.md",
+        default=str(GATEWAY_ROOT / "evaluation" / "reports" / "stage3_2_5_end_to_end_evaluation.md"),
         help="Path to output Markdown evaluation report",
     )
     parser.add_argument(
