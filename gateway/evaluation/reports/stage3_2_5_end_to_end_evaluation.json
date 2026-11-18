@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "generated_at": "2026-11-18T11:44:58.460556+00:00",
+  "generated_at": "2026-11-18T12:38:45.236870+00:00",
   "stage": "Stage 3.2.5 \u2014 End-to-End Semantic Cache Pipeline Evaluation",
   "embedding_manifest": {
     "model_name": "BAAI/bge-small-en-v1.5",
@@ -2869,11 +2869,11 @@
     ],
     "distractor_targets": [
       {
-        "intent_group_id": "ig_pl_rust_ownership_borrowing",
-        "domain": "programming_languages",
-        "subtopic": "Rust",
-        "canonical_query": "How does the Rust borrow checker prevent data races and use-after-free errors at compile time?",
-        "canonical_response": "The Rust borrow checker enforces ownership invariants at compile time: every value has a unique owner, and references must either be a single mutable reference (&mut T) or any number of immutable references (&T), but never both simultaneously. This prevents data races and use-after-free without a garbage collector.",
+        "intent_group_id": "ig_api_bulk_vs_batch_operations",
+        "domain": "api_design",
+        "subtopic": "APIDesign",
+        "canonical_query": "What is the architectural difference between bulk operations and batch operations in REST API design?",
+        "canonical_response": "Bulk operations execute a single homogeneous action across a collection of entities within a single payload (e.g. `POST /users/bulk` creating 1,000 users in one atomic SQL INSERT). Batch operations group multiple heterogeneous, independent HTTP requests into a single envelope payload (e.g. `POST /batch` containing a GET /user and a POST /order), executed by the server to reduce roundtrip overhead.",
         "metadata": {
           "schema_version": 2,
           "extractor_version": "compat-extractor-v2",
@@ -2883,8 +2883,8 @@
           },
           "dimensions": {
             "language": {
-              "status": "KNOWN",
-              "value": "rust"
+              "status": "NOT_APPLICABLE",
+              "value": null
             },
             "language_version": {
               "status": "NOT_APPLICABLE",
@@ -2928,7 +2928,7 @@
           "embedding_contract": {
             "model": "BAAI/bge-small-en-v1.5"
           },
-          "indexed_at": "2026-11-18T08:59:05.184332+00:00",
+          "indexed_at": "2026-11-18T08:59:05.195546+00:00",
           "llm_provider": "groq",
           "llm_model": "qwen/qwen3.8-27b",
           "temperature": 0.7,
@@ -2936,78 +2936,11 @@
         }
       },
       {
-        "intent_group_id": "ig_pl_rust_lifetimes_structs",
-        "domain": "programming_languages",
-        "subtopic": "Rust",
-        "canonical_query": "Why are explicit lifetime annotations required when a Rust struct holds references?",
-        "canonical_response": "Explicit lifetime annotations on structs (such as struct View<'a> { data: &'a str }) inform the compiler how long the referenced data must remain valid relative to the struct instance, ensuring the struct cannot outlive the underlying borrowed data.",
-        "metadata": {
-          "schema_version": 2,
-          "extractor_version": "compat-extractor-v2",
-          "task_kind": {
-            "status": "KNOWN",
-            "value": "code_generation"
-          },
-          "dimensions": {
-            "language": {
-              "status": "KNOWN",
-              "value": "rust"
-            },
-            "language_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "framework": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "framework_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "runtime": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "runtime_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "execution_model": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "output_format": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "constraints": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            }
-          },
-          "generation_contract": {
-            "provider": "groq",
-            "model": "qwen/qwen3.8-27b",
-            "temperature": 0.7,
-            "max_tokens": 1000
-          },
-          "embedding_contract": {
-            "model": "BAAI/bge-small-en-v1.5"
-          },
-          "indexed_at": "2026-11-18T08:59:05.184410+00:00",
-          "llm_provider": "groq",
-          "llm_model": "qwen/qwen3.8-27b",
-          "temperature": 0.7,
-          "max_tokens": 1000
-        }
-      },
-      {
-        "intent_group_id": "ig_pl_rust_concurrency_send_sync",
-        "domain": "programming_languages",
-        "subtopic": "Rust",
-        "canonical_query": "What is the difference between the Send and Sync marker traits in Rust concurrency?",
-        "canonical_response": "In Rust, Send indicates that ownership of a type can be transferred across thread boundaries safely, whereas Sync indicates that it is safe to share references to the type (&T) across multiple threads concurrently (i.e., T is Sync if and only if &T is Send).",
+        "intent_group_id": "ig_api_cursor_vs_offset_pagination",
+        "domain": "api_design",
+        "subtopic": "Pagination",
+        "canonical_query": "Why does cursor-based (keyset) pagination scale to deep pages while offset-limit pagination degrades to O(N)?",
+        "canonical_response": "In offset-limit pagination (`OFFSET 1000000 LIMIT 20`), the database must scan and discard 1,000,000 index entries before returning 20 rows, degrading linearly with depth and suffering from page drift when rows are inserted. Keyset/cursor pagination (`WHERE id > :last_id ORDER BY id LIMIT 20`) uses B-tree index seeks to jump directly to the target record in O(log N) time with zero drift.",
         "metadata": {
           "schema_version": 2,
           "extractor_version": "compat-extractor-v2",
@@ -3017,8 +2950,8 @@
           },
           "dimensions": {
             "language": {
-              "status": "KNOWN",
-              "value": "rust"
+              "status": "NOT_APPLICABLE",
+              "value": null
             },
             "language_version": {
               "status": "NOT_APPLICABLE",
@@ -3041,8 +2974,8 @@
               "value": null
             },
             "execution_model": {
-              "status": "KNOWN",
-              "value": "sync"
+              "status": "NOT_APPLICABLE",
+              "value": null
             },
             "output_format": {
               "status": "NOT_APPLICABLE",
@@ -3062,7 +2995,7 @@
           "embedding_contract": {
             "model": "BAAI/bge-small-en-v1.5"
           },
-          "indexed_at": "2026-11-18T08:59:05.184490+00:00",
+          "indexed_at": "2026-11-18T08:59:05.195218+00:00",
           "llm_provider": "groq",
           "llm_model": "qwen/qwen3.8-27b",
           "temperature": 0.7,
@@ -3070,11 +3003,11 @@
         }
       },
       {
-        "intent_group_id": "ig_pl_rust_pattern_matching_result",
-        "domain": "programming_languages",
-        "subtopic": "Rust",
-        "canonical_query": "How does Rust exhaustive pattern matching ensure safe error handling with Result and Option?",
-        "canonical_response": "Rust's match expressions are verified by the compiler to be exhaustive, requiring code to handle both Ok/Err variants for Result and Some/None variants for Option. This makes unhandled null or error states impossible at compile time without explicit unwrap calls.",
+        "intent_group_id": "ig_api_error_response_rfc7807",
+        "domain": "api_design",
+        "subtopic": "APIDesign",
+        "canonical_query": "How does the RFC 7807 Problem Details for HTTP APIs standard format error payloads?",
+        "canonical_response": "RFC 7807 standardizes error responses under the `application/problem+json` media type with five core URI/string properties: `type` (a URI reference identifying problem type), `title` (short human-readable summary), `status` (HTTP status code), `detail` (human-readable explanation specific to this occurrence), and `instance` (URI reference identifying the specific occurrence).",
         "metadata": {
           "schema_version": 2,
           "extractor_version": "compat-extractor-v2",
@@ -3084,8 +3017,8 @@
           },
           "dimensions": {
             "language": {
-              "status": "KNOWN",
-              "value": "rust"
+              "status": "NOT_APPLICABLE",
+              "value": null
             },
             "language_version": {
               "status": "NOT_APPLICABLE",
@@ -3129,7 +3062,7 @@
           "embedding_contract": {
             "model": "BAAI/bge-small-en-v1.5"
           },
-          "indexed_at": "2026-11-18T08:59:05.184569+00:00",
+          "indexed_at": "2026-11-18T08:59:05.195111+00:00",
           "llm_provider": "groq",
           "llm_model": "qwen/qwen3.8-27b",
           "temperature": 0.7,
@@ -3137,11 +3070,11 @@
         }
       },
       {
-        "intent_group_id": "ig_pl_rust_smart_pointers_arc_mutex",
-        "domain": "programming_languages",
-        "subtopic": "Rust",
-        "canonical_query": "Why is the Arc<Mutex<T>> pattern commonly needed to share mutable state across threads in Rust?",
-        "canonical_response": "Arc (Atomically Reference Counted) provides shared ownership across multiple threads by managing reference count atomically, while Mutex provides interior mutability and exclusive synchronization. Together, Arc<Mutex<T>> allows multiple threads to safely hold references and mutate the underlying data one at a time.",
+        "intent_group_id": "ig_api_field_filtering",
+        "domain": "api_design",
+        "subtopic": "APIDesign",
+        "canonical_query": "How do sparse fieldsets using a ?fields= query parameter reduce network payload size and client parsing overhead?",
+        "canonical_response": "Sparse fieldsets (standardized in JSON:API) allow clients to specify exactly which object attributes should be returned (e.g. `GET /users?fields=id,name`). The server filters the serialized payload, discarding unrequested heavy fields (like avatars or bios), significantly reducing serialization CPU time, bandwidth consumption, and client memory allocation.",
         "metadata": {
           "schema_version": 2,
           "extractor_version": "compat-extractor-v2",
@@ -3151,100 +3084,33 @@
           },
           "dimensions": {
             "language": {
-              "status": "KNOWN",
-              "value": "rust"
-            },
-            "language_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "framework": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "framework_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "runtime": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "runtime_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "execution_model": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "output_format": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "constraints": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            }
-          },
-          "generation_contract": {
-            "provider": "groq",
-            "model": "qwen/qwen3.8-27b",
-            "temperature": 0.7,
-            "max_tokens": 1000
-          },
-          "embedding_contract": {
-            "model": "BAAI/bge-small-en-v1.5"
-          },
-          "indexed_at": "2026-11-18T08:59:05.184651+00:00",
-          "llm_provider": "groq",
-          "llm_model": "qwen/qwen3.8-27b",
-          "temperature": 0.7,
-          "max_tokens": 1000
-        }
-      },
-      {
-        "intent_group_id": "ig_pl_python_asyncio_event_loop",
-        "domain": "programming_languages",
-        "subtopic": "Python",
-        "canonical_query": "How does the Python asyncio event loop manage non-blocking cooperative multitasking?",
-        "canonical_response": "The asyncio event loop runs on a single thread and maintains a queue of ready tasks. When a coroutine yields control via 'await' on an I/O operation or future, the event loop registers the OS socket with epoll/kqueue and executes other ready tasks until the I/O event fires.",
-        "metadata": {
-          "schema_version": 2,
-          "extractor_version": "compat-extractor-v2",
-          "task_kind": {
-            "status": "KNOWN",
-            "value": "code_generation"
-          },
-          "dimensions": {
-            "language": {
-              "status": "KNOWN",
-              "value": "python"
-            },
-            "language_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "framework": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "framework_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "runtime": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "runtime_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "execution_model": {
               "status": "UNKNOWN",
               "value": null
             },
+            "language_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "execution_model": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
             "output_format": {
               "status": "NOT_APPLICABLE",
               "value": null
@@ -3263,7 +3129,7 @@
           "embedding_contract": {
             "model": "BAAI/bge-small-en-v1.5"
           },
-          "indexed_at": "2026-11-18T08:59:05.184721+00:00",
+          "indexed_at": "2026-11-18T08:59:05.195330+00:00",
           "llm_provider": "groq",
           "llm_model": "qwen/qwen3.8-27b",
           "temperature": 0.7,
@@ -3271,22 +3137,22 @@
         }
       },
       {
-        "intent_group_id": "ig_pl_python_gil_concurrency",
-        "domain": "programming_languages",
-        "subtopic": "Python",
-        "canonical_query": "Why does Python's Global Interpreter Lock (GIL) prevent multi-threaded CPU parallelism?",
-        "canonical_response": "The GIL is a mutex that protects CPython internal data structures and reference counting from concurrent access. Because only one native thread can hold the GIL and execute Python bytecode at any given moment, multi-threaded CPU-bound programs cannot utilize multiple CPU cores in parallel.",
+        "intent_group_id": "ig_api_graphql_input_validation",
+        "domain": "api_design",
+        "subtopic": "GraphQL",
+        "canonical_query": "How do custom GraphQL scalars and input object types enforce semantic data validation at the schema layer?",
+        "canonical_response": "GraphQL schemas define `input` types for structured mutation arguments. Custom scalar types (like DateTime, EmailAddress, or PositiveInt) implement serialization and parsing functions: `parseValue` validates variables, `parseLiteral` validates AST query literals, and `serialize` validates output types, rejecting invalid data before resolvers execute.",
         "metadata": {
           "schema_version": 2,
           "extractor_version": "compat-extractor-v2",
           "task_kind": {
             "status": "KNOWN",
-            "value": "conceptual"
+            "value": "code_generation"
           },
           "dimensions": {
             "language": {
-              "status": "KNOWN",
-              "value": "python"
+              "status": "UNKNOWN",
+              "value": null
             },
             "language_version": {
               "status": "NOT_APPLICABLE",
@@ -3330,7 +3196,7 @@
           "embedding_contract": {
             "model": "BAAI/bge-small-en-v1.5"
           },
-          "indexed_at": "2026-11-18T08:59:05.184788+00:00",
+          "indexed_at": "2026-11-18T08:59:05.196120+00:00",
           "llm_provider": "groq",
           "llm_model": "qwen/qwen3.8-27b",
           "temperature": 0.7,
@@ -3338,11 +3204,687 @@
         }
       },
       {
-        "intent_group_id": "ig_pl_python_generators_yield",
-        "domain": "programming_languages",
-        "subtopic": "Python",
-        "canonical_query": "How do Python generators using the yield keyword optimize memory usage during large dataset processing?",
-        "canonical_response": "Generators produce items lazily on demand one at a time using 'yield', pausing function state and local variables between iterations. This avoids loading the entire dataset into memory simultaneously, resulting in O(1) auxiliary memory consumption instead of O(N).",
+        "intent_group_id": "ig_ds_atomic_compare_and_swap",
+        "domain": "concurrency_and_distributed_systems",
+        "subtopic": "LockFreeConcurrency",
+        "canonical_query": "How does hardware atomic Compare-And-Swap (CAS) enable lock-free concurrent data structures?",
+        "canonical_response": "CAS is a single CPU atomic instruction (like CMPXCHG on x86) that compares memory contents at an address with an expected value, updating to a new value only if they match. Lock-free data structures read current state, compute a new state, and execute CAS in a loop until it succeeds, eliminating operating system thread blocking and priority inversion.",
+        "metadata": {
+          "schema_version": 2,
+          "extractor_version": "compat-extractor-v2",
+          "task_kind": {
+            "status": "KNOWN",
+            "value": "conceptual"
+          },
+          "dimensions": {
+            "language": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "language_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "execution_model": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "output_format": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "constraints": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            }
+          },
+          "generation_contract": {
+            "provider": "groq",
+            "model": "qwen/qwen3.8-27b",
+            "temperature": 0.7,
+            "max_tokens": 1000
+          },
+          "embedding_contract": {
+            "model": "BAAI/bge-small-en-v1.5"
+          },
+          "indexed_at": "2026-11-18T08:59:05.191461+00:00",
+          "llm_provider": "groq",
+          "llm_model": "qwen/qwen3.8-27b",
+          "temperature": 0.7,
+          "max_tokens": 1000
+        }
+      },
+      {
+        "intent_group_id": "ig_ds_cache_aside_pattern",
+        "domain": "concurrency_and_distributed_systems",
+        "subtopic": "CachingPatterns",
+        "canonical_query": "How does the cache-aside (lazy loading) pattern manage reads, writes, and cache invalidation?",
+        "canonical_response": "In cache-aside, the application coordinates both cache and database. On read, the application checks cache; on hit, it returns data; on miss, it reads from the database, populates the cache with a TTL, and returns. On write, the application updates the database directly and invalidates (deletes) the matching key in cache.",
+        "metadata": {
+          "schema_version": 2,
+          "extractor_version": "compat-extractor-v2",
+          "task_kind": {
+            "status": "KNOWN",
+            "value": "conceptual"
+          },
+          "dimensions": {
+            "language": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "language_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "execution_model": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "output_format": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "constraints": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            }
+          },
+          "generation_contract": {
+            "provider": "groq",
+            "model": "qwen/qwen3.8-27b",
+            "temperature": 0.7,
+            "max_tokens": 1000
+          },
+          "embedding_contract": {
+            "model": "BAAI/bge-small-en-v1.5"
+          },
+          "indexed_at": "2026-11-18T08:59:05.190828+00:00",
+          "llm_provider": "groq",
+          "llm_model": "qwen/qwen3.8-27b",
+          "temperature": 0.7,
+          "max_tokens": 1000
+        }
+      },
+      {
+        "intent_group_id": "ig_ds_consistent_hashing",
+        "domain": "concurrency_and_distributed_systems",
+        "subtopic": "DistributedStorage",
+        "canonical_query": "How does consistent hashing with virtual nodes prevent massive key remapping when nodes are added or removed?",
+        "canonical_response": "Consistent hashing maps both servers and keys onto a circular hash ring (0 to 2^32-1). A key is assigned to the first server found clockwise on the ring. Adding or removing a node affects only its immediate neighbors (remapping K/N keys instead of all keys). Virtual nodes assign multiple ring tokens per physical server, ensuring uniform load distribution.",
+        "metadata": {
+          "schema_version": 2,
+          "extractor_version": "compat-extractor-v2",
+          "task_kind": {
+            "status": "KNOWN",
+            "value": "conceptual"
+          },
+          "dimensions": {
+            "language": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "language_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "execution_model": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "output_format": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "constraints": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            }
+          },
+          "generation_contract": {
+            "provider": "groq",
+            "model": "qwen/qwen3.8-27b",
+            "temperature": 0.7,
+            "max_tokens": 1000
+          },
+          "embedding_contract": {
+            "model": "BAAI/bge-small-en-v1.5"
+          },
+          "indexed_at": "2026-11-18T08:59:05.191154+00:00",
+          "llm_provider": "groq",
+          "llm_model": "qwen/qwen3.8-27b",
+          "temperature": 0.7,
+          "max_tokens": 1000
+        }
+      },
+      {
+        "intent_group_id": "ig_ds_deadlock_coffman_conditions",
+        "domain": "concurrency_and_distributed_systems",
+        "subtopic": "Deadlocks",
+        "canonical_query": "What are the four Coffman conditions required for a deadlock to occur in concurrent systems?",
+        "canonical_response": "The four Coffman conditions are: 1. Mutual Exclusion (resources cannot be shared); 2. Hold and Wait (processes holding resources can request new ones); 3. No Preemption (resources cannot be forcibly taken); 4. Circular Wait (a closed chain of processes each waiting for a resource held by the next). All four must be present simultaneously for a deadlock to occur.",
+        "metadata": {
+          "schema_version": 2,
+          "extractor_version": "compat-extractor-v2",
+          "task_kind": {
+            "status": "KNOWN",
+            "value": "conceptual"
+          },
+          "dimensions": {
+            "language": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "language_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "execution_model": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "output_format": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "constraints": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            }
+          },
+          "generation_contract": {
+            "provider": "groq",
+            "model": "qwen/qwen3.8-27b",
+            "temperature": 0.7,
+            "max_tokens": 1000
+          },
+          "embedding_contract": {
+            "model": "BAAI/bge-small-en-v1.5"
+          },
+          "indexed_at": "2026-11-18T08:59:05.191557+00:00",
+          "llm_provider": "groq",
+          "llm_model": "qwen/qwen3.8-27b",
+          "temperature": 0.7,
+          "max_tokens": 1000
+        }
+      },
+      {
+        "intent_group_id": "ig_ds_event_sourcing_pattern",
+        "domain": "concurrency_and_distributed_systems",
+        "subtopic": "EventDrivenArchitecture",
+        "canonical_query": "How does the Event Sourcing pattern represent application state as an append-only log of immutable events?",
+        "canonical_response": "Instead of updating database rows to store current entity state, Event Sourcing records every state transition as an immutable domain event (e.g., OrderCreated, ItemAdded, OrderPaid) in an append-only event store. Current state is computed by replaying events from genesis, providing a complete audit trail and time-travel debugging.",
+        "metadata": {
+          "schema_version": 2,
+          "extractor_version": "compat-extractor-v2",
+          "task_kind": {
+            "status": "KNOWN",
+            "value": "conceptual"
+          },
+          "dimensions": {
+            "language": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "language_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "execution_model": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "output_format": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "constraints": {
+              "status": "KNOWN",
+              "value": [
+                {
+                  "key": "mutation",
+                  "operator": "equals",
+                  "value": "immutable"
+                }
+              ]
+            }
+          },
+          "generation_contract": {
+            "provider": "groq",
+            "model": "qwen/qwen3.8-27b",
+            "temperature": 0.7,
+            "max_tokens": 1000
+          },
+          "embedding_contract": {
+            "model": "BAAI/bge-small-en-v1.5"
+          },
+          "indexed_at": "2026-11-18T08:59:05.191768+00:00",
+          "llm_provider": "groq",
+          "llm_model": "qwen/qwen3.8-27b",
+          "temperature": 0.7,
+          "max_tokens": 1000
+        }
+      },
+      {
+        "intent_group_id": "ig_data_arrow_columnar_ipc",
+        "domain": "data_processing",
+        "subtopic": "Analytical Storage & Columnar Formats",
+        "canonical_query": "How does Apache Arrow's in-memory columnar format eliminate serialization overhead across programming languages and processes?",
+        "canonical_response": "Before Apache Arrow, every database and data library (Pandas, Spark, DuckDB, C++, Java) used proprietary in-memory representations, requiring expensive serialization/deserialization when passing data across processes or language boundaries (e.g. JVM to Python). Arrow defines a standardized, language-independent in-memory columnar specification that aligns memory buffers for modern CPU SIMD vectorization. Processes can share Arrow record batches via shared memory (`/dev/shm` or Plasma store) using zero-copy memory pointers, eliminating 80-90% of cross-boundary serialization overhead.",
+        "metadata": {
+          "schema_version": 2,
+          "extractor_version": "compat-extractor-v2",
+          "task_kind": {
+            "status": "KNOWN",
+            "value": "conceptual"
+          },
+          "dimensions": {
+            "language": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "language_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "execution_model": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "output_format": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "constraints": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            }
+          },
+          "generation_contract": {
+            "provider": "groq",
+            "model": "qwen/qwen3.8-27b",
+            "temperature": 0.7,
+            "max_tokens": 1000
+          },
+          "embedding_contract": {
+            "model": "BAAI/bge-small-en-v1.5"
+          },
+          "indexed_at": "2026-11-18T08:59:05.202107+00:00",
+          "llm_provider": "groq",
+          "llm_model": "qwen/qwen3.8-27b",
+          "temperature": 0.7,
+          "max_tokens": 1000
+        }
+      },
+      {
+        "intent_group_id": "ig_data_avro_schema_evolution",
+        "domain": "data_processing",
+        "subtopic": "Serialization Formats & Schemas",
+        "canonical_query": "How does Apache Avro handle schema evolution and what are backward, forward, and full compatibility in a Schema Registry?",
+        "canonical_response": "In Avro, serialized binary records do not contain field tags or field names: decoding relies on having access to both the 'writer schema' (schema used to write the record) and 'reader schema' (schema used to read it). In Confluent Schema Registry: 'Backward compatibility' means consumers using a new schema can read data written with older schemas (new fields must have default values); 'Forward compatibility' means old consumers can read data written with new schemas (deleted fields must have defaults); 'Full compatibility' satisfies both backward and forward rules, allowing independent consumer and producer upgrades.",
+        "metadata": {
+          "schema_version": 2,
+          "extractor_version": "compat-extractor-v2",
+          "task_kind": {
+            "status": "KNOWN",
+            "value": "conceptual"
+          },
+          "dimensions": {
+            "language": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "language_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "execution_model": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "output_format": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "constraints": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            }
+          },
+          "generation_contract": {
+            "provider": "groq",
+            "model": "qwen/qwen3.8-27b",
+            "temperature": 0.7,
+            "max_tokens": 1000
+          },
+          "embedding_contract": {
+            "model": "BAAI/bge-small-en-v1.5"
+          },
+          "indexed_at": "2026-11-18T08:59:05.201610+00:00",
+          "llm_provider": "groq",
+          "llm_model": "qwen/qwen3.8-27b",
+          "temperature": 0.7,
+          "max_tokens": 1000
+        }
+      },
+      {
+        "intent_group_id": "ig_data_dead_letter_queues_retries",
+        "domain": "data_processing",
+        "subtopic": "Stream Processing & Event Streaming",
+        "canonical_query": "What is the role of a Dead Letter Queue (DLQ) in event-driven systems and how do retry topics with backoff prevent poison pills?",
+        "canonical_response": "In event processing, a 'poison pill' is a malformed or unprocessable message (e.g. schema incompatibility or logic bug) that repeatedly crashes consumer workers. Without handling, the consumer enters an infinite crash loop, blocking subsequent valid messages on the partition. A retry pattern routes failing messages to progressive retry topics (e.g. `orders-retry-10s`, `orders-retry-60s`) with exponential backoff. If max retries are exceeded, the message is routed to a Dead Letter Queue (DLQ), acknowledging it on the primary topic to unblock the partition while preserving the failed payload and stack trace for offline inspection and replay.",
+        "metadata": {
+          "schema_version": 2,
+          "extractor_version": "compat-extractor-v2",
+          "task_kind": {
+            "status": "KNOWN",
+            "value": "conceptual"
+          },
+          "dimensions": {
+            "language": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "language_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "execution_model": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "output_format": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "constraints": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            }
+          },
+          "generation_contract": {
+            "provider": "groq",
+            "model": "qwen/qwen3.8-27b",
+            "temperature": 0.7,
+            "max_tokens": 1000
+          },
+          "embedding_contract": {
+            "model": "BAAI/bge-small-en-v1.5"
+          },
+          "indexed_at": "2026-11-18T08:59:05.201391+00:00",
+          "llm_provider": "groq",
+          "llm_model": "qwen/qwen3.8-27b",
+          "temperature": 0.7,
+          "max_tokens": 1000
+        }
+      },
+      {
+        "intent_group_id": "ig_data_event_time_watermarks",
+        "domain": "data_processing",
+        "subtopic": "Stream Processing & Event Streaming",
+        "canonical_query": "How do event time watermarks handle out-of-order and late-arriving events in stream processing engines?",
+        "canonical_response": "Event time represents when an event occurred on the source device, which often differs from processing time (when the engine receives it) due to network jitter or device disconnection. A watermark $W(t)$ is a monotonically increasing metadata marker flowing through the stream asserting that the engine expects no more events with an event timestamp earlier than $t$. When the watermark reaches a window's end time, the engine triggers the window computation. Out-of-order events arriving before the watermark are seamlessly merged; events arriving with timestamps older than the watermark are classified as 'late data' and handled via side outputs, window accumulation, or dropped.",
+        "metadata": {
+          "schema_version": 2,
+          "extractor_version": "compat-extractor-v2",
+          "task_kind": {
+            "status": "KNOWN",
+            "value": "code_generation"
+          },
+          "dimensions": {
+            "language": {
+              "status": "UNKNOWN",
+              "value": null
+            },
+            "language_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "execution_model": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "output_format": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "constraints": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            }
+          },
+          "generation_contract": {
+            "provider": "groq",
+            "model": "qwen/qwen3.8-27b",
+            "temperature": 0.7,
+            "max_tokens": 1000
+          },
+          "embedding_contract": {
+            "model": "BAAI/bge-small-en-v1.5"
+          },
+          "indexed_at": "2026-11-18T08:59:05.201050+00:00",
+          "llm_provider": "groq",
+          "llm_model": "qwen/qwen3.8-27b",
+          "temperature": 0.7,
+          "max_tokens": 1000
+        }
+      },
+      {
+        "intent_group_id": "ig_db_pgvector_cosine_vs_l2",
+        "domain": "databases_and_vector_search",
+        "subtopic": "pgvector",
+        "canonical_query": "What is the mathematical difference between cosine distance (<=>) and L2 squared Euclidean distance (<->) in pgvector?",
+        "canonical_response": "In pgvector, cosine distance `<=>` is defined as `1.0 - (u . v) / (||u|| * ||v||)`, measuring the angle between vectors independent of their magnitude. L2 distance `<->` computes Euclidean distance `sqrt(sum((u_i - v_i)^2))`, which is sensitive to vector length. For unit-normalized vectors, cosine distance and squared Euclidean distance produce identical rankings.",
+        "metadata": {
+          "schema_version": 2,
+          "extractor_version": "compat-extractor-v2",
+          "task_kind": {
+            "status": "KNOWN",
+            "value": "conceptual"
+          },
+          "dimensions": {
+            "language": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "language_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "execution_model": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "output_format": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "constraints": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            }
+          },
+          "generation_contract": {
+            "provider": "groq",
+            "model": "qwen/qwen3.8-27b",
+            "temperature": 0.7,
+            "max_tokens": 1000
+          },
+          "embedding_contract": {
+            "model": "BAAI/bge-small-en-v1.5"
+          },
+          "indexed_at": "2026-11-18T08:59:05.188692+00:00",
+          "llm_provider": "groq",
+          "llm_model": "qwen/qwen3.8-27b",
+          "temperature": 0.7,
+          "max_tokens": 1000
+        }
+      },
+      {
+        "intent_group_id": "ig_db_pgvector_filter_pushdown",
+        "domain": "databases_and_vector_search",
+        "subtopic": "pgvector",
+        "canonical_query": "Why does the PostgreSQL query planner switch from an HNSW index scan to a sequential scan on highly selective filters?",
+        "canonical_response": "PostgreSQL's cost-based query planner estimates the cost of graph traversal versus direct filtering. If a WHERE filter matches only a tiny fraction of rows (e.g. 1% or 20 rows out of 2,000), traversing the global HNSW graph and discarding 99% of nodes is much slower than directly scanning the 20 rows and sorting their distances in memory.",
         "metadata": {
           "schema_version": 2,
           "extractor_version": "compat-extractor-v2",
@@ -3353,7 +3895,7 @@
           "dimensions": {
             "language": {
               "status": "KNOWN",
-              "value": "python"
+              "value": "sql"
             },
             "language_version": {
               "status": "NOT_APPLICABLE",
@@ -3397,7 +3939,7 @@
           "embedding_contract": {
             "model": "BAAI/bge-small-en-v1.5"
           },
-          "indexed_at": "2026-11-18T08:59:05.184861+00:00",
+          "indexed_at": "2026-11-18T08:59:05.188992+00:00",
           "llm_provider": "groq",
           "llm_model": "qwen/qwen3.8-27b",
           "temperature": 0.7,
@@ -3405,11 +3947,78 @@
         }
       },
       {
-        "intent_group_id": "ig_pl_python_descriptors_properties",
-        "domain": "programming_languages",
-        "subtopic": "Python",
-        "canonical_query": "How does the Python descriptor protocol (__get__, __set__, __delete__) power @property decorators and methods?",
-        "canonical_response": "The descriptor protocol intercepts attribute access on class instances. The @property decorator implements __get__ and optional __set__/__delete__, turning attribute lookups (obj.x) into method calls. When an attribute is accessed, Python checks the class dict for a descriptor before checking instance __dict__.",
+        "intent_group_id": "ig_db_pgvector_halfvec_storage",
+        "domain": "databases_and_vector_search",
+        "subtopic": "pgvector",
+        "canonical_query": "How does pgvector's halfvec data type reduce RAM and storage requirements for vector embeddings?",
+        "canonical_response": "Standard `vector` stores 32-bit single-precision floats (4 bytes per dimension). `halfvec` stores 16-bit half-precision floats (IEEE 754-2008 binary16, 2 bytes per dimension). This cuts index size, shared_buffers footprint, and disk I/O exactly in half with negligible loss in retrieval recall.",
+        "metadata": {
+          "schema_version": 2,
+          "extractor_version": "compat-extractor-v2",
+          "task_kind": {
+            "status": "KNOWN",
+            "value": "conceptual"
+          },
+          "dimensions": {
+            "language": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "language_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "execution_model": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "output_format": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "constraints": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            }
+          },
+          "generation_contract": {
+            "provider": "groq",
+            "model": "qwen/qwen3.8-27b",
+            "temperature": 0.7,
+            "max_tokens": 1000
+          },
+          "embedding_contract": {
+            "model": "BAAI/bge-small-en-v1.5"
+          },
+          "indexed_at": "2026-11-18T08:59:05.188892+00:00",
+          "llm_provider": "groq",
+          "llm_model": "qwen/qwen3.8-27b",
+          "temperature": 0.7,
+          "max_tokens": 1000
+        }
+      },
+      {
+        "intent_group_id": "ig_db_pgvector_hnsw_construction",
+        "domain": "databases_and_vector_search",
+        "subtopic": "pgvector",
+        "canonical_query": "How do the m and ef_construction parameters in pgvector influence HNSW index quality and build time?",
+        "canonical_response": "In pgvector HNSW indexes, 'm' defines the maximum number of bidirectional connections per graph node (higher m increases graph connectivity, recall, and RAM usage), while 'ef_construction' determines the size of the dynamic candidate list evaluated during index construction (higher ef_construction improves graph recall but linearly increases build duration).",
         "metadata": {
           "schema_version": 2,
           "extractor_version": "compat-extractor-v2",
@@ -3419,409 +4028,7 @@
           },
           "dimensions": {
             "language": {
-              "status": "KNOWN",
-              "value": "python"
-            },
-            "language_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "framework": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "framework_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "runtime": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "runtime_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "execution_model": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "output_format": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "constraints": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            }
-          },
-          "generation_contract": {
-            "provider": "groq",
-            "model": "qwen/qwen3.8-27b",
-            "temperature": 0.7,
-            "max_tokens": 1000
-          },
-          "embedding_contract": {
-            "model": "BAAI/bge-small-en-v1.5"
-          },
-          "indexed_at": "2026-11-18T08:59:05.184938+00:00",
-          "llm_provider": "groq",
-          "llm_model": "qwen/qwen3.8-27b",
-          "temperature": 0.7,
-          "max_tokens": 1000
-        }
-      },
-      {
-        "intent_group_id": "ig_pl_python_context_managers",
-        "domain": "programming_languages",
-        "subtopic": "Python",
-        "canonical_query": "How do Python context managers ensure deterministic resource cleanup using __enter__ and __exit__?",
-        "canonical_response": "The 'with' statement invokes __enter__ at block entry and guarantees __exit__ is called upon exit, even if exceptions are raised. The __exit__ method receives exception type, value, and traceback arguments, allowing cleanup code (like closing files or releasing locks) to execute reliably.",
-        "metadata": {
-          "schema_version": 2,
-          "extractor_version": "compat-extractor-v2",
-          "task_kind": {
-            "status": "KNOWN",
-            "value": "code_generation"
-          },
-          "dimensions": {
-            "language": {
-              "status": "KNOWN",
-              "value": "python"
-            },
-            "language_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "framework": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "framework_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "runtime": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "runtime_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "execution_model": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "output_format": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "constraints": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            }
-          },
-          "generation_contract": {
-            "provider": "groq",
-            "model": "qwen/qwen3.8-27b",
-            "temperature": 0.7,
-            "max_tokens": 1000
-          },
-          "embedding_contract": {
-            "model": "BAAI/bge-small-en-v1.5"
-          },
-          "indexed_at": "2026-11-18T08:59:05.185009+00:00",
-          "llm_provider": "groq",
-          "llm_model": "qwen/qwen3.8-27b",
-          "temperature": 0.7,
-          "max_tokens": 1000
-        }
-      },
-      {
-        "intent_group_id": "ig_pl_python_dataclasses_pydantic",
-        "domain": "programming_languages",
-        "subtopic": "Python",
-        "canonical_query": "What are the primary architectural differences between standard Python @dataclass and Pydantic BaseModel?",
-        "canonical_response": "Standard dataclasses generate boilerplate methods (__init__, __repr__, __eq__) and type annotations serve only as documentation without runtime enforcement. Pydantic BaseModel performs strict runtime data validation, automatic type coercion, and JSON schema parsing at runtime.",
-        "metadata": {
-          "schema_version": 2,
-          "extractor_version": "compat-extractor-v2",
-          "task_kind": {
-            "status": "KNOWN",
-            "value": "code_generation"
-          },
-          "dimensions": {
-            "language": {
-              "status": "KNOWN",
-              "value": "python"
-            },
-            "language_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "framework": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "framework_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "runtime": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "runtime_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "execution_model": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "output_format": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "constraints": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            }
-          },
-          "generation_contract": {
-            "provider": "groq",
-            "model": "qwen/qwen3.8-27b",
-            "temperature": 0.7,
-            "max_tokens": 1000
-          },
-          "embedding_contract": {
-            "model": "BAAI/bge-small-en-v1.5"
-          },
-          "indexed_at": "2026-11-18T08:59:05.185082+00:00",
-          "llm_provider": "groq",
-          "llm_model": "qwen/qwen3.8-27b",
-          "temperature": 0.7,
-          "max_tokens": 1000
-        }
-      },
-      {
-        "intent_group_id": "ig_pl_go_goroutines_channels",
-        "domain": "programming_languages",
-        "subtopic": "Go",
-        "canonical_query": "How does the Go runtime M-to-N work-stealing scheduler execute goroutines across OS threads?",
-        "canonical_response": "Go maps M goroutines onto N OS threads (G-M-P model). Each logical processor (P) has a local run queue of goroutines. When a P runs out of runnable work, it steals half the goroutines from another processor's queue, maintaining high CPU core utilization with minimal global lock contention.",
-        "metadata": {
-          "schema_version": 2,
-          "extractor_version": "compat-extractor-v2",
-          "task_kind": {
-            "status": "KNOWN",
-            "value": "conceptual"
-          },
-          "dimensions": {
-            "language": {
-              "status": "KNOWN",
-              "value": "go"
-            },
-            "language_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "framework": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "framework_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "runtime": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "runtime_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "execution_model": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "output_format": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "constraints": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            }
-          },
-          "generation_contract": {
-            "provider": "groq",
-            "model": "qwen/qwen3.8-27b",
-            "temperature": 0.7,
-            "max_tokens": 1000
-          },
-          "embedding_contract": {
-            "model": "BAAI/bge-small-en-v1.5"
-          },
-          "indexed_at": "2026-11-18T08:59:05.185151+00:00",
-          "llm_provider": "groq",
-          "llm_model": "qwen/qwen3.8-27b",
-          "temperature": 0.7,
-          "max_tokens": 1000
-        }
-      },
-      {
-        "intent_group_id": "ig_pl_go_context_cancellation",
-        "domain": "programming_languages",
-        "subtopic": "Go",
-        "canonical_query": "How does context.Context propagation coordinate request timeouts and cancellation trees in Go?",
-        "canonical_response": "Go's context.Context forms an immutable tree of cancellation scopes. When a parent context is cancelled or times out, its Done() channel closes, which cascades down to all derived child contexts, allowing long-running downstream operations and HTTP clients to abort gracefully.",
-        "metadata": {
-          "schema_version": 2,
-          "extractor_version": "compat-extractor-v2",
-          "task_kind": {
-            "status": "KNOWN",
-            "value": "conceptual"
-          },
-          "dimensions": {
-            "language": {
-              "status": "KNOWN",
-              "value": "go"
-            },
-            "language_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "framework": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "framework_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "runtime": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "runtime_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "execution_model": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "output_format": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "constraints": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            }
-          },
-          "generation_contract": {
-            "provider": "groq",
-            "model": "qwen/qwen3.8-27b",
-            "temperature": 0.7,
-            "max_tokens": 1000
-          },
-          "embedding_contract": {
-            "model": "BAAI/bge-small-en-v1.5"
-          },
-          "indexed_at": "2026-11-18T08:59:05.185216+00:00",
-          "llm_provider": "groq",
-          "llm_model": "qwen/qwen3.8-27b",
-          "temperature": 0.7,
-          "max_tokens": 1000
-        }
-      },
-      {
-        "intent_group_id": "ig_pl_go_sync_pool_reuse",
-        "domain": "programming_languages",
-        "subtopic": "Go",
-        "canonical_query": "How does sync.Pool reduce garbage collection pressure in high-throughput Go services?",
-        "canonical_response": "sync.Pool maintains a thread-safe cache of reusable temporary objects. Instead of allocating new byte buffers or structs on the heap for every request, goroutines retrieve existing objects via Get() and return them with Put(). The GC can drain the pool during collection cycles, preventing unbounded memory growth.",
-        "metadata": {
-          "schema_version": 2,
-          "extractor_version": "compat-extractor-v2",
-          "task_kind": {
-            "status": "KNOWN",
-            "value": "conceptual"
-          },
-          "dimensions": {
-            "language": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "language_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "framework": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "framework_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "runtime": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "runtime_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "execution_model": {
-              "status": "KNOWN",
-              "value": "sync"
-            },
-            "output_format": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "constraints": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            }
-          },
-          "generation_contract": {
-            "provider": "groq",
-            "model": "qwen/qwen3.8-27b",
-            "temperature": 0.7,
-            "max_tokens": 1000
-          },
-          "embedding_contract": {
-            "model": "BAAI/bge-small-en-v1.5"
-          },
-          "indexed_at": "2026-11-18T08:59:05.185305+00:00",
-          "llm_provider": "groq",
-          "llm_model": "qwen/qwen3.8-27b",
-          "temperature": 0.7,
-          "max_tokens": 1000
-        }
-      },
-      {
-        "intent_group_id": "ig_pl_go_interfaces_dispatch",
-        "domain": "programming_languages",
-        "subtopic": "Go",
-        "canonical_query": "How does Go's structural interface typing and dynamic dispatch work under the hood?",
-        "canonical_response": "In Go, interfaces are satisfied implicitly without 'implements' declarations. At runtime, an interface value is represented as a two-word pair: an itable (itab) pointer containing type metadata and method pointers, and a pointer to the underlying data. Method calls dispatch through the itab.",
-        "metadata": {
-          "schema_version": 2,
-          "extractor_version": "compat-extractor-v2",
-          "task_kind": {
-            "status": "KNOWN",
-            "value": "conceptual"
-          },
-          "dimensions": {
-            "language": {
-              "status": "NOT_APPLICABLE",
+              "status": "UNKNOWN",
               "value": null
             },
             "language_version": {
@@ -3866,275 +4073,7 @@
           "embedding_contract": {
             "model": "BAAI/bge-small-en-v1.5"
           },
-          "indexed_at": "2026-11-18T08:59:05.185392+00:00",
-          "llm_provider": "groq",
-          "llm_model": "qwen/qwen3.8-27b",
-          "temperature": 0.7,
-          "max_tokens": 1000
-        }
-      },
-      {
-        "intent_group_id": "ig_pl_go_defer_panic_recover",
-        "domain": "programming_languages",
-        "subtopic": "Go",
-        "canonical_query": "How does Go's defer, panic, and recover mechanism unwind the call stack during runtime panics?",
-        "canonical_response": "When a panic occurs, Go unwinds the stack frame by frame, executing deferred functions in LIFO order. If a deferred function invokes recover(), the panic is intercepted, stack unwinding halts, and normal execution resumes in the recovering function's caller.",
-        "metadata": {
-          "schema_version": 2,
-          "extractor_version": "compat-extractor-v2",
-          "task_kind": {
-            "status": "KNOWN",
-            "value": "conceptual"
-          },
-          "dimensions": {
-            "language": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "language_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "framework": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "framework_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "runtime": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "runtime_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "execution_model": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "output_format": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "constraints": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            }
-          },
-          "generation_contract": {
-            "provider": "groq",
-            "model": "qwen/qwen3.8-27b",
-            "temperature": 0.7,
-            "max_tokens": 1000
-          },
-          "embedding_contract": {
-            "model": "BAAI/bge-small-en-v1.5"
-          },
-          "indexed_at": "2026-11-18T08:59:05.185492+00:00",
-          "llm_provider": "groq",
-          "llm_model": "qwen/qwen3.8-27b",
-          "temperature": 0.7,
-          "max_tokens": 1000
-        }
-      },
-      {
-        "intent_group_id": "ig_pl_ts_discriminated_unions",
-        "domain": "programming_languages",
-        "subtopic": "TypeScript",
-        "canonical_query": "How do TypeScript discriminated unions enable compile-time exhaustive type narrowing?",
-        "canonical_response": "Discriminated unions combine multiple object types sharing a common literal property (the discriminant, e.g. type: 'success' | 'error'). Within conditional or switch statements, the TypeScript compiler narrows the union to the specific variant, and an unhandled case can be caught using the 'never' type.",
-        "metadata": {
-          "schema_version": 2,
-          "extractor_version": "compat-extractor-v2",
-          "task_kind": {
-            "status": "KNOWN",
-            "value": "code_generation"
-          },
-          "dimensions": {
-            "language": {
-              "status": "KNOWN",
-              "value": "typescript"
-            },
-            "language_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "framework": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "framework_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "runtime": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "runtime_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "execution_model": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "output_format": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "constraints": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            }
-          },
-          "generation_contract": {
-            "provider": "groq",
-            "model": "qwen/qwen3.8-27b",
-            "temperature": 0.7,
-            "max_tokens": 1000
-          },
-          "embedding_contract": {
-            "model": "BAAI/bge-small-en-v1.5"
-          },
-          "indexed_at": "2026-11-18T08:59:05.185560+00:00",
-          "llm_provider": "groq",
-          "llm_model": "qwen/qwen3.8-27b",
-          "temperature": 0.7,
-          "max_tokens": 1000
-        }
-      },
-      {
-        "intent_group_id": "ig_fl_fastapi_dependency_injection",
-        "domain": "frameworks_and_libraries",
-        "subtopic": "FastAPI",
-        "canonical_query": "How does FastAPI's Depends() system handle dependency injection and database session lifecycle?",
-        "canonical_response": "FastAPI resolves dependencies declared with Depends() in route handlers hierarchically before executing the endpoint. When a dependency uses 'yield', FastAPI executes code up to yield, provides the value (such as an async database session) to the handler, and executes the cleanup code in a finally block after the response is sent.",
-        "metadata": {
-          "schema_version": 2,
-          "extractor_version": "compat-extractor-v2",
-          "task_kind": {
-            "status": "KNOWN",
-            "value": "conceptual"
-          },
-          "dimensions": {
-            "language": {
-              "status": "KNOWN",
-              "value": "python"
-            },
-            "language_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "framework": {
-              "status": "KNOWN",
-              "value": "fastapi"
-            },
-            "framework_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "runtime": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "runtime_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "execution_model": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "output_format": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "constraints": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            }
-          },
-          "generation_contract": {
-            "provider": "groq",
-            "model": "qwen/qwen3.8-27b",
-            "temperature": 0.7,
-            "max_tokens": 1000
-          },
-          "embedding_contract": {
-            "model": "BAAI/bge-small-en-v1.5"
-          },
-          "indexed_at": "2026-11-18T08:59:05.186044+00:00",
-          "llm_provider": "groq",
-          "llm_model": "qwen/qwen3.8-27b",
-          "temperature": 0.7,
-          "max_tokens": 1000
-        }
-      },
-      {
-        "intent_group_id": "ig_fl_fastapi_pydantic_response_model",
-        "domain": "frameworks_and_libraries",
-        "subtopic": "FastAPI",
-        "canonical_query": "How does response_model in FastAPI enforce data filtering and prevent sensitive field leakage?",
-        "canonical_response": "FastAPI uses response_model to filter outgoing endpoint data. When a handler returns an ORM object or dict, FastAPI serializes it through the Pydantic response_model, stripping out any fields (such as hashed_password or internal flags) not explicitly declared in the schema, and automatically generating OpenAPI documentation.",
-        "metadata": {
-          "schema_version": 2,
-          "extractor_version": "compat-extractor-v2",
-          "task_kind": {
-            "status": "KNOWN",
-            "value": "conceptual"
-          },
-          "dimensions": {
-            "language": {
-              "status": "KNOWN",
-              "value": "python"
-            },
-            "language_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "framework": {
-              "status": "KNOWN",
-              "value": "fastapi"
-            },
-            "framework_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "runtime": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "runtime_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "execution_model": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "output_format": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "constraints": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            }
-          },
-          "generation_contract": {
-            "provider": "groq",
-            "model": "qwen/qwen3.8-27b",
-            "temperature": 0.7,
-            "max_tokens": 1000
-          },
-          "embedding_contract": {
-            "model": "BAAI/bge-small-en-v1.5"
-          },
-          "indexed_at": "2026-11-18T08:59:05.186135+00:00",
+          "indexed_at": "2026-11-18T08:59:05.188577+00:00",
           "llm_provider": "groq",
           "llm_model": "qwen/qwen3.8-27b",
           "temperature": 0.7,
@@ -4202,6 +4141,73 @@
             "model": "BAAI/bge-small-en-v1.5"
           },
           "indexed_at": "2026-11-18T08:59:05.186226+00:00",
+          "llm_provider": "groq",
+          "llm_model": "qwen/qwen3.8-27b",
+          "temperature": 0.7,
+          "max_tokens": 1000
+        }
+      },
+      {
+        "intent_group_id": "ig_fl_fastapi_dependency_injection",
+        "domain": "frameworks_and_libraries",
+        "subtopic": "FastAPI",
+        "canonical_query": "How does FastAPI's Depends() system handle dependency injection and database session lifecycle?",
+        "canonical_response": "FastAPI resolves dependencies declared with Depends() in route handlers hierarchically before executing the endpoint. When a dependency uses 'yield', FastAPI executes code up to yield, provides the value (such as an async database session) to the handler, and executes the cleanup code in a finally block after the response is sent.",
+        "metadata": {
+          "schema_version": 2,
+          "extractor_version": "compat-extractor-v2",
+          "task_kind": {
+            "status": "KNOWN",
+            "value": "conceptual"
+          },
+          "dimensions": {
+            "language": {
+              "status": "KNOWN",
+              "value": "python"
+            },
+            "language_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework": {
+              "status": "KNOWN",
+              "value": "fastapi"
+            },
+            "framework_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "execution_model": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "output_format": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "constraints": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            }
+          },
+          "generation_contract": {
+            "provider": "groq",
+            "model": "qwen/qwen3.8-27b",
+            "temperature": 0.7,
+            "max_tokens": 1000
+          },
+          "embedding_contract": {
+            "model": "BAAI/bge-small-en-v1.5"
+          },
+          "indexed_at": "2026-11-18T08:59:05.186044+00:00",
           "llm_provider": "groq",
           "llm_model": "qwen/qwen3.8-27b",
           "temperature": 0.7,
@@ -4343,11 +4349,78 @@
         }
       },
       {
-        "intent_group_id": "ig_fl_react_use_effect_deps",
-        "domain": "frameworks_and_libraries",
-        "subtopic": "React",
-        "canonical_query": "How does the React useEffect dependency array determine when side effects and cleanup functions run?",
-        "canonical_response": "React compares values in the dependency array across renders using Object.is. If omitted, the effect runs after every render. If empty ([]), it runs once on mount and cleans up on unmount. If populated, React runs cleanup for the previous render and re-executes the effect whenever any dependency value changes.",
+        "intent_group_id": "ig_infra_blue_green_deployment",
+        "domain": "infrastructure_deployment",
+        "subtopic": "Deployment Strategies & Migrations",
+        "canonical_query": "How does a Blue-Green deployment strategy achieve zero-downtime releases and instant rollbacks?",
+        "canonical_response": "In a Blue-Green deployment, two identical production environments exist simultaneously: 'Blue' is the active environment serving live production traffic, while 'Green' is the idle standby environment. The new version is deployed and thoroughly validated in Green without affecting users. Once verified, the load balancer or DNS router switches traffic instantly from Blue to Green. If any critical incident occurs post-cutover, rolling back is instantaneous: the load balancer switches traffic back to Blue, which was kept running in its original state.",
+        "metadata": {
+          "schema_version": 2,
+          "extractor_version": "compat-extractor-v2",
+          "task_kind": {
+            "status": "KNOWN",
+            "value": "conceptual"
+          },
+          "dimensions": {
+            "language": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "language_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "execution_model": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "output_format": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "constraints": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            }
+          },
+          "generation_contract": {
+            "provider": "groq",
+            "model": "qwen/qwen3.8-27b",
+            "temperature": 0.7,
+            "max_tokens": 1000
+          },
+          "embedding_contract": {
+            "model": "BAAI/bge-small-en-v1.5"
+          },
+          "indexed_at": "2026-11-18T08:59:05.203084+00:00",
+          "llm_provider": "groq",
+          "llm_model": "qwen/qwen3.8-27b",
+          "temperature": 0.7,
+          "max_tokens": 1000
+        }
+      },
+      {
+        "intent_group_id": "ig_infra_canary_releases_traffic_shifting",
+        "domain": "infrastructure_deployment",
+        "subtopic": "Deployment Strategies & Migrations",
+        "canonical_query": "How do canary releases and progressive traffic shifting reduce deployment blast radius in production services?",
+        "canonical_response": "A canary release deploys the new software version alongside the current stable version to a tiny subset of users or traffic (e.g. 1% to 5%). Real-time telemetry (error rates, P99 latency, business conversion) is monitored for anomalies. If metrics remain healthy, an automated orchestrator (like Argo Rollouts or Flagger) progressively increases the traffic share (e.g. 10%, 25%, 50%, 100%). If errors or regressions exceed pre-configured thresholds, the canary is aborted automatically, restricting the blast radius of bugs to only the small fraction of users exposed to the canary.",
         "metadata": {
           "schema_version": 2,
           "extractor_version": "compat-extractor-v2",
@@ -4402,7 +4475,7 @@
           "embedding_contract": {
             "model": "BAAI/bge-small-en-v1.5"
           },
-          "indexed_at": "2026-11-18T08:59:05.186503+00:00",
+          "indexed_at": "2026-11-18T08:59:05.203186+00:00",
           "llm_provider": "groq",
           "llm_model": "qwen/qwen3.8-27b",
           "temperature": 0.7,
@@ -4410,11 +4483,11 @@
         }
       },
       {
-        "intent_group_id": "ig_fl_react_use_memo_callback",
-        "domain": "frameworks_and_libraries",
-        "subtopic": "React",
-        "canonical_query": "What is the distinction between useMemo and useCallback for performance optimization in React?",
-        "canonical_response": "useMemo caches the computed result of calling a function (useMemo(() => compute(), [deps])), avoiding expensive recalculations between renders. useCallback caches the function instance itself (useCallback(fn, [deps])), preventing child components wrapped in React.memo from re-rendering due to changing function references.",
+        "intent_group_id": "ig_infra_expand_contract_migrations",
+        "domain": "infrastructure_deployment",
+        "subtopic": "Deployment Strategies & Migrations",
+        "canonical_query": "How does the Expand and Contract (Parallel Run) pattern perform zero-downtime database schema migrations?",
+        "canonical_response": "The Expand and Contract pattern breaks breaking schema changes (e.g. renaming a column or splitting a table) into non-breaking phases across deployments: 1. Expand: Add the new column/table alongside the old one without deleting anything; the database now supports both structures. 2. Dual-Write: Deploy application code that reads from the old structure but writes to both old and new. Backfill historical records asynchronously. 3. Read Cutover: Deploy application code that now reads and writes exclusively to the new structure. 4. Contract: Once verified and all older application instances are decommissioned, safely drop the old column/table in the database.",
         "metadata": {
           "schema_version": 2,
           "extractor_version": "compat-extractor-v2",
@@ -4432,8 +4505,8 @@
               "value": null
             },
             "framework": {
-              "status": "KNOWN",
-              "value": "react"
+              "status": "NOT_APPLICABLE",
+              "value": null
             },
             "framework_version": {
               "status": "NOT_APPLICABLE",
@@ -4469,7 +4542,7 @@
           "embedding_contract": {
             "model": "BAAI/bge-small-en-v1.5"
           },
-          "indexed_at": "2026-11-18T08:59:05.186591+00:00",
+          "indexed_at": "2026-11-18T08:59:05.203500+00:00",
           "llm_provider": "groq",
           "llm_model": "qwen/qwen3.8-27b",
           "temperature": 0.7,
@@ -4477,11 +4550,11 @@
         }
       },
       {
-        "intent_group_id": "ig_fl_react_custom_hooks",
-        "domain": "frameworks_and_libraries",
-        "subtopic": "React",
-        "canonical_query": "How do React custom hooks enable stateful logic reuse without sharing state between component instances?",
-        "canonical_response": "Custom hooks are JavaScript functions whose names start with 'use' and can call other hooks (useState, useEffect). They allow developers to extract and reuse stateful logic (such as fetching data or managing window size). Each component calling the hook receives its own isolated, independent instance of the internal state.",
+        "intent_group_id": "ig_infra_feature_flags_decoupled_release",
+        "domain": "infrastructure_deployment",
+        "subtopic": "Deployment Strategies & Migrations",
+        "canonical_query": "How do feature flags decouple code deployment from feature release and what are the operational trade-offs?",
+        "canonical_response": "Deploying code (pushing bits to production servers) is an engineering activity, while releasing a feature (making functionality visible to end users) is a business decision. Feature flags wrap new code paths in conditional checks evaluated dynamically at runtime. This allows code to be deployed to production continuously while remaining dormant. Features can be enabled instantly for internal testers, specific customer cohorts, or rolled out gradually without re-deploying code. The trade-offs include technical debt from dead flag cleanup, increased code branching complexity, and difficulty in testing combinatorial permutations of flag states.",
         "metadata": {
           "schema_version": 2,
           "extractor_version": "compat-extractor-v2",
@@ -4536,7 +4609,7 @@
           "embedding_contract": {
             "model": "BAAI/bge-small-en-v1.5"
           },
-          "indexed_at": "2026-11-18T08:59:05.186695+00:00",
+          "indexed_at": "2026-11-18T08:59:05.203398+00:00",
           "llm_provider": "groq",
           "llm_model": "qwen/qwen3.8-27b",
           "temperature": 0.7,
@@ -4544,11 +4617,11 @@
         }
       },
       {
-        "intent_group_id": "ig_fl_react_server_components",
-        "domain": "frameworks_and_libraries",
-        "subtopic": "React",
-        "canonical_query": "What is the architectural difference between React Server Components (RSC) and traditional SSR?",
-        "canonical_response": "Traditional SSR renders components to HTML on the server and sends both HTML and the complete JavaScript bundle to the browser for client-side hydration. React Server Components execute exclusively on the server, have direct database access, emit a binary virtual DOM stream, and ship zero JavaScript bytes to client bundles.",
+        "intent_group_id": "ig_pl_go_context_cancellation",
+        "domain": "programming_languages",
+        "subtopic": "Go",
+        "canonical_query": "How does context.Context propagation coordinate request timeouts and cancellation trees in Go?",
+        "canonical_response": "Go's context.Context forms an immutable tree of cancellation scopes. When a parent context is cancelled or times out, its Done() channel closes, which cascades down to all derived child contexts, allowing long-running downstream operations and HTTP clients to abort gracefully.",
         "metadata": {
           "schema_version": 2,
           "extractor_version": "compat-extractor-v2",
@@ -4558,142 +4631,8 @@
           },
           "dimensions": {
             "language": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "language_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "framework": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "framework_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "runtime": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "runtime_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "execution_model": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "output_format": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "constraints": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            }
-          },
-          "generation_contract": {
-            "provider": "groq",
-            "model": "qwen/qwen3.8-27b",
-            "temperature": 0.7,
-            "max_tokens": 1000
-          },
-          "embedding_contract": {
-            "model": "BAAI/bge-small-en-v1.5"
-          },
-          "indexed_at": "2026-11-18T08:59:05.186791+00:00",
-          "llm_provider": "groq",
-          "llm_model": "qwen/qwen3.8-27b",
-          "temperature": 0.7,
-          "max_tokens": 1000
-        }
-      },
-      {
-        "intent_group_id": "ig_fl_react_context_api",
-        "domain": "frameworks_and_libraries",
-        "subtopic": "React",
-        "canonical_query": "How does the React Context API resolve prop drilling across deep component hierarchies?",
-        "canonical_response": "React Context provides a way to pass data through the component tree without manually passing props down through intermediate elements. A Context.Provider supplies a value, and any descendant component can consume that value directly using the useContext hook, decoupling producers from intermediate consumers.",
-        "metadata": {
-          "schema_version": 2,
-          "extractor_version": "compat-extractor-v2",
-          "task_kind": {
-            "status": "KNOWN",
-            "value": "conceptual"
-          },
-          "dimensions": {
-            "language": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "language_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "framework": {
               "status": "KNOWN",
-              "value": "react"
-            },
-            "framework_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "runtime": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "runtime_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "execution_model": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "output_format": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "constraints": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            }
-          },
-          "generation_contract": {
-            "provider": "groq",
-            "model": "qwen/qwen3.8-27b",
-            "temperature": 0.7,
-            "max_tokens": 1000
-          },
-          "embedding_contract": {
-            "model": "BAAI/bge-small-en-v1.5"
-          },
-          "indexed_at": "2026-11-18T08:59:05.186873+00:00",
-          "llm_provider": "groq",
-          "llm_model": "qwen/qwen3.8-27b",
-          "temperature": 0.7,
-          "max_tokens": 1000
-        }
-      },
-      {
-        "intent_group_id": "ig_fl_react_error_boundaries",
-        "domain": "frameworks_and_libraries",
-        "subtopic": "React",
-        "canonical_query": "How do React Error Boundaries catch rendering exceptions and prevent entire application crashes?",
-        "canonical_response": "Error Boundaries are class components that implement componentDidCatch and/or static getDerivedStateFromError. When an unhandled error occurs during rendering, lifecycle methods, or constructors in their child tree, the boundary catches it, updates state to display a fallback UI, and prevents the entire component tree from unmounting.",
-        "metadata": {
-          "schema_version": 2,
-          "extractor_version": "compat-extractor-v2",
-          "task_kind": {
-            "status": "KNOWN",
-            "value": "debugging_explanation"
-          },
-          "dimensions": {
-            "language": {
-              "status": "UNKNOWN",
-              "value": null
+              "value": "go"
             },
             "language_version": {
               "status": "NOT_APPLICABLE",
@@ -4737,7 +4676,7 @@
           "embedding_contract": {
             "model": "BAAI/bge-small-en-v1.5"
           },
-          "indexed_at": "2026-11-18T08:59:05.186964+00:00",
+          "indexed_at": "2026-11-18T08:59:05.185216+00:00",
           "llm_provider": "groq",
           "llm_model": "qwen/qwen3.8-27b",
           "temperature": 0.7,
@@ -4745,11 +4684,11 @@
         }
       },
       {
-        "intent_group_id": "ig_fl_pytorch_tensor_autograd",
-        "domain": "frameworks_and_libraries",
-        "subtopic": "PyTorch",
-        "canonical_query": "How does the PyTorch autograd engine construct dynamic computational graphs for backpropagation?",
-        "canonical_response": "PyTorch builds dynamic computational graphs on-the-fly during the forward pass (define-by-run). Every tensor with requires_grad=True tracks operations via its grad_fn attribute. When backward() is called on the scalar loss, autograd traverses the DAG in reverse topological order, applying the chain rule to accumulate gradients into tensor.grad.",
+        "intent_group_id": "ig_pl_go_defer_panic_recover",
+        "domain": "programming_languages",
+        "subtopic": "Go",
+        "canonical_query": "How does Go's defer, panic, and recover mechanism unwind the call stack during runtime panics?",
+        "canonical_response": "When a panic occurs, Go unwinds the stack frame by frame, executing deferred functions in LIFO order. If a deferred function invokes recover(), the panic is intercepted, stack unwinding halts, and normal execution resumes in the recovering function's caller.",
         "metadata": {
           "schema_version": 2,
           "extractor_version": "compat-extractor-v2",
@@ -4804,7 +4743,7 @@
           "embedding_contract": {
             "model": "BAAI/bge-small-en-v1.5"
           },
-          "indexed_at": "2026-11-18T08:59:05.187056+00:00",
+          "indexed_at": "2026-11-18T08:59:05.185492+00:00",
           "llm_provider": "groq",
           "llm_model": "qwen/qwen3.8-27b",
           "temperature": 0.7,
@@ -4812,11 +4751,78 @@
         }
       },
       {
-        "intent_group_id": "ig_fl_pytorch_dataloader_workers",
-        "domain": "frameworks_and_libraries",
-        "subtopic": "PyTorch",
-        "canonical_query": "How does PyTorch DataLoader utilize num_workers and pin_memory to accelerate GPU training throughput?",
-        "canonical_response": "DataLoader uses num_workers to spawn background worker processes via multiprocessing, prefetching and batching data asynchronously while the GPU computes. pin_memory=True allocates page-locked (pinned) host memory, enabling fast asynchronous direct memory access (DMA) transfers from CPU RAM to GPU VRAM.",
+        "intent_group_id": "ig_pl_go_goroutines_channels",
+        "domain": "programming_languages",
+        "subtopic": "Go",
+        "canonical_query": "How does the Go runtime M-to-N work-stealing scheduler execute goroutines across OS threads?",
+        "canonical_response": "Go maps M goroutines onto N OS threads (G-M-P model). Each logical processor (P) has a local run queue of goroutines. When a P runs out of runnable work, it steals half the goroutines from another processor's queue, maintaining high CPU core utilization with minimal global lock contention.",
+        "metadata": {
+          "schema_version": 2,
+          "extractor_version": "compat-extractor-v2",
+          "task_kind": {
+            "status": "KNOWN",
+            "value": "conceptual"
+          },
+          "dimensions": {
+            "language": {
+              "status": "KNOWN",
+              "value": "go"
+            },
+            "language_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "execution_model": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "output_format": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "constraints": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            }
+          },
+          "generation_contract": {
+            "provider": "groq",
+            "model": "qwen/qwen3.8-27b",
+            "temperature": 0.7,
+            "max_tokens": 1000
+          },
+          "embedding_contract": {
+            "model": "BAAI/bge-small-en-v1.5"
+          },
+          "indexed_at": "2026-11-18T08:59:05.185151+00:00",
+          "llm_provider": "groq",
+          "llm_model": "qwen/qwen3.8-27b",
+          "temperature": 0.7,
+          "max_tokens": 1000
+        }
+      },
+      {
+        "intent_group_id": "ig_pl_go_interfaces_dispatch",
+        "domain": "programming_languages",
+        "subtopic": "Go",
+        "canonical_query": "How does Go's structural interface typing and dynamic dispatch work under the hood?",
+        "canonical_response": "In Go, interfaces are satisfied implicitly without 'implements' declarations. At runtime, an interface value is represented as a two-word pair: an itable (itab) pointer containing type metadata and method pointers, and a pointer to the underlying data. Method calls dispatch through the itab.",
         "metadata": {
           "schema_version": 2,
           "extractor_version": "compat-extractor-v2",
@@ -4871,7 +4877,7 @@
           "embedding_contract": {
             "model": "BAAI/bge-small-en-v1.5"
           },
-          "indexed_at": "2026-11-18T08:59:05.187156+00:00",
+          "indexed_at": "2026-11-18T08:59:05.185392+00:00",
           "llm_provider": "groq",
           "llm_model": "qwen/qwen3.8-27b",
           "temperature": 0.7,
@@ -4879,11 +4885,11 @@
         }
       },
       {
-        "intent_group_id": "ig_fl_pytorch_ddp_training",
-        "domain": "frameworks_and_libraries",
-        "subtopic": "PyTorch",
-        "canonical_query": "How does PyTorch DistributedDataParallel (DDP) synchronize gradients across multiple GPUs using AllReduce?",
-        "canonical_response": "DDP spawns a separate process per GPU. Each process holds a full replica of model parameters and computes forward and backward passes on its local batch partition. During the backward pass, DDP overlaps computation and communication using ring AllReduce (via NCCL), averaging gradients across GPUs asynchronously.",
+        "intent_group_id": "ig_net_cidr_subnet_calculation",
+        "domain": "protocols_and_networking",
+        "subtopic": "Networking",
+        "canonical_query": "How does CIDR prefix notation (like /24 or /27) determine network masks and usable host IP addresses?",
+        "canonical_response": "CIDR prefix /n indicates the first n bits of a 32-bit IPv4 address are the network prefix. The remaining (32 - n) bits identify hosts, giving 2^(32-n) total addresses. The first address is the Network Address and the last is the Broadcast Address, so total usable host addresses is `2^(32-n) - 2` (e.g. /24 has 254 usable hosts; /27 has 30 usable hosts).",
         "metadata": {
           "schema_version": 2,
           "extractor_version": "compat-extractor-v2",
@@ -4938,7 +4944,7 @@
           "embedding_contract": {
             "model": "BAAI/bge-small-en-v1.5"
           },
-          "indexed_at": "2026-11-18T08:59:05.187254+00:00",
+          "indexed_at": "2026-11-18T08:59:05.193905+00:00",
           "llm_provider": "groq",
           "llm_model": "qwen/qwen3.8-27b",
           "temperature": 0.7,
@@ -4946,11 +4952,11 @@
         }
       },
       {
-        "intent_group_id": "ig_fl_pytorch_model_checkpointing",
-        "domain": "frameworks_and_libraries",
-        "subtopic": "PyTorch",
-        "canonical_query": "Why should you save state_dict instead of the complete model object when checkpointing PyTorch models?",
-        "canonical_response": "Saving `model.state_dict()` serializes only parameter tensors and persistent buffers into a dictionary. Saving the entire model object with `torch.save(model)` pickles the Python class definition, which breaks when code refactors change directory paths, class names, or library versions.",
+        "intent_group_id": "ig_net_cors_preflight_options",
+        "domain": "protocols_and_networking",
+        "subtopic": "WebSecurity",
+        "canonical_query": "Why do browsers send an HTTP preflight OPTIONS request before executing cross-origin requests?",
+        "canonical_response": "For cross-origin requests that are not 'simple' (e.g. using methods like PUT/DELETE, or custom headers like Authorization or Content-Type: application/json), browsers send an OPTIONS preflight request to check if the target server understands CORS and permits the method and headers, preventing legacy servers from executing unauthorized state-changing operations.",
         "metadata": {
           "schema_version": 2,
           "extractor_version": "compat-extractor-v2",
@@ -5005,7 +5011,7 @@
           "embedding_contract": {
             "model": "BAAI/bge-small-en-v1.5"
           },
-          "indexed_at": "2026-11-18T08:59:05.187351+00:00",
+          "indexed_at": "2026-11-18T08:59:05.194110+00:00",
           "llm_provider": "groq",
           "llm_model": "qwen/qwen3.8-27b",
           "temperature": 0.7,
@@ -5013,279 +5019,11 @@
         }
       },
       {
-        "intent_group_id": "ig_fl_pytorch_custom_dataset",
-        "domain": "frameworks_and_libraries",
-        "subtopic": "PyTorch",
-        "canonical_query": "How does subclassing torch.utils.data.Dataset with __len__ and __getitem__ enable map-style data access in PyTorch?",
-        "canonical_response": "Map-style datasets implement `__len__`, which returns total sample count, and `__getitem__(index)`, which returns a single sample for a given integer key. This decoupling allows PyTorch Samplers to generate shuffled or weighted indices independently of data loading and preprocessing logic.",
-        "metadata": {
-          "schema_version": 2,
-          "extractor_version": "compat-extractor-v2",
-          "task_kind": {
-            "status": "KNOWN",
-            "value": "code_generation"
-          },
-          "dimensions": {
-            "language": {
-              "status": "UNKNOWN",
-              "value": null
-            },
-            "language_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "framework": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "framework_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "runtime": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "runtime_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "execution_model": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "output_format": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "constraints": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            }
-          },
-          "generation_contract": {
-            "provider": "groq",
-            "model": "qwen/qwen3.8-27b",
-            "temperature": 0.7,
-            "max_tokens": 1000
-          },
-          "embedding_contract": {
-            "model": "BAAI/bge-small-en-v1.5"
-          },
-          "indexed_at": "2026-11-18T08:59:05.187458+00:00",
-          "llm_provider": "groq",
-          "llm_model": "qwen/qwen3.8-27b",
-          "temperature": 0.7,
-          "max_tokens": 1000
-        }
-      },
-      {
-        "intent_group_id": "ig_fl_tokio_spawn_blocking",
-        "domain": "frameworks_and_libraries",
-        "subtopic": "Tokio",
-        "canonical_query": "Why must CPU-heavy or synchronous I/O tasks in Tokio be offloaded to tokio::task::spawn_blocking?",
-        "canonical_response": "Tokio's async runtime relies on cooperative multitasking across a small pool of worker threads (matching CPU core count). Running synchronous I/O or intensive CPU computations inside an async task blocks the worker thread from polling other tasks. `spawn_blocking` offloads work to a dedicated thread pool designed for blocking operations.",
-        "metadata": {
-          "schema_version": 2,
-          "extractor_version": "compat-extractor-v2",
-          "task_kind": {
-            "status": "KNOWN",
-            "value": "code_generation"
-          },
-          "dimensions": {
-            "language": {
-              "status": "UNKNOWN",
-              "value": null
-            },
-            "language_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "framework": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "framework_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "runtime": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "runtime_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "execution_model": {
-              "status": "KNOWN",
-              "value": "sync"
-            },
-            "output_format": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "constraints": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            }
-          },
-          "generation_contract": {
-            "provider": "groq",
-            "model": "qwen/qwen3.8-27b",
-            "temperature": 0.7,
-            "max_tokens": 1000
-          },
-          "embedding_contract": {
-            "model": "BAAI/bge-small-en-v1.5"
-          },
-          "indexed_at": "2026-11-18T08:59:05.187559+00:00",
-          "llm_provider": "groq",
-          "llm_model": "qwen/qwen3.8-27b",
-          "temperature": 0.7,
-          "max_tokens": 1000
-        }
-      },
-      {
-        "intent_group_id": "ig_db_postgres_mvcc_vacuum",
-        "domain": "databases_and_vector_search",
-        "subtopic": "PostgreSQL",
-        "canonical_query": "How does PostgreSQL Multi-Version Concurrency Control (MVCC) create dead tuples and why is VACUUM required?",
-        "canonical_response": "In PostgreSQL MVCC, an UPDATE or DELETE does not overwrite existing disk data; instead, it writes a new tuple version and sets xmax on the old tuple. Over time, expired dead tuples accumulate, causing table bloat and slower scans. VACUUM scans pages to mark dead tuple space as reusable for future inserts.",
-        "metadata": {
-          "schema_version": 2,
-          "extractor_version": "compat-extractor-v2",
-          "task_kind": {
-            "status": "KNOWN",
-            "value": "code_generation"
-          },
-          "dimensions": {
-            "language": {
-              "status": "KNOWN",
-              "value": "sql"
-            },
-            "language_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "framework": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "framework_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "runtime": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "runtime_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "execution_model": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "output_format": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "constraints": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            }
-          },
-          "generation_contract": {
-            "provider": "groq",
-            "model": "qwen/qwen3.8-27b",
-            "temperature": 0.7,
-            "max_tokens": 1000
-          },
-          "embedding_contract": {
-            "model": "BAAI/bge-small-en-v1.5"
-          },
-          "indexed_at": "2026-11-18T08:59:05.188009+00:00",
-          "llm_provider": "groq",
-          "llm_model": "qwen/qwen3.8-27b",
-          "temperature": 0.7,
-          "max_tokens": 1000
-        }
-      },
-      {
-        "intent_group_id": "ig_db_postgres_explain_buffers",
-        "domain": "databases_and_vector_search",
-        "subtopic": "PostgreSQL",
-        "canonical_query": "How do you interpret shared hit and read counts in PostgreSQL EXPLAIN (ANALYZE, BUFFERS) query plans?",
-        "canonical_response": "In EXPLAIN (ANALYZE, BUFFERS), 'shared hit' indicates 8KB pages retrieved directly from PostgreSQL shared_buffers cache in RAM, while 'shared read' indicates pages not cached in PostgreSQL memory that required operating system disk reads. A high read count indicates I/O bottlenecks and cache misses.",
-        "metadata": {
-          "schema_version": 2,
-          "extractor_version": "compat-extractor-v2",
-          "task_kind": {
-            "status": "KNOWN",
-            "value": "code_generation"
-          },
-          "dimensions": {
-            "language": {
-              "status": "KNOWN",
-              "value": "sql"
-            },
-            "language_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "framework": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "framework_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "runtime": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "runtime_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "execution_model": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "output_format": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "constraints": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            }
-          },
-          "generation_contract": {
-            "provider": "groq",
-            "model": "qwen/qwen3.8-27b",
-            "temperature": 0.7,
-            "max_tokens": 1000
-          },
-          "embedding_contract": {
-            "model": "BAAI/bge-small-en-v1.5"
-          },
-          "indexed_at": "2026-11-18T08:59:05.188093+00:00",
-          "llm_provider": "groq",
-          "llm_model": "qwen/qwen3.8-27b",
-          "temperature": 0.7,
-          "max_tokens": 1000
-        }
-      },
-      {
-        "intent_group_id": "ig_db_postgres_connection_pooling",
-        "domain": "databases_and_vector_search",
-        "subtopic": "PostgreSQL",
-        "canonical_query": "What is the difference between session pooling and transaction pooling in PgBouncer?",
-        "canonical_response": "In session pooling, a client retains a dedicated PostgreSQL backend process for the entire duration of its client connection. In transaction pooling, PgBouncer assigns a server connection only for the duration of a single transaction, returning it to the pool immediately upon COMMIT or ROLLBACK. This supports thousands of clients with few server connections.",
+        "intent_group_id": "ig_net_dns_resolution_hierarchy",
+        "domain": "protocols_and_networking",
+        "subtopic": "DNS",
+        "canonical_query": "How does the hierarchical DNS resolution process resolve a domain name through Root, TLD, and Authoritative nameservers?",
+        "canonical_response": "1. Client queries a Recursive Resolver (like 8.8.8.8); 2. If uncached, the resolver queries a Root Nameserver (.) for the Top-Level Domain (TLD); 3. The Root delegates to the TLD nameserver (.com); 4. The TLD delegates to the domain's Authoritative Nameserver; 5. The Authoritative server returns the A/AAAA record, which the recursive resolver caches and returns.",
         "metadata": {
           "schema_version": 2,
           "extractor_version": "compat-extractor-v2",
@@ -5340,7 +5078,7 @@
           "embedding_contract": {
             "model": "BAAI/bge-small-en-v1.5"
           },
-          "indexed_at": "2026-11-18T08:59:05.188220+00:00",
+          "indexed_at": "2026-11-18T08:59:05.193556+00:00",
           "llm_provider": "groq",
           "llm_model": "qwen/qwen3.8-27b",
           "temperature": 0.7,
@@ -5348,11 +5086,78 @@
         }
       },
       {
-        "intent_group_id": "ig_db_postgres_foreign_key_cascade",
-        "domain": "databases_and_vector_search",
-        "subtopic": "PostgreSQL",
-        "canonical_query": "How does PostgreSQL enforce referential integrity with ON DELETE CASCADE and why are child indexes critical?",
-        "canonical_response": "ON DELETE CASCADE automatically deletes referencing child rows when a parent row is deleted. If the child table's foreign key column lacks an index, PostgreSQL must perform an expensive full sequential scan of the child table for every deleted parent row, causing massive transaction stalls and lock contention.",
+        "intent_group_id": "ig_net_grpc_http2_transport",
+        "domain": "protocols_and_networking",
+        "subtopic": "RPC",
+        "canonical_query": "How does gRPC leverage HTTP/2 streams and Protocol Buffers to achieve high-throughput microservice communication?",
+        "canonical_response": "gRPC uses Protocol Buffers for strongly-typed, compact binary serialization. It maps remote procedure calls directly onto HTTP/2 streams using POST requests with `content-type: application/grpc`. By multiplexing multiple RPC calls across a single persistent TCP connection and utilizing HTTP/2 trailing headers for status codes, gRPC eliminates HTTP/1.1 serialization and connection overhead.",
+        "metadata": {
+          "schema_version": 2,
+          "extractor_version": "compat-extractor-v2",
+          "task_kind": {
+            "status": "KNOWN",
+            "value": "conceptual"
+          },
+          "dimensions": {
+            "language": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "language_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "execution_model": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "output_format": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "constraints": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            }
+          },
+          "generation_contract": {
+            "provider": "groq",
+            "model": "qwen/qwen3.8-27b",
+            "temperature": 0.7,
+            "max_tokens": 1000
+          },
+          "embedding_contract": {
+            "model": "BAAI/bge-small-en-v1.5"
+          },
+          "indexed_at": "2026-11-18T08:59:05.193444+00:00",
+          "llm_provider": "groq",
+          "llm_model": "qwen/qwen3.8-27b",
+          "temperature": 0.7,
+          "max_tokens": 1000
+        }
+      },
+      {
+        "intent_group_id": "ig_dbg_asan_use_after_free",
+        "domain": "software_debugging",
+        "subtopic": "Sanitizers & Concurrency Races",
+        "canonical_query": "How does LLVM AddressSanitizer (ASan) detect and report use-after-free bugs in C++?",
+        "canonical_response": "AddressSanitizer maps 1/8th of the virtual address space to shadow memory and surrounds heap allocations with 'redzones' while poisoning freed memory into a 'quarantine' pool. When memory is freed, ASan poisons its shadow bytes. Any subsequent read or write to that quarantined memory triggers an immediate ASan trap, printing stack traces for the point of invalid access, the earlier deallocation (`free`/`delete`), and the original allocation.",
         "metadata": {
           "schema_version": 2,
           "extractor_version": "compat-extractor-v2",
@@ -5363,7 +5168,7 @@
           "dimensions": {
             "language": {
               "status": "KNOWN",
-              "value": "sql"
+              "value": "c++"
             },
             "language_version": {
               "status": "NOT_APPLICABLE",
@@ -5407,7 +5212,7 @@
           "embedding_contract": {
             "model": "BAAI/bge-small-en-v1.5"
           },
-          "indexed_at": "2026-11-18T08:59:05.188309+00:00",
+          "indexed_at": "2026-11-18T08:59:05.196991+00:00",
           "llm_provider": "groq",
           "llm_model": "qwen/qwen3.8-27b",
           "temperature": 0.7,
@@ -5415,145 +5220,11 @@
         }
       },
       {
-        "intent_group_id": "ig_db_postgres_partitioning",
-        "domain": "databases_and_vector_search",
-        "subtopic": "PostgreSQL",
-        "canonical_query": "How does declarative table partitioning in PostgreSQL enable partition pruning during query execution?",
-        "canonical_response": "Declarative partitioning divides a large table into distinct partition tables based on range, list, or hash keys. During planning and execution, PostgreSQL uses query WHERE clauses to evaluate partition bounds, automatically skipping (pruning) non-matching partition tables from the query scan tree.",
-        "metadata": {
-          "schema_version": 2,
-          "extractor_version": "compat-extractor-v2",
-          "task_kind": {
-            "status": "KNOWN",
-            "value": "code_generation"
-          },
-          "dimensions": {
-            "language": {
-              "status": "KNOWN",
-              "value": "sql"
-            },
-            "language_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "framework": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "framework_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "runtime": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "runtime_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "execution_model": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "output_format": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "constraints": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            }
-          },
-          "generation_contract": {
-            "provider": "groq",
-            "model": "qwen/qwen3.8-27b",
-            "temperature": 0.7,
-            "max_tokens": 1000
-          },
-          "embedding_contract": {
-            "model": "BAAI/bge-small-en-v1.5"
-          },
-          "indexed_at": "2026-11-18T08:59:05.188388+00:00",
-          "llm_provider": "groq",
-          "llm_model": "qwen/qwen3.8-27b",
-          "temperature": 0.7,
-          "max_tokens": 1000
-        }
-      },
-      {
-        "intent_group_id": "ig_db_postgres_index_types",
-        "domain": "databases_and_vector_search",
-        "subtopic": "PostgreSQL",
-        "canonical_query": "When should you choose a GIN or GiST index over a standard B-tree index in PostgreSQL?",
-        "canonical_response": "Standard B-tree indexes are optimized for scalar comparisons (<, <=, =, >=, >) and sorting. GIN (Generalized Inverted Index) is optimized for composite items with multi-element values (full-text search, JSONB @> containment, array overlap). GiST is optimized for spatial data, range types (overlaps &&), and nearest-neighbor distance searches.",
-        "metadata": {
-          "schema_version": 2,
-          "extractor_version": "compat-extractor-v2",
-          "task_kind": {
-            "status": "KNOWN",
-            "value": "code_generation"
-          },
-          "dimensions": {
-            "language": {
-              "status": "KNOWN",
-              "value": "sql"
-            },
-            "language_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "framework": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "framework_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "runtime": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "runtime_version": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "execution_model": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "output_format": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            },
-            "constraints": {
-              "status": "NOT_APPLICABLE",
-              "value": null
-            }
-          },
-          "generation_contract": {
-            "provider": "groq",
-            "model": "qwen/qwen3.8-27b",
-            "temperature": 0.7,
-            "max_tokens": 1000
-          },
-          "embedding_contract": {
-            "model": "BAAI/bge-small-en-v1.5"
-          },
-          "indexed_at": "2026-11-18T08:59:05.188475+00:00",
-          "llm_provider": "groq",
-          "llm_model": "qwen/qwen3.8-27b",
-          "temperature": 0.7,
-          "max_tokens": 1000
-        }
-      },
-      {
-        "intent_group_id": "ig_db_pgvector_hnsw_construction",
-        "domain": "databases_and_vector_search",
-        "subtopic": "pgvector",
-        "canonical_query": "How do the m and ef_construction parameters in pgvector influence HNSW index quality and build time?",
-        "canonical_response": "In pgvector HNSW indexes, 'm' defines the maximum number of bidirectional connections per graph node (higher m increases graph connectivity, recall, and RAM usage), while 'ef_construction' determines the size of the dynamic candidate list evaluated during index construction (higher ef_construction improves graph recall but linearly increases build duration).",
+        "intent_group_id": "ig_dbg_cpu_flamegraphs",
+        "domain": "software_debugging",
+        "subtopic": "Profiling & Bottleneck Analysis",
+        "canonical_query": "How do you read and interpret a CPU flamegraph to identify performance bottlenecks in an application?",
+        "canonical_response": "On a flamegraph, the Y-axis represents the call stack depth (with parent frames below child frames), and the X-axis spans the entire sample population sorted alphabetically (not chronologically). The width of each rectangular box is proportional to the percentage of time that function was present on the CPU during sampling. Wide plateaus at the top of towers represent functions consuming CPU directly (on-CPU leaf bottlenecks), while wide towers represent functions responsible for large cumulative execution time across their callees.",
         "metadata": {
           "schema_version": 2,
           "extractor_version": "compat-extractor-v2",
@@ -5608,7 +5279,7 @@
           "embedding_contract": {
             "model": "BAAI/bge-small-en-v1.5"
           },
-          "indexed_at": "2026-11-18T08:59:05.188577+00:00",
+          "indexed_at": "2026-11-18T08:59:05.197690+00:00",
           "llm_provider": "groq",
           "llm_model": "qwen/qwen3.8-27b",
           "temperature": 0.7,
@@ -5616,21 +5287,21 @@
         }
       },
       {
-        "intent_group_id": "ig_db_pgvector_cosine_vs_l2",
-        "domain": "databases_and_vector_search",
-        "subtopic": "pgvector",
-        "canonical_query": "What is the mathematical difference between cosine distance (<=>) and L2 squared Euclidean distance (<->) in pgvector?",
-        "canonical_response": "In pgvector, cosine distance `<=>` is defined as `1.0 - (u . v) / (||u|| * ||v||)`, measuring the angle between vectors independent of their magnitude. L2 distance `<->` computes Euclidean distance `sqrt(sum((u_i - v_i)^2))`, which is sensitive to vector length. For unit-normalized vectors, cosine distance and squared Euclidean distance produce identical rankings.",
+        "intent_group_id": "ig_dbg_file_descriptor_leak",
+        "domain": "software_debugging",
+        "subtopic": "Memory & Resource Leaks",
+        "canonical_query": "How do you identify and diagnose a file descriptor leak causing 'EMFILE: too many open files' on Linux?",
+        "canonical_response": "Identify the leaking process using `lsof -p <PID>` or `ls -l /proc/<PID>/fd` to inspect the count and targets of open file descriptors (sockets, pipes, regular files). Compare descriptor counts over time with `ls -l /proc/<PID>/fd | wc -l`. A leak is diagnosed by observing steadily growing descriptor counts pointing to unclosed TCP sockets or opened files where exception handlers or error branches bypass `close()` or context managers.",
         "metadata": {
           "schema_version": 2,
           "extractor_version": "compat-extractor-v2",
           "task_kind": {
             "status": "KNOWN",
-            "value": "conceptual"
+            "value": "code_generation"
           },
           "dimensions": {
             "language": {
-              "status": "NOT_APPLICABLE",
+              "status": "UNKNOWN",
               "value": null
             },
             "language_version": {
@@ -5675,7 +5346,342 @@
           "embedding_contract": {
             "model": "BAAI/bge-small-en-v1.5"
           },
-          "indexed_at": "2026-11-18T08:59:05.188692+00:00",
+          "indexed_at": "2026-11-18T08:59:05.196917+00:00",
+          "llm_provider": "groq",
+          "llm_model": "qwen/qwen3.8-27b",
+          "temperature": 0.7,
+          "max_tokens": 1000
+        }
+      },
+      {
+        "intent_group_id": "ig_dbg_gdb_core_dump_inspection",
+        "domain": "software_debugging",
+        "subtopic": "Crash Dumps & Syscall Tracing",
+        "canonical_query": "How do you inspect a Linux core dump using GDB to find the crashing instruction and call stack?",
+        "canonical_response": "Launch GDB with the crashing binary and core dump file: `gdb <executable> <core_file>`. GDB immediately outputs the fatal signal (e.g. SIGSEGV) and the offending instruction. Run `bt` (or `bt full`) to inspect the call stack and local variable values. Use `thread apply all bt` to inspect all threads, and switch to the crashing frame with `frame <N>` to inspect register contents (`info registers`) and evaluate variable states (`print <var>`).",
+        "metadata": {
+          "schema_version": 2,
+          "extractor_version": "compat-extractor-v2",
+          "task_kind": {
+            "status": "KNOWN",
+            "value": "code_generation"
+          },
+          "dimensions": {
+            "language": {
+              "status": "UNKNOWN",
+              "value": null
+            },
+            "language_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "execution_model": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "output_format": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "constraints": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            }
+          },
+          "generation_contract": {
+            "provider": "groq",
+            "model": "qwen/qwen3.8-27b",
+            "temperature": 0.7,
+            "max_tokens": 1000
+          },
+          "embedding_contract": {
+            "model": "BAAI/bge-small-en-v1.5"
+          },
+          "indexed_at": "2026-11-18T08:59:05.198181+00:00",
+          "llm_provider": "groq",
+          "llm_model": "qwen/qwen3.8-27b",
+          "temperature": 0.7,
+          "max_tokens": 1000
+        }
+      },
+      {
+        "intent_group_id": "ig_sys_cgroup_v2_resource_limits",
+        "domain": "system_configuration",
+        "subtopic": "Docker & Containerization",
+        "canonical_query": "How do Linux cgroups v2 control CPU CFS quotas and memory limits for container runtimes?",
+        "canonical_response": "Cgroups v2 provides a unified hierarchy for resource distribution. For CPU, `cpu.max` specifies two numbers: `$MAX $PERIOD` (e.g. `200000 100000` allows 2 CPU cores per 100 ms period); if a container exceeds this CFS quota, its threads are throttled until the next period. For memory, `memory.max` sets the hard memory limit (triggering OOM kill if exceeded and un-reclaimable), `memory.high` sets a soft throttle boundary where processes are slowed down to reclaim page cache, and `memory.current` reflects live usage.",
+        "metadata": {
+          "schema_version": 2,
+          "extractor_version": "compat-extractor-v2",
+          "task_kind": {
+            "status": "KNOWN",
+            "value": "code_generation"
+          },
+          "dimensions": {
+            "language": {
+              "status": "UNKNOWN",
+              "value": null
+            },
+            "language_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "execution_model": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "output_format": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "constraints": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            }
+          },
+          "generation_contract": {
+            "provider": "groq",
+            "model": "qwen/qwen3.8-27b",
+            "temperature": 0.7,
+            "max_tokens": 1000
+          },
+          "embedding_contract": {
+            "model": "BAAI/bge-small-en-v1.5"
+          },
+          "indexed_at": "2026-11-18T08:59:05.199667+00:00",
+          "llm_provider": "groq",
+          "llm_model": "qwen/qwen3.8-27b",
+          "temperature": 0.7,
+          "max_tokens": 1000
+        }
+      },
+      {
+        "intent_group_id": "ig_sys_docker_healthchecks_restarts",
+        "domain": "system_configuration",
+        "subtopic": "Docker & Containerization",
+        "canonical_query": "How do Docker HEALTHCHECK instructions interact with container restart policies and service orchestrators?",
+        "canonical_response": "A Dockerfile `HEALTHCHECK` periodically runs a command inside the container (e.g. `curl -f http://localhost:8080/health || exit 1`) with parameters `--interval`, `--timeout`, `--start-period`, and `--retries`. If the command exits non-zero consecutive times matching retries, the container status transitions from `healthy` to `unhealthy`. Crucially, standard Docker engine restart policies (`restart: always` or `unless-stopped`) only restart containers upon process exit, NOT when becoming unhealthy; orchestrators like Docker Swarm or Kubernetes are required to kill and replace unhealthy containers.",
+        "metadata": {
+          "schema_version": 2,
+          "extractor_version": "compat-extractor-v2",
+          "task_kind": {
+            "status": "KNOWN",
+            "value": "code_generation"
+          },
+          "dimensions": {
+            "language": {
+              "status": "UNKNOWN",
+              "value": null
+            },
+            "language_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework": {
+              "status": "KNOWN",
+              "value": "docker"
+            },
+            "framework_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "execution_model": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "output_format": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "constraints": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            }
+          },
+          "generation_contract": {
+            "provider": "groq",
+            "model": "qwen/qwen3.8-27b",
+            "temperature": 0.7,
+            "max_tokens": 1000
+          },
+          "embedding_contract": {
+            "model": "BAAI/bge-small-en-v1.5"
+          },
+          "indexed_at": "2026-11-18T08:59:05.199762+00:00",
+          "llm_provider": "groq",
+          "llm_model": "qwen/qwen3.8-27b",
+          "temperature": 0.7,
+          "max_tokens": 1000
+        }
+      },
+      {
+        "intent_group_id": "ig_sys_docker_layer_caching",
+        "domain": "system_configuration",
+        "subtopic": "Docker & Containerization",
+        "canonical_query": "How does Docker layer caching work and why should dependency files (package.json / requirements.txt) be copied before application code?",
+        "canonical_response": "Docker builds images as a series of read-only layers corresponding to Dockerfile instructions (`RUN`, `COPY`, `ADD`). During a build, Docker checks if it can reuse a cached layer: for `COPY`, it hashes file contents; for `RUN`, it matches the exact command string. If any layer changes, all subsequent layers are invalidated. Copying dependency files first (`COPY package.json .`) and installing packages (`RUN npm install`) before copying the application source (`COPY . .`) ensures expensive dependency downloads remain cached whenever developers modify application code.",
+        "metadata": {
+          "schema_version": 2,
+          "extractor_version": "compat-extractor-v2",
+          "task_kind": {
+            "status": "KNOWN",
+            "value": "code_generation"
+          },
+          "dimensions": {
+            "language": {
+              "status": "UNKNOWN",
+              "value": null
+            },
+            "language_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework": {
+              "status": "KNOWN",
+              "value": "docker"
+            },
+            "framework_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "execution_model": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "output_format": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "constraints": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            }
+          },
+          "generation_contract": {
+            "provider": "groq",
+            "model": "qwen/qwen3.8-27b",
+            "temperature": 0.7,
+            "max_tokens": 1000
+          },
+          "embedding_contract": {
+            "model": "BAAI/bge-small-en-v1.5"
+          },
+          "indexed_at": "2026-11-18T08:59:05.199579+00:00",
+          "llm_provider": "groq",
+          "llm_model": "qwen/qwen3.8-27b",
+          "temperature": 0.7,
+          "max_tokens": 1000
+        }
+      },
+      {
+        "intent_group_id": "ig_sys_docker_multistage_builds",
+        "domain": "system_configuration",
+        "subtopic": "Docker & Containerization",
+        "canonical_query": "How do Docker multi-stage builds reduce production container image size and eliminate build tool vulnerabilities?",
+        "canonical_response": "Multi-stage builds use multiple `FROM` instructions in a single Dockerfile. The first stage (builder) includes heavy compilers, SDKs, package managers, and header files to build the application binary or bundle. Subsequent stages (such as a minimal alpine or distroless base) copy only the compiled artifacts from the builder using `COPY --from=builder /app/binary /binary`. This strips build-time dependencies, compiler caches, and development tooling, shrinking image sizes from hundreds of megabytes down to megabytes and drastically reducing the CVE attack surface.",
+        "metadata": {
+          "schema_version": 2,
+          "extractor_version": "compat-extractor-v2",
+          "task_kind": {
+            "status": "KNOWN",
+            "value": "code_generation"
+          },
+          "dimensions": {
+            "language": {
+              "status": "UNKNOWN",
+              "value": null
+            },
+            "language_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework": {
+              "status": "KNOWN",
+              "value": "docker"
+            },
+            "framework_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "execution_model": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "output_format": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "constraints": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            }
+          },
+          "generation_contract": {
+            "provider": "groq",
+            "model": "qwen/qwen3.8-27b",
+            "temperature": 0.7,
+            "max_tokens": 1000
+          },
+          "embedding_contract": {
+            "model": "BAAI/bge-small-en-v1.5"
+          },
+          "indexed_at": "2026-11-18T08:59:05.199349+00:00",
           "llm_provider": "groq",
           "llm_model": "qwen/qwen3.8-27b",
           "temperature": 0.7,
@@ -5739,15 +5745,90 @@
           ]
         },
         "latency_stats": {
-          "count": 252,
-          "mean": 7.064,
-          "std": 8.347,
-          "min": 0.479,
-          "max": 23.431,
-          "p50": 1.013,
-          "p90": 18.973,
-          "p95": 20.107,
-          "p99": 22.125
+          "total_requests": {
+            "count": 252,
+            "mean": 3.295,
+            "std": 3.94,
+            "min": 0.155,
+            "max": 13.159,
+            "p50": 0.442,
+            "p90": 8.611,
+            "p95": 9.052,
+            "p99": 10.021
+          },
+          "eligible_requests": {
+            "count": 92,
+            "mean": 8.43,
+            "std": 0.885,
+            "min": 7.37,
+            "max": 13.159,
+            "p50": 8.254,
+            "p90": 9.162,
+            "p95": 9.327,
+            "p99": 12.842
+          },
+          "ineligible_requests": {
+            "count": 160,
+            "mean": 0.343,
+            "std": 0.147,
+            "min": 0.155,
+            "max": 1.081,
+            "p50": 0.329,
+            "p90": 0.535,
+            "p95": 0.611,
+            "p99": 0.67
+          },
+          "component_timings": {
+            "embedding_ms": {
+              "count": 92,
+              "mean": 5.709,
+              "std": 0.692,
+              "min": 4.88,
+              "max": 10.49,
+              "p50": 5.58,
+              "p90": 6.27,
+              "p95": 6.5,
+              "p99": 7.42
+            },
+            "vector_retrieval_ms": {
+              "count": 92,
+              "mean": 1.99,
+              "std": 0.204,
+              "min": 1.68,
+              "max": 2.81,
+              "p50": 2.0,
+              "p90": 2.17,
+              "p95": 2.23,
+              "p99": 2.77
+            },
+            "policy_evaluation_ms": {
+              "count": 92,
+              "mean": 0.123,
+              "std": 0.022,
+              "min": 0.09,
+              "max": 0.22,
+              "p50": 0.12,
+              "p90": 0.15,
+              "p95": 0.16,
+              "p99": 0.17
+            },
+            "semantic_lookup_ms": {
+              "count": 92,
+              "mean": 8.04,
+              "std": 0.856,
+              "min": 7.05,
+              "max": 12.81,
+              "p50": 7.88,
+              "p90": 8.66,
+              "p95": 8.86,
+              "p99": 12.24
+            }
+          }
+        },
+        "candidate_pool_invariants": {
+          "initial_candidate_count": 84,
+          "final_candidate_count": 84,
+          "pool_mutated": false
         }
       }
     },
@@ -5805,15 +5886,90 @@
           ]
         },
         "latency_stats": {
-          "count": 252,
-          "mean": 6.852,
-          "std": 8.149,
-          "min": 0.445,
-          "max": 22.012,
-          "p50": 0.949,
-          "p90": 18.991,
-          "p95": 20.003,
-          "p99": 21.116
+          "total_requests": {
+            "count": 252,
+            "mean": 3.187,
+            "std": 3.75,
+            "min": 0.166,
+            "max": 9.692,
+            "p50": 0.455,
+            "p90": 8.23,
+            "p95": 8.471,
+            "p99": 8.862
+          },
+          "eligible_requests": {
+            "count": 92,
+            "mean": 8.11,
+            "std": 0.397,
+            "min": 7.469,
+            "max": 9.692,
+            "p50": 8.075,
+            "p90": 8.595,
+            "p95": 8.792,
+            "p99": 9.223
+          },
+          "ineligible_requests": {
+            "count": 160,
+            "mean": 0.356,
+            "std": 0.148,
+            "min": 0.166,
+            "max": 0.779,
+            "p50": 0.341,
+            "p90": 0.579,
+            "p95": 0.63,
+            "p99": 0.744
+          },
+          "component_timings": {
+            "embedding_ms": {
+              "count": 92,
+              "mean": 5.43,
+              "std": 0.339,
+              "min": 4.8,
+              "max": 6.47,
+              "p50": 5.41,
+              "p90": 5.87,
+              "p95": 5.95,
+              "p99": 6.17
+            },
+            "vector_retrieval_ms": {
+              "count": 92,
+              "mean": 1.967,
+              "std": 0.161,
+              "min": 1.67,
+              "max": 2.66,
+              "p50": 1.96,
+              "p90": 2.1,
+              "p95": 2.16,
+              "p99": 2.65
+            },
+            "policy_evaluation_ms": {
+              "count": 92,
+              "mean": 0.126,
+              "std": 0.01,
+              "min": 0.1,
+              "max": 0.15,
+              "p50": 0.12,
+              "p90": 0.14,
+              "p95": 0.14,
+              "p99": 0.15
+            },
+            "semantic_lookup_ms": {
+              "count": 92,
+              "mean": 7.697,
+              "std": 0.377,
+              "min": 7.0,
+              "max": 9.14,
+              "p50": 7.65,
+              "p90": 8.15,
+              "p95": 8.22,
+              "p99": 8.85
+            }
+          }
+        },
+        "candidate_pool_invariants": {
+          "initial_candidate_count": 84,
+          "final_candidate_count": 84,
+          "pool_mutated": false
         }
       }
     }
@@ -5825,7 +5981,14 @@
     "delta_false_negatives": -2,
     "delta_recall": 0.02381,
     "delta_f1_score": 0.0444,
-    "delta_provider_calls": -2
+    "delta_provider_calls": -2,
+    "simulated_resource_savings": {
+      "prompt_tokens_saved": 100,
+      "completion_tokens_saved": 300,
+      "total_tokens_saved": 400,
+      "simulated_upstream_latency_saved_sec": 0.9,
+      "disclaimer": "Simulated estimate based on test fixtures (50 prompt tokens + 150 completion tokens per saved call, 450ms simulated provider latency). Not measured against a live external LLM billing endpoint."
+    }
   },
   "ambiguity_margin_evaluation": [
     {
@@ -5933,45 +6096,55 @@
       {
         "scenario_id": "s325_fail_no_candidate",
         "scenario_type": "no_candidate",
+        "description": "Empty candidate pool in target namespace",
         "fell_back_to_provider": true,
-        "provider_call_count": 1
+        "provider_call_count": 1,
+        "cache_type": "none"
       },
       {
         "scenario_id": "s325_fail_expired_candidate",
         "scenario_type": "expired_candidate",
+        "description": "Candidate vector exists, but cache_entries record is expired (NOW() - 2h)",
         "fell_back_to_provider": true,
-        "provider_call_count": 2
+        "provider_call_count": 1,
+        "cache_type": "none"
       },
       {
         "scenario_id": "s325_fail_namespace_mismatch",
         "scenario_type": "namespace_mismatch",
+        "description": "Candidate exists only in other namespace, verifying namespace isolation",
         "fell_back_to_provider": true,
-        "provider_call_count": 3
+        "provider_call_count": 1,
+        "cache_type": "none"
       },
       {
         "scenario_id": "s325_fail_embedding_error",
         "scenario_type": "embedding_failure",
+        "description": "Simulated embedding provider timeout triggers fail-open upstream generation",
         "fell_back_to_provider": true,
-        "provider_call_count": 4
+        "provider_call_count": 1,
+        "cache_type": "none"
       },
       {
         "scenario_id": "s325_fail_vector_store_error",
         "scenario_type": "vector_store_failure",
+        "description": "Simulated PostgreSQL pgvector failure triggers fail-open upstream generation",
         "fell_back_to_provider": true,
-        "provider_call_count": 5
+        "provider_call_count": 1,
+        "cache_type": "none"
       }
     ]
   },
   "execution_plan_summary": [
-    "Limit  (cost=16.47..16.48 rows=1 width=101) (actual time=5.738..5.739 rows=5.00 loops=1)",
-    "  Buffers: shared hit=28721",
-    "  ->  Sort  (cost=16.47..16.48 rows=1 width=101) (actual time=5.737..5.737 rows=5.00 loops=1)",
+    "Limit  (cost=16.47..16.48 rows=1 width=101) (actual time=1.228..1.229 rows=5.00 loops=1)",
+    "  Buffers: shared hit=3771",
+    "  ->  Sort  (cost=16.47..16.48 rows=1 width=101) (actual time=1.227..1.228 rows=5.00 loops=1)",
     "        Sort Key: ((v.vector <=> '[-0.03518371,0.00785849,0.05707047,-0.01299776,0.03100847,-0.05451746,0.09951431,0.08510043,0.03699209,0.01231297,0.00754601,-0.03707187,0.03800266,0.02362867,-0.08334523,0.02723214,-0.0260886,0.04185877,-0.06446357,-0.02120862,0.04770942,-0.0143607,-0.03898663,-0.03656659,0.02535727,0.01723284,-0.03882707,0.00967352,-0.01962629,-0.1552019,-0.00106874,-0.02543705,-0.01176114,0.0132504,-0.03098187,0.00119839,0.04263,-0.03659318,0.00380957,0.07323955,-0.00122914,0.06111274,-0.03342851,-0.05292183,-0.0230436,-0.04300231,-0.07318637,-0.02760445,-0.01340332,0.03499755,0.00989292,-0.03898663,-0.01630205,0.01369585,0.07456925,0.06712296,0.03329554,0.0165414,-0.01816362,0.03880047,0.01768493,-0.00384614,-0.08802575,0.03396039,0.05680454,0.00642907,-0.01045804,-0.05685772,0.07515431,0.01836308,-0.07712226,0.00974001,-0.02580936,0.07648401,0.01892155,-0.04600742,-0.0049099,0.01192736,-0.0009632,0.01481279,-0.05808104,-0.05119322,0.01612919,0.01638183,0.08483449,-0.02398768,0.00592046,-0.0286948,0.07307999,0.02586255,0.03108825,-0.00494646,0.08350479,0.04276297,-0.02245854,0.02773742,0.02583596,0.08802575,0.01393519,0.36103854,-0.07371824,-0.0108902,-0.04874659,-0.03627406,-0.02470572,0.00341399,0.00506613,-0.00255135,-0.00054434,-0.02731192,-0.00056221,-0.02789698,0.02731192,-0.01535797,0.04441178,0.0699951,-0.05020925,-0.02120862,-0.02026454,-0.02257821,0.05116663,0.04425222,-0.00881587,0.0115085,0.02981174,0.05637903,0.06185737,0.08898314,-0.03959829,0.03146057,0.03499755,-0.02965218,0.01209357,0.04624676,0.00576755,0.01590314,0.00492319,-0.02586255,0.05286864,0.05371964,0.0182567,0.02312338,-0.0352369,-0.07962208,-0.02997131,0.06786759,-0.0787179,0.04257681,-0.01124921,-0.02272447,0.00295192,0.05004969,-0.0421513,-0.03539646,-0.03614109,-0.01361607,-0.03068934,-0.04528938,0.00699419,0.03832179,-0.05552803,0.01787109,-0.03411995,-0.00692771,-0.05754916,-0.02458604,-0.007187,0.03300301,-0.04332144,-0.00708727,-0.03467842,-0.02973196,-0.03427951,-0.06462313,0.0321786,0.00346718,-0.08557911,0.02196655,0.03824201,0.01916089,-0.00651883,-0.016076,-0.06276156,0.02178039,-0.00448439,-0.04345441,0.0056645,0.02731192,0.05369305,0.0243467,-0.04106096,-0.12424662,0.00521905,-0.01611589,-0.03451886,-0.00210424,-0.08196235,0.0003426,0.00991952,0.01728602,0.11052418,0.03861432,-0.00149507,-0.01457345,0.00815102,0.03677934,0.01263874,-0.02009168,0.02906711,-0.00809119,-0.04528938,0.05313458,-0.02659388,0.0139086,0.02888096,-0.04983694,-0.00246326,-0.02167402,0.00245661,-0.02731192,0.03880047,0.04358737,-0.04933165,-0.2708321,0.05095388,-0.04132689,-0.02410735,0.01615578,-0.07058016,0.01670096,-0.02543705,-0.04443838,-0.03943873,0.05010288,0.00401568,0.01106306,-0.00942088,0.00157319,-0.06169781,0.03555602,-0.01172125,-0.05167192,-0.01218665,-0.02277766,-0.02493176,0.06643152,-0.05855973,0.02190006,-0.03959829,0.18445517,0.06472951,-0.02074323,0.00948072,0.0482679,0.01370915,-0.04443838,-0.07717545,-0.02538386,0.01424102,0.01230632,-0.03292323,0.04898593,0.00589719,0.00340734,-0.03499755,-0.02534397,-0.01028518,0.06308069,-0.05257611,-0.0534537,-0.07845196,-0.03885366,0.05919798,0.10419484,0.01562391,0.00356358,0.03215201,0.02429351,0.00925467,0.04180558,0.01356953,-0.05337392,-0.06318706,0.00510935,0.0352369,-0.00486003,-0.0408748,0.0204374,0.05797466,0.06063405,-0.05797466,0.04161943,0.00010118,-0.07398418,0.10089719,-0.05909161,0.02018476,-0.0369655,0.02644762,0.00570771,-0.0115218,-0.00606008,-0.01573028,0.01946672,0.04467772,0.00316966,0.02188677,0.00620302,-0.06451676,-0.00933445,-0.0173924,0.03255091,0.00087178,3.14e-06,0.00833053,-0.00478025,-0.02680663,0.01717965,0.02384142,-0.26657706,-0.02691301,0.02422703,0.01039156,0.01470642,0.03555602,0.0334551,0.02155434,0.01588984,0.02035762,-0.04709777,0.08962139,-0.0080247,-0.01154174,0.04127371,0.05499615,0.03856113,-0.00638918,0.04723074,-0.0604213,0.05329414,-0.01380223,0.18105115,-0.02193995,0.00773217,0.02797676,-0.00729337,-0.01485268,0.09430191,-0.03268388,-0.04183218,-0.02054377,0.05877248,-0.01341661,-0.00149175,-0.04584785,-0.01728602,0.02736511,-0.02162083,-0.01845615,-0.07185667,0.03842816,0.03204563,-0.02717895,0.02986493,-0.12488488,-0.05531528,-0.09456784,-0.01647491,0.04244384,-0.01269858,-0.00114686,0.01345651,-0.07318637,0.01378893,0.00475366,-0.06675065,-0.0009125,-0.01208027,0.00932116,0.08387711,0.01358283,0.08398348,0.06366576,0.01263209]'::vector))",
-    "        Sort Method: top-N heapsort  Memory: 28kB",
-    "        Buffers: shared hit=28721",
-    "        ->  Nested Loop  (cost=0.41..16.46 rows=1 width=101) (actual time=0.061..5.706 rows=174.00 loops=1)",
+    "        Sort Method: top-N heapsort  Memory: 30kB",
+    "        Buffers: shared hit=3771",
+    "        ->  Nested Loop  (cost=0.41..16.46 rows=1 width=101) (actual time=0.041..1.197 rows=84.00 loops=1)",
     "              Join Filter: ((v.fingerprint)::text = (c.fingerprint)::text)",
-    "              Rows Removed by Join Filter: 28651",
-    "              Buffers: shared hit=28721"
+    "              Rows Removed by Join Filter: 3486",
+    "              Buffers: shared hit=3771"
   ]
 }

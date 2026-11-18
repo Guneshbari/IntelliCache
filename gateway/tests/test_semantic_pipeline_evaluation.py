@@ -26,6 +26,7 @@ from app.config import get_settings
 from app.core.contracts import ChatMessage, GenerationRequest, GenerationResult
 from app.core.service import IntelliCacheCore
 from app.core.singleflight import SingleFlightCoordinator
+from app.semantic_cache.compatibility import SemanticCompatibilityMetadata
 from app.semantic_cache.policy import SemanticCachePolicy
 from app.semantic_cache.service import SemanticCacheService
 from datetime import datetime, timedelta, timezone
@@ -42,6 +43,8 @@ from app.vector_store.migration import run_vector_migrations
 from app.vector_store.postgres_store import PostgresVectorStore
 from scripts.evaluate_semantic_pipeline import (
     DeterministicStubProvider,
+    ReadOnlyPostgresCache,
+    ReadOnlySemanticCacheService,
     compute_clustered_bootstrap_cis,
     compute_distribution_stats,
     compute_wilson_ci,
@@ -70,6 +73,8 @@ class TestEmbeddingManifestAndCache(unittest.TestCase):
         self.assertEqual(self.manifest["provider"], "FastEmbed")
         self.assertEqual(self.manifest["embedding_count"], 1514)
         self.assertEqual(self.manifest["dataset_sha256"], "b13d69c9024246136f69b189d3f0801a4e71de1d1f9362761faa943a7a913da5")
+        self.assertEqual(self.manifest["cache_sha256"], "de7515fa572e8dc901ce6175067bec9b14b664495f3b8b08f528a440cc7d04bb")
+        self.assertEqual(self.manifest["query_corpus_sha256"], "ce2d4acfcd6433861974e418771bce39bbe8d0c6a053e2d9285ce87ac91cbb60")
 
     def test_validation_function_passes(self):
         passed = validate_embedding_cache_and_manifest(self.cache_path, self.manifest_path, self.dataset_path)
@@ -126,6 +131,18 @@ class TestScenarioDatasetArchitecture(unittest.TestCase):
             group_neg = [s for s in group_scenarios if s["scenario_type"] == "hard_negative"]
             self.assertEqual(len(group_pos), 2, f"Intent group {ig} must have exactly 2 positive scenarios.")
             self.assertEqual(len(group_neg), 4, f"Intent group {ig} must have exactly 4 hard negative scenarios.")
+
+    def test_distractor_candidates_domain_stratified(self):
+        distractors = self.meta["distractor_targets"]
+        self.assertEqual(len(distractors), 42)
+        domain_counts = {}
+        for d in distractors:
+            dom = d["domain"]
+            domain_counts[dom] = domain_counts.get(dom, 0) + 1
+
+        self.assertEqual(len(domain_counts), 10, "Distractors must be drawn from all 10 domains.")
+        for dom, count in domain_counts.items():
+            self.assertIn(count, (4, 5), f"Domain '{dom}' must have 4 or 5 distractors, found {count}")
 
 
 class TestStatisticalCalculations(unittest.TestCase):
@@ -199,36 +216,72 @@ class TestThresholdConfigurationInjectionAndIsolation(unittest.TestCase):
 
 
 class TestCandidateLevelAmbiguityAccounting(unittest.TestCase):
-    """Verifies candidate-level ambiguity accounting and differentiation of prevented FP vs erroneous FN."""
+    """Verifies candidate-level ambiguity accounting and differentiation of prevented FP vs erroneous FN using runtime policy."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.compat_meta = {
+            "schema_version": 2,
+            "extractor_version": "compat-extractor-v2",
+            "task_kind": {"status": "KNOWN", "value": "conceptual"},
+            "dimensions": {
+                "language": {"status": "NOT_APPLICABLE", "value": None},
+                "language_version": {"status": "NOT_APPLICABLE", "value": None},
+                "framework": {"status": "NOT_APPLICABLE", "value": None},
+                "framework_version": {"status": "NOT_APPLICABLE", "value": None},
+                "runtime": {"status": "NOT_APPLICABLE", "value": None},
+                "runtime_version": {"status": "NOT_APPLICABLE", "value": None},
+                "execution_model": {"status": "NOT_APPLICABLE", "value": None},
+                "output_format": {"status": "NOT_APPLICABLE", "value": None},
+                "constraints": {"status": "NOT_APPLICABLE", "value": None},
+            },
+            "generation_contract": {"provider": "groq", "model": "qwen/qwen3.8-27b", "temperature": 0.7, "max_tokens": 1000},
+            "embedding_contract": {"model": "BAAI/bge-small-en-v1.5"},
+            "llm_provider": "groq",
+            "llm_model": "qwen/qwen3.8-27b",
+            "temperature": 0.7,
+            "max_tokens": 1000,
+        }
+        cls.policy = SemanticCachePolicy(min_similarity=0.90, min_margin=0.03, configured_model="BAAI/bge-small-en-v1.5")
+        cls.req_meta = SemanticCompatibilityMetadata.from_dict(cls.compat_meta)
 
     def test_ambiguity_conflicting_prevents_false_positive(self):
         top_cand = VectorSearchResult(
             cache_namespace="ns",
             fingerprint="fp1",
             query_text="Top query",
-            model="m",
+            model="BAAI/bge-small-en-v1.5",
             distance=0.04,
             similarity=0.96,
             cached_response="Incorrect Answer A",
+            metadata=self.compat_meta,
         )
         runner_up = VectorSearchResult(
             cache_namespace="ns",
             fingerprint="fp2",
             query_text="Runner query",
-            model="m",
+            model="BAAI/bge-small-en-v1.5",
             distance=0.05,
             similarity=0.95,
             cached_response="Different Answer B",
+            metadata=self.compat_meta,
+        )
+        req = GenerationRequest(
+            model="qwen/qwen3.8-27b",
+            messages=[ChatMessage(role="user", content="Top query")],
+            temperature=0.7,
+            max_tokens=1000,
+            provider="groq",
+            namespace="ns",
         )
 
-        diff = top_cand.similarity - runner_up.similarity  # 0.01
-        margin = 0.03
+        winning, reason = self.policy.evaluate_candidates([top_cand, runner_up], req, request_metadata=self.req_meta)
+        self.assertIsNone(winning)
+        self.assertIsNotNone(reason)
+        self.assertIn("Ambiguous candidate", reason)
+
+        # Top candidate was NOT expected safe response, so ambiguity prevented a false positive!
         expected_safe_response = "Correct Answer C"
-
-        is_ambiguous = (diff < margin) and (top_cand.cached_response != runner_up.cached_response)
-        self.assertTrue(is_ambiguous)
-
-        # Top candidate was NOT the expected safe response, so ambiguity prevented a false positive!
         prevented_fp = 1 if (top_cand.cached_response.strip() != expected_safe_response.strip()) else 0
         erroneous_fn = 1 if (top_cand.cached_response.strip() == expected_safe_response.strip()) else 0
         self.assertEqual(prevented_fp, 1)
@@ -239,29 +292,38 @@ class TestCandidateLevelAmbiguityAccounting(unittest.TestCase):
             cache_namespace="ns",
             fingerprint="fp1",
             query_text="Top query",
-            model="m",
+            model="BAAI/bge-small-en-v1.5",
             distance=0.04,
             similarity=0.96,
             cached_response="Correct Answer A",
+            metadata=self.compat_meta,
         )
         runner_up = VectorSearchResult(
             cache_namespace="ns",
             fingerprint="fp2",
             query_text="Runner query",
-            model="m",
+            model="BAAI/bge-small-en-v1.5",
             distance=0.05,
             similarity=0.95,
             cached_response="Incorrect Answer B",
+            metadata=self.compat_meta,
+        )
+        req = GenerationRequest(
+            model="qwen/qwen3.8-27b",
+            messages=[ChatMessage(role="user", content="Top query")],
+            temperature=0.7,
+            max_tokens=1000,
+            provider="groq",
+            namespace="ns",
         )
 
-        diff = top_cand.similarity - runner_up.similarity  # 0.01
-        margin = 0.03
-        expected_safe_response = "Correct Answer A"
-
-        is_ambiguous = (diff < margin) and (top_cand.cached_response != runner_up.cached_response)
-        self.assertTrue(is_ambiguous)
+        winning, reason = self.policy.evaluate_candidates([top_cand, runner_up], req, request_metadata=self.req_meta)
+        self.assertIsNone(winning)
+        self.assertIsNotNone(reason)
+        self.assertIn("Ambiguous candidate", reason)
 
         # Top candidate was actually the correct answer! Ambiguity caused an unnecessary miss
+        expected_safe_response = "Correct Answer A"
         prevented_fp = 1 if (top_cand.cached_response.strip() != expected_safe_response.strip()) else 0
         erroneous_fn = 1 if (top_cand.cached_response.strip() == expected_safe_response.strip()) else 0
         self.assertEqual(prevented_fp, 0)
@@ -272,27 +334,35 @@ class TestCandidateLevelAmbiguityAccounting(unittest.TestCase):
             cache_namespace="ns",
             fingerprint="fp1",
             query_text="Top query",
-            model="m",
+            model="BAAI/bge-small-en-v1.5",
             distance=0.04,
             similarity=0.96,
             cached_response="Same Correct Answer",
+            metadata=self.compat_meta,
         )
         runner_up = VectorSearchResult(
             cache_namespace="ns",
             fingerprint="fp2",
             query_text="Runner query",
-            model="m",
+            model="BAAI/bge-small-en-v1.5",
             distance=0.045,
             similarity=0.955,
             cached_response="Same Correct Answer",
+            metadata=self.compat_meta,
+        )
+        req = GenerationRequest(
+            model="qwen/qwen3.8-27b",
+            messages=[ChatMessage(role="user", content="Top query")],
+            temperature=0.7,
+            max_tokens=1000,
+            provider="groq",
+            namespace="ns",
         )
 
-        diff = top_cand.similarity - runner_up.similarity  # 0.005 < 0.03
-        margin = 0.03
-
-        # Candidates agree! Ambiguity must NOT trigger
-        is_ambiguous = (diff < margin) and (top_cand.cached_response.strip() != runner_up.cached_response.strip())
-        self.assertFalse(is_ambiguous, "Concordant answers must not trigger ambiguity rejection.")
+        winning, reason = self.policy.evaluate_candidates([top_cand, runner_up], req, request_metadata=self.req_meta)
+        self.assertIsNotNone(winning, "Concordant answers must not be rejected.")
+        self.assertEqual(winning.cached_response, "Same Correct Answer")
+        self.assertIsNone(reason)
 
 
 class TestCompatibilityGuardrails(unittest.TestCase):
@@ -378,6 +448,97 @@ class TestInfrastructureFailOpen(unittest.IsolatedAsyncioTestCase):
         self.assertIn("[UPSTREAM_GENERATED", res.text)
         self.assertEqual(stub_provider.call_count, 1)
 
+    async def test_embedding_failure_fails_open(self):
+        mock_vector_store = AsyncMock()
+        failing_embedding_provider = AsyncMock()
+        failing_embedding_provider.embed_query.side_effect = TimeoutError("FastEmbed timeout after 5000ms")
+        failing_embedding_provider.embed.side_effect = TimeoutError("FastEmbed timeout after 5000ms")
+
+        policy = SemanticCachePolicy(min_similarity=0.90, min_margin=0.03)
+        mock_cache = AsyncMock()
+        mock_cache.get.return_value = None
+
+        semantic_cache = SemanticCacheService(
+            embedding_provider=failing_embedding_provider,
+            vector_store=mock_vector_store,
+            policy=policy,
+        )
+
+        core = IntelliCacheCore(
+            cache=mock_cache,
+            semantic_cache=semantic_cache,
+            single_flight=SingleFlightCoordinator(),
+            cache_enabled=True,
+        )
+
+        stub_provider = DeterministicStubProvider()
+        req = GenerationRequest(
+            model="meta-llama/llama-3.1-8b-instruct",
+            messages=[ChatMessage(role="user", content="Explain how TCP Reno congestion control works.")],
+            temperature=0.7,
+            max_tokens=1024,
+            provider="groq",
+        )
+
+        res = await core.execute_query(req, stub_provider)
+        self.assertEqual(res.cache_type, "none")
+        self.assertFalse(res.cached)
+        self.assertIn("[UPSTREAM_GENERATED", res.text)
+        self.assertEqual(stub_provider.call_count, 1)
+
+    async def test_empty_candidate_pool_fails_open(self):
+        empty_vector_store = AsyncMock()
+        empty_vector_store.search.return_value = []
+
+        mock_embedding_provider = AsyncMock()
+        mock_embedding_provider.embed_query.return_value = MagicMock(vector=[0.1] * 384, model="BAAI/bge-small-en-v1.5")
+        mock_embedding_provider.embed.return_value = MagicMock(vector=[0.1] * 384, model="BAAI/bge-small-en-v1.5")
+
+        policy = SemanticCachePolicy(min_similarity=0.90, min_margin=0.03, configured_model="BAAI/bge-small-en-v1.5")
+        mock_cache = AsyncMock()
+        mock_cache.get.return_value = None
+
+        semantic_cache = SemanticCacheService(
+            embedding_provider=mock_embedding_provider,
+            vector_store=empty_vector_store,
+            policy=policy,
+        )
+
+        core = IntelliCacheCore(
+            cache=mock_cache,
+            semantic_cache=semantic_cache,
+            single_flight=SingleFlightCoordinator(),
+            cache_enabled=True,
+        )
+
+        stub_provider = DeterministicStubProvider()
+        req = GenerationRequest(
+            model="meta-llama/llama-3.1-8b-instruct",
+            messages=[ChatMessage(role="user", content="Explain Raft consensus.")],
+            temperature=0.7,
+            max_tokens=1024,
+            provider="groq",
+        )
+
+        res = await core.execute_query(req, stub_provider)
+        self.assertEqual(res.cache_type, "none")
+        self.assertFalse(res.cached)
+        self.assertIn("[UPSTREAM_GENERATED", res.text)
+        self.assertEqual(stub_provider.call_count, 1)
+
+    async def test_candidate_pool_immutability_proxies(self):
+        ro_cache = ReadOnlyPostgresCache(pool=MagicMock())
+        saved = await ro_cache.set("some_key", MagicMock(), namespace="test_ns")
+        self.assertIsNone(saved, "ReadOnlyPostgresCache.set must return None without writing.")
+
+        ro_semantic = ReadOnlySemanticCacheService(
+            embedding_provider=MagicMock(),
+            vector_store=MagicMock(),
+            policy=MagicMock(),
+        )
+        indexed = await ro_semantic.index(MagicMock(), MagicMock())
+        self.assertFalse(indexed, "ReadOnlySemanticCacheService.index must no-op and return False.")
+
 
 class TestReportArtifactsConsistency(unittest.TestCase):
     """Verifies evaluation reports exist and conform to schema and invariants."""
@@ -427,6 +588,18 @@ class TestReportArtifactsConsistency(unittest.TestCase):
         # Fallbacks 100%
         fallbacks = self.report_data["infrastructure_fallback_evaluation"]
         self.assertTrue(fallbacks["all_fell_back_cleanly"])
+
+        # Candidate pool immutability
+        self.assertEqual(baseline["candidate_pool_invariants"]["initial_candidate_count"], 84)
+        self.assertEqual(baseline["candidate_pool_invariants"]["final_candidate_count"], 84)
+        self.assertFalse(baseline["candidate_pool_invariants"]["pool_mutated"])
+        self.assertEqual(candidate["candidate_pool_invariants"]["initial_candidate_count"], 84)
+        self.assertEqual(candidate["candidate_pool_invariants"]["final_candidate_count"], 84)
+        self.assertFalse(candidate["candidate_pool_invariants"]["pool_mutated"])
+
+        # Simulated resource savings note
+        self.assertIn("simulated_resource_savings", paired)
+        self.assertIn("disclaimer", paired["simulated_resource_savings"])
 
 
 class TestLiveFastEmbedPgvectorPipelineIntegration(unittest.IsolatedAsyncioTestCase):

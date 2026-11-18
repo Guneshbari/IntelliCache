@@ -15,6 +15,7 @@ Produces:
 
 from __future__ import annotations
 
+from collections import defaultdict
 import hashlib
 import json
 from pathlib import Path
@@ -51,25 +52,38 @@ def build_stage3_2_5_scenarios(
                 "metadata": p["compatibility_metadata"],
             }
 
-    # 42 Distractor candidates from train/calibration splits
+    # 42 Distractor candidates from train/calibration splits, domain-stratified
     train_cal_pairs = [p for p in pairs if p["split"] in ("train", "calibration") and p["label"] != "incompatible"]
-    train_cal_groups = sorted(list(set(p["intent_group_id"] for p in train_cal_pairs)))
     
-    # Pick 42 distinct distractor intent groups (spread across domains)
-    distractor_targets: List[Dict[str, Any]] = []
-    seen_distractor_groups = set()
+    domain_to_groups: Dict[str, Dict[str, Dict[str, Any]]] = defaultdict(dict)
     for p in train_cal_pairs:
         gid = p["intent_group_id"]
-        if gid not in seen_distractor_groups and len(distractor_targets) < 42:
-            seen_distractor_groups.add(gid)
-            distractor_targets.append({
+        d = p["domain"]
+        if gid not in domain_to_groups[d]:
+            domain_to_groups[d][gid] = {
                 "intent_group_id": gid,
-                "domain": p["domain"],
+                "domain": d,
                 "subtopic": p["subtopic"],
                 "canonical_query": p["query_a"],
                 "canonical_response": p["cached_response_a"],
                 "metadata": p["compatibility_metadata"],
-            })
+            }
+
+    sorted_domains = sorted(domain_to_groups.keys())
+    if len(sorted_domains) != 10:
+        raise ValueError(f"Expected 10 domains in train/calibration data, found {len(sorted_domains)}")
+
+    distractor_targets: List[Dict[str, Any]] = []
+    for d_idx, d_name in enumerate(sorted_domains):
+        quota = 5 if d_idx < 2 else 4
+        d_gids = sorted(domain_to_groups[d_name].keys())
+        if len(d_gids) < quota:
+            raise ValueError(f"Domain '{d_name}' has only {len(d_gids)} groups, required {quota}")
+        for gid in d_gids[:quota]:
+            distractor_targets.append(domain_to_groups[d_name][gid])
+
+    if len(distractor_targets) != 42:
+        raise ValueError(f"Expected exactly 42 distractor targets, got {len(distractor_targets)}")
 
     # Build primary scenario items
     for idx, p in enumerate(test_compat_pairs, 1):
@@ -96,6 +110,36 @@ def build_stage3_2_5_scenarios(
     # 2. Controlled Ambiguity Scenarios (12 scenarios)
     ambiguity_scenarios: List[Dict[str, Any]] = []
     
+    ambig_meta = {
+        "schema_version": 2,
+        "extractor_version": "compat-extractor-v2",
+        "task_kind": {"status": "KNOWN", "value": "conceptual"},
+        "dimensions": {
+            "language": {"status": "NOT_APPLICABLE", "value": None},
+            "language_version": {"status": "NOT_APPLICABLE", "value": None},
+            "framework": {"status": "NOT_APPLICABLE", "value": None},
+            "framework_version": {"status": "NOT_APPLICABLE", "value": None},
+            "runtime": {"status": "NOT_APPLICABLE", "value": None},
+            "runtime_version": {"status": "NOT_APPLICABLE", "value": None},
+            "execution_model": {"status": "NOT_APPLICABLE", "value": None},
+            "output_format": {"status": "NOT_APPLICABLE", "value": None},
+            "constraints": {"status": "NOT_APPLICABLE", "value": None},
+        },
+        "generation_contract": {
+            "provider": "groq",
+            "model": "qwen/qwen3.8-27b",
+            "temperature": 0.7,
+            "max_tokens": 1000,
+        },
+        "embedding_contract": {
+            "model": "BAAI/bge-small-en-v1.5",
+        },
+        "llm_provider": "groq",
+        "llm_model": "qwen/qwen3.8-27b",
+        "temperature": 0.7,
+        "max_tokens": 1000,
+    }
+
     # Conflicting responses within margin delta < 0.03
     for i in range(1, 5):
         ambiguity_scenarios.append({
@@ -108,12 +152,14 @@ def build_stage3_2_5_scenarios(
                 "response": f"Response Option Alpha {i}",
                 "similarity": 0.940,
                 "distance": 0.060,
+                "metadata": ambig_meta,
             },
             "runner_up_candidate": {
                 "query": f"Runner up candidate query {i}",
                 "response": f"Response Option Beta {i}",  # Conflicting!
                 "similarity": 0.925,                     # diff = 0.015 < 0.030
                 "distance": 0.075,
+                "metadata": ambig_meta,
             },
             "expected_safe_response": None,
             "expected_outcome": "ambiguous_rejection",
@@ -132,12 +178,14 @@ def build_stage3_2_5_scenarios(
                 "response": common_resp,
                 "similarity": 0.940,
                 "distance": 0.060,
+                "metadata": ambig_meta,
             },
             "runner_up_candidate": {
                 "query": f"Concordant runner up candidate query {i}",
                 "response": common_resp,                  # Identical!
                 "similarity": 0.930,                     # diff = 0.010 < 0.030
                 "distance": 0.070,
+                "metadata": ambig_meta,
             },
             "expected_safe_response": common_resp,
             "expected_outcome": "concordant_hit",
@@ -155,12 +203,14 @@ def build_stage3_2_5_scenarios(
                 "response": f"Clear Top Response {i}",
                 "similarity": 0.945,
                 "distance": 0.055,
+                "metadata": ambig_meta,
             },
             "runner_up_candidate": {
                 "query": f"Clear runner up query {i}",
                 "response": f"Clear Alternative Response {i}",
                 "similarity": 0.890,                     # diff = 0.055 >= 0.030
                 "distance": 0.110,
+                "metadata": ambig_meta,
             },
             "expected_safe_response": f"Clear Top Response {i}",
             "expected_outcome": "cache_hit",

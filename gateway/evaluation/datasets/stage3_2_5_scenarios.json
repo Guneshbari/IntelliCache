@@ -18695,13 +18695,131 @@
         "query": "Top candidate query 1",
         "response": "Response Option Alpha 1",
         "similarity": 0.94,
-        "distance": 0.06
+        "distance": 0.06,
+        "metadata": {
+          "schema_version": 2,
+          "extractor_version": "compat-extractor-v2",
+          "task_kind": {
+            "status": "KNOWN",
+            "value": "conceptual"
+          },
+          "dimensions": {
+            "language": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "language_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "execution_model": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "output_format": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "constraints": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            }
+          },
+          "generation_contract": {
+            "provider": "groq",
+            "model": "qwen/qwen3.8-27b",
+            "temperature": 0.7,
+            "max_tokens": 1000
+          },
+          "embedding_contract": {
+            "model": "BAAI/bge-small-en-v1.5"
+          },
+          "llm_provider": "groq",
+          "llm_model": "qwen/qwen3.8-27b",
+          "temperature": 0.7,
+          "max_tokens": 1000
+        }
       },
       "runner_up_candidate": {
         "query": "Runner up candidate query 1",
         "response": "Response Option Beta 1",
         "similarity": 0.925,
-        "distance": 0.075
+        "distance": 0.075,
+        "metadata": {
+          "schema_version": 2,
+          "extractor_version": "compat-extractor-v2",
+          "task_kind": {
+            "status": "KNOWN",
+            "value": "conceptual"
+          },
+          "dimensions": {
+            "language": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "language_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "execution_model": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "output_format": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "constraints": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            }
+          },
+          "generation_contract": {
+            "provider": "groq",
+            "model": "qwen/qwen3.8-27b",
+            "temperature": 0.7,
+            "max_tokens": 1000
+          },
+          "embedding_contract": {
+            "model": "BAAI/bge-small-en-v1.5"
+          },
+          "llm_provider": "groq",
+          "llm_model": "qwen/qwen3.8-27b",
+          "temperature": 0.7,
+          "max_tokens": 1000
+        }
       },
       "expected_safe_response": null,
       "expected_outcome": "ambiguous_rejection"
@@ -18715,13 +18833,131 @@
         "query": "Top candidate query 2",
         "response": "Response Option Alpha 2",
         "similarity": 0.94,
-        "distance": 0.06
+        "distance": 0.06,
+        "metadata": {
+          "schema_version": 2,
+          "extractor_version": "compat-extractor-v2",
+          "task_kind": {
+            "status": "KNOWN",
+            "value": "conceptual"
+          },
+          "dimensions": {
+            "language": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "language_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "execution_model": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "output_format": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "constraints": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            }
+          },
+          "generation_contract": {
+            "provider": "groq",
+            "model": "qwen/qwen3.8-27b",
+            "temperature": 0.7,
+            "max_tokens": 1000
+          },
+          "embedding_contract": {
+            "model": "BAAI/bge-small-en-v1.5"
+          },
+          "llm_provider": "groq",
+          "llm_model": "qwen/qwen3.8-27b",
+          "temperature": 0.7,
+          "max_tokens": 1000
+        }
       },
       "runner_up_candidate": {
         "query": "Runner up candidate query 2",
         "response": "Response Option Beta 2",
         "similarity": 0.925,
-        "distance": 0.075
+        "distance": 0.075,
+        "metadata": {
+          "schema_version": 2,
+          "extractor_version": "compat-extractor-v2",
+          "task_kind": {
+            "status": "KNOWN",
+            "value": "conceptual"
+          },
+          "dimensions": {
+            "language": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "language_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "execution_model": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "output_format": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "constraints": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            }
+          },
+          "generation_contract": {
+            "provider": "groq",
+            "model": "qwen/qwen3.8-27b",
+            "temperature": 0.7,
+            "max_tokens": 1000
+          },
+          "embedding_contract": {
+            "model": "BAAI/bge-small-en-v1.5"
+          },
+          "llm_provider": "groq",
+          "llm_model": "qwen/qwen3.8-27b",
+          "temperature": 0.7,
+          "max_tokens": 1000
+        }
       },
       "expected_safe_response": null,
       "expected_outcome": "ambiguous_rejection"
@@ -18735,13 +18971,131 @@
         "query": "Top candidate query 3",
         "response": "Response Option Alpha 3",
         "similarity": 0.94,
-        "distance": 0.06
+        "distance": 0.06,
+        "metadata": {
+          "schema_version": 2,
+          "extractor_version": "compat-extractor-v2",
+          "task_kind": {
+            "status": "KNOWN",
+            "value": "conceptual"
+          },
+          "dimensions": {
+            "language": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "language_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "execution_model": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "output_format": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "constraints": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            }
+          },
+          "generation_contract": {
+            "provider": "groq",
+            "model": "qwen/qwen3.8-27b",
+            "temperature": 0.7,
+            "max_tokens": 1000
+          },
+          "embedding_contract": {
+            "model": "BAAI/bge-small-en-v1.5"
+          },
+          "llm_provider": "groq",
+          "llm_model": "qwen/qwen3.8-27b",
+          "temperature": 0.7,
+          "max_tokens": 1000
+        }
       },
       "runner_up_candidate": {
         "query": "Runner up candidate query 3",
         "response": "Response Option Beta 3",
         "similarity": 0.925,
-        "distance": 0.075
+        "distance": 0.075,
+        "metadata": {
+          "schema_version": 2,
+          "extractor_version": "compat-extractor-v2",
+          "task_kind": {
+            "status": "KNOWN",
+            "value": "conceptual"
+          },
+          "dimensions": {
+            "language": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "language_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "execution_model": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "output_format": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "constraints": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            }
+          },
+          "generation_contract": {
+            "provider": "groq",
+            "model": "qwen/qwen3.8-27b",
+            "temperature": 0.7,
+            "max_tokens": 1000
+          },
+          "embedding_contract": {
+            "model": "BAAI/bge-small-en-v1.5"
+          },
+          "llm_provider": "groq",
+          "llm_model": "qwen/qwen3.8-27b",
+          "temperature": 0.7,
+          "max_tokens": 1000
+        }
       },
       "expected_safe_response": null,
       "expected_outcome": "ambiguous_rejection"
@@ -18755,13 +19109,131 @@
         "query": "Top candidate query 4",
         "response": "Response Option Alpha 4",
         "similarity": 0.94,
-        "distance": 0.06
+        "distance": 0.06,
+        "metadata": {
+          "schema_version": 2,
+          "extractor_version": "compat-extractor-v2",
+          "task_kind": {
+            "status": "KNOWN",
+            "value": "conceptual"
+          },
+          "dimensions": {
+            "language": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "language_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "execution_model": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "output_format": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "constraints": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            }
+          },
+          "generation_contract": {
+            "provider": "groq",
+            "model": "qwen/qwen3.8-27b",
+            "temperature": 0.7,
+            "max_tokens": 1000
+          },
+          "embedding_contract": {
+            "model": "BAAI/bge-small-en-v1.5"
+          },
+          "llm_provider": "groq",
+          "llm_model": "qwen/qwen3.8-27b",
+          "temperature": 0.7,
+          "max_tokens": 1000
+        }
       },
       "runner_up_candidate": {
         "query": "Runner up candidate query 4",
         "response": "Response Option Beta 4",
         "similarity": 0.925,
-        "distance": 0.075
+        "distance": 0.075,
+        "metadata": {
+          "schema_version": 2,
+          "extractor_version": "compat-extractor-v2",
+          "task_kind": {
+            "status": "KNOWN",
+            "value": "conceptual"
+          },
+          "dimensions": {
+            "language": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "language_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "execution_model": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "output_format": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "constraints": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            }
+          },
+          "generation_contract": {
+            "provider": "groq",
+            "model": "qwen/qwen3.8-27b",
+            "temperature": 0.7,
+            "max_tokens": 1000
+          },
+          "embedding_contract": {
+            "model": "BAAI/bge-small-en-v1.5"
+          },
+          "llm_provider": "groq",
+          "llm_model": "qwen/qwen3.8-27b",
+          "temperature": 0.7,
+          "max_tokens": 1000
+        }
       },
       "expected_safe_response": null,
       "expected_outcome": "ambiguous_rejection"
@@ -18775,13 +19247,131 @@
         "query": "Concordant top candidate query 1",
         "response": "Concordant common response answer for test 1",
         "similarity": 0.94,
-        "distance": 0.06
+        "distance": 0.06,
+        "metadata": {
+          "schema_version": 2,
+          "extractor_version": "compat-extractor-v2",
+          "task_kind": {
+            "status": "KNOWN",
+            "value": "conceptual"
+          },
+          "dimensions": {
+            "language": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "language_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "execution_model": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "output_format": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "constraints": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            }
+          },
+          "generation_contract": {
+            "provider": "groq",
+            "model": "qwen/qwen3.8-27b",
+            "temperature": 0.7,
+            "max_tokens": 1000
+          },
+          "embedding_contract": {
+            "model": "BAAI/bge-small-en-v1.5"
+          },
+          "llm_provider": "groq",
+          "llm_model": "qwen/qwen3.8-27b",
+          "temperature": 0.7,
+          "max_tokens": 1000
+        }
       },
       "runner_up_candidate": {
         "query": "Concordant runner up candidate query 1",
         "response": "Concordant common response answer for test 1",
         "similarity": 0.93,
-        "distance": 0.07
+        "distance": 0.07,
+        "metadata": {
+          "schema_version": 2,
+          "extractor_version": "compat-extractor-v2",
+          "task_kind": {
+            "status": "KNOWN",
+            "value": "conceptual"
+          },
+          "dimensions": {
+            "language": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "language_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "execution_model": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "output_format": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "constraints": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            }
+          },
+          "generation_contract": {
+            "provider": "groq",
+            "model": "qwen/qwen3.8-27b",
+            "temperature": 0.7,
+            "max_tokens": 1000
+          },
+          "embedding_contract": {
+            "model": "BAAI/bge-small-en-v1.5"
+          },
+          "llm_provider": "groq",
+          "llm_model": "qwen/qwen3.8-27b",
+          "temperature": 0.7,
+          "max_tokens": 1000
+        }
       },
       "expected_safe_response": "Concordant common response answer for test 1",
       "expected_outcome": "concordant_hit"
@@ -18795,13 +19385,131 @@
         "query": "Concordant top candidate query 2",
         "response": "Concordant common response answer for test 2",
         "similarity": 0.94,
-        "distance": 0.06
+        "distance": 0.06,
+        "metadata": {
+          "schema_version": 2,
+          "extractor_version": "compat-extractor-v2",
+          "task_kind": {
+            "status": "KNOWN",
+            "value": "conceptual"
+          },
+          "dimensions": {
+            "language": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "language_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "execution_model": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "output_format": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "constraints": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            }
+          },
+          "generation_contract": {
+            "provider": "groq",
+            "model": "qwen/qwen3.8-27b",
+            "temperature": 0.7,
+            "max_tokens": 1000
+          },
+          "embedding_contract": {
+            "model": "BAAI/bge-small-en-v1.5"
+          },
+          "llm_provider": "groq",
+          "llm_model": "qwen/qwen3.8-27b",
+          "temperature": 0.7,
+          "max_tokens": 1000
+        }
       },
       "runner_up_candidate": {
         "query": "Concordant runner up candidate query 2",
         "response": "Concordant common response answer for test 2",
         "similarity": 0.93,
-        "distance": 0.07
+        "distance": 0.07,
+        "metadata": {
+          "schema_version": 2,
+          "extractor_version": "compat-extractor-v2",
+          "task_kind": {
+            "status": "KNOWN",
+            "value": "conceptual"
+          },
+          "dimensions": {
+            "language": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "language_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "execution_model": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "output_format": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "constraints": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            }
+          },
+          "generation_contract": {
+            "provider": "groq",
+            "model": "qwen/qwen3.8-27b",
+            "temperature": 0.7,
+            "max_tokens": 1000
+          },
+          "embedding_contract": {
+            "model": "BAAI/bge-small-en-v1.5"
+          },
+          "llm_provider": "groq",
+          "llm_model": "qwen/qwen3.8-27b",
+          "temperature": 0.7,
+          "max_tokens": 1000
+        }
       },
       "expected_safe_response": "Concordant common response answer for test 2",
       "expected_outcome": "concordant_hit"
@@ -18815,13 +19523,131 @@
         "query": "Concordant top candidate query 3",
         "response": "Concordant common response answer for test 3",
         "similarity": 0.94,
-        "distance": 0.06
+        "distance": 0.06,
+        "metadata": {
+          "schema_version": 2,
+          "extractor_version": "compat-extractor-v2",
+          "task_kind": {
+            "status": "KNOWN",
+            "value": "conceptual"
+          },
+          "dimensions": {
+            "language": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "language_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "execution_model": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "output_format": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "constraints": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            }
+          },
+          "generation_contract": {
+            "provider": "groq",
+            "model": "qwen/qwen3.8-27b",
+            "temperature": 0.7,
+            "max_tokens": 1000
+          },
+          "embedding_contract": {
+            "model": "BAAI/bge-small-en-v1.5"
+          },
+          "llm_provider": "groq",
+          "llm_model": "qwen/qwen3.8-27b",
+          "temperature": 0.7,
+          "max_tokens": 1000
+        }
       },
       "runner_up_candidate": {
         "query": "Concordant runner up candidate query 3",
         "response": "Concordant common response answer for test 3",
         "similarity": 0.93,
-        "distance": 0.07
+        "distance": 0.07,
+        "metadata": {
+          "schema_version": 2,
+          "extractor_version": "compat-extractor-v2",
+          "task_kind": {
+            "status": "KNOWN",
+            "value": "conceptual"
+          },
+          "dimensions": {
+            "language": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "language_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "execution_model": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "output_format": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "constraints": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            }
+          },
+          "generation_contract": {
+            "provider": "groq",
+            "model": "qwen/qwen3.8-27b",
+            "temperature": 0.7,
+            "max_tokens": 1000
+          },
+          "embedding_contract": {
+            "model": "BAAI/bge-small-en-v1.5"
+          },
+          "llm_provider": "groq",
+          "llm_model": "qwen/qwen3.8-27b",
+          "temperature": 0.7,
+          "max_tokens": 1000
+        }
       },
       "expected_safe_response": "Concordant common response answer for test 3",
       "expected_outcome": "concordant_hit"
@@ -18835,13 +19661,131 @@
         "query": "Concordant top candidate query 4",
         "response": "Concordant common response answer for test 4",
         "similarity": 0.94,
-        "distance": 0.06
+        "distance": 0.06,
+        "metadata": {
+          "schema_version": 2,
+          "extractor_version": "compat-extractor-v2",
+          "task_kind": {
+            "status": "KNOWN",
+            "value": "conceptual"
+          },
+          "dimensions": {
+            "language": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "language_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "execution_model": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "output_format": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "constraints": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            }
+          },
+          "generation_contract": {
+            "provider": "groq",
+            "model": "qwen/qwen3.8-27b",
+            "temperature": 0.7,
+            "max_tokens": 1000
+          },
+          "embedding_contract": {
+            "model": "BAAI/bge-small-en-v1.5"
+          },
+          "llm_provider": "groq",
+          "llm_model": "qwen/qwen3.8-27b",
+          "temperature": 0.7,
+          "max_tokens": 1000
+        }
       },
       "runner_up_candidate": {
         "query": "Concordant runner up candidate query 4",
         "response": "Concordant common response answer for test 4",
         "similarity": 0.93,
-        "distance": 0.07
+        "distance": 0.07,
+        "metadata": {
+          "schema_version": 2,
+          "extractor_version": "compat-extractor-v2",
+          "task_kind": {
+            "status": "KNOWN",
+            "value": "conceptual"
+          },
+          "dimensions": {
+            "language": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "language_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "execution_model": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "output_format": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "constraints": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            }
+          },
+          "generation_contract": {
+            "provider": "groq",
+            "model": "qwen/qwen3.8-27b",
+            "temperature": 0.7,
+            "max_tokens": 1000
+          },
+          "embedding_contract": {
+            "model": "BAAI/bge-small-en-v1.5"
+          },
+          "llm_provider": "groq",
+          "llm_model": "qwen/qwen3.8-27b",
+          "temperature": 0.7,
+          "max_tokens": 1000
+        }
       },
       "expected_safe_response": "Concordant common response answer for test 4",
       "expected_outcome": "concordant_hit"
@@ -18855,13 +19799,131 @@
         "query": "Clear top candidate query 1",
         "response": "Clear Top Response 1",
         "similarity": 0.945,
-        "distance": 0.055
+        "distance": 0.055,
+        "metadata": {
+          "schema_version": 2,
+          "extractor_version": "compat-extractor-v2",
+          "task_kind": {
+            "status": "KNOWN",
+            "value": "conceptual"
+          },
+          "dimensions": {
+            "language": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "language_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "execution_model": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "output_format": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "constraints": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            }
+          },
+          "generation_contract": {
+            "provider": "groq",
+            "model": "qwen/qwen3.8-27b",
+            "temperature": 0.7,
+            "max_tokens": 1000
+          },
+          "embedding_contract": {
+            "model": "BAAI/bge-small-en-v1.5"
+          },
+          "llm_provider": "groq",
+          "llm_model": "qwen/qwen3.8-27b",
+          "temperature": 0.7,
+          "max_tokens": 1000
+        }
       },
       "runner_up_candidate": {
         "query": "Clear runner up query 1",
         "response": "Clear Alternative Response 1",
         "similarity": 0.89,
-        "distance": 0.11
+        "distance": 0.11,
+        "metadata": {
+          "schema_version": 2,
+          "extractor_version": "compat-extractor-v2",
+          "task_kind": {
+            "status": "KNOWN",
+            "value": "conceptual"
+          },
+          "dimensions": {
+            "language": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "language_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "execution_model": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "output_format": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "constraints": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            }
+          },
+          "generation_contract": {
+            "provider": "groq",
+            "model": "qwen/qwen3.8-27b",
+            "temperature": 0.7,
+            "max_tokens": 1000
+          },
+          "embedding_contract": {
+            "model": "BAAI/bge-small-en-v1.5"
+          },
+          "llm_provider": "groq",
+          "llm_model": "qwen/qwen3.8-27b",
+          "temperature": 0.7,
+          "max_tokens": 1000
+        }
       },
       "expected_safe_response": "Clear Top Response 1",
       "expected_outcome": "cache_hit"
@@ -18875,13 +19937,131 @@
         "query": "Clear top candidate query 2",
         "response": "Clear Top Response 2",
         "similarity": 0.945,
-        "distance": 0.055
+        "distance": 0.055,
+        "metadata": {
+          "schema_version": 2,
+          "extractor_version": "compat-extractor-v2",
+          "task_kind": {
+            "status": "KNOWN",
+            "value": "conceptual"
+          },
+          "dimensions": {
+            "language": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "language_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "execution_model": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "output_format": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "constraints": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            }
+          },
+          "generation_contract": {
+            "provider": "groq",
+            "model": "qwen/qwen3.8-27b",
+            "temperature": 0.7,
+            "max_tokens": 1000
+          },
+          "embedding_contract": {
+            "model": "BAAI/bge-small-en-v1.5"
+          },
+          "llm_provider": "groq",
+          "llm_model": "qwen/qwen3.8-27b",
+          "temperature": 0.7,
+          "max_tokens": 1000
+        }
       },
       "runner_up_candidate": {
         "query": "Clear runner up query 2",
         "response": "Clear Alternative Response 2",
         "similarity": 0.89,
-        "distance": 0.11
+        "distance": 0.11,
+        "metadata": {
+          "schema_version": 2,
+          "extractor_version": "compat-extractor-v2",
+          "task_kind": {
+            "status": "KNOWN",
+            "value": "conceptual"
+          },
+          "dimensions": {
+            "language": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "language_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "execution_model": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "output_format": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "constraints": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            }
+          },
+          "generation_contract": {
+            "provider": "groq",
+            "model": "qwen/qwen3.8-27b",
+            "temperature": 0.7,
+            "max_tokens": 1000
+          },
+          "embedding_contract": {
+            "model": "BAAI/bge-small-en-v1.5"
+          },
+          "llm_provider": "groq",
+          "llm_model": "qwen/qwen3.8-27b",
+          "temperature": 0.7,
+          "max_tokens": 1000
+        }
       },
       "expected_safe_response": "Clear Top Response 2",
       "expected_outcome": "cache_hit"
@@ -18895,13 +20075,131 @@
         "query": "Clear top candidate query 3",
         "response": "Clear Top Response 3",
         "similarity": 0.945,
-        "distance": 0.055
+        "distance": 0.055,
+        "metadata": {
+          "schema_version": 2,
+          "extractor_version": "compat-extractor-v2",
+          "task_kind": {
+            "status": "KNOWN",
+            "value": "conceptual"
+          },
+          "dimensions": {
+            "language": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "language_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "execution_model": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "output_format": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "constraints": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            }
+          },
+          "generation_contract": {
+            "provider": "groq",
+            "model": "qwen/qwen3.8-27b",
+            "temperature": 0.7,
+            "max_tokens": 1000
+          },
+          "embedding_contract": {
+            "model": "BAAI/bge-small-en-v1.5"
+          },
+          "llm_provider": "groq",
+          "llm_model": "qwen/qwen3.8-27b",
+          "temperature": 0.7,
+          "max_tokens": 1000
+        }
       },
       "runner_up_candidate": {
         "query": "Clear runner up query 3",
         "response": "Clear Alternative Response 3",
         "similarity": 0.89,
-        "distance": 0.11
+        "distance": 0.11,
+        "metadata": {
+          "schema_version": 2,
+          "extractor_version": "compat-extractor-v2",
+          "task_kind": {
+            "status": "KNOWN",
+            "value": "conceptual"
+          },
+          "dimensions": {
+            "language": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "language_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "execution_model": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "output_format": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "constraints": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            }
+          },
+          "generation_contract": {
+            "provider": "groq",
+            "model": "qwen/qwen3.8-27b",
+            "temperature": 0.7,
+            "max_tokens": 1000
+          },
+          "embedding_contract": {
+            "model": "BAAI/bge-small-en-v1.5"
+          },
+          "llm_provider": "groq",
+          "llm_model": "qwen/qwen3.8-27b",
+          "temperature": 0.7,
+          "max_tokens": 1000
+        }
       },
       "expected_safe_response": "Clear Top Response 3",
       "expected_outcome": "cache_hit"
@@ -18915,13 +20213,131 @@
         "query": "Clear top candidate query 4",
         "response": "Clear Top Response 4",
         "similarity": 0.945,
-        "distance": 0.055
+        "distance": 0.055,
+        "metadata": {
+          "schema_version": 2,
+          "extractor_version": "compat-extractor-v2",
+          "task_kind": {
+            "status": "KNOWN",
+            "value": "conceptual"
+          },
+          "dimensions": {
+            "language": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "language_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "execution_model": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "output_format": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "constraints": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            }
+          },
+          "generation_contract": {
+            "provider": "groq",
+            "model": "qwen/qwen3.8-27b",
+            "temperature": 0.7,
+            "max_tokens": 1000
+          },
+          "embedding_contract": {
+            "model": "BAAI/bge-small-en-v1.5"
+          },
+          "llm_provider": "groq",
+          "llm_model": "qwen/qwen3.8-27b",
+          "temperature": 0.7,
+          "max_tokens": 1000
+        }
       },
       "runner_up_candidate": {
         "query": "Clear runner up query 4",
         "response": "Clear Alternative Response 4",
         "similarity": 0.89,
-        "distance": 0.11
+        "distance": 0.11,
+        "metadata": {
+          "schema_version": 2,
+          "extractor_version": "compat-extractor-v2",
+          "task_kind": {
+            "status": "KNOWN",
+            "value": "conceptual"
+          },
+          "dimensions": {
+            "language": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "language_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "framework_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "runtime_version": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "execution_model": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "output_format": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            },
+            "constraints": {
+              "status": "NOT_APPLICABLE",
+              "value": null
+            }
+          },
+          "generation_contract": {
+            "provider": "groq",
+            "model": "qwen/qwen3.8-27b",
+            "temperature": 0.7,
+            "max_tokens": 1000
+          },
+          "embedding_contract": {
+            "model": "BAAI/bge-small-en-v1.5"
+          },
+          "llm_provider": "groq",
+          "llm_model": "qwen/qwen3.8-27b",
+          "temperature": 0.7,
+          "max_tokens": 1000
+        }
       },
       "expected_safe_response": "Clear Top Response 4",
       "expected_outcome": "cache_hit"
