@@ -141,27 +141,75 @@ def build_stage3_2_5_scenarios(
     }
 
     # Conflicting responses within margin delta < 0.03
-    for i in range(1, 5):
+    # Explicit ground-truth answers for each conflicting pair to rigorously classify
+    # whether ambiguity rejection prevented a false positive (top was wrong) or caused
+    # an erroneous false negative (top was correct).
+    conflicting_fixtures = [
+        {
+            "id": "s325_ambig_conflicting_01",
+            "query": "In Python asyncio, what exception is raised when a task is cancelled?",
+            "top_q": "What exception does Python asyncio task cancellation raise?",
+            "top_r": "Task cancellation in Python asyncio raises KeyboardInterrupt.",  # WRONG
+            "run_q": "What error is raised when an asyncio task is cancelled in Python?",
+            "run_r": "Task cancellation in Python asyncio raises asyncio.CancelledError.",  # CORRECT
+            "gt_r": "Task cancellation in Python asyncio raises asyncio.CancelledError.",
+            "top_is_correct": False,
+        },
+        {
+            "id": "s325_ambig_conflicting_02",
+            "query": "In PostgreSQL, what is the default network port number?",
+            "top_q": "What port does PostgreSQL default to?",
+            "top_r": "The default port for PostgreSQL is 3306.",  # WRONG (MySQL port)
+            "run_q": "Default PostgreSQL listening port?",
+            "run_r": "The default port for PostgreSQL is 5432.",  # CORRECT
+            "gt_r": "The default port for PostgreSQL is 5432.",
+            "top_is_correct": False,
+        },
+        {
+            "id": "s325_ambig_conflicting_03",
+            "query": "What does dict.get('missing') return in Python if no default is provided?",
+            "top_q": "Return value of Python dict.get() for missing key without default?",
+            "top_r": "In Python, dict.get() returns None if the key is missing and no default is provided.",  # CORRECT
+            "run_q": "What happens when dict.get() key is not found in Python?",
+            "run_r": "In Python, dict.get() raises KeyError if the key is missing and no default is provided.",  # WRONG
+            "gt_r": "In Python, dict.get() returns None if the key is missing and no default is provided.",
+            "top_is_correct": True,
+        },
+        {
+            "id": "s325_ambig_conflicting_04",
+            "query": "In HTTP response status codes, what does 404 Not Found indicate?",
+            "top_q": "What does HTTP status code 404 mean?",
+            "top_r": "HTTP 404 indicates the origin server cannot find the requested resource.",  # CORRECT
+            "run_q": "Meaning of 404 status code in HTTP?",
+            "run_r": "HTTP 404 indicates unauthorized access requiring user credentials.",  # WRONG
+            "gt_r": "HTTP 404 indicates the origin server cannot find the requested resource.",
+            "top_is_correct": True,
+        },
+    ]
+
+    for fix in conflicting_fixtures:
         ambiguity_scenarios.append({
-            "scenario_id": f"s325_ambig_conflicting_{i:02d}",
+            "scenario_id": fix["id"],
             "scenario_category": "ambiguity_controlled",
             "scenario_type": "ambiguous_competing_candidates",
-            "incoming_query": f"Ambiguous test query with competing conflicting candidates {i}",
+            "incoming_query": fix["query"],
             "top_candidate": {
-                "query": f"Top candidate query {i}",
-                "response": f"Response Option Alpha {i}",
+                "query": fix["top_q"],
+                "response": fix["top_r"],
                 "similarity": 0.940,
                 "distance": 0.060,
                 "metadata": ambig_meta,
             },
             "runner_up_candidate": {
-                "query": f"Runner up candidate query {i}",
-                "response": f"Response Option Beta {i}",  # Conflicting!
-                "similarity": 0.925,                     # diff = 0.015 < 0.030
+                "query": fix["run_q"],
+                "response": fix["run_r"],
+                "similarity": 0.925,  # diff = 0.015 < 0.030
                 "distance": 0.075,
                 "metadata": ambig_meta,
             },
-            "expected_safe_response": None,
+            "ground_truth_response": fix["gt_r"],
+            "expected_safe_response": fix["gt_r"] if fix["top_is_correct"] else None,
+            "top_candidate_is_correct": fix["top_is_correct"],
             "expected_outcome": "ambiguous_rejection",
         })
 
@@ -187,12 +235,15 @@ def build_stage3_2_5_scenarios(
                 "distance": 0.070,
                 "metadata": ambig_meta,
             },
+            "ground_truth_response": common_resp,
             "expected_safe_response": common_resp,
+            "top_candidate_is_correct": True,
             "expected_outcome": "concordant_hit",
         })
 
     # Distinct responses outside margin delta >= 0.03
     for i in range(1, 5):
+        clear_resp = f"Clear Top Response {i}"
         ambiguity_scenarios.append({
             "scenario_id": f"s325_ambig_clear_margin_{i:02d}",
             "scenario_category": "ambiguity_controlled",
@@ -200,7 +251,7 @@ def build_stage3_2_5_scenarios(
             "incoming_query": f"Ambiguous test query with clear margin {i}",
             "top_candidate": {
                 "query": f"Clear top candidate query {i}",
-                "response": f"Clear Top Response {i}",
+                "response": clear_resp,
                 "similarity": 0.945,
                 "distance": 0.055,
                 "metadata": ambig_meta,
@@ -212,7 +263,9 @@ def build_stage3_2_5_scenarios(
                 "distance": 0.110,
                 "metadata": ambig_meta,
             },
-            "expected_safe_response": f"Clear Top Response {i}",
+            "ground_truth_response": clear_resp,
+            "expected_safe_response": clear_resp,
+            "top_candidate_is_correct": True,
             "expected_outcome": "cache_hit",
         })
 
@@ -240,12 +293,14 @@ def build_stage3_2_5_scenarios(
         })
 
     # 4. Infrastructure & Failure Scenarios (5 scenarios)
+    # Uses demonstrably eligible queries so requests proceed past eligibility
+    # checks and genuinely reach the target infrastructure component being tested.
     failure_scenarios = [
         {
             "scenario_id": "s325_fail_no_candidate",
             "scenario_category": "infrastructure_fallback",
             "scenario_type": "no_candidate",
-            "incoming_query": "Explain how distributed snapshotting works in Chandy-Lamport algorithm.",
+            "incoming_query": "How do I write a Python function to parse JSON data?",
             "description": "Empty candidate pool in target namespace.",
             "expected_safe_response": None,
             "expected_outcome": "upstream_fallback",
@@ -254,7 +309,7 @@ def build_stage3_2_5_scenarios(
             "scenario_id": "s325_fail_expired_candidate",
             "scenario_category": "infrastructure_fallback",
             "scenario_type": "expired_candidate",
-            "incoming_query": "Explain Raft consensus leader election and term heartbeats.",
+            "incoming_query": "Explain how to implement binary search in Python with code",
             "description": "Candidate vector exists in vector_records, but joined cache_entries record is expired.",
             "expected_safe_response": None,
             "expected_outcome": "upstream_fallback",
@@ -263,7 +318,7 @@ def build_stage3_2_5_scenarios(
             "scenario_id": "s325_fail_namespace_mismatch",
             "scenario_category": "infrastructure_fallback",
             "scenario_type": "namespace_mismatch",
-            "incoming_query": "How does PostgreSQL pgvector perform HNSW vector index construction?",
+            "incoming_query": "How to query PostgreSQL database table using SQL select in Python?",
             "description": "Candidate exists only in another namespace, ensuring namespace isolation.",
             "expected_safe_response": None,
             "expected_outcome": "upstream_fallback",
@@ -281,7 +336,7 @@ def build_stage3_2_5_scenarios(
             "scenario_id": "s325_fail_vector_store_error",
             "scenario_category": "infrastructure_fallback",
             "scenario_type": "vector_store_failure",
-            "incoming_query": "What is the difference between TCP Reno and TCP BBR congestion control?",
+            "incoming_query": "How do I configure TCP socket keepalive in Python network script?",
             "description": "Simulated vector store failure causes fail-open upstream generation.",
             "expected_safe_response": None,
             "expected_outcome": "upstream_fallback",

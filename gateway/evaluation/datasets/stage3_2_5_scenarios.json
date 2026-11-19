@@ -18690,10 +18690,10 @@
       "scenario_id": "s325_ambig_conflicting_01",
       "scenario_category": "ambiguity_controlled",
       "scenario_type": "ambiguous_competing_candidates",
-      "incoming_query": "Ambiguous test query with competing conflicting candidates 1",
+      "incoming_query": "In Python asyncio, what exception is raised when a task is cancelled?",
       "top_candidate": {
-        "query": "Top candidate query 1",
-        "response": "Response Option Alpha 1",
+        "query": "What exception does Python asyncio task cancellation raise?",
+        "response": "Task cancellation in Python asyncio raises KeyboardInterrupt.",
         "similarity": 0.94,
         "distance": 0.06,
         "metadata": {
@@ -18757,8 +18757,8 @@
         }
       },
       "runner_up_candidate": {
-        "query": "Runner up candidate query 1",
-        "response": "Response Option Beta 1",
+        "query": "What error is raised when an asyncio task is cancelled in Python?",
+        "response": "Task cancellation in Python asyncio raises asyncio.CancelledError.",
         "similarity": 0.925,
         "distance": 0.075,
         "metadata": {
@@ -18821,17 +18821,19 @@
           "max_tokens": 1000
         }
       },
+      "ground_truth_response": "Task cancellation in Python asyncio raises asyncio.CancelledError.",
       "expected_safe_response": null,
+      "top_candidate_is_correct": false,
       "expected_outcome": "ambiguous_rejection"
     },
     {
       "scenario_id": "s325_ambig_conflicting_02",
       "scenario_category": "ambiguity_controlled",
       "scenario_type": "ambiguous_competing_candidates",
-      "incoming_query": "Ambiguous test query with competing conflicting candidates 2",
+      "incoming_query": "In PostgreSQL, what is the default network port number?",
       "top_candidate": {
-        "query": "Top candidate query 2",
-        "response": "Response Option Alpha 2",
+        "query": "What port does PostgreSQL default to?",
+        "response": "The default port for PostgreSQL is 3306.",
         "similarity": 0.94,
         "distance": 0.06,
         "metadata": {
@@ -18895,8 +18897,8 @@
         }
       },
       "runner_up_candidate": {
-        "query": "Runner up candidate query 2",
-        "response": "Response Option Beta 2",
+        "query": "Default PostgreSQL listening port?",
+        "response": "The default port for PostgreSQL is 5432.",
         "similarity": 0.925,
         "distance": 0.075,
         "metadata": {
@@ -18959,17 +18961,19 @@
           "max_tokens": 1000
         }
       },
+      "ground_truth_response": "The default port for PostgreSQL is 5432.",
       "expected_safe_response": null,
+      "top_candidate_is_correct": false,
       "expected_outcome": "ambiguous_rejection"
     },
     {
       "scenario_id": "s325_ambig_conflicting_03",
       "scenario_category": "ambiguity_controlled",
       "scenario_type": "ambiguous_competing_candidates",
-      "incoming_query": "Ambiguous test query with competing conflicting candidates 3",
+      "incoming_query": "What does dict.get('missing') return in Python if no default is provided?",
       "top_candidate": {
-        "query": "Top candidate query 3",
-        "response": "Response Option Alpha 3",
+        "query": "Return value of Python dict.get() for missing key without default?",
+        "response": "In Python, dict.get() returns None if the key is missing and no default is provided.",
         "similarity": 0.94,
         "distance": 0.06,
         "metadata": {
@@ -19033,8 +19037,8 @@
         }
       },
       "runner_up_candidate": {
-        "query": "Runner up candidate query 3",
-        "response": "Response Option Beta 3",
+        "query": "What happens when dict.get() key is not found in Python?",
+        "response": "In Python, dict.get() raises KeyError if the key is missing and no default is provided.",
         "similarity": 0.925,
         "distance": 0.075,
         "metadata": {
@@ -19097,17 +19101,19 @@
           "max_tokens": 1000
         }
       },
-      "expected_safe_response": null,
+      "ground_truth_response": "In Python, dict.get() returns None if the key is missing and no default is provided.",
+      "expected_safe_response": "In Python, dict.get() returns None if the key is missing and no default is provided.",
+      "top_candidate_is_correct": true,
       "expected_outcome": "ambiguous_rejection"
     },
     {
       "scenario_id": "s325_ambig_conflicting_04",
       "scenario_category": "ambiguity_controlled",
       "scenario_type": "ambiguous_competing_candidates",
-      "incoming_query": "Ambiguous test query with competing conflicting candidates 4",
+      "incoming_query": "In HTTP response status codes, what does 404 Not Found indicate?",
       "top_candidate": {
-        "query": "Top candidate query 4",
-        "response": "Response Option Alpha 4",
+        "query": "What does HTTP status code 404 mean?",
+        "response": "HTTP 404 indicates the origin server cannot find the requested resource.",
         "similarity": 0.94,
         "distance": 0.06,
         "metadata": {
@@ -19171,8 +19177,8 @@
         }
       },
       "runner_up_candidate": {
-        "query": "Runner up candidate query 4",
-        "response": "Response Option Beta 4",
+        "query": "Meaning of 404 status code in HTTP?",
+        "response": "HTTP 404 indicates unauthorized access requiring user credentials.",
         "similarity": 0.925,
         "distance": 0.075,
         "metadata": {
@@ -19235,7 +19241,9 @@
           "max_tokens": 1000
         }
       },
-      "expected_safe_response": null,
+      "ground_truth_response": "HTTP 404 indicates the origin server cannot find the requested resource.",
+      "expected_safe_response": "HTTP 404 indicates the origin server cannot find the requested resource.",
+      "top_candidate_is_correct": true,
       "expected_outcome": "ambiguous_rejection"
     },
     {
@@ -19373,7 +19381,9 @@
           "max_tokens": 1000
         }
       },
+      "ground_truth_response": "Concordant common response answer for test 1",
       "expected_safe_response": "Concordant common response answer for test 1",
+      "top_candidate_is_correct": true,
       "expected_outcome": "concordant_hit"
     },
     {
@@ -19511,7 +19521,9 @@
           "max_tokens": 1000
         }
       },
+      "ground_truth_response": "Concordant common response answer for test 2",
       "expected_safe_response": "Concordant common response answer for test 2",
+      "top_candidate_is_correct": true,
       "expected_outcome": "concordant_hit"
     },
     {
@@ -19649,7 +19661,9 @@
           "max_tokens": 1000
         }
       },
+      "ground_truth_response": "Concordant common response answer for test 3",
       "expected_safe_response": "Concordant common response answer for test 3",
+      "top_candidate_is_correct": true,
       "expected_outcome": "concordant_hit"
     },
     {
@@ -19787,7 +19801,9 @@
           "max_tokens": 1000
         }
       },
+      "ground_truth_response": "Concordant common response answer for test 4",
       "expected_safe_response": "Concordant common response answer for test 4",
+      "top_candidate_is_correct": true,
       "expected_outcome": "concordant_hit"
     },
     {
@@ -19925,7 +19941,9 @@
           "max_tokens": 1000
         }
       },
+      "ground_truth_response": "Clear Top Response 1",
       "expected_safe_response": "Clear Top Response 1",
+      "top_candidate_is_correct": true,
       "expected_outcome": "cache_hit"
     },
     {
@@ -20063,7 +20081,9 @@
           "max_tokens": 1000
         }
       },
+      "ground_truth_response": "Clear Top Response 2",
       "expected_safe_response": "Clear Top Response 2",
+      "top_candidate_is_correct": true,
       "expected_outcome": "cache_hit"
     },
     {
@@ -20201,7 +20221,9 @@
           "max_tokens": 1000
         }
       },
+      "ground_truth_response": "Clear Top Response 3",
       "expected_safe_response": "Clear Top Response 3",
+      "top_candidate_is_correct": true,
       "expected_outcome": "cache_hit"
     },
     {
@@ -20339,7 +20361,9 @@
           "max_tokens": 1000
         }
       },
+      "ground_truth_response": "Clear Top Response 4",
       "expected_safe_response": "Clear Top Response 4",
+      "top_candidate_is_correct": true,
       "expected_outcome": "cache_hit"
     }
   ],
@@ -24501,7 +24525,7 @@
       "scenario_id": "s325_fail_no_candidate",
       "scenario_category": "infrastructure_fallback",
       "scenario_type": "no_candidate",
-      "incoming_query": "Explain how distributed snapshotting works in Chandy-Lamport algorithm.",
+      "incoming_query": "How do I write a Python function to parse JSON data?",
       "description": "Empty candidate pool in target namespace.",
       "expected_safe_response": null,
       "expected_outcome": "upstream_fallback"
@@ -24510,7 +24534,7 @@
       "scenario_id": "s325_fail_expired_candidate",
       "scenario_category": "infrastructure_fallback",
       "scenario_type": "expired_candidate",
-      "incoming_query": "Explain Raft consensus leader election and term heartbeats.",
+      "incoming_query": "Explain how to implement binary search in Python with code",
       "description": "Candidate vector exists in vector_records, but joined cache_entries record is expired.",
       "expected_safe_response": null,
       "expected_outcome": "upstream_fallback"
@@ -24519,7 +24543,7 @@
       "scenario_id": "s325_fail_namespace_mismatch",
       "scenario_category": "infrastructure_fallback",
       "scenario_type": "namespace_mismatch",
-      "incoming_query": "How does PostgreSQL pgvector perform HNSW vector index construction?",
+      "incoming_query": "How to query PostgreSQL database table using SQL select in Python?",
       "description": "Candidate exists only in another namespace, ensuring namespace isolation.",
       "expected_safe_response": null,
       "expected_outcome": "upstream_fallback"
@@ -24537,7 +24561,7 @@
       "scenario_id": "s325_fail_vector_store_error",
       "scenario_category": "infrastructure_fallback",
       "scenario_type": "vector_store_failure",
-      "incoming_query": "What is the difference between TCP Reno and TCP BBR congestion control?",
+      "incoming_query": "How do I configure TCP socket keepalive in Python network script?",
       "description": "Simulated vector store failure causes fail-open upstream generation.",
       "expected_safe_response": null,
       "expected_outcome": "upstream_fallback"

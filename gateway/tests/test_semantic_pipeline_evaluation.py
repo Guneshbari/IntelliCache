@@ -414,9 +414,10 @@ class TestInfrastructureFailOpen(unittest.IsolatedAsyncioTestCase):
         failing_vector_store.search.side_effect = RuntimeError("pgvector connection lost")
 
         mock_embedding_provider = AsyncMock()
-        mock_embedding_provider.embed_query.return_value = MagicMock(vector=[0.1] * 384)
+        mock_embedding_provider.embed.return_value = MagicMock(vector=[0.1] * 384, model="BAAI/bge-small-en-v1.5")
+        mock_embedding_provider.embed_query.return_value = MagicMock(vector=[0.1] * 384, model="BAAI/bge-small-en-v1.5")
 
-        policy = SemanticCachePolicy(min_similarity=0.90, min_margin=0.03)
+        policy = SemanticCachePolicy(min_similarity=0.90, min_margin=0.03, configured_model="BAAI/bge-small-en-v1.5")
         mock_cache = AsyncMock()
         mock_cache.get.return_value = None  # Exact miss
 
@@ -436,17 +437,21 @@ class TestInfrastructureFailOpen(unittest.IsolatedAsyncioTestCase):
         stub_provider = DeterministicStubProvider()
         req = GenerationRequest(
             model="meta-llama/llama-3.1-8b-instruct",
-            messages=[ChatMessage(role="user", content="Explain how TCP Reno congestion control works.")],
+            messages=[ChatMessage(role="user", content="How do I configure TCP socket keepalive in Python network script?")],
             temperature=0.7,
             max_tokens=1024,
             provider="groq",
         )
+
+        elig = policy.check_eligibility(req)
+        self.assertTrue(elig.eligible, f"Query must be eligible for vector store search test, got: {elig.reason}")
 
         res = await core.execute_query(req, stub_provider)
         self.assertEqual(res.cache_type, "none")
         self.assertFalse(res.cached)
         self.assertIn("[UPSTREAM_GENERATED", res.text)
         self.assertEqual(stub_provider.call_count, 1)
+        failing_vector_store.search.assert_awaited_once()
 
     async def test_embedding_failure_fails_open(self):
         mock_vector_store = AsyncMock()
@@ -454,7 +459,7 @@ class TestInfrastructureFailOpen(unittest.IsolatedAsyncioTestCase):
         failing_embedding_provider.embed_query.side_effect = TimeoutError("FastEmbed timeout after 5000ms")
         failing_embedding_provider.embed.side_effect = TimeoutError("FastEmbed timeout after 5000ms")
 
-        policy = SemanticCachePolicy(min_similarity=0.90, min_margin=0.03)
+        policy = SemanticCachePolicy(min_similarity=0.90, min_margin=0.03, configured_model="BAAI/bge-small-en-v1.5")
         mock_cache = AsyncMock()
         mock_cache.get.return_value = None
 
@@ -474,17 +479,22 @@ class TestInfrastructureFailOpen(unittest.IsolatedAsyncioTestCase):
         stub_provider = DeterministicStubProvider()
         req = GenerationRequest(
             model="meta-llama/llama-3.1-8b-instruct",
-            messages=[ChatMessage(role="user", content="Explain how TCP Reno congestion control works.")],
+            messages=[ChatMessage(role="user", content="Write a Python script to compute moving averages with pandas.")],
             temperature=0.7,
             max_tokens=1024,
             provider="groq",
         )
+
+        elig = policy.check_eligibility(req)
+        self.assertTrue(elig.eligible, f"Query must be eligible for embedding failure test, got: {elig.reason}")
 
         res = await core.execute_query(req, stub_provider)
         self.assertEqual(res.cache_type, "none")
         self.assertFalse(res.cached)
         self.assertIn("[UPSTREAM_GENERATED", res.text)
         self.assertEqual(stub_provider.call_count, 1)
+        self.assertGreaterEqual(failing_embedding_provider.embed.await_count, 1)
+        mock_vector_store.search.assert_not_called()
 
     async def test_empty_candidate_pool_fails_open(self):
         empty_vector_store = AsyncMock()
@@ -514,17 +524,21 @@ class TestInfrastructureFailOpen(unittest.IsolatedAsyncioTestCase):
         stub_provider = DeterministicStubProvider()
         req = GenerationRequest(
             model="meta-llama/llama-3.1-8b-instruct",
-            messages=[ChatMessage(role="user", content="Explain Raft consensus.")],
+            messages=[ChatMessage(role="user", content="How do I write a Python function to parse JSON data?")],
             temperature=0.7,
             max_tokens=1024,
             provider="groq",
         )
+
+        elig = policy.check_eligibility(req)
+        self.assertTrue(elig.eligible, f"Query must be eligible for empty candidate pool test, got: {elig.reason}")
 
         res = await core.execute_query(req, stub_provider)
         self.assertEqual(res.cache_type, "none")
         self.assertFalse(res.cached)
         self.assertIn("[UPSTREAM_GENERATED", res.text)
         self.assertEqual(stub_provider.call_count, 1)
+        empty_vector_store.search.assert_awaited_once()
 
     async def test_candidate_pool_immutability_proxies(self):
         ro_cache = ReadOnlyPostgresCache(pool=MagicMock())
