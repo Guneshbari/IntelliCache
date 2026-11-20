@@ -122,6 +122,7 @@ class _NamespaceData:
         self.shadow_requests_sampled = 0
         self.shadow_requests_unsampled = 0
         self.shadow_requests_eligible = 0
+        self.shadow_bypass_requests = 0
         self.shadow_hypothetical_hits = 0
         self.shadow_no_candidate = 0
         self.shadow_threshold_rejections = 0
@@ -340,6 +341,8 @@ class _NamespaceData:
                 self.shadow_requests_eligible += 1
             elif outcome == "ineligible_request":
                 pass
+            elif outcome == "bypass_requested":
+                self.shadow_bypass_requests += 1
             elif outcome == "threshold_rejection":
                 self.shadow_threshold_rejections += 1
                 self.shadow_requests_eligible += 1
@@ -424,6 +427,7 @@ class _NamespaceData:
                 shadow_requests_sampled=self.shadow_requests_sampled,
                 shadow_requests_unsampled=self.shadow_requests_unsampled,
                 shadow_requests_eligible=self.shadow_requests_eligible,
+                shadow_bypass_requests=self.shadow_bypass_requests,
                 shadow_hypothetical_hits=self.shadow_hypothetical_hits,
                 shadow_no_candidate=self.shadow_no_candidate,
                 shadow_threshold_rejections=self.shadow_threshold_rejections,
@@ -874,6 +878,7 @@ class RuntimeMetricsCollector:
             agg_shadow.shadow_requests_sampled += sh.shadow_requests_sampled
             agg_shadow.shadow_requests_unsampled += sh.shadow_requests_unsampled
             agg_shadow.shadow_requests_eligible += sh.shadow_requests_eligible
+            agg_shadow.shadow_bypass_requests += sh.shadow_bypass_requests
             agg_shadow.shadow_hypothetical_hits += sh.shadow_hypothetical_hits
             agg_shadow.shadow_no_candidate += sh.shadow_no_candidate
             agg_shadow.shadow_threshold_rejections += sh.shadow_threshold_rejections

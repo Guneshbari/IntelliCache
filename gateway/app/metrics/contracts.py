@@ -66,6 +66,7 @@ class ShadowMetrics(BaseModel):
     shadow_requests_sampled: int = 0
     shadow_requests_unsampled: int = 0
     shadow_requests_eligible: int = 0
+    shadow_bypass_requests: int = 0
     shadow_hypothetical_hits: int = 0
     shadow_no_candidate: int = 0
     shadow_threshold_rejections: int = 0

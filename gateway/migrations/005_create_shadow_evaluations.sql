@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS shadow_evaluations (
             'eligible_candidate_hit',
             'eligible_no_candidate',
             'ineligible_request',
+            'bypass_requested',
             'threshold_rejection',
             'ambiguity_rejection',
             'compatibility_rejection',
@@ -75,3 +76,28 @@ CREATE INDEX IF NOT EXISTS idx_shadow_eval_request_hash
 
 CREATE INDEX IF NOT EXISTS idx_shadow_eval_retention
     ON shadow_evaluations (timestamp);
+
+-- Ensure chk_shadow_outcome is updated if table already existed prior to Stage 3.3 bypass addition
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'chk_shadow_outcome'
+    ) THEN
+        ALTER TABLE shadow_evaluations DROP CONSTRAINT chk_shadow_outcome;
+        ALTER TABLE shadow_evaluations ADD CONSTRAINT chk_shadow_outcome CHECK (
+            hypothetical_cache_outcome IN (
+                'eligible_candidate_hit',
+                'eligible_no_candidate',
+                'ineligible_request',
+                'bypass_requested',
+                'threshold_rejection',
+                'ambiguity_rejection',
+                'compatibility_rejection',
+                'embedding_failure',
+                'vector_store_failure',
+                'shadow_timeout',
+                'shadow_execution_failure'
+            )
+        );
+    END IF;
+END $$;

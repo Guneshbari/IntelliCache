@@ -37,14 +37,43 @@ class FastEmbedProvider(EmbeddingProvider):
         dimensions: Optional[int] = 384,
         client: Optional[httpx.AsyncClient] = None,
         executor: Optional[ThreadPoolExecutor] = None,
+        max_concurrency: Optional[int] = None,
     ):
         self.base_url = base_url
         self.model_name = (model or "BAAI/bge-small-en-v1.5").strip()
         self.timeout_seconds = float(timeout_seconds) if timeout_seconds > 0 else 30.0
         self.expected_dimensions = int(dimensions) if dimensions is not None and dimensions > 0 else 384
         self.executor = executor
+        self.max_concurrency = int(max_concurrency) if max_concurrency and max_concurrency > 0 else None
         self._model = None
         self._lock = asyncio.Lock()
+        self._semaphore: Optional[asyncio.Semaphore] = None
+
+    def _get_executor(self) -> ThreadPoolExecutor:
+        """Lazily creates or returns the ThreadPoolExecutor for inference."""
+        if self.executor is None:
+            workers = self.max_concurrency or 4
+            self.executor = ThreadPoolExecutor(
+                max_workers=workers,
+                thread_name_prefix="fastembed-inference",
+            )
+        return self.executor
+
+    def _get_semaphore(self) -> asyncio.Semaphore:
+        """
+        Lazily creates or returns the concurrency bounding semaphore.
+        Limits total in-flight submitted inference work in worker threads,
+        accounting for running C++/ONNX threads that cannot be interrupted.
+        """
+        if self._semaphore is None:
+            limit = self.max_concurrency
+            executor = self._get_executor()
+            if limit is None and executor is not None:
+                limit = getattr(executor, "_max_workers", None)
+            if limit is None or limit <= 0:
+                limit = 4
+            self._semaphore = asyncio.Semaphore(limit)
+        return self._semaphore
 
     @property
     def model(self) -> str:
@@ -157,13 +186,43 @@ class FastEmbedProvider(EmbeddingProvider):
                 ) from err
 
         loop = asyncio.get_running_loop()
-        fut = loop.run_in_executor(self.executor, _compute)
+        sem = self._get_semaphore()
+        executor = self._get_executor()
+
+        # Bounded inference submission gate:
+        # Prevents queueing unbounded work when worker threads are busy running ONNX inference.
+        try:
+            await asyncio.wait_for(sem.acquire(), timeout=self.timeout_seconds)
+        except asyncio.TimeoutError as exc:
+            raise EmbeddingTimeoutError(
+                f"FastEmbed inference capacity saturated; worker threads busy after {self.timeout_seconds:.1f}s.",
+                provider="fastembed",
+            ) from exc
+
+        def _safe_release(_f: Any) -> None:
+            if not loop.is_closed():
+                try:
+                    loop.call_soon_threadsafe(sem.release)
+                except RuntimeError:
+                    pass
+
+        acquired = True
+        try:
+            cf = executor.submit(_compute)
+            cf.add_done_callback(_safe_release)
+            acquired = False  # Ownership transferred to cf completion callback
+        finally:
+            if acquired:
+                sem.release()
+
+        af = asyncio.wrap_future(cf)
         try:
             vector = await asyncio.wait_for(
-                fut,
+                af,
                 timeout=self.timeout_seconds,
             )
         except asyncio.TimeoutError as exc:
+            cf.cancel()
             raise EmbeddingTimeoutError(
                 f"FastEmbed embedding generation timed out after {self.timeout_seconds:.1f}s.",
                 provider="fastembed",
@@ -257,12 +316,42 @@ class FastEmbedProvider(EmbeddingProvider):
                         provider="fastembed",
                     ) from err
 
+            loop = asyncio.get_running_loop()
+            sem = self._get_semaphore()
+            executor = self._get_executor()
+
+            try:
+                await asyncio.wait_for(sem.acquire(), timeout=self.timeout_seconds)
+            except asyncio.TimeoutError as exc:
+                raise EmbeddingTimeoutError(
+                    f"FastEmbed batch capacity saturated; worker threads busy after {self.timeout_seconds:.1f}s.",
+                    provider="fastembed",
+                ) from exc
+
+            def _safe_release(_f: Any) -> None:
+                if not loop.is_closed():
+                    try:
+                        loop.call_soon_threadsafe(sem.release)
+                    except RuntimeError:
+                        pass
+
+            acquired = True
+            try:
+                cf = executor.submit(_compute_chunk)
+                cf.add_done_callback(_safe_release)
+                acquired = False  # Ownership transferred to cf completion callback
+            finally:
+                if acquired:
+                    sem.release()
+
+            af = asyncio.wrap_future(cf)
             try:
                 chunk_vectors = await asyncio.wait_for(
-                    asyncio.to_thread(_compute_chunk),
+                    af,
                     timeout=self.timeout_seconds,
                 )
             except asyncio.TimeoutError as exc:
+                cf.cancel()
                 raise EmbeddingTimeoutError(
                     f"FastEmbed batch embedding generation timed out after {self.timeout_seconds:.1f}s.",
                     provider="fastembed",

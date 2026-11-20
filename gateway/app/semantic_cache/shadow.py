@@ -100,6 +100,7 @@ class ShadowTask:
     stream: bool = False
     is_multi_turn: bool = False
     actual_response_text: Optional[str] = None
+    bypass_cache: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -108,11 +109,11 @@ class ShadowTask:
 
 class ReadOnlyVectorStoreAdapter(BaseVectorStore):
     """
-    Structural read-only adapter wrapping a BaseVectorStore.
-    Guarantees both application-level and database-level write protection:
-    1. Blocks upsert(), delete(), and clear() in Python.
+    Structural read-only adapter wrapping a BaseVectorStore for shadow evaluation.
+    Enforces application-level write protection and transaction-level read-only search:
+    1. Blocks upsert(), delete(), and clear() in application code by raising PermissionError.
     2. Enables readonly_transaction on the underlying store if supported (e.g. PostgresVectorStore),
-       guaranteeing that PostgreSQL enforces SET TRANSACTION READ ONLY.
+       ensuring that PostgreSQL search queries execute in a SET TRANSACTION READ ONLY transaction.
     """
 
     def __init__(self, inner: BaseVectorStore, enforce_db_readonly: bool = True):
@@ -245,6 +246,8 @@ class ShadowEvaluationService:
             prov = self.semantic_cache.embedding_provider
             if hasattr(prov, "executor") and prov.executor is None:
                 prov.executor = self.executor
+            if hasattr(prov, "max_concurrency") and getattr(prov, "max_concurrency", None) is None:
+                prov.max_concurrency = settings.shadow_max_concurrency
         self._workers: List[asyncio.Task] = []
         self._stopping = False
         self._running = False
@@ -363,80 +366,113 @@ class ShadowEvaluationService:
         failure_category: Optional[str] = None
         hit: Optional[SemanticHit] = None
 
-        try:
-            # 1. Eligibility Check: Short-circuit if ineligible (skip ONNX & pgvector)
-            eligibility = self.semantic_cache.is_eligible(gen_req)
-            if not eligibility.eligible:
-                eligibility_status = "ineligible"
-                eligibility_rejection_reason = map_eligibility_rejection_code(eligibility.reason)
-                hypothetical_cache_outcome = "ineligible_request"
-            else:
-                retrieval_status = "attempted"
-                # 2. Real lookup with bounded timeout and request-scoped diagnostics hook
-                try:
-                    hit = await asyncio.wait_for(
-                        self.semantic_cache.lookup(gen_req, diagnostics_hook=_capture),
-                        timeout=self.settings.shadow_timeout_seconds,
-                    )
-                except asyncio.TimeoutError:
-                    hypothetical_cache_outcome = "shadow_timeout"
-                    failure_category = "SHADOW_TIMEOUT"
-                except Exception as exc:
-                    hypothetical_cache_outcome = "shadow_execution_failure"
-                    failure_category = "SHADOW_EXECUTION_FAILURE"
-                    logger.warning("Shadow lookup error for '%s': %s", task.request_id, exc)
+        # 1. Check explicit cache bypass
+        if task.bypass_cache:
+            eligibility_status = "bypassed"
+            retrieval_status = "bypassed"
+            hypothetical_cache_outcome = "bypass_requested"
+        else:
+            try:
+                # Eligibility Check: Short-circuit if ineligible (skip ONNX & pgvector)
+                eligibility = self.semantic_cache.is_eligible(gen_req)
+                if not eligibility.eligible:
+                    eligibility_status = "ineligible"
+                    eligibility_rejection_reason = map_eligibility_rejection_code(eligibility.reason)
+                    hypothetical_cache_outcome = "ineligible_request"
+                else:
+                    retrieval_status = "attempted"
+                    # 2. Real lookup with bounded timeout and request-scoped diagnostics hook
+                    try:
+                        hit = await asyncio.wait_for(
+                            self.semantic_cache.lookup(gen_req, diagnostics_hook=_capture),
+                            timeout=self.settings.shadow_timeout_seconds,
+                        )
+                    except asyncio.TimeoutError:
+                        hypothetical_cache_outcome = "shadow_timeout"
+                        failure_category = "SHADOW_TIMEOUT"
+                    except Exception as exc:
+                        hypothetical_cache_outcome = "shadow_execution_failure"
+                        failure_category = "SHADOW_EXECUTION_FAILURE"
+                        logger.warning("Shadow lookup error for '%s': %s", task.request_id, exc)
 
-                # Extract diagnostics if lookup finished
-                if failure_category is None:
-                    embedding_duration_ms = max(0.0, float(captured_diag.get("embed_latency_ms") or 0.0))
-                    retrieval_duration_ms = max(0.0, float(captured_diag.get("search_latency_ms") or 0.0))
-                    policy_duration_ms = max(0.0, float(captured_diag.get("eval_latency_ms") or 0.0))
+                    # Extract diagnostics if lookup finished
+                    if failure_category is None:
+                        embedding_duration_ms = max(0.0, float(captured_diag.get("embed_latency_ms") or 0.0))
+                        retrieval_duration_ms = max(0.0, float(captured_diag.get("search_latency_ms") or 0.0))
+                        policy_duration_ms = max(0.0, float(captured_diag.get("eval_latency_ms") or 0.0))
 
-                    candidates: List[VectorSearchResult] = captured_diag.get("candidates") or []
-                    candidate_count = len(candidates)
+                        candidates: List[VectorSearchResult] = captured_diag.get("candidates") or []
+                        candidate_count = len(candidates)
 
-                    if candidate_count > 0:
-                        top_similarity = round(float(candidates[0].similarity), 4)
-                        if candidate_count > 1:
-                            runner_up_similarity = round(float(candidates[1].similarity), 4)
-                            similarity_margin = round(float(top_similarity - runner_up_similarity), 4)
+                        if candidate_count > 0:
+                            top_similarity = round(float(candidates[0].similarity), 4)
+                            if candidate_count > 1:
+                                runner_up_similarity = round(float(candidates[1].similarity), 4)
+                                similarity_margin = round(float(top_similarity - runner_up_similarity), 4)
 
-                    rejection = captured_diag.get("rejection_reason") or ""
+                        rejection = captured_diag.get("rejection_reason") or ""
 
-                    if hit is not None:
-                        hypothetical_cache_outcome = "eligible_candidate_hit"
-                        compatibility_validation_result = "compatible"
-                        retrieval_status = "hit"
+                        if hit is not None:
+                            hypothetical_cache_outcome = "eligible_candidate_hit"
+                            compatibility_validation_result = "compatible"
+                            retrieval_status = "hit"
 
-                        # Candidate response match comparison
-                        if task.actual_response_hash and hit.cached_response:
-                            cand_hash = hashlib.sha256(hit.cached_response.strip().encode("utf-8")).hexdigest()
-                            candidate_response_matched = (cand_hash == task.actual_response_hash)
-                    else:
-                        retrieval_status = "miss"
-                        if "embedding failure" in rejection.lower() or "model mismatch" in rejection.lower():
-                            hypothetical_cache_outcome = "embedding_failure"
-                            failure_category = "EMBEDDING_ERROR"
-                        elif "vector search failure" in rejection.lower():
-                            hypothetical_cache_outcome = "vector_store_failure"
-                            failure_category = "VECTOR_STORE_ERROR"
-                        elif candidate_count == 0:
-                            hypothetical_cache_outcome = "eligible_no_candidate"
-                        elif "ambigu" in rejection.lower() or "margin" in rejection.lower():
-                            hypothetical_cache_outcome = "ambiguity_rejection"
-                            ambiguity_decision = "AMBIGUOUS_MARGIN_TOO_SMALL"
-                        elif "compat" in rejection.lower() or "mismatch" in rejection.lower():
-                            hypothetical_cache_outcome = "compatibility_rejection"
-                            compatibility_validation_result = "incompatible"
-                            compatibility_rejection_reason = map_compatibility_rejection_code(rejection)
+                            # Candidate response match comparison
+                            if task.actual_response_hash and hit.cached_response:
+                                cand_hash = hashlib.sha256(hit.cached_response.strip().encode("utf-8")).hexdigest()
+                                candidate_response_matched = (cand_hash == task.actual_response_hash)
                         else:
-                            hypothetical_cache_outcome = "threshold_rejection"
+                            retrieval_status = "miss"
+                            if "embedding failure" in rejection.lower() or "model mismatch" in rejection.lower():
+                                hypothetical_cache_outcome = "embedding_failure"
+                                failure_category = "EMBEDDING_ERROR"
+                            elif "vector search failure" in rejection.lower():
+                                hypothetical_cache_outcome = "vector_store_failure"
+                                failure_category = "VECTOR_STORE_ERROR"
+                            elif candidate_count == 0:
+                                hypothetical_cache_outcome = "eligible_no_candidate"
+                            elif "ambigu" in rejection.lower() or "margin" in rejection.lower():
+                                hypothetical_cache_outcome = "ambiguity_rejection"
+                                ambiguity_decision = "AMBIGUOUS_MARGIN_TOO_SMALL"
+                            elif "compat" in rejection.lower() or "mismatch" in rejection.lower():
+                                hypothetical_cache_outcome = "compatibility_rejection"
+                                compatibility_validation_result = "incompatible"
+                                compatibility_rejection_reason = map_compatibility_rejection_code(rejection)
+                            else:
+                                hypothetical_cache_outcome = "threshold_rejection"
 
-        except Exception as err:
-            hypothetical_cache_outcome = "shadow_execution_failure"
-            failure_category = "SHADOW_EXECUTION_FAILURE"
-            logger.error("Unexpected error in shadow evaluation: %s", err, exc_info=True)
+            except Exception as err:
+                hypothetical_cache_outcome = "shadow_execution_failure"
+                failure_category = "SHADOW_EXECUTION_FAILURE"
+                logger.error("Unexpected error in shadow evaluation: %s", err, exc_info=True)
 
+        # 3. Dedicated Shadow Candidate Ingestion:
+        # If the actual response was from the upstream provider and the query was eligible,
+        # index this candidate into the shadow candidate pool (shadow_vector_records) so future
+        # shadow evaluations can retrieve it. Never mutates production cache_entries or vector_records.
+        # Applies a dedicated bounded timeout so candidate ingestion cannot hang shadow workers.
+        if (
+            self.shadow_vector_store is not None
+            and task.actual_response_source == "upstream_provider"
+            and task.actual_response_text
+            and eligibility_status == "eligible"
+            and not task.bypass_cache
+        ):
+            try:
+                await asyncio.wait_for(
+                    self.index_shadow_candidate(task, task.actual_response_text),
+                    timeout=self.settings.shadow_timeout_seconds,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "Shadow candidate ingestion timed out for '%s' after %.1fs",
+                    task.request_id,
+                    self.settings.shadow_timeout_seconds,
+                )
+            except Exception as ing_err:
+                logger.debug("Shadow candidate ingestion error for '%s': %s", task.request_id, ing_err)
+
+        # Total execution duration includes lookup AND candidate ingestion
         exec_duration_ms = max(0.0, (time.perf_counter() - start_time) * 1000.0)
 
         # Record metrics independently (shadow hits never increment production cache hits)
@@ -449,21 +485,6 @@ class ShadowEvaluationService:
             retrieval_latency_ms=retrieval_duration_ms,
             policy_latency_ms=policy_duration_ms,
         )
-
-        # 3. Dedicated Shadow Candidate Ingestion:
-        # If the actual response was from the upstream provider and the query was eligible,
-        # index this candidate into the shadow candidate pool (shadow_vector_records) so future
-        # shadow evaluations can retrieve it. Never mutates production cache_entries or vector_records.
-        if (
-            self.shadow_vector_store is not None
-            and task.actual_response_source == "upstream_provider"
-            and task.actual_response_text
-            and eligibility_status == "eligible"
-        ):
-            try:
-                await self.index_shadow_candidate(task, task.actual_response_text)
-            except Exception as ing_err:
-                logger.debug("Shadow candidate ingestion error: %s", ing_err)
 
         # Persist to database (if PostgreSQL pool is configured)
         if self.db_pool is not None:

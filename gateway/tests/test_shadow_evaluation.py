@@ -657,6 +657,176 @@ class TestShadowEvaluationServiceExecution(unittest.IsolatedAsyncioTestCase):
         finally:
             slow_provider.executor.shutdown(wait=False)
 
+    async def test_repeated_timeout_executor_queue_bounding(self):
+        """Verifies repeated timeouts under slow thread-backed inference do not accumulate pending work."""
+        import concurrent.futures
+        from app.embeddings.fastembed_adapter import FastEmbedProvider
+
+        class SlowComputeFastEmbedProvider(FastEmbedProvider):
+            def __init__(self, executor, max_concurrency=2):
+                super().__init__(
+                    model="BAAI/bge-small-en-v1.5",
+                    timeout_seconds=0.05,
+                    dimensions=4,
+                    executor=executor,
+                    max_concurrency=max_concurrency,
+                )
+
+            def _load_model_sync(self):
+                class DummyModel:
+                    def query_embed(self, texts):
+                        for _ in texts:
+                            time.sleep(0.12)
+                            yield [0.1, 0.2, 0.3, 0.4]
+                    def embed(self, texts):
+                        for _ in texts:
+                            time.sleep(0.12)
+                            yield [0.1, 0.2, 0.3, 0.4]
+                return DummyModel()
+
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+        try:
+            slow_provider = SlowComputeFastEmbedProvider(executor=executor, max_concurrency=2)
+            slow_cache = ReadOnlySemanticCacheService(
+                embedding_provider=slow_provider,
+                vector_store=self.read_only_adapter,
+                policy=self.policy,
+                default_namespace="default",
+            )
+            svc = ShadowEvaluationService(
+                settings=Settings(
+                    cache_backend="memory",
+                    shadow_evaluation_enabled=True,
+                    shadow_timeout_seconds=0.05,
+                    shadow_max_concurrency=2,
+                    shadow_queue_max_size=20,
+                ),
+                semantic_cache=slow_cache,
+                db_pool=None,
+                metrics_collector=self.collector,
+            )
+            await svc.start()
+
+            # Enqueue 8 consecutive tasks that experience inference timeouts
+            for i in range(8):
+                task = ShadowTask(
+                    request_id=f"req-rep-timeout-{i}",
+                    request_hash=f"h-rep-timeout-{i}",
+                    cache_namespace="default",
+                    provider="groq",
+                    requested_model="qwen/qwen3.8-27b",
+                    temperature=0.0,
+                    max_tokens=100,
+                    query_text=f"How to implement binary search in Python? Variant {i}",
+                    actual_response_source="upstream_provider",
+                    actual_response_hash=None,
+                    actual_latency_ms=10.0,
+                    enqueued_at=time.perf_counter(),
+                )
+                svc.enqueue(task)
+
+            await svc.queue.join()
+            await svc.stop(drain_timeout=1.0)
+
+            # Assert all 8 tasks finished cleanly with execution failure / embedding failure recorded
+            snap = self.collector.get_namespace_snapshot("default")
+            total_failures = snap.shadow.shadow_execution_failures + snap.shadow.shadow_embedding_failures
+            self.assertEqual(total_failures, 8)
+            # Pending work in executor._work_queue must be 0 (no lingering jobs)
+            self.assertEqual(executor._work_queue.qsize(), 0)
+        finally:
+            executor.shutdown(wait=False)
+
+    async def test_shadow_task_preserves_explicit_cache_bypass(self):
+        """When bypass_cache is True, shadow evaluation records bypass_requested and skips semantic lookup."""
+        task = ShadowTask(
+            request_id="req-bypass-1",
+            request_hash="hash-bypass-1",
+            cache_namespace="default",
+            provider="groq",
+            requested_model="qwen/qwen3.8-27b",
+            temperature=0.0,
+            max_tokens=100,
+            query_text="How to calculate fibonacci?",
+            actual_response_source="bypass",
+            actual_response_hash=hashlib.sha256(b"def fib(n): return n").hexdigest(),
+            actual_latency_ms=45.0,
+            enqueued_at=time.perf_counter(),
+            bypass_cache=True,
+            actual_response_text="def fib(n): return n",
+        )
+
+        initial_embed_count = getattr(self.embed_provider, "call_count", 0)
+        self.shadow_service.enqueue(task)
+        await self.shadow_service.queue.join()
+
+        # Semantic lookup and embedding must be skipped entirely
+        self.assertEqual(getattr(self.embed_provider, "call_count", 0), initial_embed_count)
+
+        snap = self.collector.get_namespace_snapshot("default")
+        self.assertEqual(snap.shadow.shadow_bypass_requests, 1)
+        self.assertEqual(snap.shadow.shadow_hypothetical_hits, 0)
+        self.assertEqual(snap.shadow.shadow_requests_eligible, 0)
+
+    async def test_candidate_ingestion_bounded_timeout(self):
+        """Candidate ingestion enforces bounded execution timeout and prevents hanging worker."""
+        class SlowIngestionEmbedder:
+            def __init__(self):
+                self.model = "BAAI/bge-small-en-v1.5"
+                self.dimensions = 4
+            async def embed(self, text: str, task: str = "query"):
+                if task == "document" or task == EmbeddingTask.DOCUMENT:
+                    await asyncio.sleep(0.3)  # Exceeds 0.05s timeout
+                @dataclass
+                class Res:
+                    vector: list
+                    model: str
+                return Res(vector=[0.1, 0.2, 0.3, 0.4], model=self.model)
+
+        mock_store = AsyncMock()
+        slow_cache = ReadOnlySemanticCacheService(
+            embedding_provider=SlowIngestionEmbedder(),
+            vector_store=self.read_only_adapter,
+            policy=self.policy,
+            default_namespace="default",
+        )
+        svc = ShadowEvaluationService(
+            settings=Settings(
+                cache_backend="memory",
+                shadow_evaluation_enabled=True,
+                shadow_timeout_seconds=0.05,
+                shadow_max_concurrency=2,
+                shadow_queue_max_size=10,
+            ),
+            semantic_cache=slow_cache,
+            db_pool=None,
+            metrics_collector=self.collector,
+            shadow_vector_store=mock_store,
+        )
+        await svc.start()
+
+        task = ShadowTask(
+            request_id="req-slow-ingestion",
+            request_hash="h-slow-ingestion",
+            cache_namespace="default",
+            provider="groq",
+            requested_model="qwen/qwen3.8-27b",
+            temperature=0.0,
+            max_tokens=100,
+            query_text="What is quicksort?",
+            actual_response_source="upstream_provider",
+            actual_response_hash="hash-quicksort",
+            actual_latency_ms=50.0,
+            enqueued_at=time.perf_counter(),
+            actual_response_text="Quicksort is a divide and conquer algorithm.",
+        )
+        svc.enqueue(task)
+        await svc.queue.join()
+        await svc.stop(drain_timeout=0.5)
+
+        # Candidate ingestion timed out, so mock_store.upsert was not reached
+        mock_store.upsert.assert_not_called()
+
     async def test_shadow_candidate_ingestion_and_subsequent_hit(self):
         """Shadow candidate ingestion populates shadow vector store while production store remains empty."""
         shadow_candidate_store = InMemoryVectorStore(dimensions=4)
@@ -1239,7 +1409,7 @@ class TestPostgresShadowStorageIntegration(unittest.IsolatedAsyncioTestCase):
 
 
 class TestDatabaseLevelReadOnlyEnforcement(unittest.IsolatedAsyncioTestCase):
-    """Verifies PostgreSQL and adapter level read-only transaction enforcement (P1)."""
+    """Verifies application-level write protection and transaction-level read-only search isolation."""
 
     async def test_readonly_adapter_enforces_db_readonly_flag(self):
         pg_store = PostgresVectorStore(
@@ -1292,7 +1462,7 @@ class TestDatabaseLevelReadOnlyEnforcement(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(tx_ctx.exited)
 
     async def test_postgres_readonly_transaction_blocks_mutation(self):
-        """Simulates PostgreSQL error 25006 (cannot_execute_in_read_only_transaction) on write in readonly tx."""
+        """Simulates PostgreSQL error 25006 (cannot_execute_in_read_only_transaction) when write is attempted in readonly transaction."""
         class MockReadOnlyTransactionError(Exception):
             sqlstate = "25006"
 
@@ -1316,7 +1486,7 @@ class TestDatabaseLevelReadOnlyEnforcement(unittest.IsolatedAsyncioTestCase):
             readonly_transaction=True,
         )
 
-        # Attempting upsert in a read-only context fails at the database transaction layer
+        # Attempting upsert when wrapped in a read-only transaction context simulates database write rejection
         rec = VectorRecord(
             cache_namespace="default",
             fingerprint="fp-write",

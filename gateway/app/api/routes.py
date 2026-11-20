@@ -981,6 +981,7 @@ async def execute_query(
                                     stream=True,
                                     is_multi_turn=is_multi,
                                     actual_response_text=full_text if full_text else None,
+                                    bypass_cache=effective_bypass_cache,
                                 )
                                 shadow_svc.enqueue(shadow_task)
                             except Exception as shadow_err:
@@ -1109,6 +1110,7 @@ async def execute_query(
                     stream=False,
                     is_multi_turn=is_multi,
                     actual_response_text=result.text if result.text else None,
+                    bypass_cache=effective_bypass_cache,
                 )
                 shadow_svc.enqueue(shadow_task)
             except Exception as shadow_err:
