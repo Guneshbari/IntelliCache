@@ -9,3 +9,4 @@ releases
 coverage
 gateway/evaluation/reports
 gateway/evaluation/datasets
+load_testing/reports/*.json

@@ -20,6 +20,9 @@ export const standardThresholds = {
   http_req_failed: ['rate<0.01'],
   http_req_duration: ['p(95)<500', 'p(99)<1000'],
   exact_cache_hits: ['count>=0'],
+  exact_cache_misses: ['count>=0'],
+  exact_hit_latency_ms: ['p(95)<500'],
+  cache_miss_latency_ms: ['p(95)<1000'],
   semantic_hits_served: ['count==0'], // Must remain strictly 0!
 }
 

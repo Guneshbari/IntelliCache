@@ -8,22 +8,44 @@ import http from 'k6/http'
 import { sleep } from 'k6'
 import { BASE_URL, standardThresholds } from '../config/test-profiles.js'
 import { getClientHeaders, getAdminHeaders } from '../helpers/auth.js'
-import { recordResponseMetrics } from '../helpers/metrics.js'
+import {
+  recordResponseMetrics,
+  exactCacheHits,
+  exactCacheMisses,
+  exactHitLatency,
+  cacheMissLatency,
+} from '../helpers/metrics.js'
 import { assertSuccessResponse } from '../helpers/assertions.js'
 import { createPRNG, getWorkloadSeed, deterministicPick } from '../helpers/prng.js'
 
+export { exactCacheHits, exactCacheMisses, exactHitLatency, cacheMissLatency }
+
 const vus = parseInt(__ENV.VUS || '10', 10)
 const duration = __ENV.DURATION || '20s'
+const iterations = parseInt(__ENV.ITERATIONS || '0', 10)
 const seed = getWorkloadSeed()
 
-export const options = {
-  stages: [
-    { duration: '3s', target: vus }, // Warm-up ramp
-    { duration: duration, target: vus }, // Steady-state load
-    { duration: '2s', target: 0 }, // Cooldown
-  ],
-  thresholds: standardThresholds,
-}
+export const options =
+  iterations > 0
+    ? {
+        scenarios: {
+          fixed_baseline: {
+            executor: 'per-vu-iterations',
+            vus: vus,
+            iterations: Math.floor(iterations / vus),
+            maxDuration: '120s',
+          },
+        },
+        thresholds: standardThresholds,
+      }
+    : {
+        stages: [
+          { duration: '3s', target: vus }, // Warm-up ramp
+          { duration: duration, target: vus }, // Steady-state load
+          { duration: '2s', target: 0 }, // Cooldown
+        ],
+        thresholds: standardThresholds,
+      }
 
 const comparativeDataset = JSON.parse(open('../datasets/comparative_workload.json'))
 
