@@ -40,6 +40,7 @@ load_testing/
 All tests execute via the pre-pulled **`grafana/k6:latest`** Docker image. No local host installation of k6 is required.
 
 ### 2.1 Mode A: Host Gateway with Host Networking (Recommended for Local Dev)
+
 When running the gateway locally (e.g. `uvicorn app.main:app --host 0.0.0.0 --port 8000`):
 
 ```bash
@@ -53,6 +54,7 @@ docker run --rm -i \
 ```
 
 ### 2.2 Mode B: Isolated Docker Compose Environment
+
 For a completely containerized test run:
 
 ```bash
@@ -71,18 +73,19 @@ docker compose -f load_testing/docker-compose.load-test.yml down -v
 
 ## 3. Workload Datasets & Expected Behaviour
 
-| Dataset | File | Query Composition | Purpose |
-| :--- | :--- | :--- | :--- |
-| **Smoke** | `datasets/smoke.json` | 1 seed, 1 repeat, 1 miss, 1 bypass | Quick verification of endpoint contracts and invariants |
-| **Baseline** | `datasets/baseline_workload.json` | 10 exact targets, 5 unique misses, 2 bypasses | Exact-cache baseline latency and hit rate measurement |
-| **Semantic** | `datasets/semantic_workload.json` | 2 seeds, 2 paraphrases, 2 hard negatives, 4 ineligibles | Shadow evaluation decision quality and rejection verification |
-| **Mixed** | `datasets/mixed_workload.json` | 4 exact hits, 2 paraphrases, 2 incompatibles, 2 misses, 1 ineligible, 1 bypass | Realistic production traffic simulation |
+| Dataset      | File                              | Query Composition                                                              | Purpose                                                       |
+| :----------- | :-------------------------------- | :----------------------------------------------------------------------------- | :------------------------------------------------------------ |
+| **Smoke**    | `datasets/smoke.json`             | 1 seed, 1 repeat, 1 miss, 1 bypass                                             | Quick verification of endpoint contracts and invariants       |
+| **Baseline** | `datasets/baseline_workload.json` | 10 exact targets, 5 unique misses, 2 bypasses                                  | Exact-cache baseline latency and hit rate measurement         |
+| **Semantic** | `datasets/semantic_workload.json` | 2 seeds, 2 paraphrases, 2 hard negatives, 4 ineligibles                        | Shadow evaluation decision quality and rejection verification |
+| **Mixed**    | `datasets/mixed_workload.json`    | 4 exact hits, 2 paraphrases, 2 incompatibles, 2 misses, 1 ineligible, 1 bypass | Realistic production traffic simulation                       |
 
 ---
 
 ## 4. Test Execution Profiles & Invariant Gates
 
 ### Invariant Checks Enforced in All Tests:
+
 - `http_req_failed < 1%`: HTTP 4xx/5xx error rate must remain under 1%.
 - `semantic_hits_served == 0`: **CRITICAL PRODUCTION INVARIANT**. Semantic cache responses must NEVER be served to users.
 - `http_req_duration P95 < 500ms`: P95 request duration must satisfy service thresholds.

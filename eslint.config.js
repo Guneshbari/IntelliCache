@@ -19,6 +19,7 @@ export default tseslint.config(
       'dist-*/**',
       'node_modules/**',
       'gateway/**',
+      'load_testing/**',
       '.venv/**',
       '**/.venv/**',
       'coverage/**',

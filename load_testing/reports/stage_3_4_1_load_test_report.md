@@ -20,6 +20,7 @@
 Stage 3.4.1 successfully establishes a reproducible, containerized **Grafana k6 load-testing integration** for IntelliCache. Using the host's existing `grafana/k6:latest` Docker image, the framework exercises the complete gateway pipeline across exact-cache lookups, SingleFlight concurrency coalescing, fail-open upstream fallbacks, and asynchronous shadow evaluation.
 
 All 8 phases mandated for Stage 3.4.1 have been executed and verified:
+
 1. **Audit Complete**: Verified API contracts (`QueryRequest`, `QueryResponse`), token authentication (`X-Client-Token`), and database schema.
 2. **k6 Integration**: Implemented clean directory structure under `load_testing/` with zero hardcoded credentials and fully configurable parameters.
 3. **Deterministic Workloads**: Built smoke, baseline, semantic, and mixed workload datasets without sensitive data.
@@ -57,12 +58,12 @@ All 8 phases mandated for Stage 3.4.1 have been executed and verified:
 
 ## 3. Workload Datasets & Expected Behaviour
 
-| Dataset | Path | Items | Composition & Traffic Intent | Expected Gateway Response |
-| :--- | :--- | :---: | :--- | :--- |
-| **Smoke** | `load_testing/datasets/smoke.json` | 4 | 1 seed query, 1 repeat exact query, 1 unique query, 1 bypass query | Seed: miss (`cached: false`); Repeat: exact hit (`cached: true, cache_type: 'exact'`); Bypass: miss (`cached: false`) |
-| **Baseline** | `load_testing/datasets/baseline_workload.json` | 17 | 10 exact targets (seeded), 5 unique misses, 2 explicit bypasses | 60% exact hits (<10ms), 30% unique misses (~120ms), 10% bypasses (~120ms) |
-| **Semantic** | `load_testing/datasets/semantic_workload.json` | 10 | 2 seeds, 2 paraphrases, 2 hard negatives, 4 ineligibles (multi-turn, system prompt, temperature 0.7, non-technical) | Paraphrases: shadow hypothetical hit; Ineligibles: policy rejection (`MULTI_TURN`, `TEMPERATURE_NON_ZERO`, etc.) |
-| **Mixed** | `load_testing/datasets/mixed_workload.json` | 12 | 4 exact hits, 2 paraphrases, 2 domain incompatibles, 2 unique misses, 1 multi-turn ineligible, 1 bypass | Blended production traffic model: exact hit rate ~60-70%, shadow sampling ~10% |
+| Dataset      | Path                                           | Items | Composition & Traffic Intent                                                                                        | Expected Gateway Response                                                                                             |
+| :----------- | :--------------------------------------------- | :---: | :------------------------------------------------------------------------------------------------------------------ | :-------------------------------------------------------------------------------------------------------------------- |
+| **Smoke**    | `load_testing/datasets/smoke.json`             |   4   | 1 seed query, 1 repeat exact query, 1 unique query, 1 bypass query                                                  | Seed: miss (`cached: false`); Repeat: exact hit (`cached: true, cache_type: 'exact'`); Bypass: miss (`cached: false`) |
+| **Baseline** | `load_testing/datasets/baseline_workload.json` |  17   | 10 exact targets (seeded), 5 unique misses, 2 explicit bypasses                                                     | 60% exact hits (<10ms), 30% unique misses (~120ms), 10% bypasses (~120ms)                                             |
+| **Semantic** | `load_testing/datasets/semantic_workload.json` |  10   | 2 seeds, 2 paraphrases, 2 hard negatives, 4 ineligibles (multi-turn, system prompt, temperature 0.7, non-technical) | Paraphrases: shadow hypothetical hit; Ineligibles: policy rejection (`MULTI_TURN`, `TEMPERATURE_NON_ZERO`, etc.)      |
+| **Mixed**    | `load_testing/datasets/mixed_workload.json`    |  12   | 4 exact hits, 2 paraphrases, 2 domain incompatibles, 2 unique misses, 1 multi-turn ineligible, 1 bypass             | Blended production traffic model: exact hit rate ~60-70%, shadow sampling ~10%                                        |
 
 ---
 
@@ -73,14 +74,15 @@ All 8 phases mandated for Stage 3.4.1 have been executed and verified:
 All baseline tests were executed against the isolated local environment (`LLM_PROVIDER=mock`, `CACHE_BACKEND=postgres`, `DATABASE_URL=postgresql://.../intellicache_loadtest`).
 
 | Concurrency Level | Test Duration | Completed Requests | Request Throughput | Exact Cache Hits | Exact Hit Ratio | Exact Hit Latency (Avg / P95) | Provider Miss Latency (Avg / P95) | Overall P95 Duration | HTTP Error Rate | Semantic Hits Served |
-| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **1 VU** | 10.0 s | 18 | 1.80 req/s | 11 | 61.1% | 12.00 ms / 14.43 ms | 124.92 ms / 132.55 ms | 125.62 ms | **0.00%** | **0** |
-| **5 VUs** | 25.0 s | 683 | 25.92 req/s | 405 | 60.2% | 4.43 ms / 6.86 ms | 125.09 ms / 128.64 ms | 127.97 ms | **0.00%** | **0** |
-| **10 VUs** | 25.0 s | 1,324 | 52.73 req/s | 764 | 58.1% | 3.51 ms / 5.71 ms | 124.20 ms / 127.62 ms | 126.58 ms | **0.00%** | **0** |
-| **25 VUs** | 25.0 s | 3,350 | 133.47 req/s | 2,024 | 60.4% | 2.95 ms / 4.70 ms | 123.49 ms / 126.44 ms | 125.43 ms | **0.00%** | **0** |
-| **50 VUs** | 25.0 s | 6,619 | **263.76 req/s** | 3,937 | 59.5% | 2.98 ms / 4.95 ms | 123.61 ms / 126.83 ms | 125.49 ms | **0.00%** | **0** |
+| :---------------: | :-----------: | :----------------: | :----------------: | :--------------: | :-------------: | :---------------------------: | :-------------------------------: | :------------------: | :-------------: | :------------------: |
+|     **1 VU**      |    10.0 s     |         18         |     1.80 req/s     |        11        |      61.1%      |      12.00 ms / 14.43 ms      |       124.92 ms / 132.55 ms       |      125.62 ms       |    **0.00%**    |        **0**         |
+|     **5 VUs**     |    25.0 s     |        683         |    25.92 req/s     |       405        |      60.2%      |       4.43 ms / 6.86 ms       |       125.09 ms / 128.64 ms       |      127.97 ms       |    **0.00%**    |        **0**         |
+|    **10 VUs**     |    25.0 s     |       1,324        |    52.73 req/s     |       764        |      58.1%      |       3.51 ms / 5.71 ms       |       124.20 ms / 127.62 ms       |      126.58 ms       |    **0.00%**    |        **0**         |
+|    **25 VUs**     |    25.0 s     |       3,350        |    133.47 req/s    |      2,024       |      60.4%      |       2.95 ms / 4.70 ms       |       123.49 ms / 126.44 ms       |      125.43 ms       |    **0.00%**    |        **0**         |
+|    **50 VUs**     |    25.0 s     |       6,619        |  **263.76 req/s**  |      3,937       |      59.5%      |       2.98 ms / 4.95 ms       |       123.61 ms / 126.83 ms       |      125.49 ms       |    **0.00%**    |        **0**         |
 
 #### Baseline Operational Insights:
+
 - **Sub-5ms Exact Hit Latency**: Exact cache lookups consistently execute in 2.95–4.43 ms on average, with P95 under 5.7 ms under concurrent load.
 - **Linear Concurrency Scaling**: Throughput scales linearly from 25.92 req/s (5 VUs) to 263.76 req/s (50 VUs) with zero error rate degradation.
 - **Invariant Upheld**: Zero semantic cached responses were returned to users (`semantic_hits_served: 0`).
@@ -100,31 +102,34 @@ Executed with `SHADOW_EVALUATION_ENABLED=true`, `SHADOW_SAMPLING_RATE=0.10`, `SH
 
 #### Telemetry Breakdown from `/admin/metrics`:
 
-| Metric Category | Telemetry Key | Value Recorded | Verification Note |
-| :--- | :--- | :---: | :--- |
-| **Shadow Request Volume** | `shadow_requests_total` | 1,826 | Matches gateway total request counter |
-| **Sampling Gate** | `shadow_requests_sampled` | 180 | **9.86%** empirical sampling rate (target: 10.0%) |
-| **Sampling Gate** | `shadow_requests_unsampled` | 1,646 | Discarded pre-enqueue with zero overhead |
-| **Eligibility Filter** | `shadow_requests_eligible` | 54 | 29.8% eligibility rate among sampled queries |
-| **Shadow Outcomes** | `shadow_hypothetical_hits` | 17 | Hypothetical hits identified in shadow store |
-| **Shadow Outcomes** | `shadow_compatibility_rejections` | 36 | Deterministically rejected incompatible queries |
-| **Shadow Outcomes** | `shadow_no_candidate` | 1 | Cold-start query prior to candidate ingestion |
-| **Queue Health** | `shadow_queue_dropped_total` | **0** | Zero dropped tasks; queue capacity remained unexhausted |
-| **Queue Health** | `shadow_execution_failures` | **0** | Zero worker task exceptions |
-| **Component Latency** | `shadow_embedding_latency_ms` | Mean: 5.48 ms, P50: 5.40 ms, P95: 6.14 ms | FastEmbed ONNX CPU embedding generation |
-| **Component Latency** | `shadow_retrieval_latency_ms` | Mean: 1.64 ms, P50: 1.10 ms, P95: 6.51 ms | PostgreSQL pgvector HNSW cosine search |
-| **Component Latency** | `shadow_policy_latency_ms` | Mean: 0.05 ms, P50: 0.05 ms, P95: 0.06 ms | Deterministic compatibility & ambiguity check |
-| **Total Shadow Task** | `shadow_execution_latency_ms` | Mean: 2.36 ms, P50: 0.13 ms, P95: 7.57 ms | Complete background worker task duration |
+| Metric Category           | Telemetry Key                     |              Value Recorded               | Verification Note                                       |
+| :------------------------ | :-------------------------------- | :---------------------------------------: | :------------------------------------------------------ |
+| **Shadow Request Volume** | `shadow_requests_total`           |                   1,826                   | Matches gateway total request counter                   |
+| **Sampling Gate**         | `shadow_requests_sampled`         |                    180                    | **9.86%** empirical sampling rate (target: 10.0%)       |
+| **Sampling Gate**         | `shadow_requests_unsampled`       |                   1,646                   | Discarded pre-enqueue with zero overhead                |
+| **Eligibility Filter**    | `shadow_requests_eligible`        |                    54                     | 29.8% eligibility rate among sampled queries            |
+| **Shadow Outcomes**       | `shadow_hypothetical_hits`        |                    17                     | Hypothetical hits identified in shadow store            |
+| **Shadow Outcomes**       | `shadow_compatibility_rejections` |                    36                     | Deterministically rejected incompatible queries         |
+| **Shadow Outcomes**       | `shadow_no_candidate`             |                     1                     | Cold-start query prior to candidate ingestion           |
+| **Queue Health**          | `shadow_queue_dropped_total`      |                   **0**                   | Zero dropped tasks; queue capacity remained unexhausted |
+| **Queue Health**          | `shadow_execution_failures`       |                   **0**                   | Zero worker task exceptions                             |
+| **Component Latency**     | `shadow_embedding_latency_ms`     | Mean: 5.48 ms, P50: 5.40 ms, P95: 6.14 ms | FastEmbed ONNX CPU embedding generation                 |
+| **Component Latency**     | `shadow_retrieval_latency_ms`     | Mean: 1.64 ms, P50: 1.10 ms, P95: 6.51 ms | PostgreSQL pgvector HNSW cosine search                  |
+| **Component Latency**     | `shadow_policy_latency_ms`        | Mean: 0.05 ms, P50: 0.05 ms, P95: 0.06 ms | Deterministic compatibility & ambiguity check           |
+| **Total Shadow Task**     | `shadow_execution_latency_ms`     | Mean: 2.36 ms, P50: 0.13 ms, P95: 7.57 ms | Complete background worker task duration                |
 
 #### Storage & Production Cache Isolation Evidence:
+
 Database table inspection immediately following the run:
+
 ```text
-          tbl          | count 
+          tbl          | count
 -----------------------+-------
  vector_records        |     0   <-- Production vector store: strictly untouched
  shadow_vector_records |     1   <-- Shadow vector store: candidate ingested
  shadow_evaluations    |   180   <-- Evaluation log: matches sampled requests
 ```
+
 - **Production `vector_records`**: Exactly **0 rows** (100% write isolation preserved).
 - **Production Cache Hits**: Telemetry `semantic.semantic_hits = 0`.
 - **User Invariance**: `semantic_hits_served = 0`.
@@ -244,6 +249,7 @@ docker run --rm -i --network host \
 ## 7. Recommendations for Stage 3.4.2
 
 With Stage 3.4.1 completed and verified:
+
 1. **Proceed to Stage 3.4.2 (Controlled Shadow Evaluation Deployment)**:
    - Deploy shadow evaluation to staging with `SHADOW_SAMPLING_RATE=1.0` (100% sampling).
    - Verify multi-hour stability under continuous traffic.

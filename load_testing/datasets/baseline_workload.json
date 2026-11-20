@@ -2,86 +2,139 @@
   {
     "id": "base_seed_01",
     "group": "exact_target",
-    "payload": { "prompt": "What is the difference between synchronous and asynchronous execution in Python?", "temperature": 0.0 }
+    "payload": {
+      "prompt": "What is the difference between synchronous and asynchronous execution in Python?",
+      "temperature": 0.0
+    }
   },
   {
     "id": "base_seed_02",
     "group": "exact_target",
-    "payload": { "prompt": "How do you implement a thread-safe singleton pattern in Java?", "temperature": 0.0 }
+    "payload": {
+      "prompt": "How do you implement a thread-safe singleton pattern in Java?",
+      "temperature": 0.0
+    }
   },
   {
     "id": "base_seed_03",
     "group": "exact_target",
-    "payload": { "prompt": "Explain how HNSW indexing works for approximate nearest neighbor vector search.", "temperature": 0.0 }
+    "payload": {
+      "prompt": "Explain how HNSW indexing works for approximate nearest neighbor vector search.",
+      "temperature": 0.0
+    }
   },
   {
     "id": "base_seed_04",
     "group": "exact_target",
-    "payload": { "prompt": "How to optimize database connection pooling with asyncpg and PostgreSQL?", "temperature": 0.0 }
+    "payload": {
+      "prompt": "How to optimize database connection pooling with asyncpg and PostgreSQL?",
+      "temperature": 0.0
+    }
   },
   {
     "id": "base_seed_05",
     "group": "exact_target",
-    "payload": { "prompt": "What are zero-cost abstractions in the Rust programming language?", "temperature": 0.0 }
+    "payload": {
+      "prompt": "What are zero-cost abstractions in the Rust programming language?",
+      "temperature": 0.0
+    }
   },
   {
     "id": "base_seed_06",
     "group": "exact_target",
-    "payload": { "prompt": "Explain how Docker container bridge networks isolate traffic from the host.", "temperature": 0.0 }
+    "payload": {
+      "prompt": "Explain how Docker container bridge networks isolate traffic from the host.",
+      "temperature": 0.0
+    }
   },
   {
     "id": "base_seed_07",
     "group": "exact_target",
-    "payload": { "prompt": "What is the SingleFlight concurrency pattern in distributed web services?", "temperature": 0.0 }
+    "payload": {
+      "prompt": "What is the SingleFlight concurrency pattern in distributed web services?",
+      "temperature": 0.0
+    }
   },
   {
     "id": "base_seed_08",
     "group": "exact_target",
-    "payload": { "prompt": "How to handle database transaction rollbacks safely in Python with asyncpg?", "temperature": 0.0 }
+    "payload": {
+      "prompt": "How to handle database transaction rollbacks safely in Python with asyncpg?",
+      "temperature": 0.0
+    }
   },
   {
     "id": "base_seed_09",
     "group": "exact_target",
-    "payload": { "prompt": "Explain the difference between TCP slow start and congestion avoidance.", "temperature": 0.0 }
+    "payload": {
+      "prompt": "Explain the difference between TCP slow start and congestion avoidance.",
+      "temperature": 0.0
+    }
   },
   {
     "id": "base_seed_10",
     "group": "exact_target",
-    "payload": { "prompt": "How to construct a balanced B-tree index in relational database engines?", "temperature": 0.0 }
+    "payload": {
+      "prompt": "How to construct a balanced B-tree index in relational database engines?",
+      "temperature": 0.0
+    }
   },
   {
     "id": "base_miss_01",
     "group": "unique_miss",
-    "payload": { "prompt": "How to implement quicksort with randomized pivot selection in Go?", "temperature": 0.0 }
+    "payload": {
+      "prompt": "How to implement quicksort with randomized pivot selection in Go?",
+      "temperature": 0.0
+    }
   },
   {
     "id": "base_miss_02",
     "group": "unique_miss",
-    "payload": { "prompt": "What is the difference between mutable and immutable borrow in Rust?", "temperature": 0.0 }
+    "payload": {
+      "prompt": "What is the difference between mutable and immutable borrow in Rust?",
+      "temperature": 0.0
+    }
   },
   {
     "id": "base_miss_03",
     "group": "unique_miss",
-    "payload": { "prompt": "How to serialize complex nested JSON objects using Pydantic v2?", "temperature": 0.0 }
+    "payload": {
+      "prompt": "How to serialize complex nested JSON objects using Pydantic v2?",
+      "temperature": 0.0
+    }
   },
   {
     "id": "base_miss_04",
     "group": "unique_miss",
-    "payload": { "prompt": "Explain the internal structure of Linux virtual memory page tables.", "temperature": 0.0 }
+    "payload": {
+      "prompt": "Explain the internal structure of Linux virtual memory page tables.",
+      "temperature": 0.0
+    }
   },
   {
     "id": "base_miss_05",
     "group": "unique_miss",
-    "payload": { "prompt": "How do you detect memory leaks in long-running Node.js worker processes?", "temperature": 0.0 }
+    "payload": {
+      "prompt": "How do you detect memory leaks in long-running Node.js worker processes?",
+      "temperature": 0.0
+    }
   },
   {
     "id": "base_bypass_01",
     "group": "bypass",
-    "payload": { "prompt": "What is the difference between synchronous and asynchronous execution in Python?", "bypass_cache": true, "temperature": 0.0 }
+    "payload": {
+      "prompt": "What is the difference between synchronous and asynchronous execution in Python?",
+      "bypass_cache": true,
+      "temperature": 0.0
+    }
   },
   {
     "id": "base_bypass_02",
     "group": "bypass",
-    "payload": { "prompt": "How do you implement a thread-safe singleton pattern in Java?", "bypass_cache": true, "temperature": 0.0 }
+    "payload": {
+      "prompt": "How do you implement a thread-safe singleton pattern in Java?",
+      "bypass_cache": true,
+      "temperature": 0.0
+    }
   }
 ]
