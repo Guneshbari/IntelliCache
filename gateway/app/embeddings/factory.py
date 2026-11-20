@@ -79,6 +79,9 @@ class EmbeddingProviderFactory:
                 )
             resolved_dimensions = int(dimensions) if dimensions is not None and dimensions > 0 else 768
 
+        if key not in ("fastembed", "local"):
+            kwargs.pop("executor", None)
+
         provider_cls = cls._registry[key]
         return provider_cls(
             base_url=base_url,

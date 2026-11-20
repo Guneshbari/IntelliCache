@@ -186,7 +186,7 @@ jobs:
           LLM_PROVIDER: 'mock'
           CACHE_BACKEND: 'postgres'
           VECTOR_STORE_BACKEND: 'postgres'
-          SHADOW_EVALUATION_ENABLED: 'true'
+          SHADOW_EVALUATION_ENABLED: 'false'
           SEMANTIC_CACHE_ENABLED: 'false'
         run: |
           uvicorn app.main:app --host 127.0.0.1 --port 8000 &
