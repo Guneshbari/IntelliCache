@@ -1,0 +1,80 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: intellicache-loadtest-pg
+    environment:
+      POSTGRES_USER: intellicache_user
+      POSTGRES_PASSWORD: intellicache_test_password
+      POSTGRES_DB: intellicache_loadtest
+    ports:
+      - "54329:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U intellicache_user -d intellicache_loadtest"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+    networks:
+      - intellicache-loadtest-net
+
+  gateway:
+    image: python:3.12-slim
+    container_name: intellicache-loadtest-gateway
+    working_dir: /app/gateway
+    volumes:
+      - ../gateway:/app/gateway
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "8000"
+      LLM_PROVIDER: "mock"
+      GROQ_MODEL: "mock-qwen-27b"
+      CACHE_BACKEND: "postgres"
+      DATABASE_URL: "postgresql://intellicache_user:intellicache_test_password@postgres:5432/intellicache_loadtest"
+      VECTOR_STORE_BACKEND: "postgres"
+      VECTOR_DIMENSIONS: "384"
+      EMBEDDING_PROVIDER: "fastembed"
+      EMBEDDING_MODEL: "BAAI/bge-small-en-v1.5"
+      SEMANTIC_CACHE_ENABLED: "false"
+      SEMANTIC_CACHE_MIN_SIMILARITY: "0.92"
+      SEMANTIC_CACHE_MIN_MARGIN: "0.03"
+      SHADOW_EVALUATION_ENABLED: "${SHADOW_EVALUATION_ENABLED:-false}"
+      SHADOW_SAMPLING_RATE: "${SHADOW_SAMPLING_RATE:-1.0}"
+      SHADOW_MAX_CONCURRENCY: "${SHADOW_MAX_CONCURRENCY:-4}"
+      SHADOW_QUEUE_MAX_SIZE: "${SHADOW_QUEUE_MAX_SIZE:-1000}"
+      SHADOW_TIMEOUT_SECONDS: "5.0"
+      ADMIN_API_TOKEN: "test-admin-token"
+      CLIENT_API_TOKENS: '{"test-client-token": "default", "tenant-b-token": "tenant_b"}'
+      ALLOW_UNAUTHENTICATED_LOOPBACK: "false"
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: >
+      sh -c "pip install -q -r requirements.txt -r requirements-fastembed.txt &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8000/health\")'"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+    networks:
+      - intellicache-loadtest-net
+
+  k6:
+    image: grafana/k6:latest
+    container_name: intellicache-loadtest-k6
+    volumes:
+      - .:/load_testing
+    environment:
+      BASE_URL: "http://gateway:8000"
+      CLIENT_TOKEN: "test-client-token"
+      ADMIN_TOKEN: "test-admin-token"
+    depends_on:
+      gateway:
+        condition: service_healthy
+    networks:
+      - intellicache-loadtest-net
+
+networks:
+  intellicache-loadtest-net:
+    driver: bridge

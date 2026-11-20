@@ -1,0 +1,73 @@
+[
+  {
+    "id": "sem_seed_01",
+    "category": "seed",
+    "payload": { "prompt": "How does Rust achieve memory safety without a garbage collector?", "temperature": 0.0 }
+  },
+  {
+    "id": "sem_paraphrase_01",
+    "category": "semantic_paraphrase",
+    "seed_ref": "sem_seed_01",
+    "payload": { "prompt": "In Rust, what mechanism guarantees memory safety without garbage collection?", "temperature": 0.0 }
+  },
+  {
+    "id": "sem_hard_negative_01",
+    "category": "incompatible_domain",
+    "seed_ref": "sem_seed_01",
+    "payload": { "prompt": "How does C++ achieve memory safety without a garbage collector?", "temperature": 0.0 }
+  },
+  {
+    "id": "sem_seed_02",
+    "category": "seed",
+    "payload": { "prompt": "Explain how to implement binary search in Python.", "temperature": 0.0 }
+  },
+  {
+    "id": "sem_paraphrase_02",
+    "category": "semantic_paraphrase",
+    "seed_ref": "sem_seed_02",
+    "payload": { "prompt": "How do you write a binary search algorithm in Python?", "temperature": 0.0 }
+  },
+  {
+    "id": "sem_hard_negative_02",
+    "category": "incompatible_domain",
+    "seed_ref": "sem_seed_02",
+    "payload": { "prompt": "Explain how to implement binary search in Rust.", "temperature": 0.0 }
+  },
+  {
+    "id": "sem_ineligible_multiturn",
+    "category": "ineligible",
+    "payload": {
+      "messages": [
+        { "role": "user", "content": "What is Python?" },
+        { "role": "assistant", "content": "Python is a high-level programming language." },
+        { "role": "user", "content": "How do I filter a list in Python?" }
+      ],
+      "temperature": 0.0
+    }
+  },
+  {
+    "id": "sem_ineligible_sysprompt",
+    "category": "ineligible",
+    "payload": {
+      "prompt": "How do I filter a list in Python?",
+      "system_prompt": "You are a concise programming assistant.",
+      "temperature": 0.0
+    }
+  },
+  {
+    "id": "sem_ineligible_temp",
+    "category": "ineligible",
+    "payload": {
+      "prompt": "Explain memory ownership in Rust.",
+      "temperature": 0.7
+    }
+  },
+  {
+    "id": "sem_ineligible_nontech",
+    "category": "ineligible",
+    "payload": {
+      "prompt": "Write a short poem about a summer morning.",
+      "temperature": 0.0
+    }
+  }
+]

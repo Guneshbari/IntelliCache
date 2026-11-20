@@ -1,0 +1,40 @@
+[
+  {
+    "id": "smoke_seed_01",
+    "type": "seed",
+    "payload": {
+      "prompt": "Explain memory ownership in Rust programming language.",
+      "temperature": 0.0
+    },
+    "expected_cache": "miss"
+  },
+  {
+    "id": "smoke_repeat_01",
+    "type": "exact_hit",
+    "payload": {
+      "prompt": "Explain memory ownership in Rust programming language.",
+      "temperature": 0.0
+    },
+    "expected_cache": "hit",
+    "expected_cache_type": "exact"
+  },
+  {
+    "id": "smoke_miss_01",
+    "type": "exact_miss",
+    "payload": {
+      "prompt": "How to configure PostgreSQL connection pooling in FastAPI?",
+      "temperature": 0.0
+    },
+    "expected_cache": "miss"
+  },
+  {
+    "id": "smoke_bypass_01",
+    "type": "bypass",
+    "payload": {
+      "prompt": "Explain memory ownership in Rust programming language.",
+      "bypass_cache": true,
+      "temperature": 0.0
+    },
+    "expected_cache": "miss"
+  }
+]

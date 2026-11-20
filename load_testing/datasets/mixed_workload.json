@@ -1,0 +1,69 @@
+[
+  {
+    "id": "mix_exact_01",
+    "intent": "exact_hit",
+    "payload": { "prompt": "What is the difference between synchronous and asynchronous execution in Python?", "temperature": 0.0 }
+  },
+  {
+    "id": "mix_exact_02",
+    "intent": "exact_hit",
+    "payload": { "prompt": "How do you implement a thread-safe singleton pattern in Java?", "temperature": 0.0 }
+  },
+  {
+    "id": "mix_exact_03",
+    "intent": "exact_hit",
+    "payload": { "prompt": "Explain how HNSW indexing works for approximate nearest neighbor vector search.", "temperature": 0.0 }
+  },
+  {
+    "id": "mix_exact_04",
+    "intent": "exact_hit",
+    "payload": { "prompt": "How to optimize database connection pooling with asyncpg and PostgreSQL?", "temperature": 0.0 }
+  },
+  {
+    "id": "mix_para_01",
+    "intent": "semantic_candidate",
+    "payload": { "prompt": "Can you explain synchronous vs asynchronous execution in Python?", "temperature": 0.0 }
+  },
+  {
+    "id": "mix_para_02",
+    "intent": "semantic_candidate",
+    "payload": { "prompt": "How is thread-safe singleton implemented in Java?", "temperature": 0.0 }
+  },
+  {
+    "id": "mix_incompat_01",
+    "intent": "incompatible_domain",
+    "payload": { "prompt": "What is the difference between synchronous and asynchronous execution in C++?", "temperature": 0.0 }
+  },
+  {
+    "id": "mix_incompat_02",
+    "intent": "incompatible_domain",
+    "payload": { "prompt": "How do you implement a thread-safe singleton pattern in Rust?", "temperature": 0.0 }
+  },
+  {
+    "id": "mix_miss_01",
+    "intent": "unique_miss",
+    "payload": { "prompt": "Explain the RAII idiom and lifetime management in modern C++20.", "temperature": 0.0 }
+  },
+  {
+    "id": "mix_miss_02",
+    "intent": "unique_miss",
+    "payload": { "prompt": "How does Kafka achieve distributed partitioned fault-tolerant log consensus?", "temperature": 0.0 }
+  },
+  {
+    "id": "mix_inelig_01",
+    "intent": "ineligible_request",
+    "payload": {
+      "messages": [
+        { "role": "user", "content": "Hello" },
+        { "role": "assistant", "content": "Hi there" },
+        { "role": "user", "content": "How to configure Docker bridge network?" }
+      ],
+      "temperature": 0.0
+    }
+  },
+  {
+    "id": "mix_bypass_01",
+    "intent": "bypass_request",
+    "payload": { "prompt": "What is the difference between synchronous and asynchronous execution in Python?", "bypass_cache": true, "temperature": 0.0 }
+  }
+]
