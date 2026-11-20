@@ -26,6 +26,11 @@ from app.metrics import (
     get_metrics_collector,
 )
 from app.semantic_cache import SemanticCachePolicy, SemanticCacheService
+from app.semantic_cache.shadow import (
+    ReadOnlySemanticCacheService,
+    ReadOnlyVectorStoreAdapter,
+    ShadowEvaluationService,
+)
 from app.vector_store import (
     BaseVectorStore,
     InMemoryVectorStore,
@@ -40,10 +45,12 @@ from app.routes.query import (
     QueryCache,
     get_query_cache,
     get_semantic_cache,
+    get_shadow_service,
     get_vector_store,
     router as query_router,
     set_query_cache,
     set_semantic_cache,
+    set_shadow_service,
     set_vector_store,
     verify_admin_token,
     verify_client_token,
@@ -67,6 +74,7 @@ async def _cleanup_gateway_resources(
     embedding_provider: Optional[Any] = None,
     cache: Optional[BaseCache] = None,
     pool: Optional[asyncpg.Pool] = None,
+    shadow_service: Optional[ShadowEvaluationService] = None,
 ) -> list[Exception]:
     """
     Cleans up gateway infrastructure resources independently.
@@ -74,6 +82,14 @@ async def _cleanup_gateway_resources(
     Avoids double-closing the PostgreSQL pool (closed by PostgresCache if cache exists, or pool directly).
     """
     errors: list[Exception] = []
+
+    # 0. Gracefully stop shadow evaluation service (bounded drain)
+    if shadow_service is not None:
+        try:
+            await shadow_service.stop()
+        except Exception as exc:
+            logger.error("Error stopping shadow evaluation service: %s", exc)
+            errors.append(exc)
 
     # 1. Close semantic cache (which closes owned embedding provider and vector store independently)
     if semantic_cache is not None:
@@ -134,6 +150,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     vector_store: Optional[BaseVectorStore] = None
     embedding_provider: Optional[Any] = None
     semantic_cache: Optional[SemanticCacheService] = None
+    shadow_service: Optional[ShadowEvaluationService] = None
+    shadow_vector_store: Optional[BaseVectorStore] = None
+    shadow_embedding_provider: Optional[Any] = None
 
     try:
         if settings.cache_backend == "postgres":
@@ -243,30 +262,102 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     settings.semantic_cache_top_k,
                 )
 
+        # Shadow Evaluation Initialization (Stage 3.3)
+        if settings.shadow_evaluation_enabled:
+            logger.info("Initializing shadow evaluation components (Stage 3.3)...")
+            # 1. Base vector store (if not already created by semantic cache)
+            if vector_store is not None:
+                base_shadow_vec = vector_store
+            elif settings.cache_backend == "postgres":
+                logger.info("Running vector store migrations for shadow evaluation...")
+                await run_vector_migrations(pool, dimensions=settings.vector_dimensions)
+                shadow_vector_store = PostgresVectorStore(
+                    pool=pool,
+                    default_namespace=settings.cache_namespace,
+                    default_model=settings.embedding_model,
+                    dimensions=settings.vector_dimensions,
+                )
+                base_shadow_vec = shadow_vector_store
+            else:
+                shadow_vector_store = InMemoryVectorStore(
+                    dimensions=settings.vector_dimensions,
+                    default_namespace=settings.cache_namespace,
+                    default_model=settings.embedding_model,
+                    exact_cache=cache,
+                    max_records=settings.vector_store_max_entries,
+                )
+                base_shadow_vec = shadow_vector_store
+
+            # Wrap in structural read-only adapter (forbids upsert, delete, clear)
+            read_only_vec = ReadOnlyVectorStoreAdapter(base_shadow_vec)
+
+            # 2. Embedding provider (if not already created)
+            if embedding_provider is not None:
+                shadow_embed_prov = embedding_provider
+            else:
+                shadow_embedding_provider = EmbeddingProviderFactory.create(
+                    provider_name=settings.embedding_provider,
+                    model=settings.embedding_model,
+                    dimensions=settings.vector_dimensions,
+                    base_url=settings.embedding_base_url,
+                    timeout_seconds=settings.embedding_timeout_seconds,
+                )
+                shadow_embed_prov = shadow_embedding_provider
+
+            # 3. Policy & ReadOnlySemanticCacheService (overrides index() to no-op)
+            shadow_policy = SemanticCachePolicy(
+                min_similarity=settings.semantic_cache_min_similarity,
+                min_margin=settings.semantic_cache_min_margin,
+                top_k=settings.semantic_cache_top_k,
+                configured_model=settings.embedding_model,
+            )
+            shadow_sem_cache = ReadOnlySemanticCacheService(
+                embedding_provider=shadow_embed_prov,
+                vector_store=read_only_vec,
+                policy=shadow_policy,
+                default_namespace=settings.cache_namespace,
+            )
+
+            # 4. ShadowEvaluationService
+            shadow_service = ShadowEvaluationService(
+                settings=settings,
+                semantic_cache=shadow_sem_cache,
+                db_pool=pool,
+                metrics_collector=collector,
+            )
+            await shadow_service.start()
+            app.state.shadow_service = shadow_service
+            set_shadow_service(shadow_service)
+
         # Register initialized components in app.state and global singletons only after full success
         app.state.db_pool = pool
         app.state.cache = cache
         app.state.vector_store = vector_store
         app.state.semantic_cache = semantic_cache
+        app.state.shadow_service = shadow_service
 
         set_query_cache(cache)
         set_vector_store(vector_store)
         set_semantic_cache(semantic_cache)
+        set_shadow_service(shadow_service)
 
     except Exception as startup_err:
         logger.error("Startup initialization failed: %s", startup_err)
         try:
             await _cleanup_gateway_resources(
                 semantic_cache=semantic_cache,
-                vector_store=vector_store,
-                embedding_provider=embedding_provider,
+                vector_store=vector_store or shadow_vector_store,
+                embedding_provider=embedding_provider or shadow_embedding_provider,
                 cache=cache,
                 pool=pool,
+                shadow_service=shadow_service,
             )
         finally:
+            set_shadow_service(None)
             set_semantic_cache(None)
             set_vector_store(None)
             set_query_cache(None)
+            app.state.shadow_service = None
             app.state.semantic_cache = None
             app.state.vector_store = None
             app.state.cache = None
@@ -281,15 +372,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         try:
             shutdown_errors = await _cleanup_gateway_resources(
                 semantic_cache=semantic_cache,
-                vector_store=vector_store,
-                embedding_provider=embedding_provider,
+                vector_store=vector_store or shadow_vector_store,
+                embedding_provider=embedding_provider or shadow_embedding_provider,
                 cache=cache,
                 pool=pool,
+                shadow_service=shadow_service,
             )
         finally:
+            set_shadow_service(None)
             set_semantic_cache(None)
             set_vector_store(None)
             set_query_cache(None)
+            app.state.shadow_service = None
             app.state.semantic_cache = None
             app.state.vector_store = None
             app.state.cache = None

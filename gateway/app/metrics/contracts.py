@@ -60,6 +60,24 @@ class SemanticMetrics(BaseModel):
     validator_failures: int = 0
 
 
+class ShadowMetrics(BaseModel):
+    """Detailed telemetry for semantic cache shadow evaluation mode."""
+    shadow_requests_total: int = 0
+    shadow_requests_sampled: int = 0
+    shadow_requests_unsampled: int = 0
+    shadow_requests_eligible: int = 0
+    shadow_hypothetical_hits: int = 0
+    shadow_no_candidate: int = 0
+    shadow_threshold_rejections: int = 0
+    shadow_ambiguity_rejections: int = 0
+    shadow_compatibility_rejections: int = 0
+    shadow_embedding_failures: int = 0
+    shadow_vector_store_failures: int = 0
+    shadow_execution_failures: int = 0
+    shadow_queue_depth: int = 0
+    shadow_queue_dropped_total: int = 0
+
+
 class LatencySummary(BaseModel):
     """Statistical summary of operation latency distributions in milliseconds."""
     sample_count: int = 0
@@ -84,6 +102,7 @@ class LatencyMetrics(BaseModel):
     exact_cache_write_latency_ms: LatencySummary = Field(default_factory=LatencySummary)
     vector_indexing_latency_ms: LatencySummary = Field(default_factory=LatencySummary)
     estimated_latency_saved_ms: LatencySummary = Field(default_factory=LatencySummary)
+    shadow_execution_latency_ms: LatencySummary = Field(default_factory=LatencySummary)
 
 
 class DerivedRates(BaseModel):
@@ -103,6 +122,7 @@ class NamespaceMetricsSnapshot(BaseModel):
     request_and_cache: RequestAndCacheMetrics = Field(default_factory=RequestAndCacheMetrics)
     provider_and_savings: ProviderAndSavingsMetrics = Field(default_factory=ProviderAndSavingsMetrics)
     semantic: SemanticMetrics = Field(default_factory=SemanticMetrics)
+    shadow: ShadowMetrics = Field(default_factory=ShadowMetrics)
     derived_rates: DerivedRates = Field(default_factory=DerivedRates)
     latencies: LatencyMetrics = Field(default_factory=LatencyMetrics)
     notes: Optional[Dict[str, str]] = None

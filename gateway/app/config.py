@@ -181,6 +181,26 @@ class Settings(BaseModel):
         )
     )
 
+    # Shadow Evaluation Configuration (Stage 3.3)
+    shadow_evaluation_enabled: bool = Field(
+        default_factory=lambda: os.getenv("SHADOW_EVALUATION_ENABLED", "false").lower() in ("true", "1", "yes")
+    )
+    shadow_sampling_rate: float = Field(
+        default_factory=lambda: float(os.getenv("SHADOW_SAMPLING_RATE", "1.0"))
+    )
+    shadow_max_concurrency: int = Field(
+        default_factory=lambda: int(os.getenv("SHADOW_MAX_CONCURRENCY", "5"))
+    )
+    shadow_queue_max_size: int = Field(
+        default_factory=lambda: int(os.getenv("SHADOW_QUEUE_MAX_SIZE", "256"))
+    )
+    shadow_timeout_seconds: float = Field(
+        default_factory=lambda: float(os.getenv("SHADOW_TIMEOUT_SECONDS", "2.0"))
+    )
+    shadow_retention_days: int = Field(
+        default_factory=lambda: int(os.getenv("SHADOW_RETENTION_DAYS", "30"))
+    )
+
     @model_validator(mode="after")
     def validate_backends(self) -> "Settings":
         valid_cache_backends = {"memory", "postgres"}
@@ -268,6 +288,32 @@ class Settings(BaseModel):
             raise ValueError("SEMANTIC_CACHE_MIN_MARGIN must be between 0.0 and 1.0.")
         if self.semantic_cache_top_k <= 0:
             raise ValueError("SEMANTIC_CACHE_TOP_K must be positive.")
+        return self
+
+    @model_validator(mode="after")
+    def validate_shadow_evaluation_config(self) -> "Settings":
+        if not (0.0 <= self.shadow_sampling_rate <= 1.0):
+            raise ValueError(
+                f"SHADOW_SAMPLING_RATE must be between 0.0 and 1.0, got {self.shadow_sampling_rate}."
+            )
+        if self.shadow_max_concurrency < 1 or self.shadow_max_concurrency > 50:
+            raise ValueError(
+                f"SHADOW_MAX_CONCURRENCY must be between 1 and 50, got {self.shadow_max_concurrency}."
+            )
+        if self.shadow_queue_max_size < 1 or self.shadow_queue_max_size > 10000:
+            raise ValueError(
+                f"SHADOW_QUEUE_MAX_SIZE must be between 1 and 10000, got {self.shadow_queue_max_size}."
+            )
+        if self.shadow_timeout_seconds <= 0.0 or self.shadow_timeout_seconds > 60.0:
+            raise ValueError(
+                f"SHADOW_TIMEOUT_SECONDS must be strictly greater than 0.0 and <= 60.0, got {self.shadow_timeout_seconds}."
+            )
+        if self.shadow_retention_days < 1 or self.shadow_retention_days > 365:
+            raise ValueError(
+                f"SHADOW_RETENTION_DAYS must be between 1 and 365, got {self.shadow_retention_days}."
+            )
+        if self.shadow_evaluation_enabled and self.cache_backend == "postgres" and not self.database_url:
+            raise ValueError("DATABASE_URL must be configured when SHADOW_EVALUATION_ENABLED is true.")
         return self
 
     @model_validator(mode="after")

@@ -6,10 +6,13 @@ Delegates caching decisions and inference orchestration to IntelliCache Core.
 
 import asyncio
 from datetime import datetime, timezone
+import hashlib
 import hmac
 import ipaddress
 import json
 import logging
+import random
+import time
 from typing import Any, AsyncGenerator, Callable, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
@@ -67,6 +70,7 @@ from ..providers.factory import ProviderFactory
 from ..providers.groq_adapter import GroqProvider
 from ..providers.interfaces import LLMProvider
 from ..semantic_cache.interfaces import BaseSemanticCache
+from ..semantic_cache.shadow import ShadowTask
 from ..vector_store.interfaces import BaseVectorStore
 
 logger = logging.getLogger("intellicache.gateway.api")
@@ -411,6 +415,20 @@ def set_vector_store(vector_store: Optional[BaseVectorStore]) -> None:
     """Configures the global vector store singleton."""
     global _vector_store_singleton
     _vector_store_singleton = vector_store
+
+
+_shadow_service_singleton: Optional[Any] = None
+
+
+def get_shadow_service() -> Optional[Any]:
+    """Dependency returning configured ShadowEvaluationService singleton (or None if disabled)."""
+    return _shadow_service_singleton
+
+
+def set_shadow_service(shadow_service: Optional[Any]) -> None:
+    """Configures the global shadow evaluation service singleton."""
+    global _shadow_service_singleton
+    _shadow_service_singleton = shadow_service
 
 
 def get_core_service(
@@ -932,6 +950,38 @@ async def execute_query(
                         }
                         yield f"data: {json.dumps(final_payload)}\n\n"
                         yield "data: [DONE]\n\n"
+
+                        # Non-blocking shadow observation trigger for streaming (Stage 3.3)
+                        shadow_svc = get_shadow_service()
+                        if shadow_svc and shadow_svc.settings.shadow_evaluation_enabled:
+                            try:
+                                full_text = "".join(accumulated_text)
+                                prompt_text = request.get_effective_prompt()
+                                actual_src = "exact_cache" if chunk.cached else ("bypass" if effective_bypass_cache else "upstream_provider")
+                                resp_hash = hashlib.sha256(full_text.strip().encode("utf-8")).hexdigest() if full_text else None
+                                is_multi = bool(len(canonical_messages) > 1 or (request.messages and len(request.messages) > 1))
+                                req_h = hashlib.sha256(prompt_text.strip().encode("utf-8")).hexdigest()
+                                shadow_task = ShadowTask(
+                                    request_id=f"req_{int(time.time()*1000)}_{random.randint(1000, 9999)}",
+                                    request_hash=req_h,
+                                    cache_namespace=client_namespace,
+                                    provider=settings.llm_provider,
+                                    requested_model=effective_model,
+                                    temperature=effective_temperature,
+                                    max_tokens=effective_max_tokens,
+                                    query_text=prompt_text,
+                                    actual_response_source=actual_src,
+                                    actual_response_hash=resp_hash,
+                                    actual_latency_ms=chunk.latency_ms or 0.0,
+                                    enqueued_at=time.perf_counter(),
+                                    task_kind="generation",
+                                    system_prompt=request.system_prompt,
+                                    stream=True,
+                                    is_multi_turn=is_multi,
+                                )
+                                shadow_svc.enqueue(shadow_task)
+                            except Exception as shadow_err:
+                                logger.debug("Non-blocking shadow streaming enqueue failed: %s", shadow_err)
             except asyncio.CancelledError:
                 if conv_service and turn_record:
                     if heartbeat and heartbeat.lease_lost:
@@ -1026,6 +1076,38 @@ async def execute_query(
                 },
             )
         completed_cleanly = True
+
+        # Non-blocking shadow observation trigger (Stage 3.3)
+        shadow_svc = get_shadow_service()
+        if shadow_svc and shadow_svc.settings.shadow_evaluation_enabled:
+            try:
+                prompt_text = request.get_effective_prompt()
+                actual_src = "exact_cache" if result.cached else ("bypass" if effective_bypass_cache else "upstream_provider")
+                resp_hash = hashlib.sha256(result.text.strip().encode("utf-8")).hexdigest() if result.text else None
+                is_multi = bool(len(canonical_messages) > 1 or (request.messages and len(request.messages) > 1))
+                req_h = hashlib.sha256(prompt_text.strip().encode("utf-8")).hexdigest()
+                shadow_task = ShadowTask(
+                    request_id=f"req_{int(time.time()*1000)}_{random.randint(1000, 9999)}",
+                    request_hash=req_h,
+                    cache_namespace=client_namespace,
+                    provider=settings.llm_provider,
+                    requested_model=effective_model,
+                    temperature=effective_temperature,
+                    max_tokens=effective_max_tokens,
+                    query_text=prompt_text,
+                    actual_response_source=actual_src,
+                    actual_response_hash=resp_hash,
+                    actual_latency_ms=result.latency_ms or 0.0,
+                    enqueued_at=time.perf_counter(),
+                    task_kind="generation",
+                    system_prompt=request.system_prompt,
+                    stream=False,
+                    is_multi_turn=is_multi,
+                )
+                shadow_svc.enqueue(shadow_task)
+            except Exception as shadow_err:
+                logger.debug("Non-blocking shadow enqueue failed: %s", shadow_err)
+
         return QueryResponse(
             response=result.text,
             cached=result.cached,

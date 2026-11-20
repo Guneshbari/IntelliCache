@@ -20,6 +20,7 @@ from .contracts import (
     ProviderAndSavingsMetrics,
     RequestAndCacheMetrics,
     SemanticMetrics,
+    ShadowMetrics,
 )
 
 logger = logging.getLogger("intellicache.gateway.metrics")
@@ -116,6 +117,22 @@ class _NamespaceData:
         self.indexing_failures = 0
         self.validator_failures = 0
 
+        # Shadow Evaluation Diagnostics (Stage 3.3)
+        self.shadow_requests_total = 0
+        self.shadow_requests_sampled = 0
+        self.shadow_requests_unsampled = 0
+        self.shadow_requests_eligible = 0
+        self.shadow_hypothetical_hits = 0
+        self.shadow_no_candidate = 0
+        self.shadow_threshold_rejections = 0
+        self.shadow_ambiguity_rejections = 0
+        self.shadow_compatibility_rejections = 0
+        self.shadow_embedding_failures = 0
+        self.shadow_vector_store_failures = 0
+        self.shadow_execution_failures = 0
+        self.shadow_queue_depth = 0
+        self.shadow_queue_dropped_total = 0
+
         # Bounded Latency Samples
         self.latency_samples: Dict[str, Deque[float]] = {
             "total_request_latency_ms": deque(maxlen=max_samples),
@@ -128,6 +145,7 @@ class _NamespaceData:
             "exact_cache_write_latency_ms": deque(maxlen=max_samples),
             "vector_indexing_latency_ms": deque(maxlen=max_samples),
             "estimated_latency_saved_ms": deque(maxlen=max_samples),
+            "shadow_execution_latency_ms": deque(maxlen=max_samples),
         }
 
     def record_request(self, stream: bool = False, bypass: bool = False) -> None:
@@ -287,6 +305,57 @@ class _NamespaceData:
             if target is not None:
                 target.append(max(0.0, float(latency_ms)))
 
+    def record_shadow_request(self, sampled: bool, queue_depth: int = 0) -> None:
+        with self.lock:
+            self.shadow_requests_total += 1
+            if sampled:
+                self.shadow_requests_sampled += 1
+            else:
+                self.shadow_requests_unsampled += 1
+            self.shadow_queue_depth = max(0, queue_depth)
+
+    def record_shadow_drop(self) -> None:
+        with self.lock:
+            self.shadow_queue_dropped_total += 1
+
+    def record_shadow_outcome(
+        self,
+        outcome: str,
+        execution_latency_ms: float = 0.0,
+        queue_depth: int = 0,
+    ) -> None:
+        with self.lock:
+            self.shadow_queue_depth = max(0, queue_depth)
+            if outcome == "eligible_candidate_hit":
+                self.shadow_hypothetical_hits += 1
+                self.shadow_requests_eligible += 1
+            elif outcome == "eligible_no_candidate":
+                self.shadow_no_candidate += 1
+                self.shadow_requests_eligible += 1
+            elif outcome == "ineligible_request":
+                pass
+            elif outcome == "threshold_rejection":
+                self.shadow_threshold_rejections += 1
+                self.shadow_requests_eligible += 1
+            elif outcome == "ambiguity_rejection":
+                self.shadow_ambiguity_rejections += 1
+                self.shadow_requests_eligible += 1
+            elif outcome == "compatibility_rejection":
+                self.shadow_compatibility_rejections += 1
+                self.shadow_requests_eligible += 1
+            elif outcome == "embedding_failure":
+                self.shadow_embedding_failures += 1
+                self.shadow_requests_eligible += 1
+            elif outcome == "vector_store_failure":
+                self.shadow_vector_store_failures += 1
+                self.shadow_requests_eligible += 1
+            elif outcome in ("shadow_timeout", "shadow_execution_failure"):
+                self.shadow_execution_failures += 1
+                self.shadow_requests_eligible += 1
+
+            if execution_latency_ms > 0:
+                self.latency_samples["shadow_execution_latency_ms"].append(max(0.0, float(execution_latency_ms)))
+
     def snapshot(self, uptime_seconds: float) -> NamespaceMetricsSnapshot:
         with self.lock:
             req_cache = RequestAndCacheMetrics(
@@ -338,6 +407,23 @@ class _NamespaceData:
                 validator_failures=self.validator_failures,
             )
 
+            shadow = ShadowMetrics(
+                shadow_requests_total=self.shadow_requests_total,
+                shadow_requests_sampled=self.shadow_requests_sampled,
+                shadow_requests_unsampled=self.shadow_requests_unsampled,
+                shadow_requests_eligible=self.shadow_requests_eligible,
+                shadow_hypothetical_hits=self.shadow_hypothetical_hits,
+                shadow_no_candidate=self.shadow_no_candidate,
+                shadow_threshold_rejections=self.shadow_threshold_rejections,
+                shadow_ambiguity_rejections=self.shadow_ambiguity_rejections,
+                shadow_compatibility_rejections=self.shadow_compatibility_rejections,
+                shadow_embedding_failures=self.shadow_embedding_failures,
+                shadow_vector_store_failures=self.shadow_vector_store_failures,
+                shadow_execution_failures=self.shadow_execution_failures,
+                shadow_queue_depth=self.shadow_queue_depth,
+                shadow_queue_dropped_total=self.shadow_queue_dropped_total,
+            )
+
             # Rates
             exact_rate = (
                 (self.exact_cache_hits / self.exact_cache_lookups)
@@ -380,6 +466,7 @@ class _NamespaceData:
                 exact_cache_write_latency_ms=compute_latency_summary(list(self.latency_samples["exact_cache_write_latency_ms"])),
                 vector_indexing_latency_ms=compute_latency_summary(list(self.latency_samples["vector_indexing_latency_ms"])),
                 estimated_latency_saved_ms=compute_latency_summary(list(self.latency_samples["estimated_latency_saved_ms"])),
+                shadow_execution_latency_ms=compute_latency_summary(list(self.latency_samples["shadow_execution_latency_ms"])),
             )
 
             notes = {
@@ -395,6 +482,7 @@ class _NamespaceData:
                 request_and_cache=req_cache,
                 provider_and_savings=prov_savings,
                 semantic=semantic,
+                shadow=shadow,
                 derived_rates=rates,
                 latencies=latencies,
                 notes=notes,
@@ -640,6 +728,37 @@ class RuntimeMetricsCollector:
         except Exception as e:
             logger.debug("Metrics record_latency failed: %s", e)
 
+    def record_shadow_request(self, namespace: str, sampled: bool, queue_depth: int = 0) -> None:
+        try:
+            ns_data = self.get_or_create_namespace(namespace)
+            ns_data.record_shadow_request(sampled=sampled, queue_depth=queue_depth)
+        except Exception as e:
+            logger.debug("Metrics record_shadow_request failed: %s", e)
+
+    def record_shadow_drop(self, namespace: str) -> None:
+        try:
+            ns_data = self.get_or_create_namespace(namespace)
+            ns_data.record_shadow_drop()
+        except Exception as e:
+            logger.debug("Metrics record_shadow_drop failed: %s", e)
+
+    def record_shadow_outcome(
+        self,
+        namespace: str,
+        outcome: str,
+        execution_latency_ms: float = 0.0,
+        queue_depth: int = 0,
+    ) -> None:
+        try:
+            ns_data = self.get_or_create_namespace(namespace)
+            ns_data.record_shadow_outcome(
+                outcome=outcome,
+                execution_latency_ms=execution_latency_ms,
+                queue_depth=queue_depth,
+            )
+        except Exception as e:
+            logger.debug("Metrics record_shadow_outcome failed: %s", e)
+
     # -----------------------------------------------------------------------
     # Snapshots
     # -----------------------------------------------------------------------
@@ -664,6 +783,7 @@ class RuntimeMetricsCollector:
         agg_req = RequestAndCacheMetrics()
         agg_prov = ProviderAndSavingsMetrics()
         agg_sem = SemanticMetrics()
+        agg_shadow = ShadowMetrics()
         merged_samples: Dict[str, List[float]] = {
             "total_request_latency_ms": [],
             "exact_lookup_latency_ms": [],
@@ -675,6 +795,7 @@ class RuntimeMetricsCollector:
             "exact_cache_write_latency_ms": [],
             "vector_indexing_latency_ms": [],
             "estimated_latency_saved_ms": [],
+            "shadow_execution_latency_ms": [],
         }
 
         for snap in ns_snapshots.values():
@@ -724,6 +845,22 @@ class RuntimeMetricsCollector:
             agg_sem.indexing_failures += s.indexing_failures
             agg_sem.validator_failures += s.validator_failures
 
+            sh = snap.shadow
+            agg_shadow.shadow_requests_total += sh.shadow_requests_total
+            agg_shadow.shadow_requests_sampled += sh.shadow_requests_sampled
+            agg_shadow.shadow_requests_unsampled += sh.shadow_requests_unsampled
+            agg_shadow.shadow_requests_eligible += sh.shadow_requests_eligible
+            agg_shadow.shadow_hypothetical_hits += sh.shadow_hypothetical_hits
+            agg_shadow.shadow_no_candidate += sh.shadow_no_candidate
+            agg_shadow.shadow_threshold_rejections += sh.shadow_threshold_rejections
+            agg_shadow.shadow_ambiguity_rejections += sh.shadow_ambiguity_rejections
+            agg_shadow.shadow_compatibility_rejections += sh.shadow_compatibility_rejections
+            agg_shadow.shadow_embedding_failures += sh.shadow_embedding_failures
+            agg_shadow.shadow_vector_store_failures += sh.shadow_vector_store_failures
+            agg_shadow.shadow_execution_failures += sh.shadow_execution_failures
+            agg_shadow.shadow_queue_depth += sh.shadow_queue_depth
+            agg_shadow.shadow_queue_dropped_total += sh.shadow_queue_dropped_total
+
         # Merge raw samples from ns_data
         for ns_data in all_namespaces:
             with ns_data.lock:
@@ -771,6 +908,7 @@ class RuntimeMetricsCollector:
             exact_cache_write_latency_ms=compute_latency_summary(merged_samples["exact_cache_write_latency_ms"]),
             vector_indexing_latency_ms=compute_latency_summary(merged_samples["vector_indexing_latency_ms"]),
             estimated_latency_saved_ms=compute_latency_summary(merged_samples["estimated_latency_saved_ms"]),
+            shadow_execution_latency_ms=compute_latency_summary(merged_samples["shadow_execution_latency_ms"]),
         )
 
         aggregate_snapshot = NamespaceMetricsSnapshot(
@@ -780,6 +918,7 @@ class RuntimeMetricsCollector:
             request_and_cache=agg_req,
             provider_and_savings=agg_prov,
             semantic=agg_sem,
+            shadow=agg_shadow,
             derived_rates=agg_rates,
             latencies=agg_latencies,
             notes={
