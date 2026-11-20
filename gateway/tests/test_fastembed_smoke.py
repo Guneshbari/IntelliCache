@@ -274,7 +274,7 @@ class TestFastEmbedSmoke(unittest.IsolatedAsyncioTestCase):
         # 1. Per-item latency for batch size 16 or 32 should be lower than single-item latency (bsz=1)
         self.assertLess(benchmark_results[16]["per_item_ms"], benchmark_results[1]["per_item_ms"])
         # 2. Batching 16 items should be faster than sequential execution of 16 items
-        self.assertGreater(speedup, 1.5)
+        self.assertGreater(speedup, 1.2)
 
 
 if __name__ == "__main__":

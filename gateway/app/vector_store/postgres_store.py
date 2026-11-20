@@ -179,6 +179,7 @@ class PostgresVectorStore(BaseVectorStore):
         self._validate_vector_dimensions(query_vector, context="Query vector")
 
         vec_str = _format_vector(query_vector)
+        join_type = "JOIN" if self.table_name == "vector_records" else "LEFT JOIN"
 
         query = f"""
             SELECT
@@ -196,7 +197,7 @@ class PostgresVectorStore(BaseVectorStore):
                 c.total_tokens,
                 c.latency_ms AS original_latency_ms
             FROM {self.table_name} v
-            LEFT JOIN cache_entries c
+            {join_type} cache_entries c
                 ON v.cache_namespace = c.cache_namespace
                AND v.fingerprint = c.fingerprint
                AND (c.expires_at IS NULL OR c.expires_at > NOW())
@@ -404,6 +405,7 @@ class PostgresVectorStore(BaseVectorStore):
         vec_str = _format_vector(query_vector)
 
         explain_cmd = "EXPLAIN (ANALYZE, BUFFERS)" if analyze else "EXPLAIN (BUFFERS)"
+        join_type = "JOIN" if self.table_name == "vector_records" else "LEFT JOIN"
         query = f"""
             {explain_cmd}
             SELECT
@@ -421,7 +423,7 @@ class PostgresVectorStore(BaseVectorStore):
                 c.total_tokens,
                 c.latency_ms AS original_latency_ms
             FROM {self.table_name} v
-            LEFT JOIN cache_entries c
+            {join_type} cache_entries c
                 ON v.cache_namespace = c.cache_namespace
                AND v.fingerprint = c.fingerprint
                AND (c.expires_at IS NULL OR c.expires_at > NOW())
