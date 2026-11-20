@@ -146,6 +146,9 @@ class _NamespaceData:
             "vector_indexing_latency_ms": deque(maxlen=max_samples),
             "estimated_latency_saved_ms": deque(maxlen=max_samples),
             "shadow_execution_latency_ms": deque(maxlen=max_samples),
+            "shadow_embedding_latency_ms": deque(maxlen=max_samples),
+            "shadow_retrieval_latency_ms": deque(maxlen=max_samples),
+            "shadow_policy_latency_ms": deque(maxlen=max_samples),
         }
 
     def record_request(self, stream: bool = False, bypass: bool = False) -> None:
@@ -323,6 +326,9 @@ class _NamespaceData:
         outcome: str,
         execution_latency_ms: float = 0.0,
         queue_depth: int = 0,
+        embedding_latency_ms: float = 0.0,
+        retrieval_latency_ms: float = 0.0,
+        policy_latency_ms: float = 0.0,
     ) -> None:
         with self.lock:
             self.shadow_queue_depth = max(0, queue_depth)
@@ -355,6 +361,12 @@ class _NamespaceData:
 
             if execution_latency_ms > 0:
                 self.latency_samples["shadow_execution_latency_ms"].append(max(0.0, float(execution_latency_ms)))
+            if embedding_latency_ms > 0:
+                self.latency_samples["shadow_embedding_latency_ms"].append(max(0.0, float(embedding_latency_ms)))
+            if retrieval_latency_ms > 0:
+                self.latency_samples["shadow_retrieval_latency_ms"].append(max(0.0, float(retrieval_latency_ms)))
+            if policy_latency_ms > 0:
+                self.latency_samples["shadow_policy_latency_ms"].append(max(0.0, float(policy_latency_ms)))
 
     def snapshot(self, uptime_seconds: float) -> NamespaceMetricsSnapshot:
         with self.lock:
@@ -467,6 +479,9 @@ class _NamespaceData:
                 vector_indexing_latency_ms=compute_latency_summary(list(self.latency_samples["vector_indexing_latency_ms"])),
                 estimated_latency_saved_ms=compute_latency_summary(list(self.latency_samples["estimated_latency_saved_ms"])),
                 shadow_execution_latency_ms=compute_latency_summary(list(self.latency_samples["shadow_execution_latency_ms"])),
+                shadow_embedding_latency_ms=compute_latency_summary(list(self.latency_samples["shadow_embedding_latency_ms"])),
+                shadow_retrieval_latency_ms=compute_latency_summary(list(self.latency_samples["shadow_retrieval_latency_ms"])),
+                shadow_policy_latency_ms=compute_latency_summary(list(self.latency_samples["shadow_policy_latency_ms"])),
             )
 
             notes = {
@@ -748,6 +763,9 @@ class RuntimeMetricsCollector:
         outcome: str,
         execution_latency_ms: float = 0.0,
         queue_depth: int = 0,
+        embedding_latency_ms: float = 0.0,
+        retrieval_latency_ms: float = 0.0,
+        policy_latency_ms: float = 0.0,
     ) -> None:
         try:
             ns_data = self.get_or_create_namespace(namespace)
@@ -755,6 +773,9 @@ class RuntimeMetricsCollector:
                 outcome=outcome,
                 execution_latency_ms=execution_latency_ms,
                 queue_depth=queue_depth,
+                embedding_latency_ms=embedding_latency_ms,
+                retrieval_latency_ms=retrieval_latency_ms,
+                policy_latency_ms=policy_latency_ms,
             )
         except Exception as e:
             logger.debug("Metrics record_shadow_outcome failed: %s", e)
@@ -796,6 +817,9 @@ class RuntimeMetricsCollector:
             "vector_indexing_latency_ms": [],
             "estimated_latency_saved_ms": [],
             "shadow_execution_latency_ms": [],
+            "shadow_embedding_latency_ms": [],
+            "shadow_retrieval_latency_ms": [],
+            "shadow_policy_latency_ms": [],
         }
 
         for snap in ns_snapshots.values():
@@ -909,6 +933,9 @@ class RuntimeMetricsCollector:
             vector_indexing_latency_ms=compute_latency_summary(merged_samples["vector_indexing_latency_ms"]),
             estimated_latency_saved_ms=compute_latency_summary(merged_samples["estimated_latency_saved_ms"]),
             shadow_execution_latency_ms=compute_latency_summary(merged_samples["shadow_execution_latency_ms"]),
+            shadow_embedding_latency_ms=compute_latency_summary(merged_samples["shadow_embedding_latency_ms"]),
+            shadow_retrieval_latency_ms=compute_latency_summary(merged_samples["shadow_retrieval_latency_ms"]),
+            shadow_policy_latency_ms=compute_latency_summary(merged_samples["shadow_policy_latency_ms"]),
         )
 
         aggregate_snapshot = NamespaceMetricsSnapshot(

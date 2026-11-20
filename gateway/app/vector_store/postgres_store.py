@@ -59,6 +59,8 @@ class PostgresVectorStore(BaseVectorStore):
         default_model: str = "nomic-embed-text",
         dimensions: int = 768,
         owns_pool: bool = False,
+        table_name: str = "vector_records",
+        readonly_transaction: bool = False,
     ):
         if dimensions <= 0:
             raise VectorInvalidError(f"Vector dimensions must be positive, got {dimensions}.")
@@ -72,6 +74,8 @@ class PostgresVectorStore(BaseVectorStore):
         self.default_model = default_model.strip()
         self.dimensions = dimensions
         self._owns_pool = owns_pool
+        self.table_name = table_name.strip()
+        self.readonly_transaction = bool(readonly_transaction)
 
     def _validate_vector_dimensions(self, vector: Sequence[float], context: str = "vector") -> None:
         """Validates that a vector's dimension matches the configured store dimension."""
@@ -106,8 +110,8 @@ class PostgresVectorStore(BaseVectorStore):
         meta_json = json.dumps(record.metadata or {})
         created_at = record.created_at or datetime.now(timezone.utc)
 
-        query = """
-            INSERT INTO vector_records (
+        query = f"""
+            INSERT INTO {self.table_name} (
                 cache_namespace, fingerprint, query_text, model, vector, metadata, created_at, updated_at
             )
             VALUES (
@@ -176,7 +180,7 @@ class PostgresVectorStore(BaseVectorStore):
 
         vec_str = _format_vector(query_vector)
 
-        query = """
+        query = f"""
             SELECT
                 v.id,
                 v.cache_namespace,
@@ -191,8 +195,8 @@ class PostgresVectorStore(BaseVectorStore):
                 c.completion_tokens,
                 c.total_tokens,
                 c.latency_ms AS original_latency_ms
-            FROM vector_records v
-            JOIN cache_entries c
+            FROM {self.table_name} v
+            LEFT JOIN cache_entries c
                 ON v.cache_namespace = c.cache_namespace
                AND v.fingerprint = c.fingerprint
                AND (c.expires_at IS NULL OR c.expires_at > NOW())
@@ -204,7 +208,11 @@ class PostgresVectorStore(BaseVectorStore):
 
         try:
             async with self.pool.acquire() as conn:
-                rows = await conn.fetch(query, vec_str, ns, target_model, top_k)
+                if self.readonly_transaction:
+                    async with conn.transaction(readonly=True):
+                        rows = await conn.fetch(query, vec_str, ns, target_model, top_k)
+                else:
+                    rows = await conn.fetch(query, vec_str, ns, target_model, top_k)
 
             results: List[VectorSearchResult] = []
             for row in rows:
@@ -217,6 +225,7 @@ class PostgresVectorStore(BaseVectorStore):
                 comp_toks = int(row["completion_tokens"]) if row["completion_tokens"] is not None else 0
                 tot_toks = int(row["total_tokens"]) if row["total_tokens"] is not None else 0
                 orig_latency = float(row["original_latency_ms"]) if row["original_latency_ms"] is not None else 0.0
+                resp_text = row["cached_response"] or meta.get("cached_response")
 
                 results.append(
                     VectorSearchResult(
@@ -226,7 +235,7 @@ class PostgresVectorStore(BaseVectorStore):
                         model=row["model"],
                         distance=dist,
                         similarity=sim,
-                        cached_response=row["cached_response"],
+                        cached_response=resp_text,
                         prompt_tokens=prompt_toks,
                         completion_tokens=comp_toks,
                         total_tokens=tot_toks,
@@ -269,9 +278,9 @@ class PostgresVectorStore(BaseVectorStore):
         if not target_model:
             raise VectorInvalidError("Model cannot be empty.")
 
-        query = """
+        query = f"""
             SELECT cache_namespace, fingerprint, query_text, model, vector, metadata, created_at
-            FROM vector_records
+            FROM {self.table_name}
             WHERE cache_namespace = $1 AND fingerprint = $2 AND model = $3
         """
 
@@ -309,7 +318,7 @@ class PostgresVectorStore(BaseVectorStore):
         if not ns:
             raise VectorInvalidError("Namespace cannot be empty.")
 
-        query = "DELETE FROM vector_records WHERE cache_namespace = $1 AND fingerprint = $2"
+        query = f"DELETE FROM {self.table_name} WHERE cache_namespace = $1 AND fingerprint = $2"
         try:
             async with self.pool.acquire() as conn:
                 result_tag = await conn.execute(query, ns, fp)
@@ -327,7 +336,7 @@ class PostgresVectorStore(BaseVectorStore):
         if not ns:
             raise VectorInvalidError("Namespace cannot be empty.")
 
-        query = "DELETE FROM vector_records WHERE cache_namespace = $1"
+        query = f"DELETE FROM {self.table_name} WHERE cache_namespace = $1"
         try:
             async with self.pool.acquire() as conn:
                 result_tag = await conn.execute(query, ns)
@@ -353,10 +362,10 @@ class PostgresVectorStore(BaseVectorStore):
         """
         Inspects whether vector indexes (e.g. HNSW) are present on the vector_records table.
         """
-        query = """
+        query = f"""
             SELECT indexname, indexdef
             FROM pg_indexes
-            WHERE tablename = 'vector_records';
+            WHERE tablename = '{self.table_name}';
         """
         try:
             async with self.pool.acquire() as conn:
@@ -411,8 +420,8 @@ class PostgresVectorStore(BaseVectorStore):
                 c.completion_tokens,
                 c.total_tokens,
                 c.latency_ms AS original_latency_ms
-            FROM vector_records v
-            JOIN cache_entries c
+            FROM {self.table_name} v
+            LEFT JOIN cache_entries c
                 ON v.cache_namespace = c.cache_namespace
                AND v.fingerprint = c.fingerprint
                AND (c.expires_at IS NULL OR c.expires_at > NOW())

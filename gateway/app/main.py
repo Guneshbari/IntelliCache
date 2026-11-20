@@ -265,46 +265,50 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # Shadow Evaluation Initialization (Stage 3.3)
         if settings.shadow_evaluation_enabled:
             logger.info("Initializing shadow evaluation components (Stage 3.3)...")
-            # 1. Base vector store (if not already created by semantic cache)
-            if vector_store is not None:
-                base_shadow_vec = vector_store
-            elif settings.cache_backend == "postgres":
+            from concurrent.futures import ThreadPoolExecutor
+            shadow_executor = ThreadPoolExecutor(
+                max_workers=settings.shadow_max_concurrency,
+                thread_name_prefix="shadow-inference",
+            )
+
+            # 1. Dedicated Shadow Candidate Store (shadow_vector_records / isolated in-memory)
+            if settings.cache_backend == "postgres":
                 logger.info("Running vector store migrations for shadow evaluation...")
                 await run_vector_migrations(pool, dimensions=settings.vector_dimensions)
-                shadow_vector_store = PostgresVectorStore(
+                shadow_candidate_store = PostgresVectorStore(
                     pool=pool,
                     default_namespace=settings.cache_namespace,
                     default_model=settings.embedding_model,
                     dimensions=settings.vector_dimensions,
+                    table_name="shadow_vector_records",
                 )
-                base_shadow_vec = shadow_vector_store
             else:
-                shadow_vector_store = InMemoryVectorStore(
+                shadow_candidate_store = InMemoryVectorStore(
                     dimensions=settings.vector_dimensions,
                     default_namespace=settings.cache_namespace,
                     default_model=settings.embedding_model,
-                    exact_cache=cache,
                     max_records=settings.vector_store_max_entries,
                 )
-                base_shadow_vec = shadow_vector_store
+            shadow_vector_store = shadow_candidate_store
 
-            # Wrap in structural read-only adapter (forbids upsert, delete, clear)
-            read_only_vec = ReadOnlyVectorStoreAdapter(base_shadow_vec)
+            # Wrap in structural read-only adapter with database-level read-only enforcement
+            read_only_vec = ReadOnlyVectorStoreAdapter(shadow_candidate_store, enforce_db_readonly=True)
 
-            # 2. Embedding provider (if not already created)
-            if embedding_provider is not None:
-                shadow_embed_prov = embedding_provider
-            else:
-                shadow_embedding_provider = EmbeddingProviderFactory.create(
-                    provider_name=settings.embedding_provider,
-                    model=settings.embedding_model,
-                    dimensions=settings.vector_dimensions,
-                    base_url=settings.embedding_base_url,
-                    timeout_seconds=settings.embedding_timeout_seconds,
-                )
-                shadow_embed_prov = shadow_embedding_provider
+            # 2. Embedding provider (bound to dedicated thread pool executor)
+            shadow_embedding_provider = EmbeddingProviderFactory.create(
+                provider_name=settings.embedding_provider,
+                model=settings.embedding_model,
+                dimensions=settings.vector_dimensions,
+                base_url=settings.embedding_base_url,
+                timeout_seconds=settings.embedding_timeout_seconds,
+                executor=shadow_executor,
+            )
+            shadow_embed_prov = shadow_embedding_provider
+            # Warm up model off-thread if supported
+            if hasattr(shadow_embed_prov, "initialize"):
+                await shadow_embed_prov.initialize()
 
-            # 3. Policy & ReadOnlySemanticCacheService (overrides index() to no-op)
+            # 3. Policy & ReadOnlySemanticCacheService (uses isolated metrics collector and overrides index())
             shadow_policy = SemanticCachePolicy(
                 min_similarity=settings.semantic_cache_min_similarity,
                 min_margin=settings.semantic_cache_min_margin,
@@ -318,13 +322,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 default_namespace=settings.cache_namespace,
             )
 
-            # 4. ShadowEvaluationService
+            # 4. ShadowEvaluationService with candidate ingestion support
             shadow_service = ShadowEvaluationService(
                 settings=settings,
                 semantic_cache=shadow_sem_cache,
                 db_pool=pool,
                 metrics_collector=collector,
+                shadow_vector_store=shadow_candidate_store,
             )
+            # Re-use the executor if already created
+            shadow_service.executor = shadow_executor
             await shadow_service.start()
             app.state.shadow_service = shadow_service
             set_shadow_service(shadow_service)

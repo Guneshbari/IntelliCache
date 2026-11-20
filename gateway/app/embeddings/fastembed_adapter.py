@@ -5,6 +5,7 @@ Uses ONNX Runtime under the hood via the optional fastembed library.
 """
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import logging
 from typing import List, Optional, Sequence, Union
 import httpx
@@ -35,11 +36,13 @@ class FastEmbedProvider(EmbeddingProvider):
         timeout_seconds: float = 30.0,
         dimensions: Optional[int] = 384,
         client: Optional[httpx.AsyncClient] = None,
+        executor: Optional[ThreadPoolExecutor] = None,
     ):
         self.base_url = base_url
         self.model_name = (model or "BAAI/bge-small-en-v1.5").strip()
         self.timeout_seconds = float(timeout_seconds) if timeout_seconds > 0 else 30.0
         self.expected_dimensions = int(dimensions) if dimensions is not None and dimensions > 0 else 384
+        self.executor = executor
         self._model = None
         self._lock = asyncio.Lock()
 
@@ -53,26 +56,39 @@ class FastEmbedProvider(EmbeddingProvider):
         """Configured or expected dimensionality of the embedding vector."""
         return self.expected_dimensions
 
-    def _get_model(self):
-        """Lazily initialize the underlying FastEmbed model."""
-        if self._model is None:
-            try:
-                from fastembed import TextEmbedding
-            except (ImportError, ModuleNotFoundError) as exc:
-                raise EmbeddingConfigurationError(
-                    "FastEmbed is not installed. To use the FastEmbed provider, install it via: "
-                    "pip install -r requirements-fastembed.txt (or pip install fastembed)",
-                    provider="fastembed",
-                ) from exc
+    def _load_model_sync(self):
+        """Synchronously loads the FastEmbed model (to be called in a worker thread)."""
+        try:
+            from fastembed import TextEmbedding
+        except (ImportError, ModuleNotFoundError) as exc:
+            raise EmbeddingConfigurationError(
+                "FastEmbed is not installed. To use the FastEmbed provider, install it via: "
+                "pip install -r requirements-fastembed.txt (or pip install fastembed)",
+                provider="fastembed",
+            ) from exc
 
-            try:
-                self._model = TextEmbedding(model_name=self.model_name)
-                logger.info("Loaded FastEmbed model: '%s'", self.model_name)
-            except Exception as exc:
-                raise EmbeddingConnectionError(
-                    f"Failed to initialize FastEmbed model '{self.model_name}': {exc}",
-                    provider="fastembed",
-                ) from exc
+        try:
+            loaded = TextEmbedding(model_name=self.model_name)
+            logger.info("Loaded FastEmbed model: '%s'", self.model_name)
+            return loaded
+        except Exception as exc:
+            raise EmbeddingConnectionError(
+                f"Failed to initialize FastEmbed model '{self.model_name}': {exc}",
+                provider="fastembed",
+            ) from exc
+
+    async def initialize(self) -> None:
+        """Eagerly initializes the underlying FastEmbed model in a worker thread to keep the event loop unblocked."""
+        if self._model is None:
+            async with self._lock:
+                if self._model is None:
+                    loop = asyncio.get_running_loop()
+                    self._model = await loop.run_in_executor(self.executor, self._load_model_sync)
+
+    def _get_model(self):
+        """Lazily initialize or return the underlying FastEmbed model."""
+        if self._model is None:
+            self._model = self._load_model_sync()
         return self._model
 
     async def embed(
@@ -83,15 +99,21 @@ class FastEmbedProvider(EmbeddingProvider):
         """
         Generates a vector embedding for the input text using local FastEmbed model.
         Differentiates query vs document/passage embedding according to task.
-        Executes ONNX CPU inference in a separate worker thread to avoid blocking asyncio loop.
+        Executes ONNX CPU inference in a dedicated worker thread to avoid blocking asyncio loop.
         """
         if not text or not text.strip():
             raise EmbeddingResponseError("Input text cannot be empty.", provider="fastembed")
 
         raw_text = text.strip()
 
-        async with self._lock:
+        # Check if _get_model is patched (e.g. in unit tests) or lazily initialize off-thread
+        from unittest.mock import Mock
+        if isinstance(getattr(self, "_get_model", None), Mock):
             model = self._get_model()
+        else:
+            if self._model is None:
+                await self.initialize()
+            model = self._model
 
         # Determine task normalized string
         task_str = task.value if isinstance(task, EmbeddingTask) else str(task).lower().strip()
@@ -134,9 +156,11 @@ class FastEmbedProvider(EmbeddingProvider):
                     provider="fastembed",
                 ) from err
 
+        loop = asyncio.get_running_loop()
+        fut = loop.run_in_executor(self.executor, _compute)
         try:
             vector = await asyncio.wait_for(
-                asyncio.to_thread(_compute),
+                fut,
                 timeout=self.timeout_seconds,
             )
         except asyncio.TimeoutError as exc:

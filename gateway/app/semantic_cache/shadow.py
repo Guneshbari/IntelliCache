@@ -16,6 +16,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from ..config import Settings
 from ..core.contracts import ChatMessage, GenerationRequest, GenerationResult
+from ..embeddings.contracts import EmbeddingTask
 from ..metrics.collector import RuntimeMetricsCollector, get_metrics_collector
 from ..vector_store.contracts import VectorRecord, VectorSearchResult
 from ..vector_store.interfaces import BaseVectorStore
@@ -98,6 +99,7 @@ class ShadowTask:
     system_prompt: Optional[str] = None
     stream: bool = False
     is_multi_turn: bool = False
+    actual_response_text: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -107,13 +109,28 @@ class ShadowTask:
 class ReadOnlyVectorStoreAdapter(BaseVectorStore):
     """
     Structural read-only adapter wrapping a BaseVectorStore.
-    Exposes search and metadata inspection while strictly forbidding
-    upsert, delete, and clear operations, guaranteeing that shadow evaluations
-    cannot mutate production vector tables.
+    Guarantees both application-level and database-level write protection:
+    1. Blocks upsert(), delete(), and clear() in Python.
+    2. Enables readonly_transaction on the underlying store if supported (e.g. PostgresVectorStore),
+       guaranteeing that PostgreSQL enforces SET TRANSACTION READ ONLY.
     """
 
-    def __init__(self, inner: BaseVectorStore):
+    def __init__(self, inner: BaseVectorStore, enforce_db_readonly: bool = True):
         self._inner = inner
+        self._enforce_db_readonly = enforce_db_readonly
+        if enforce_db_readonly and hasattr(inner, "readonly_transaction"):
+            inner.readonly_transaction = True
+
+    @property
+    def inner(self) -> BaseVectorStore:
+        return self._inner
+
+    @property
+    def enforce_db_readonly(self) -> bool:
+        return self._enforce_db_readonly
+
+    def is_enforcing_db_readonly(self) -> bool:
+        return self._enforce_db_readonly
 
     @property
     def dimensions(self) -> int:
@@ -157,10 +174,31 @@ class ReadOnlyVectorStoreAdapter(BaseVectorStore):
 class ReadOnlySemanticCacheService(SemanticCacheService):
     """
     Read-only semantic cache service for shadow evaluation.
-    Inherits all eligibility checks, FastEmbed inference, pgvector retrieval,
-    and compatibility validation from SemanticCacheService, but ensures
-    that index() is a strict no-op that never writes to the vector store or cache.
+    Inherits all eligibility checks, FastEmbed inference, vector retrieval,
+    and compatibility validation from SemanticCacheService, but ensures:
+    1. An isolated RuntimeMetricsCollector is used so production metrics are NEVER modified.
+    2. index() is a strict no-op that never writes to the vector store or cache.
     """
+
+    def __init__(
+        self,
+        embedding_provider: Any,
+        vector_store: BaseVectorStore,
+        policy: Any,
+        default_namespace: str = "default",
+        metrics_collector: Optional[RuntimeMetricsCollector] = None,
+        diagnostics_hook: Optional[Callable[[Dict[str, Any]], None]] = None,
+    ):
+        # Always use an isolated metrics collector so production metrics are NEVER modified
+        self.isolated_collector = metrics_collector or RuntimeMetricsCollector()
+        super().__init__(
+            embedding_provider=embedding_provider,
+            vector_store=vector_store,
+            policy=policy,
+            default_namespace=default_namespace,
+            metrics_collector=self.isolated_collector,
+            diagnostics_hook=diagnostics_hook,
+        )
 
     async def index(
         self,
@@ -179,7 +217,8 @@ class ShadowEvaluationService:
     """
     Asynchronous, bounded background service that processes shadow evaluations.
     Manages queueing, pre-enqueue sampling, concurrency control via Semaphore,
-    ONNX CPU execution via dedicated ThreadPoolExecutor, and failure isolation.
+    ONNX CPU execution via dedicated ThreadPoolExecutor, candidate ingestion,
+    and failure isolation.
     """
 
     def __init__(
@@ -188,17 +227,24 @@ class ShadowEvaluationService:
         semantic_cache: SemanticCacheService,
         db_pool: Optional[Any] = None,
         metrics_collector: Optional[RuntimeMetricsCollector] = None,
+        shadow_vector_store: Optional[BaseVectorStore] = None,
     ):
         self.settings = settings
         self.semantic_cache = semantic_cache
         self.db_pool = db_pool
         self.metrics_collector = metrics_collector
+        self.shadow_vector_store = shadow_vector_store
         self.queue: asyncio.Queue[ShadowTask] = asyncio.Queue(maxsize=settings.shadow_queue_max_size)
         self.semaphore = asyncio.Semaphore(settings.shadow_max_concurrency)
         self.executor = ThreadPoolExecutor(
             max_workers=settings.shadow_max_concurrency,
-            thread_name_prefix="shadow-worker",
+            thread_name_prefix="shadow-inference",
         )
+        # If embedding provider supports an executor, configure it with our dedicated executor
+        if hasattr(self.semantic_cache, "embedding_provider"):
+            prov = self.semantic_cache.embedding_provider
+            if hasattr(prov, "executor") and prov.executor is None:
+                prov.executor = self.executor
         self._workers: List[asyncio.Task] = []
         self._stopping = False
         self._running = False
@@ -292,15 +338,11 @@ class ShadowEvaluationService:
             metadata={"request_id": task.request_id, "task_kind": task.task_kind},
         )
 
-        # Hook diagnostics
+        # Request-scoped diagnostics capture (zero mutation of shared service attributes)
         captured_diag: Dict[str, Any] = {}
 
         def _capture(diag: Dict[str, Any]) -> None:
             captured_diag.update(diag)
-
-        # Temporarily attach our diagnostics capture to the semantic cache instance
-        original_hook = self.semantic_cache.diagnostics_hook
-        self.semantic_cache.diagnostics_hook = _capture
 
         eligibility_status = "eligible"
         eligibility_rejection_reason: Optional[str] = None
@@ -330,10 +372,10 @@ class ShadowEvaluationService:
                 hypothetical_cache_outcome = "ineligible_request"
             else:
                 retrieval_status = "attempted"
-                # 2. Real lookup with bounded timeout
+                # 2. Real lookup with bounded timeout and request-scoped diagnostics hook
                 try:
                     hit = await asyncio.wait_for(
-                        self.semantic_cache.lookup(gen_req),
+                        self.semantic_cache.lookup(gen_req, diagnostics_hook=_capture),
                         timeout=self.settings.shadow_timeout_seconds,
                     )
                 except asyncio.TimeoutError:
@@ -394,8 +436,6 @@ class ShadowEvaluationService:
             hypothetical_cache_outcome = "shadow_execution_failure"
             failure_category = "SHADOW_EXECUTION_FAILURE"
             logger.error("Unexpected error in shadow evaluation: %s", err, exc_info=True)
-        finally:
-            self.semantic_cache.diagnostics_hook = original_hook
 
         exec_duration_ms = max(0.0, (time.perf_counter() - start_time) * 1000.0)
 
@@ -405,7 +445,25 @@ class ShadowEvaluationService:
             outcome=hypothetical_cache_outcome,
             execution_latency_ms=exec_duration_ms,
             queue_depth=self.queue.qsize(),
+            embedding_latency_ms=embedding_duration_ms,
+            retrieval_latency_ms=retrieval_duration_ms,
+            policy_latency_ms=policy_duration_ms,
         )
+
+        # 3. Dedicated Shadow Candidate Ingestion:
+        # If the actual response was from the upstream provider and the query was eligible,
+        # index this candidate into the shadow candidate pool (shadow_vector_records) so future
+        # shadow evaluations can retrieve it. Never mutates production cache_entries or vector_records.
+        if (
+            self.shadow_vector_store is not None
+            and task.actual_response_source == "upstream_provider"
+            and task.actual_response_text
+            and eligibility_status == "eligible"
+        ):
+            try:
+                await self.index_shadow_candidate(task, task.actual_response_text)
+            except Exception as ing_err:
+                logger.debug("Shadow candidate ingestion error: %s", ing_err)
 
         # Persist to database (if PostgreSQL pool is configured)
         if self.db_pool is not None:
@@ -510,6 +568,68 @@ class ShadowEvaluationService:
                 kwargs["failure_category"],
             )
 
+    async def index_shadow_candidate(self, task: ShadowTask, response_text: str) -> bool:
+        """
+        Asynchronously indexes an eligible upstream response into the shadow candidate pool (shadow_vector_records).
+        Guarantees zero mutation of production cache_entries or vector_records.
+        """
+        if not self.shadow_vector_store or not response_text or not response_text.strip():
+            return False
+        if task.actual_response_source != "upstream_provider":
+            return False
+
+        # 1. Check eligibility
+        messages = [ChatMessage(role="user", content=task.query_text)]
+        gen_req = GenerationRequest(
+            model=task.requested_model,
+            messages=messages,
+            temperature=task.temperature,
+            max_tokens=task.max_tokens,
+            provider=task.provider,
+            namespace=task.cache_namespace,
+            stream=task.stream,
+        )
+        eligibility = self.semantic_cache.policy.check_eligibility(gen_req)
+        if not eligibility.eligible:
+            return False
+
+        # 2. Extract metadata
+        meta_obj = eligibility.metadata or self.semantic_cache.policy.extractor.extract(
+            gen_req, self.semantic_cache.policy.configured_model
+        )
+        meta_dict = meta_obj.to_dict()
+        meta_dict["cached_response"] = response_text.strip()
+
+        # 3. Generate document embedding
+        try:
+            embed_res = await self.semantic_cache.embedding_provider.embed(
+                task.query_text.strip(), task=EmbeddingTask.DOCUMENT
+            )
+        except Exception as exc:
+            logger.warning("Shadow candidate embedding failed for '%s': %s", task.request_id, exc)
+            return False
+
+        # 4. Upsert into shadow vector store (shadow_vector_records)
+        record = VectorRecord(
+            cache_namespace=task.cache_namespace,
+            fingerprint=task.request_hash,
+            query_text=task.query_text.strip(),
+            model=self.semantic_cache.policy.configured_model,
+            vector=embed_res.vector,
+            metadata=meta_dict,
+        )
+        try:
+            await self.shadow_vector_store.upsert(record)
+            logger.debug(
+                "Ingested shadow candidate into shadow vector store: fingerprint='%s...' namespace='%s'",
+                task.request_hash[:12],
+                task.cache_namespace,
+            )
+            return True
+        except Exception as exc:
+            logger.warning("Shadow candidate upsert failed for '%s': %s", task.request_id, exc)
+            return False
+
     async def cleanup_old_records(self, retention_days: Optional[int] = None, batch_size: int = 500) -> int:
         """
         Deletes records older than retention_days in bounded batches.
@@ -591,3 +711,79 @@ class ShadowEvaluationService:
         self.executor.shutdown(wait=True)
         self._running = False
         logger.info("ShadowEvaluationService stopped.")
+
+
+# ---------------------------------------------------------------------------
+# Offline Backfill Utility
+# ---------------------------------------------------------------------------
+
+async def backfill_shadow_candidates_from_cache(
+    db_pool: Any,
+    shadow_vector_store: BaseVectorStore,
+    embedding_provider: Any,
+    policy: Any,
+    namespace: str = "default",
+    limit: int = 1000,
+) -> int:
+    """
+    Controlled offline backfill from eligible historical exact cache entries into shadow vector records.
+    Executes a read-only SELECT against cache_entries without mutating production cache or vector records.
+    """
+    if db_pool is None or shadow_vector_store is None:
+        return 0
+
+    query = """
+        SELECT cache_namespace, fingerprint, query_text, response, prompt_tokens, completion_tokens, total_tokens, latency_ms
+        FROM cache_entries
+        WHERE cache_namespace = $1
+          AND (expires_at IS NULL OR expires_at > NOW())
+        ORDER BY created_at DESC
+        LIMIT $2;
+    """
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(query, namespace, limit)
+
+    count = 0
+    for row in rows:
+        q_text = row["query_text"]
+        resp_text = row["response"]
+        if not q_text or not resp_text:
+            continue
+
+        gen_req = GenerationRequest(
+            model=getattr(policy, "configured_model", "default"),
+            messages=[ChatMessage(role="user", content=q_text)],
+            temperature=0.0,
+            max_tokens=None,
+            provider="groq",
+            namespace=row["cache_namespace"],
+        )
+        elig = policy.check_eligibility(gen_req)
+        if not elig.eligible:
+            continue
+
+        try:
+            embed_res = await embedding_provider.embed(q_text, task=EmbeddingTask.DOCUMENT)
+            meta_obj = elig.metadata or policy.extractor.extract(gen_req, policy.configured_model)
+            meta_dict = meta_obj.to_dict()
+            meta_dict["cached_response"] = resp_text
+
+            rec = VectorRecord(
+                cache_namespace=row["cache_namespace"],
+                fingerprint=row["fingerprint"],
+                query_text=q_text,
+                model=policy.configured_model,
+                vector=embed_res.vector,
+                metadata=meta_dict,
+            )
+            await shadow_vector_store.upsert(rec)
+            count += 1
+        except Exception as exc:
+            logger.warning("Failed to backfill shadow record %s: %s", row["fingerprint"], exc)
+
+    logger.info(
+        "Backfilled %d shadow candidates from cache_entries for namespace '%s'",
+        count,
+        namespace,
+    )
+    return count

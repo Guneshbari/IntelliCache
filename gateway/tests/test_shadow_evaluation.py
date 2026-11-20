@@ -24,6 +24,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.config import Settings
 from app.core.contracts import ChatMessage, GenerationRequest, GenerationResult
+from app.embeddings.fastembed_adapter import FastEmbedProvider
+from app.metrics import get_metrics_collector
 from app.metrics.collector import RuntimeMetricsCollector
 from app.semantic_cache.contracts import SemanticHit
 from app.semantic_cache.policy import SemanticCachePolicy
@@ -33,11 +35,13 @@ from app.semantic_cache.shadow import (
     ReadOnlyVectorStoreAdapter,
     ShadowEvaluationService,
     ShadowTask,
+    backfill_shadow_candidates_from_cache,
     map_compatibility_rejection_code,
     map_eligibility_rejection_code,
 )
 from app.vector_store.contracts import VectorRecord, VectorSearchResult
 from app.vector_store.in_memory_store import InMemoryVectorStore
+from app.vector_store.postgres_store import PostgresVectorStore
 
 
 class MockEmbeddingProvider:
@@ -186,6 +190,80 @@ class TestMultiLayerWriteProtection(unittest.IsolatedAsyncioTestCase):
         # Verify raw store remains empty
         records = await self.raw_store.search([0.5, 0.5, 0.5, 0.5], top_k=5)
         self.assertEqual(len(records), 0)
+
+
+class TestConcurrentDiagnosticsIsolation(unittest.IsolatedAsyncioTestCase):
+    """Verifies that request-scoped diagnostics hooks eliminate race conditions under concurrent lookups (P1)."""
+
+    async def asyncSetUp(self):
+        self.raw_store = InMemoryVectorStore(dimensions=4)
+        self.embed_provider = MockEmbeddingProvider()
+        self.policy = SemanticCachePolicy(
+            min_similarity=0.92,
+            min_margin=0.03,
+            top_k=5,
+            configured_model="BAAI/bge-small-en-v1.5",
+        )
+        self.service = SemanticCacheService(
+            embedding_provider=self.embed_provider,
+            vector_store=self.raw_store,
+            policy=self.policy,
+            default_namespace="default",
+        )
+
+        # Seed candidate into store
+        embed_res = await self.embed_provider.embed("Base query candidate")
+        from app.semantic_cache.compatibility import CompatibilityExtractor
+        extractor = CompatibilityExtractor()
+        req_seed = GenerationRequest(
+            model="qwen/qwen3.8-27b",
+            messages=[ChatMessage(role="user", content="Base query candidate")],
+            temperature=0.0,
+        )
+        meta_dict = extractor.extract(req_seed, "BAAI/bge-small-en-v1.5").to_dict()
+        meta_dict["cached_response"] = "Base response text"
+        await self.raw_store.upsert(
+            VectorRecord(
+                cache_namespace="default",
+                fingerprint="fp-base",
+                query_text="Base query candidate",
+                vector=embed_res.vector,
+                model="BAAI/bge-small-en-v1.5",
+                metadata=meta_dict,
+            )
+        )
+
+    async def test_concurrent_diagnostics_hook_race_isolation(self):
+        """10 concurrent coroutines invoking lookup with distinct hooks capture only their own diagnostics."""
+        concurrency = 10
+        captured_by_request = {i: [] for i in range(concurrency)}
+
+        def make_hook(req_idx: int):
+            def _hook(diag: dict):
+                captured_by_request[req_idx].append(diag)
+            return _hook
+
+        async def worker(idx: int):
+            req = GenerationRequest(
+                model="qwen/qwen3.8-27b",
+                messages=[ChatMessage(role="user", content=f"Concurrent query prompt #{idx}")],
+                temperature=0.0,
+            )
+            return await self.service.lookup(req, diagnostics_hook=make_hook(idx))
+
+        results = await asyncio.gather(*[worker(i) for i in range(concurrency)])
+        self.assertEqual(len(results), concurrency)
+
+        for i in range(concurrency):
+            diags = captured_by_request[i]
+            self.assertEqual(len(diags), 1, f"Worker {i} should have captured exactly 1 diagnostic payload")
+            captured_hash = diags[0].get("query_hash")
+            expected_hash = hashlib.sha256(f"Concurrent query prompt #{i}".encode("utf-8")).hexdigest()
+            self.assertEqual(
+                captured_hash,
+                expected_hash,
+                f"Worker {i} captured diagnostic belonging to a different request: got '{captured_hash}'",
+            )
 
 
 class TestShadowEvaluationServiceExecution(unittest.IsolatedAsyncioTestCase):
@@ -416,6 +494,303 @@ class TestShadowEvaluationServiceExecution(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snap.shadow.shadow_requests_total, 1)
         self.assertEqual(snap.shadow.shadow_requests_sampled, 0)
         self.assertEqual(snap.shadow.shadow_requests_unsampled, 1)
+
+    async def test_shadow_evaluation_production_metrics_isolation(self):
+        """Executing diverse shadow tasks must NOT increment production cache metrics."""
+        prod_collector = get_metrics_collector()
+        prod_collector.reset()
+
+        # Seed candidate in shadow store
+        embed_res = await self.embed_provider.embed("Python reverse list")
+        from app.semantic_cache.compatibility import CompatibilityExtractor
+        extractor = CompatibilityExtractor()
+        req_seed = GenerationRequest(
+            model="qwen/qwen3.8-27b",
+            messages=[ChatMessage(role="user", content="Python reverse list")],
+            temperature=0.0,
+            max_tokens=100,
+        )
+        meta_dict = extractor.extract(req_seed, "BAAI/bge-small-en-v1.5").to_dict()
+        meta_dict["cached_response"] = "items[::-1]"
+        await self.raw_store.upsert(
+            VectorRecord(
+                cache_namespace="default",
+                fingerprint="fp-metrics-iso",
+                query_text="Python reverse list",
+                vector=embed_res.vector,
+                model="BAAI/bge-small-en-v1.5",
+                metadata=meta_dict,
+            )
+        )
+
+        tasks = [
+            # 1. Eligible hit
+            ShadowTask(
+                request_id="iso-hit",
+                request_hash="hash-iso-hit",
+                cache_namespace="default",
+                provider="groq",
+                requested_model="qwen/qwen3.8-27b",
+                temperature=0.0,
+                max_tokens=100,
+                query_text="Python reverse list",
+                actual_response_source="upstream_provider",
+                actual_response_hash=None,
+                actual_latency_ms=40.0,
+                enqueued_at=time.perf_counter(),
+                actual_response_text="items[::-1]",
+            ),
+            # 2. Eligible miss (no match)
+            ShadowTask(
+                request_id="iso-miss",
+                request_hash="hash-iso-miss",
+                cache_namespace="default",
+                provider="groq",
+                requested_model="qwen/qwen3.8-27b",
+                temperature=0.0,
+                max_tokens=100,
+                query_text="Completely unrelated topic about astrophysics",
+                actual_response_source="upstream_provider",
+                actual_response_hash=None,
+                actual_latency_ms=60.0,
+                enqueued_at=time.perf_counter(),
+            ),
+            # 3. Ineligible request
+            ShadowTask(
+                request_id="iso-inelig",
+                request_hash="hash-iso-inelig",
+                cache_namespace="default",
+                provider="groq",
+                requested_model="qwen/qwen3.8-27b",
+                temperature=0.7,
+                max_tokens=100,
+                query_text="Creative prompt",
+                actual_response_source="upstream_provider",
+                actual_response_hash=None,
+                actual_latency_ms=80.0,
+                enqueued_at=time.perf_counter(),
+            ),
+        ]
+
+        for t in tasks:
+            self.shadow_service.enqueue(t)
+        await self.shadow_service.queue.join()
+
+        # Shadow metrics must be recorded in shadow collector
+        shadow_snap = self.collector.get_namespace_snapshot("default")
+        self.assertEqual(shadow_snap.shadow.shadow_requests_total, 3)
+        self.assertEqual(shadow_snap.shadow.shadow_hypothetical_hits, 1)
+
+        # STRICT INVARIANT: Global production metrics MUST remain completely untouched!
+        prod_snap = prod_collector.get_namespace_snapshot("default")
+        self.assertEqual(prod_snap.request_and_cache.semantic_lookups, 0)
+        self.assertEqual(prod_snap.request_and_cache.semantic_hits, 0)
+        self.assertEqual(prod_snap.request_and_cache.semantic_misses, 0)
+        self.assertEqual(prod_snap.request_and_cache.exact_cache_hits, 0)
+        self.assertEqual(prod_snap.request_and_cache.exact_cache_misses, 0)
+        self.assertEqual(prod_snap.latencies.semantic_lookup_latency_ms.sample_count, 0)
+
+    async def test_thread_backed_embedding_timeout_and_bounded_executor(self):
+        """Thread-backed slow embedding provider times out gracefully without blocking the asyncio loop."""
+        import concurrent.futures
+
+        class ThreadSlowEmbeddingProvider:
+            def __init__(self):
+                self.model = "BAAI/bge-small-en-v1.5"
+                self.dimensions = 4
+                self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+
+            async def embed(self, text: str, task: str = "query"):
+                def _work():
+                    time.sleep(0.3)
+                    return [0.5, 0.5, 0.5, 0.5]
+                loop = asyncio.get_running_loop()
+                fut = loop.run_in_executor(self.executor, _work)
+                res = await fut
+                @dataclass
+                class Result:
+                    vector: list[float]
+                    model: str
+                return Result(vector=res, model=self.model)
+
+        slow_provider = ThreadSlowEmbeddingProvider()
+        try:
+            slow_cache = ReadOnlySemanticCacheService(
+                embedding_provider=slow_provider,
+                vector_store=self.read_only_adapter,
+                policy=self.policy,
+                default_namespace="default",
+            )
+            svc = ShadowEvaluationService(
+                settings=Settings(
+                    cache_backend="memory",
+                    shadow_evaluation_enabled=True,
+                    shadow_timeout_seconds=0.05,
+                    shadow_max_concurrency=2,
+                    shadow_queue_max_size=10,
+                ),
+                semantic_cache=slow_cache,
+                db_pool=None,
+                metrics_collector=self.collector,
+            )
+            await svc.start()
+            task = ShadowTask(
+                request_id="req-thread-timeout",
+                request_hash="h-thread-timeout",
+                cache_namespace="default",
+                provider="groq",
+                requested_model="qwen/qwen3.8-27b",
+                temperature=0.0,
+                max_tokens=100,
+                query_text="How to reverse a list in Python?",
+                actual_response_source="upstream_provider",
+                actual_response_hash=None,
+                actual_latency_ms=10.0,
+                enqueued_at=time.perf_counter(),
+            )
+            svc.enqueue(task)
+            await svc.queue.join()
+            await svc.stop(drain_timeout=0.5)
+
+            snap = self.collector.get_namespace_snapshot("default")
+            self.assertGreaterEqual(snap.shadow.shadow_execution_failures, 1)
+        finally:
+            slow_provider.executor.shutdown(wait=False)
+
+    async def test_shadow_candidate_ingestion_and_subsequent_hit(self):
+        """Shadow candidate ingestion populates shadow vector store while production store remains empty."""
+        shadow_candidate_store = InMemoryVectorStore(dimensions=4)
+        self.shadow_service.shadow_vector_store = shadow_candidate_store
+
+        task = ShadowTask(
+            request_id="req-ingest-test-1",
+            request_hash="hash-ingest-test-1",
+            cache_namespace="default",
+            provider="groq",
+            requested_model="qwen/qwen3.8-27b",
+            temperature=0.0,
+            max_tokens=100,
+            query_text="How to sort a list in Python?",
+            actual_response_source="upstream_provider",
+            actual_response_hash="resp-h1",
+            actual_latency_ms=100.0,
+            enqueued_at=time.perf_counter(),
+            actual_response_text="Use items.sort() or sorted(items)",
+        )
+
+        # 1. Ingest candidate via shadow service
+        success = await self.shadow_service.index_shadow_candidate(task, task.actual_response_text)
+        self.assertTrue(success)
+
+        # Candidate is present in shadow store
+        shadow_records = await shadow_candidate_store.search([0.5, 0.5, 0.5, 0.5], top_k=5)
+        self.assertEqual(len(shadow_records), 1)
+        self.assertEqual(shadow_records[0].metadata["cached_response"], "Use items.sort() or sorted(items)")
+
+        # CRITICAL: Production store remains completely empty!
+        prod_records = await self.raw_store.search([0.5, 0.5, 0.5, 0.5], top_k=5)
+        self.assertEqual(len(prod_records), 0)
+
+        # 2. Point shadow semantic cache to read from shadow candidate store
+        self.shadow_semantic_cache.vector_store = ReadOnlyVectorStoreAdapter(shadow_candidate_store)
+
+        # 3. Subsequent identical query matches the shadow candidate
+        task2 = ShadowTask(
+            request_id="req-ingest-test-2",
+            request_hash="hash-ingest-test-2",
+            cache_namespace="default",
+            provider="groq",
+            requested_model="qwen/qwen3.8-27b",
+            temperature=0.0,
+            max_tokens=100,
+            query_text="How to sort a list in Python?",
+            actual_response_source="upstream_provider",
+            actual_response_hash="resp-h1",
+            actual_latency_ms=100.0,
+            enqueued_at=time.perf_counter(),
+            actual_response_text="Use items.sort() or sorted(items)",
+        )
+        self.shadow_service.enqueue(task2)
+        await self.shadow_service.queue.join()
+
+        snap = self.collector.get_namespace_snapshot("default")
+        self.assertEqual(snap.shadow.shadow_hypothetical_hits, 1)
+
+        # Production store remains empty
+        prod_records_after = await self.raw_store.search([0.5, 0.5, 0.5, 0.5], top_k=5)
+        self.assertEqual(len(prod_records_after), 0)
+
+    async def test_offline_backfill_shadow_candidates(self):
+        """Offline backfill imports eligible exact-cache entries into shadow store and skips ineligible ones."""
+        shadow_store = InMemoryVectorStore(dimensions=4)
+
+        # Mock database connection and pool
+        mock_rows = [
+            {
+                "cache_namespace": "default",
+                "fingerprint": "fp-1",
+                "query_text": "How to sort in Python?",
+                "response": "Use sorted(x)",
+                "prompt_tokens": 10,
+                "completion_tokens": 10,
+                "total_tokens": 20,
+                "latency_ms": 30.0,
+            },
+            {
+                "cache_namespace": "default",
+                "fingerprint": "fp-2",
+                "query_text": "What is Python list comprehension?",
+                "response": "[x for x in seq]",
+                "prompt_tokens": 12,
+                "completion_tokens": 15,
+                "total_tokens": 27,
+                "latency_ms": 35.0,
+            },
+            {
+                "cache_namespace": "default",
+                "fingerprint": "fp-3",
+                "query_text": "",  # Empty query -> ineligible
+                "response": "empty",
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "latency_ms": 0.0,
+            },
+        ]
+        mock_conn = AsyncMock()
+        mock_conn.fetch.return_value = mock_rows
+        mock_pool = MagicMock()
+        mock_pool.acquire.return_value.__aenter__.return_value = mock_conn
+
+        imported = await backfill_shadow_candidates_from_cache(
+            db_pool=mock_pool,
+            shadow_vector_store=shadow_store,
+            embedding_provider=self.embed_provider,
+            policy=self.policy,
+            namespace="default",
+            limit=50,
+        )
+        self.assertEqual(imported, 2)
+        records = await shadow_store.search([0.5, 0.5, 0.5, 0.5], top_k=5)
+        self.assertEqual(len(records), 2)
+
+    async def test_shadow_component_latency_metrics_aggregation(self):
+        """Shadow component latencies (embedding, retrieval, policy) are recorded and aggregated in metrics."""
+        self.collector.record_shadow_outcome(
+            namespace="default",
+            outcome="eligible_candidate_hit",
+            execution_latency_ms=45.0,
+            embedding_latency_ms=12.0,
+            retrieval_latency_ms=25.0,
+            policy_latency_ms=4.0,
+        )
+        snap = self.collector.get_namespace_snapshot("default")
+        self.assertEqual(snap.latencies.shadow_embedding_latency_ms.sample_count, 1)
+        self.assertAlmostEqual(snap.latencies.shadow_embedding_latency_ms.mean, 12.0)
+        self.assertEqual(snap.latencies.shadow_retrieval_latency_ms.sample_count, 1)
+        self.assertAlmostEqual(snap.latencies.shadow_retrieval_latency_ms.mean, 25.0)
+        self.assertEqual(snap.latencies.shadow_policy_latency_ms.sample_count, 1)
+        self.assertAlmostEqual(snap.latencies.shadow_policy_latency_ms.mean, 4.0)
 
 
 class TestControlledReasonCodes(unittest.TestCase):
@@ -861,6 +1236,98 @@ class TestPostgresShadowStorageIntegration(unittest.IsolatedAsyncioTestCase):
         # Verify bounded cleanup executes without syntax error
         deleted = await service.cleanup_old_records(retention_days=30, batch_size=100)
         self.assertGreaterEqual(deleted, 0)
+
+
+class TestDatabaseLevelReadOnlyEnforcement(unittest.IsolatedAsyncioTestCase):
+    """Verifies PostgreSQL and adapter level read-only transaction enforcement (P1)."""
+
+    async def test_readonly_adapter_enforces_db_readonly_flag(self):
+        pg_store = PostgresVectorStore(
+            pool=MagicMock(),
+            dimensions=4,
+            table_name="vector_records",
+            readonly_transaction=False,
+        )
+        adapter = ReadOnlyVectorStoreAdapter(pg_store, enforce_db_readonly=True)
+        self.assertTrue(pg_store.readonly_transaction)
+        self.assertTrue(adapter.is_enforcing_db_readonly())
+
+    async def test_postgres_vector_store_readonly_transaction_wrapping(self):
+        """When readonly_transaction=True, search executes inside conn.transaction(readonly=True)."""
+        class MockTxContext:
+            def __init__(self):
+                self.entered = False
+                self.exited = False
+
+            async def __aenter__(self):
+                self.entered = True
+                return self
+
+            async def __aexit__(self, exc_type, exc_val, exc_tb):
+                self.exited = True
+                return False
+
+        tx_ctx = MockTxContext()
+        mock_conn = MagicMock()
+        mock_conn.fetch = AsyncMock(return_value=[])
+        mock_conn.transaction = MagicMock(return_value=tx_ctx)
+
+        mock_pool = MagicMock()
+        mock_acquire = MagicMock()
+        mock_acquire.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_acquire.__aexit__ = AsyncMock(return_value=None)
+        mock_pool.acquire.return_value = mock_acquire
+
+        store = PostgresVectorStore(
+            pool=mock_pool,
+            dimensions=4,
+            table_name="vector_records",
+            readonly_transaction=True,
+        )
+
+        res = await store.search([0.1, 0.2, 0.3, 0.4], top_k=3)
+        self.assertEqual(res, [])
+        mock_conn.transaction.assert_called_once_with(readonly=True)
+        self.assertTrue(tx_ctx.entered)
+        self.assertTrue(tx_ctx.exited)
+
+    async def test_postgres_readonly_transaction_blocks_mutation(self):
+        """Simulates PostgreSQL error 25006 (cannot_execute_in_read_only_transaction) on write in readonly tx."""
+        class MockReadOnlyTransactionError(Exception):
+            sqlstate = "25006"
+
+        mock_conn = MagicMock()
+        mock_conn.execute = AsyncMock(
+            side_effect=MockReadOnlyTransactionError(
+                "ERROR: cannot execute INSERT in a read-only transaction (SQLSTATE 25006)"
+            )
+        )
+
+        mock_pool = MagicMock()
+        mock_acquire = MagicMock()
+        mock_acquire.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_acquire.__aexit__ = AsyncMock(return_value=None)
+        mock_pool.acquire.return_value = mock_acquire
+
+        store = PostgresVectorStore(
+            pool=mock_pool,
+            dimensions=4,
+            table_name="vector_records",
+            readonly_transaction=True,
+        )
+
+        # Attempting upsert in a read-only context fails at the database transaction layer
+        rec = VectorRecord(
+            cache_namespace="default",
+            fingerprint="fp-write",
+            query_text="Write attempt",
+            vector=[0.1, 0.2, 0.3, 0.4],
+            model="bge",
+            metadata={},
+        )
+        with self.assertRaises(Exception) as ctx:
+            await store.upsert(rec)
+        self.assertIn("cannot execute INSERT in a read-only transaction", str(ctx.exception))
 
 
 if __name__ == "__main__":

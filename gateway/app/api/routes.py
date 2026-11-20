@@ -960,7 +960,9 @@ async def execute_query(
                                 actual_src = "exact_cache" if chunk.cached else ("bypass" if effective_bypass_cache else "upstream_provider")
                                 resp_hash = hashlib.sha256(full_text.strip().encode("utf-8")).hexdigest() if full_text else None
                                 is_multi = bool(len(canonical_messages) > 1 or (request.messages and len(request.messages) > 1))
-                                req_h = hashlib.sha256(prompt_text.strip().encode("utf-8")).hexdigest()
+                                req_h = hashlib.sha256(
+                                    f"{client_namespace}:{effective_model}:{effective_temperature}:{effective_max_tokens}:{prompt_text}".encode("utf-8")
+                                ).hexdigest()
                                 shadow_task = ShadowTask(
                                     request_id=f"req_{int(time.time()*1000)}_{random.randint(1000, 9999)}",
                                     request_hash=req_h,
@@ -978,6 +980,7 @@ async def execute_query(
                                     system_prompt=request.system_prompt,
                                     stream=True,
                                     is_multi_turn=is_multi,
+                                    actual_response_text=full_text if full_text else None,
                                 )
                                 shadow_svc.enqueue(shadow_task)
                             except Exception as shadow_err:
@@ -1085,7 +1088,9 @@ async def execute_query(
                 actual_src = "exact_cache" if result.cached else ("bypass" if effective_bypass_cache else "upstream_provider")
                 resp_hash = hashlib.sha256(result.text.strip().encode("utf-8")).hexdigest() if result.text else None
                 is_multi = bool(len(canonical_messages) > 1 or (request.messages and len(request.messages) > 1))
-                req_h = hashlib.sha256(prompt_text.strip().encode("utf-8")).hexdigest()
+                req_h = result.fingerprint or hashlib.sha256(
+                    f"{client_namespace}:{effective_model}:{effective_temperature}:{effective_max_tokens}:{prompt_text}".encode("utf-8")
+                ).hexdigest()
                 shadow_task = ShadowTask(
                     request_id=f"req_{int(time.time()*1000)}_{random.randint(1000, 9999)}",
                     request_hash=req_h,
@@ -1103,6 +1108,7 @@ async def execute_query(
                     system_prompt=request.system_prompt,
                     stream=False,
                     is_multi_turn=is_multi,
+                    actual_response_text=result.text if result.text else None,
                 )
                 shadow_svc.enqueue(shadow_task)
             except Exception as shadow_err:

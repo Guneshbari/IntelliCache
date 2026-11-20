@@ -6,6 +6,7 @@ safe failure fallbacks, and vector indexing.
 
 import asyncio
 from datetime import datetime, timezone
+import hashlib
 import logging
 import time
 from typing import Any, Callable, Dict, Optional
@@ -50,10 +51,15 @@ class SemanticCacheService(BaseSemanticCache):
     def _get_collector(self) -> RuntimeMetricsCollector:
         return self.metrics_collector or get_metrics_collector()
 
-    def _emit_diagnostics(self, data: Dict[str, Any]) -> None:
-        if self.diagnostics_hook:
+    def _emit_diagnostics(
+        self,
+        data: Dict[str, Any],
+        hook: Optional[Callable[[Dict[str, Any]], None]] = None,
+    ) -> None:
+        effective_hook = hook or self.diagnostics_hook
+        if effective_hook:
             try:
-                self.diagnostics_hook(data)
+                effective_hook(data)
             except Exception as hook_exc:
                 logger.warning("Diagnostics hook failed: %s", hook_exc)
 
@@ -64,7 +70,11 @@ class SemanticCacheService(BaseSemanticCache):
         self._get_collector().record_semantic_eligibility_check(ns, eligible=res.eligible)
         return res
 
-    async def lookup(self, request: GenerationRequest) -> Optional[SemanticHit]:
+    async def lookup(
+        self,
+        request: GenerationRequest,
+        diagnostics_hook: Optional[Callable[[Dict[str, Any]], None]] = None,
+    ) -> Optional[SemanticHit]:
         """
         Attempts semantic lookup for an eligible request.
         Fails open on embedding or vector storage errors, returning None.
@@ -73,6 +83,8 @@ class SemanticCacheService(BaseSemanticCache):
         collector = self._get_collector()
         ns = request.namespace or self.default_namespace
         lookup_start = time.perf_counter()
+        query_text = (request.messages[0].content or "").strip() if request.messages else ""
+        query_hash = hashlib.sha256(query_text.encode("utf-8")).hexdigest()
 
         eligibility = self.is_eligible(request)
         if not eligibility.eligible:
@@ -81,23 +93,26 @@ class SemanticCacheService(BaseSemanticCache):
                 "Request ineligible for semantic caching: %s",
                 eligibility.reason,
             )
-            self._emit_diagnostics({
-                "eligible": False,
-                "reason": eligibility.reason,
-                "metadata": None,
-                "embed_latency_ms": 0.0,
-                "search_latency_ms": 0.0,
-                "eval_latency_ms": 0.0,
-                "lookup_latency_ms": (time.perf_counter() - lookup_start) * 1000.0,
-                "candidates": [],
-                "winning_candidate": None,
-                "rejection_reason": eligibility.reason,
-            })
+            self._emit_diagnostics(
+                {
+                    "query_hash": query_hash,
+                    "eligible": False,
+                    "reason": eligibility.reason,
+                    "metadata": None,
+                    "embed_latency_ms": 0.0,
+                    "search_latency_ms": 0.0,
+                    "eval_latency_ms": 0.0,
+                    "lookup_latency_ms": (time.perf_counter() - lookup_start) * 1000.0,
+                    "candidates": [],
+                    "winning_candidate": None,
+                    "rejection_reason": eligibility.reason,
+                },
+                hook=diagnostics_hook,
+            )
             return None
 
         self.stats.lookups += 1
         collector.record_semantic_lookup(ns)
-        query_text = request.messages[0].content.strip()
 
         # 1. Generate query embedding
         embed_start = time.perf_counter()
@@ -117,18 +132,22 @@ class SemanticCacheService(BaseSemanticCache):
                 type(exc).__name__,
                 sanitize_error_message(str(exc)),
             )
-            self._emit_diagnostics({
-                "eligible": True,
-                "reason": eligibility.reason,
-                "metadata": eligibility.metadata,
-                "embed_latency_ms": embed_lat_ms,
-                "search_latency_ms": 0.0,
-                "eval_latency_ms": 0.0,
-                "lookup_latency_ms": sem_lat_ms,
-                "candidates": [],
-                "winning_candidate": None,
-                "rejection_reason": f"Embedding failure: {exc}",
-            })
+            self._emit_diagnostics(
+                {
+                    "query_hash": query_hash,
+                    "eligible": True,
+                    "reason": eligibility.reason,
+                    "metadata": eligibility.metadata,
+                    "embed_latency_ms": embed_lat_ms,
+                    "search_latency_ms": 0.0,
+                    "eval_latency_ms": 0.0,
+                    "lookup_latency_ms": sem_lat_ms,
+                    "candidates": [],
+                    "winning_candidate": None,
+                    "rejection_reason": f"Embedding failure: {exc}",
+                },
+                hook=diagnostics_hook,
+            )
             return None
 
         # Validate reported model identity against configured model (fail open)
@@ -142,18 +161,22 @@ class SemanticCacheService(BaseSemanticCache):
                 self.policy.configured_model,
                 embed_res.model,
             )
-            self._emit_diagnostics({
-                "eligible": True,
-                "reason": eligibility.reason,
-                "metadata": eligibility.metadata,
-                "embed_latency_ms": embed_lat_ms,
-                "search_latency_ms": 0.0,
-                "eval_latency_ms": 0.0,
-                "lookup_latency_ms": sem_lat_ms,
-                "candidates": [],
-                "winning_candidate": None,
-                "rejection_reason": f"Model mismatch: expected {self.policy.configured_model}, got {embed_res.model}",
-            })
+            self._emit_diagnostics(
+                {
+                    "query_hash": query_hash,
+                    "eligible": True,
+                    "reason": eligibility.reason,
+                    "metadata": eligibility.metadata,
+                    "embed_latency_ms": embed_lat_ms,
+                    "search_latency_ms": 0.0,
+                    "eval_latency_ms": 0.0,
+                    "lookup_latency_ms": sem_lat_ms,
+                    "candidates": [],
+                    "winning_candidate": None,
+                    "rejection_reason": f"Model mismatch: expected {self.policy.configured_model}, got {embed_res.model}",
+                },
+                hook=diagnostics_hook,
+            )
             return None
 
         # 2. Search nearest neighbours in vector store
@@ -179,18 +202,22 @@ class SemanticCacheService(BaseSemanticCache):
                 type(exc).__name__,
                 sanitize_error_message(str(exc)),
             )
-            self._emit_diagnostics({
-                "eligible": True,
-                "reason": eligibility.reason,
-                "metadata": eligibility.metadata,
-                "embed_latency_ms": embed_lat_ms,
-                "search_latency_ms": search_lat_ms,
-                "eval_latency_ms": 0.0,
-                "lookup_latency_ms": sem_lat_ms,
-                "candidates": [],
-                "winning_candidate": None,
-                "rejection_reason": f"Vector search failure: {exc}",
-            })
+            self._emit_diagnostics(
+                {
+                    "query_hash": query_hash,
+                    "eligible": True,
+                    "reason": eligibility.reason,
+                    "metadata": eligibility.metadata,
+                    "embed_latency_ms": embed_lat_ms,
+                    "search_latency_ms": search_lat_ms,
+                    "eval_latency_ms": 0.0,
+                    "lookup_latency_ms": sem_lat_ms,
+                    "candidates": [],
+                    "winning_candidate": None,
+                    "rejection_reason": f"Vector search failure: {exc}",
+                },
+                hook=diagnostics_hook,
+            )
             return None
 
         # 3. Evaluate candidates against policy
@@ -215,18 +242,22 @@ class SemanticCacheService(BaseSemanticCache):
                 type(exc).__name__,
                 sanitize_error_message(str(exc)),
             )
-            self._emit_diagnostics({
-                "eligible": True,
-                "reason": eligibility.reason,
-                "metadata": eligibility.metadata,
-                "embed_latency_ms": embed_lat_ms,
-                "search_latency_ms": search_lat_ms,
-                "eval_latency_ms": eval_lat_ms,
-                "lookup_latency_ms": sem_lat_ms,
-                "candidates": candidates,
-                "winning_candidate": None,
-                "rejection_reason": f"Policy evaluation failure: {exc}",
-            })
+            self._emit_diagnostics(
+                {
+                    "query_hash": query_hash,
+                    "eligible": True,
+                    "reason": eligibility.reason,
+                    "metadata": eligibility.metadata,
+                    "embed_latency_ms": embed_lat_ms,
+                    "search_latency_ms": search_lat_ms,
+                    "eval_latency_ms": eval_lat_ms,
+                    "lookup_latency_ms": sem_lat_ms,
+                    "candidates": candidates,
+                    "winning_candidate": None,
+                    "rejection_reason": f"Policy evaluation failure: {exc}",
+                },
+                hook=diagnostics_hook,
+            )
             return None
 
         eval_lat_ms = (time.perf_counter() - eval_start) * 1000.0
@@ -245,18 +276,22 @@ class SemanticCacheService(BaseSemanticCache):
                 collector.record_incompatible_candidate(ns)
 
             logger.debug("Semantic lookup miss: %s", rejection_reason)
-            self._emit_diagnostics({
-                "eligible": True,
-                "reason": eligibility.reason,
-                "metadata": eligibility.metadata,
-                "embed_latency_ms": embed_lat_ms,
-                "search_latency_ms": search_lat_ms,
-                "eval_latency_ms": eval_lat_ms,
-                "lookup_latency_ms": sem_lat_ms,
-                "candidates": candidates,
-                "winning_candidate": None,
-                "rejection_reason": rejection_reason,
-            })
+            self._emit_diagnostics(
+                {
+                    "query_hash": query_hash,
+                    "eligible": True,
+                    "reason": eligibility.reason,
+                    "metadata": eligibility.metadata,
+                    "embed_latency_ms": embed_lat_ms,
+                    "search_latency_ms": search_lat_ms,
+                    "eval_latency_ms": eval_lat_ms,
+                    "lookup_latency_ms": sem_lat_ms,
+                    "candidates": candidates,
+                    "winning_candidate": None,
+                    "rejection_reason": rejection_reason,
+                },
+                hook=diagnostics_hook,
+            )
             return None
 
         # 4. Successful semantic cache hit
@@ -269,18 +304,22 @@ class SemanticCacheService(BaseSemanticCache):
             winning_candidate.similarity,
         )
 
-        self._emit_diagnostics({
-            "eligible": True,
-            "reason": eligibility.reason,
-            "metadata": eligibility.metadata,
-            "embed_latency_ms": embed_lat_ms,
-            "search_latency_ms": search_lat_ms,
-            "eval_latency_ms": eval_lat_ms,
-            "lookup_latency_ms": sem_lat_ms,
-            "candidates": candidates,
-            "winning_candidate": winning_candidate,
-            "rejection_reason": None,
-        })
+        self._emit_diagnostics(
+            {
+                "query_hash": query_hash,
+                "eligible": True,
+                "reason": eligibility.reason,
+                "metadata": eligibility.metadata,
+                "embed_latency_ms": embed_lat_ms,
+                "search_latency_ms": search_lat_ms,
+                "eval_latency_ms": eval_lat_ms,
+                "lookup_latency_ms": sem_lat_ms,
+                "candidates": candidates,
+                "winning_candidate": winning_candidate,
+                "rejection_reason": None,
+            },
+            hook=diagnostics_hook,
+        )
 
         return SemanticHit(
             cached_response=winning_candidate.cached_response or "",

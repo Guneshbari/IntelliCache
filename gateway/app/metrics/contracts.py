@@ -103,6 +103,9 @@ class LatencyMetrics(BaseModel):
     vector_indexing_latency_ms: LatencySummary = Field(default_factory=LatencySummary)
     estimated_latency_saved_ms: LatencySummary = Field(default_factory=LatencySummary)
     shadow_execution_latency_ms: LatencySummary = Field(default_factory=LatencySummary)
+    shadow_embedding_latency_ms: LatencySummary = Field(default_factory=LatencySummary)
+    shadow_retrieval_latency_ms: LatencySummary = Field(default_factory=LatencySummary)
+    shadow_policy_latency_ms: LatencySummary = Field(default_factory=LatencySummary)
 
 
 class DerivedRates(BaseModel):
