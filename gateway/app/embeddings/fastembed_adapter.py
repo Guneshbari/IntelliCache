@@ -7,7 +7,7 @@ Uses ONNX Runtime under the hood via the optional fastembed library.
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import logging
-from typing import List, Optional, Sequence, Union
+from typing import Any, List, Optional, Sequence, Union
 import httpx
 
 from .contracts import EmbeddingResult, EmbeddingTask
