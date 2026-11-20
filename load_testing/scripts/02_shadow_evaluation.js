@@ -1,8 +1,8 @@
 /**
  * 02_shadow_evaluation.js
- * Evaluates gateway throughput, latency, and overhead with semantic shadow evaluation enabled.
- * Uses identical mixed workload to compare fairly against baseline exact-cache run.
- * Gathers shadow metrics via /admin/metrics endpoint during teardown.
+ * Evaluates the IntelliCache gateway under shadow evaluation mode.
+ * Uses the IDENTICAL dataset, stages, seed, and distribution as 01_baseline_exact_cache.js
+ * to ensure strict ceteris paribus comparability for overhead measurement.
  */
 
 import http from 'k6/http'
@@ -11,91 +11,136 @@ import { BASE_URL, standardThresholds } from '../config/test-profiles.js'
 import { getClientHeaders, getAdminHeaders } from '../helpers/auth.js'
 import { recordResponseMetrics } from '../helpers/metrics.js'
 import { assertSuccessResponse } from '../helpers/assertions.js'
+import { createPRNG, getWorkloadSeed, deterministicPick } from '../helpers/prng.js'
+
+const vus = parseInt(__ENV.VUS || '10', 10)
+const duration = __ENV.DURATION || '20s'
+const seed = getWorkloadSeed()
 
 export const options = {
   stages: [
-    { duration: '5s', target: parseInt(__ENV.VUS || '10', 10) },
-    { duration: __ENV.DURATION || '20s', target: parseInt(__ENV.VUS || '10', 10) },
-    { duration: '5s', target: 0 },
+    { duration: '3s', target: vus }, // Warm-up ramp
+    { duration: duration, target: vus }, // Steady-state load
+    { duration: '2s', target: 0 }, // Cooldown
   ],
   thresholds: standardThresholds,
 }
 
-const mixedDataset = JSON.parse(open('../datasets/mixed_workload.json'))
+const comparativeDataset = JSON.parse(open('../datasets/comparative_workload.json'))
 
 export function setup() {
-  // Prime exact cache targets so exact hit ratio remains comparable
-  const url = `${BASE_URL}/query`
-  const exactTargets = mixedDataset.filter((d) => d.intent === 'exact_hit')
+  console.log(`[Shadow Load] VUs: ${vus}, Duration: ${duration}, Seed: ${seed}`)
+
+  // 1. Warm up exact targets so they are primed in cache (identical to baseline)
+  const warmupHeaders = getClientHeaders()
+  const exactTargets = comparativeDataset.filter((item) => item.intent === 'exact_target')
+
   for (const item of exactTargets) {
-    http.post(url, JSON.stringify(item.payload), {
-      headers: getClientHeaders(),
-      tags: { name: 'Setup_Prime_Cache' },
+    http.post(`${BASE_URL}/query`, JSON.stringify(item.payload), {
+      headers: warmupHeaders,
+      tags: { name: 'Warmup_Prime' },
     })
   }
 
-  // Record initial telemetry from admin metrics
+  // 2. Capture shadow and request metric counters before run
+  let initialMetrics = {}
   const adminRes = http.get(`${BASE_URL}/admin/metrics`, {
     headers: getAdminHeaders(),
   })
-  let initialMetrics = {}
   if (adminRes.status === 200) {
     try {
-      initialMetrics = adminRes.json()
+      const parsed = adminRes.json()
+      initialMetrics = parsed.aggregate || parsed
     } catch (e) {}
   }
-  return { initialMetrics }
+
+  return {
+    startTime: Date.now(),
+    seed: seed,
+    initialMetrics: initialMetrics,
+  }
 }
 
-export default function () {
-  const url = `${BASE_URL}/query`
-
-  // Pick an item from mixed dataset
-  const index = Math.floor(Math.random() * mixedDataset.length)
-  const item = mixedDataset[index]
+export default function (data) {
+  // Deterministic PRNG per VU and iteration (identical formula to baseline)
+  const prng = createPRNG(data.seed + __VU * 10000 + __ITER)
+  const item = deterministicPick(comparativeDataset, prng)
 
   let payload = item.payload
-  // If unique miss, ensure fresh prompt
   if (item.intent === 'unique_miss') {
     payload = {
-      prompt: `${item.payload.prompt} [vu-${__VU}-${Date.now()}-${Math.random()}]`,
+      prompt: `${item.payload.prompt} [seed-${data.seed}-vu-${__VU}-iter-${__ITER}]`,
       temperature: 0.0,
     }
   }
 
-  const tag = `ShadowWorkload_${item.intent}`
-  const res = http.post(url, JSON.stringify(payload), {
+  const res = http.post(`${BASE_URL}/query`, JSON.stringify(payload), {
     headers: getClientHeaders(),
-    tags: { name: tag },
+    tags: { name: `Shadow_${item.intent}` },
   })
 
-  assertSuccessResponse(res, tag)
-  recordResponseMetrics(res)
+  assertSuccessResponse(res, `Shadow_${item.intent}`)
+  recordResponseMetrics(res, {
+    intent: item.intent,
+    isBypass: item.intent === 'bypass',
+    isIneligible: item.intent === 'ineligible',
+    payload: payload,
+  })
 
-  sleep(0.1)
+  sleep(0.05)
 }
 
 export function teardown(data) {
-  // Scrape final telemetry to record shadow evaluation activity
+  const elapsedSec = (Date.now() - data.startTime) / 1000
+  console.log(`[Shadow Load] Complete. Total wall-clock: ${elapsedSec.toFixed(2)}s`)
+
+  // Allow shadow background workers to drain pending queue items
+  sleep(1.0)
+
   const adminRes = http.get(`${BASE_URL}/admin/metrics`, {
     headers: getAdminHeaders(),
   })
   if (adminRes.status === 200) {
     try {
-      const finalMetrics = adminRes.json()
-      const agg = finalMetrics.aggregate || finalMetrics
-      console.log('--- Post-Test Shadow Telemetry Snapshot ---')
-      if (agg.shadow) {
-        console.log(`Shadow Total Requests: ${agg.shadow.shadow_requests_total}`)
-        console.log(`Shadow Sampled Requests: ${agg.shadow.shadow_requests_sampled}`)
-        console.log(`Shadow Eligible Requests: ${agg.shadow.shadow_requests_eligible}`)
-        console.log(`Shadow Hypothetical Hits: ${agg.shadow.shadow_hypothetical_hits}`)
-        console.log(`Shadow Dropped Requests: ${agg.shadow.shadow_queue_dropped_total}`)
-      }
-      if (agg.request_and_cache) {
-        console.log(`Exact Cache Lookups: ${agg.request_and_cache.exact_cache_lookups}`)
-        console.log(`Exact Cache Hits: ${agg.request_and_cache.exact_cache_hits}`)
-        console.log(`Exact Cache Misses: ${agg.request_and_cache.exact_cache_misses}`)
+      const parsed = adminRes.json()
+      const agg = parsed.aggregate || parsed
+      const beforeShadow = data.initialMetrics.shadow || {}
+      const afterShadow = agg.shadow || {}
+
+      const deltaSampled =
+        (afterShadow.shadow_requests_sampled || 0) - (beforeShadow.shadow_requests_sampled || 0)
+      const deltaUnsampled =
+        (afterShadow.shadow_requests_unsampled || 0) - (beforeShadow.shadow_requests_unsampled || 0)
+      const deltaEligible =
+        (afterShadow.shadow_requests_eligible || 0) - (beforeShadow.shadow_requests_eligible || 0)
+      const deltaHypoHits =
+        (afterShadow.shadow_hypothetical_hits || 0) - (beforeShadow.shadow_hypothetical_hits || 0)
+      const deltaDrops =
+        (afterShadow.shadow_queue_dropped_total || 0) -
+        (beforeShadow.shadow_queue_dropped_total || 0)
+      const deltaExecFailures =
+        (afterShadow.shadow_execution_failures || 0) - (beforeShadow.shadow_execution_failures || 0)
+
+      console.log(`[Shadow Telemetry] Sampled: ${deltaSampled}, Unsampled: ${deltaUnsampled}`)
+      console.log(
+        `[Shadow Telemetry] Eligible: ${deltaEligible}, Hypothetical Hits: ${deltaHypoHits}`
+      )
+      console.log(
+        `[Shadow Telemetry] Queue Drops: ${deltaDrops}, Exec Failures: ${deltaExecFailures}`
+      )
+      if (agg.latencies) {
+        console.log(
+          `[Shadow Latencies] Embedding Mean: ${agg.latencies.shadow_embedding_latency_ms?.mean}ms`
+        )
+        console.log(
+          `[Shadow Latencies] Retrieval Mean: ${agg.latencies.shadow_retrieval_latency_ms?.mean}ms`
+        )
+        console.log(
+          `[Shadow Latencies] Policy Mean: ${agg.latencies.shadow_policy_latency_ms?.mean}ms`
+        )
+        console.log(
+          `[Shadow Latencies] Execution Mean: ${agg.latencies.shadow_execution_latency_ms?.mean}ms`
+        )
       }
     } catch (e) {}
   }

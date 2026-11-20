@@ -1,11 +1,8 @@
 /**
  * 05_soak_test.js
- * Configurable long-running soak test script for stability and resource leak detection.
- * Supports configurable durations: e.g. 30m, 1h, 24h via SOAK_DURATION environment variable.
- * Default execution profile runs a brief test if SOAK_DURATION is not explicitly set.
- *
- * NOTE: As per Phase 7 instructions, a full 24-hour soak test is NOT automatically
- * executed during CI or implementation turns; this script is provided for operators.
+ * Parameterized endurance test to detect slow memory leaks, event loop degradation,
+ * database connection pool exhaustion, or unbounded background worker queue growth.
+ * Configured via SOAK_DURATION (e.g. '30m', '1h', '24h') and VUS.
  */
 
 import http from 'k6/http'
@@ -14,9 +11,11 @@ import { BASE_URL, standardThresholds } from '../config/test-profiles.js'
 import { getClientHeaders, getAdminHeaders } from '../helpers/auth.js'
 import { recordResponseMetrics } from '../helpers/metrics.js'
 import { assertSuccessResponse } from '../helpers/assertions.js'
+import { createPRNG, getWorkloadSeed, deterministicPick } from '../helpers/prng.js'
 
-const soakDuration = __ENV.SOAK_DURATION || '2m' // Default to 2m for quick verification if not specified
+const soakDuration = __ENV.SOAK_DURATION || '2m'
 const vus = parseInt(__ENV.VUS || '10', 10)
+const seed = getWorkloadSeed()
 
 export const options = {
   stages: [
@@ -27,35 +26,39 @@ export const options = {
   thresholds: standardThresholds,
 }
 
-const mixedDataset = JSON.parse(open('../datasets/mixed_workload.json'))
+const comparativeDataset = JSON.parse(open('../datasets/comparative_workload.json'))
 
 export function setup() {
-  console.log(`[Soak Test] Starting soak run: VUs=${vus}, Duration=${soakDuration}`)
-  // Log baseline health and memory before soak
+  console.log(`[Soak Test] Starting soak run: VUs=${vus}, Duration=${soakDuration}, Seed=${seed}`)
   const healthRes = http.get(`${BASE_URL}/health`)
   console.log(`[Soak Test] Initial Health: status=${healthRes.status}`)
-  return { startTime: Date.now() }
+  return { startTime: Date.now(), seed: seed }
 }
 
-export default function () {
-  const url = `${BASE_URL}/query`
-  const item = mixedDataset[Math.floor(Math.random() * mixedDataset.length)]
+export default function (data) {
+  const prng = createPRNG(data.seed + __VU * 10000 + __ITER)
+  const item = deterministicPick(comparativeDataset, prng)
 
   let payload = item.payload
   if (item.intent === 'unique_miss') {
     payload = {
-      prompt: `${item.payload.prompt} [soak-${__VU}-${Date.now()}-${Math.random()}]`,
+      prompt: `${item.payload.prompt} [soak-${data.seed}-${__VU}-${Date.now()}]`,
       temperature: 0.0,
     }
   }
 
-  const res = http.post(url, JSON.stringify(payload), {
+  const res = http.post(`${BASE_URL}/query`, JSON.stringify(payload), {
     headers: getClientHeaders(),
     tags: { name: `Soak_${item.intent}` },
   })
 
   assertSuccessResponse(res, `Soak_${item.intent}`)
-  recordResponseMetrics(res)
+  recordResponseMetrics(res, {
+    intent: item.intent,
+    isBypass: item.intent === 'bypass',
+    isIneligible: item.intent === 'ineligible',
+    payload: payload,
+  })
 
   sleep(0.2)
 }

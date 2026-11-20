@@ -44,7 +44,7 @@ export function assertSuccessResponse(res, scenarioName = 'query') {
 
 export function assertExactHit(res, scenarioName = 'exact_hit') {
   return check(res, {
-    [`${scenarioName}: cached is true`]: (r) => {
+    [`${scenarioName}: cached is true and exact`]: (r) => {
       try {
         const body = r.json()
         return body && body.cached === true && body.cache_type === 'exact'
@@ -53,5 +53,38 @@ export function assertExactHit(res, scenarioName = 'exact_hit') {
       }
     },
     [`${scenarioName}: latency is sub-100ms`]: (r) => r.timings.duration < 100,
+  })
+}
+
+export function assertExactMiss(res, scenarioName = 'exact_miss') {
+  return check(res, {
+    [`${scenarioName}: cached is false on miss`]: (r) => {
+      try {
+        const body = r.json()
+        return body && body.cached === false && body.cache_type === 'none'
+      } catch (e) {
+        return false
+      }
+    },
+  })
+}
+
+export function assertBypass(res, scenarioName = 'bypass') {
+  return check(res, {
+    [`${scenarioName}: cached is false on bypass`]: (r) => {
+      try {
+        const body = r.json()
+        return body && body.cached === false && body.cache_type === 'none'
+      } catch (e) {
+        return false
+      }
+    },
+  })
+}
+
+export function assertExpectedError(res, expectedStatus, scenarioName = 'error_check') {
+  return check(res, {
+    [`${scenarioName}: status matches expected ${expectedStatus}`]: (r) =>
+      r.status === expectedStatus,
   })
 }

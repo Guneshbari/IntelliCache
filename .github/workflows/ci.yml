@@ -177,6 +177,36 @@ jobs:
           TEST_DATABASE_URL: 'postgresql://postgres:postgres@localhost:5432/intellicache_test'
         run: python -m unittest discover tests
 
+      - name: Run k6 load testing smoke verification
+        working-directory: gateway
+        env:
+          DATABASE_URL: 'postgresql://postgres:postgres@localhost:5432/intellicache_test'
+          CLIENT_API_TOKEN: 'test-client-token'
+          ADMIN_API_TOKEN: 'test-admin-token'
+          LLM_PROVIDER: 'mock'
+          CACHE_BACKEND: 'postgres'
+          VECTOR_STORE_BACKEND: 'postgres'
+          SHADOW_EVALUATION_ENABLED: 'true'
+          SEMANTIC_CACHE_ENABLED: 'false'
+        run: |
+          uvicorn app.main:app --host 127.0.0.1 --port 8000 &
+          GATEWAY_PID=$!
+          echo "Waiting for gateway startup on port 8000..."
+          for i in {1..30}; do
+            if curl -s http://127.0.0.1:8000/health | grep -q '"status":"healthy"'; then
+              echo "Gateway ready!"
+              break
+            fi
+            sleep 1
+          done
+          docker run --rm --network host \
+            -v ${{ github.workspace }}/load_testing:/load_testing \
+            -e BASE_URL=http://127.0.0.1:8000 \
+            -e CLIENT_TOKEN=test-client-token \
+            -e ADMIN_TOKEN=test-admin-token \
+            grafana/k6:latest run /load_testing/scripts/00_smoke_test.js
+          kill $GATEWAY_PID || true
+
   gateway-fastembed-real-inference:
     name: Gateway Real FastEmbed & pgvector (384-d) Verification
     runs-on: ubuntu-latest

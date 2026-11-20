@@ -73,12 +73,13 @@ docker compose -f load_testing/docker-compose.load-test.yml down -v
 
 ## 3. Workload Datasets & Expected Behaviour
 
-| Dataset      | File                              | Query Composition                                                              | Purpose                                                       |
-| :----------- | :-------------------------------- | :----------------------------------------------------------------------------- | :------------------------------------------------------------ |
-| **Smoke**    | `datasets/smoke.json`             | 1 seed, 1 repeat, 1 miss, 1 bypass                                             | Quick verification of endpoint contracts and invariants       |
-| **Baseline** | `datasets/baseline_workload.json` | 10 exact targets, 5 unique misses, 2 bypasses                                  | Exact-cache baseline latency and hit rate measurement         |
-| **Semantic** | `datasets/semantic_workload.json` | 2 seeds, 2 paraphrases, 2 hard negatives, 4 ineligibles                        | Shadow evaluation decision quality and rejection verification |
-| **Mixed**    | `datasets/mixed_workload.json`    | 4 exact hits, 2 paraphrases, 2 incompatibles, 2 misses, 1 ineligible, 1 bypass | Realistic production traffic simulation                       |
+| Dataset         | File                                 | Query Composition                                                                       | Purpose                                                          |
+| :-------------- | :----------------------------------- | :-------------------------------------------------------------------------------------- | :--------------------------------------------------------------- |
+| **Smoke**       | `datasets/smoke.json`                | 1 seed, 1 repeat, 1 miss, 1 bypass                                                      | Comprehensive verification of endpoint contracts and invariants  |
+| **Comparative** | `datasets/comparative_workload.json` | 6 exact targets, 3 paraphrases, 3 unique misses, 1 ineligible, 1 bypass, 1 incompatible | Unified, seed-reproducible dataset for baseline vs shadow parity |
+| **Baseline**    | `datasets/baseline_workload.json`    | 10 exact targets, 5 unique misses, 2 bypasses                                           | Exact-cache baseline latency and hit rate measurement            |
+| **Semantic**    | `datasets/semantic_workload.json`    | 2 seeds, 2 paraphrases, 2 hard negatives, 4 ineligibles                                 | Shadow evaluation decision quality and rejection verification    |
+| **Mixed**       | `datasets/mixed_workload.json`       | 4 exact hits, 2 paraphrases, 2 incompatibles, 2 misses, 1 ineligible, 1 bypass          | Realistic production traffic simulation                          |
 
 ---
 

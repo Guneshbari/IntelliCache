@@ -1,76 +1,115 @@
 /**
  * 01_baseline_exact_cache.js
- * Evaluates API performance and exact-cache behavior with shadow evaluation disabled.
- * Measures latency percentiles (P50, P90, P95, P99), throughput, and exact hit rate.
+ * Measures baseline performance of the IntelliCache gateway with exact-match caching.
+ * Uses reproducible deterministic query selection and warms up targets during setup.
  */
 
 import http from 'k6/http'
 import { sleep } from 'k6'
 import { BASE_URL, standardThresholds } from '../config/test-profiles.js'
-import { getClientHeaders } from '../helpers/auth.js'
+import { getClientHeaders, getAdminHeaders } from '../helpers/auth.js'
 import { recordResponseMetrics } from '../helpers/metrics.js'
 import { assertSuccessResponse } from '../helpers/assertions.js'
+import { createPRNG, getWorkloadSeed, deterministicPick } from '../helpers/prng.js'
+
+const vus = parseInt(__ENV.VUS || '10', 10)
+const duration = __ENV.DURATION || '20s'
+const seed = getWorkloadSeed()
 
 export const options = {
   stages: [
-    { duration: '5s', target: parseInt(__ENV.VUS || '10', 10) },
-    { duration: __ENV.DURATION || '20s', target: parseInt(__ENV.VUS || '10', 10) },
-    { duration: '5s', target: 0 },
+    { duration: '3s', target: vus }, // Warm-up ramp
+    { duration: duration, target: vus }, // Steady-state load
+    { duration: '2s', target: 0 }, // Cooldown
   ],
   thresholds: standardThresholds,
 }
 
-const dataset = JSON.parse(open('../datasets/baseline_workload.json'))
+const comparativeDataset = JSON.parse(open('../datasets/comparative_workload.json'))
 
 export function setup() {
-  // Prime the exact cache with the 10 exact_target queries so subsequent calls hit
-  const url = `${BASE_URL}/query`
-  const targets = dataset.filter((d) => d.group === 'exact_target')
-  for (const item of targets) {
-    http.post(url, JSON.stringify(item.payload), {
-      headers: getClientHeaders(),
-      tags: { name: 'Setup_Prime_Cache' },
+  console.log(`[Baseline Load] VUs: ${vus}, Duration: ${duration}, Seed: ${seed}`)
+
+  // 1. Warm up exact targets so they are primed in cache
+  const warmupHeaders = getClientHeaders()
+  const exactTargets = comparativeDataset.filter((item) => item.intent === 'exact_target')
+
+  for (const item of exactTargets) {
+    http.post(`${BASE_URL}/query`, JSON.stringify(item.payload), {
+      headers: warmupHeaders,
+      tags: { name: 'Warmup_Prime' },
     })
+  }
+
+  // 2. Capture baseline metric counters before run
+  let initialMetrics = {}
+  const adminRes = http.get(`${BASE_URL}/admin/metrics`, {
+    headers: getAdminHeaders(),
+  })
+  if (adminRes.status === 200) {
+    try {
+      const parsed = adminRes.json()
+      initialMetrics = parsed.aggregate || parsed
+    } catch (e) {}
+  }
+
+  return {
+    startTime: Date.now(),
+    seed: seed,
+    initialMetrics: initialMetrics,
   }
 }
 
-export default function () {
-  const url = `${BASE_URL}/query`
+export default function (data) {
+  // Deterministic PRNG per VU and iteration
+  const prng = createPRNG(data.seed + __VU * 10000 + __ITER)
+  const item = deterministicPick(comparativeDataset, prng)
 
-  // Select a query following realistic baseline distribution:
-  // 60% probability of exact target (should hit exact cache)
-  // 30% probability of unique miss
-  // 10% probability of bypass request
-  const rand = Math.random()
-  let item
-
-  if (rand < 0.6) {
-    const targets = dataset.filter((d) => d.group === 'exact_target')
-    item = targets[Math.floor(Math.random() * targets.length)]
-  } else if (rand < 0.9) {
-    const misses = dataset.filter((d) => d.group === 'unique_miss')
-    const baseMiss = misses[Math.floor(Math.random() * misses.length)]
-    // Ensure uniqueness for miss by appending VU and iteration timestamp
-    item = {
-      group: 'unique_miss',
-      payload: {
-        prompt: `${baseMiss.payload.prompt} [query-${__VU}-${Date.now()}-${Math.random()}]`,
-        temperature: 0.0,
-      },
+  let payload = item.payload
+  if (item.intent === 'unique_miss') {
+    payload = {
+      prompt: `${item.payload.prompt} [seed-${data.seed}-vu-${__VU}-iter-${__ITER}]`,
+      temperature: 0.0,
     }
-  } else {
-    const bypasses = dataset.filter((d) => d.group === 'bypass')
-    item = bypasses[Math.floor(Math.random() * bypasses.length)]
   }
 
-  const tag = `Query_${item.group}`
-  const res = http.post(url, JSON.stringify(item.payload), {
+  const res = http.post(`${BASE_URL}/query`, JSON.stringify(payload), {
     headers: getClientHeaders(),
-    tags: { name: tag },
+    tags: { name: `Baseline_${item.intent}` },
   })
 
-  assertSuccessResponse(res, tag)
-  recordResponseMetrics(res)
+  assertSuccessResponse(res, `Baseline_${item.intent}`)
+  recordResponseMetrics(res, {
+    intent: item.intent,
+    isBypass: item.intent === 'bypass',
+    isIneligible: item.intent === 'ineligible',
+    payload: payload,
+  })
 
-  sleep(0.1)
+  sleep(0.05)
+}
+
+export function teardown(data) {
+  const elapsedSec = (Date.now() - data.startTime) / 1000
+  console.log(`[Baseline Load] Complete. Total wall-clock: ${elapsedSec.toFixed(2)}s`)
+
+  const adminRes = http.get(`${BASE_URL}/admin/metrics`, {
+    headers: getAdminHeaders(),
+  })
+  if (adminRes.status === 200) {
+    try {
+      const parsed = adminRes.json()
+      const agg = parsed.aggregate || parsed
+      const beforeReq = data.initialMetrics.request_and_cache || {}
+      const afterReq = agg.request_and_cache || {}
+
+      const deltaReqs =
+        (afterReq.total_authenticated_requests || 0) - (beforeReq.total_authenticated_requests || 0)
+      const deltaHits = (afterReq.exact_cache_hits || 0) - (beforeReq.exact_cache_hits || 0)
+      const deltaMisses = (afterReq.exact_cache_misses || 0) - (beforeReq.exact_cache_misses || 0)
+
+      console.log(`[Baseline Telemetry] Total Reqs Delta: ${deltaReqs}`)
+      console.log(`[Baseline Telemetry] Exact Hits: ${deltaHits}, Exact Misses: ${deltaMisses}`)
+    } catch (e) {}
+  }
 }

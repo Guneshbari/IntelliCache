@@ -3,8 +3,13 @@
  */
 
 export const BASE_URL = __ENV.BASE_URL || 'http://127.0.0.1:8000'
-export const CLIENT_TOKEN = __ENV.CLIENT_TOKEN || 'test-client-token'
-export const ADMIN_TOKEN = __ENV.ADMIN_TOKEN || 'test-admin-token'
+export const CLIENT_TOKEN =
+  __ENV.CLIENT_TOKEN ||
+  __ENV.GATEWAY_CLIENT_API_KEY ||
+  __ENV.CLIENT_API_TOKEN ||
+  'test-client-token'
+export const ADMIN_TOKEN =
+  __ENV.ADMIN_TOKEN || __ENV.ADMIN_API_KEY || __ENV.ADMIN_API_TOKEN || 'test-admin-token'
 
 // Conservative stop-condition thresholds:
 // 1. HTTP failures must remain below 1%
@@ -20,7 +25,7 @@ export const standardThresholds = {
 
 export const smokeProfile = {
   vus: 1,
-  duration: '10s',
+  iterations: 1,
   thresholds: standardThresholds,
 }
 

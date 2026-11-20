@@ -1,0 +1,124 @@
+[
+  {
+    "id": "comp_01_hit",
+    "intent": "exact_target",
+    "payload": {
+      "prompt": "What is the capital of France and what is its population?",
+      "temperature": 0.0
+    }
+  },
+  {
+    "id": "comp_02_hit",
+    "intent": "exact_target",
+    "payload": {
+      "prompt": "Explain the difference between TCP and UDP protocols in networking.",
+      "temperature": 0.0
+    }
+  },
+  {
+    "id": "comp_03_hit",
+    "intent": "exact_target",
+    "payload": {
+      "prompt": "How does binary search achieve O(log n) time complexity?",
+      "temperature": 0.0
+    }
+  },
+  {
+    "id": "comp_04_hit",
+    "intent": "exact_target",
+    "payload": {
+      "prompt": "What are ACID properties in relational database management systems?",
+      "temperature": 0.0
+    }
+  },
+  {
+    "id": "comp_05_hit",
+    "intent": "exact_target",
+    "payload": {
+      "prompt": "How does garbage collection work in the V8 JavaScript engine?",
+      "temperature": 0.0
+    }
+  },
+  {
+    "id": "comp_06_hit",
+    "intent": "exact_target",
+    "payload": {
+      "prompt": "Summarize the architectural differences between Monolith and Microservices.",
+      "temperature": 0.0
+    }
+  },
+  {
+    "id": "comp_07_paraphrase",
+    "intent": "semantic_paraphrase",
+    "payload": {
+      "prompt": "Explain how TCP differs from UDP in computer network communication.",
+      "temperature": 0.0
+    }
+  },
+  {
+    "id": "comp_08_paraphrase",
+    "intent": "semantic_paraphrase",
+    "payload": {
+      "prompt": "Explain the ACID guarantees in SQL relational databases.",
+      "temperature": 0.0
+    }
+  },
+  {
+    "id": "comp_09_paraphrase",
+    "intent": "semantic_paraphrase",
+    "payload": {
+      "prompt": "Can you explain why binary search has logarithmic time complexity?",
+      "temperature": 0.0
+    }
+  },
+  {
+    "id": "comp_10_unique_miss",
+    "intent": "unique_miss",
+    "payload": {
+      "prompt": "Explain how the Raft consensus algorithm handles leader election.",
+      "temperature": 0.0
+    }
+  },
+  {
+    "id": "comp_11_unique_miss",
+    "intent": "unique_miss",
+    "payload": {
+      "prompt": "What are zero-knowledge proofs and how are they used in cryptography?",
+      "temperature": 0.0
+    }
+  },
+  {
+    "id": "comp_12_unique_miss",
+    "intent": "unique_miss",
+    "payload": {
+      "prompt": "Describe memory layout and stack vs heap allocation in C++.",
+      "temperature": 0.0
+    }
+  },
+  {
+    "id": "comp_13_ineligible",
+    "intent": "ineligible",
+    "payload": {
+      "prompt": "Write a random haiku about autumn leaves.",
+      "temperature": 0.8
+    }
+  },
+  {
+    "id": "comp_14_bypass",
+    "intent": "bypass",
+    "payload": {
+      "prompt": "What is the capital of France and what is its population?",
+      "bypass_cache": true,
+      "temperature": 0.0
+    }
+  },
+  {
+    "id": "comp_15_incompatible",
+    "intent": "incompatible_model",
+    "payload": {
+      "prompt": "What are ACID properties in relational database management systems?",
+      "model": "llama-3.1-8b-instant",
+      "temperature": 0.0
+    }
+  }
+]
