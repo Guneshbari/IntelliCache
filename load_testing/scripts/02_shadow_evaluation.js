@@ -53,8 +53,10 @@ const comparativeDataset = JSON.parse(open('../datasets/comparative_workload.jso
 export function setup() {
   console.log(`[Shadow Load] VUs: ${vus}, Duration: ${duration}, Seed: ${seed}`)
 
-  // 1. Warm up exact targets so they are primed in cache (identical to baseline)
-  const warmupHeaders = getClientHeaders()
+  // 1. Warm up exact targets so they are primed in cache (isolated from shadow evaluation)
+  const warmupHeaders = Object.assign({}, getClientHeaders(), {
+    'X-Warmup-Prime': 'true',
+  })
   const exactTargets = comparativeDataset.filter((item) => item.intent === 'exact_target')
 
   for (const item of exactTargets) {
@@ -63,6 +65,9 @@ export function setup() {
       tags: { name: 'Warmup_Prime' },
     })
   }
+
+  // Ensure complete quiescence before measured iterations begin
+  sleep(0.5)
 
   // 2. Capture shadow and request metric counters before run
   let initialMetrics = {}

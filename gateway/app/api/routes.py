@@ -952,8 +952,10 @@ async def execute_query(
                         yield "data: [DONE]\n\n"
 
                         # Non-blocking shadow observation trigger for streaming (Stage 3.3)
+                        # Explicitly skipped during warm-up priming to eliminate background evaluation contamination (Stage 3.4.1.4)
+                        is_warmup_prime = raw_request.headers.get("X-Warmup-Prime", "").strip().lower() == "true"
                         shadow_svc = get_shadow_service()
-                        if shadow_svc and shadow_svc.settings.shadow_evaluation_enabled:
+                        if shadow_svc and shadow_svc.settings.shadow_evaluation_enabled and not is_warmup_prime:
                             try:
                                 full_text = "".join(accumulated_text)
                                 prompt_text = request.get_effective_prompt()
@@ -1082,8 +1084,10 @@ async def execute_query(
         completed_cleanly = True
 
         # Non-blocking shadow observation trigger (Stage 3.3)
+        # Explicitly skipped during warm-up priming to eliminate background evaluation contamination (Stage 3.4.1.4)
+        is_warmup_prime = raw_request.headers.get("X-Warmup-Prime", "").strip().lower() == "true"
         shadow_svc = get_shadow_service()
-        if shadow_svc and shadow_svc.settings.shadow_evaluation_enabled:
+        if shadow_svc and shadow_svc.settings.shadow_evaluation_enabled and not is_warmup_prime:
             try:
                 prompt_text = request.get_effective_prompt()
                 actual_src = "exact_cache" if result.cached else ("bypass" if effective_bypass_cache else "upstream_provider")

@@ -1,24 +1,29 @@
 #!/usr/bin/env python3
 """
-run_paired_benchmark.py (Stage 3.4.1.3)
+run_paired_benchmark.py (Stage 3.4.1.4)
 Orchestrates genuine controlled paired benchmarks between Baseline (exact-cache only)
 and Shadow Evaluation modes under identical cold-cache initial conditions.
 
-Key Improvements in Stage 3.4.1.3:
-1. Equivalent Cache State: Explicit database table purge (`DELETE FROM cache_entries`)
-   and metrics reset before EVERY individual run so neither mode inherits cache history.
-2. Alternating Execution Order:
+Key Improvements in Stage 3.4.1.4:
+1. Fail-Fast Cache & Metrics Reset: Explicit database table purge (`DELETE FROM cache_entries;`)
+   and verification that count == 0, plus admin cache clear and metrics reset with hard assertion
+   that entries == 0 before every single trial. Aborts immediately on any failure.
+2. Isolated Shadow-Mode Warm-Up: Setup priming requests pass `X-Warmup-Prime: true` so the gateway
+   populates exact-cache targets without enqueuing background FastEmbed/pgvector shadow tasks.
+   In shadow mode, a 0.5s quiescence pause guarantees all workers are idle before measurements.
+3. Alternating Execution Order:
    - Pair 1: Baseline 1 -> Shadow 1
    - Pair 2: Shadow 2 -> Baseline 2
    - Pair 3: Baseline 3 -> Shadow 3
    Eliminates warm-up bias, database growth artifacts, and system drift.
-3. Genuinely Unique Miss Prompts: Unique misses parameterized by pair ID
+4. Genuinely Unique Miss Prompts: Unique misses parameterized by pair ID
    (`[pair-X-vu-Y-iter-Z]`), ensuring identical request sequences within each pair
    and distinct cold misses across pairs.
-4. Per-Pair Difference Calculation: Calculates true paired deltas (Shadow_i - Baseline_i)
+5. Per-Pair Difference Calculation: Calculates true paired deltas (Shadow_i - Baseline_i)
    for each individual trial pair before synthesizing the median, min, max, and stddev.
-5. Cryptographic State Verification: Pre- and post-test SHA-256 integrity inspection
-   over all 9 columns of `vector_records` to verify zero mutations in the load-testing DB.
+6. Cryptographic State Verification: Pre- and post-test SHA-256 integrity inspection
+   over all 9 columns of `vector_records` to verify zero mutations in the load-testing DB,
+   with hard missing-table verification guards.
 """
 
 import asyncio
@@ -142,37 +147,81 @@ def stop_gateway(proc: subprocess.Popen) -> None:
     time.sleep(1.0)
 
 
-async def _async_purge_cache_db():
+async def _async_purge_and_verify_db() -> int:
     conn = await asyncpg.connect(DB_URL)
     try:
         await conn.execute("DELETE FROM cache_entries;")
+        count = await conn.fetchval("SELECT count(*) FROM cache_entries;")
+        return int(count)
     finally:
         await conn.close()
 
 
-def reset_cache_state():
+def reset_and_verify_cache_state():
     """
-    Purges cache_entries from database and resets telemetry counters.
-    Ensures that every trial begins from an identical cold cache state.
+    Purges cache_entries and resets telemetry counters with strict fail-fast validation.
+    Aborts immediately if the database purge, administrative endpoints, or empty-state
+    verification fail (Stage 3.4.1.4).
     """
+    # 1. Direct database purge and verification
     try:
-        asyncio.run(_async_purge_cache_db())
-    except Exception as e:
-        print(f"[Cache Reset Warning] Direct DB purge error: {e}", file=sys.stderr)
+        db_count = asyncio.run(_async_purge_and_verify_db())
+    except Exception as exc:
+        raise RuntimeError(f"Database cache purge failed with connection error: {exc}") from exc
 
-    # Admin endpoints if gateway is running
-    for path in ["/admin/cache/clear?namespace=all", "/admin/metrics/reset"]:
-        try:
-            req = urllib.request.Request(
-                f"{BASE_URL}{path}",
-                headers={"X-Admin-Token": "test-admin-token"},
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=2.0) as resp:
-                pass
-        except Exception:
-            pass
-    print("[Cache Reset] Cache state cleared and telemetry reset for upcoming run.")
+    if db_count != 0:
+        raise RuntimeError(f"Database cache purge failed: {db_count} entries remain in cache_entries!")
+
+    # 2. Administrative cache purge verification
+    req_clear = urllib.request.Request(
+        f"{BASE_URL}/admin/cache/clear?namespace=all",
+        headers={"X-Admin-Token": "test-admin-token"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req_clear, timeout=5.0) as resp:
+            if resp.status != 200:
+                raise RuntimeError(f"Admin cache clear failed with HTTP status {resp.status}")
+            data = json.loads(resp.read().decode())
+            if data.get("status") != "ok":
+                raise RuntimeError(f"Admin cache clear payload rejected: {data}")
+    except Exception as exc:
+        raise RuntimeError(f"Admin cache clear failed: {exc}") from exc
+
+    # 3. Administrative metrics reset verification
+    req_reset = urllib.request.Request(
+        f"{BASE_URL}/admin/metrics/reset",
+        headers={"X-Admin-Token": "test-admin-token"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req_reset, timeout=5.0) as resp:
+            if resp.status != 200:
+                raise RuntimeError(f"Admin metrics reset failed with HTTP status {resp.status}")
+            data = json.loads(resp.read().decode())
+            if data.get("status") != "ok":
+                raise RuntimeError(f"Admin metrics reset payload rejected: {data}")
+    except Exception as exc:
+        raise RuntimeError(f"Admin metrics reset failed: {exc}") from exc
+
+    # 4. Final verification: Verify zero entries exist in cache
+    req_stats = urllib.request.Request(
+        f"{BASE_URL}/cache/stats",
+        headers={"X-Admin-Token": "test-admin-token"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req_stats, timeout=5.0) as resp:
+            if resp.status != 200:
+                raise RuntimeError(f"Cache stats check failed with HTTP status {resp.status}")
+            stats_data = json.loads(resp.read().decode())
+            current_entries = stats_data.get("current_entries", stats_data.get("total_entries", 0))
+            if current_entries != 0:
+                raise RuntimeError(f"Pre-trial cache verification failed: cache stats report {current_entries} entries!")
+    except Exception as exc:
+        raise RuntimeError(f"Pre-trial cache stats verification failed: {exc}") from exc
+
+    print("[Cache Reset] Cache state verified completely empty (0 entries) and telemetry reset for upcoming run.")
 
 
 def run_k6(script_name: str, output_json: str, extra_env: Dict[str, str] = None) -> int:
@@ -362,7 +411,7 @@ def main():
     print("\n--- STEP 1: Running Smoke Test Verification ---")
     proc = start_gateway(shadow_enabled=False)
     try:
-        reset_cache_state()
+        reset_and_verify_cache_state()
         ret = run_k6("00_smoke_test.js", "smoke_test_summary.json")
         if ret != 0:
             print("ERROR: Smoke test failed.", file=sys.stderr)
@@ -396,7 +445,7 @@ def main():
         print("\n>>> STARTING PAIR 1 (Token: pair1, Order: Baseline -> Shadow) <<<")
         # 1A: Baseline
         ensure_gateway(shadow_enabled=False)
-        reset_cache_state()
+        reset_and_verify_cache_state()
         ret = run_k6("01_baseline_exact_cache.js", "baseline_run_1.json", extra_env={"PAIR_ID": "pair1"})
         if ret != 0:
             raise RuntimeError("Baseline run 1 failed")
@@ -404,7 +453,7 @@ def main():
 
         # 1B: Shadow
         ensure_gateway(shadow_enabled=True)
-        reset_cache_state()
+        reset_and_verify_cache_state()
         ret = run_k6("02_shadow_evaluation.js", "shadow_run_1.json", extra_env={"PAIR_ID": "pair1"})
         if ret != 0:
             raise RuntimeError("Shadow run 1 failed")
@@ -416,7 +465,7 @@ def main():
         print("\n>>> STARTING PAIR 2 (Token: pair2, Order: Shadow -> Baseline [Alternated]) <<<")
         # 2A: Shadow
         ensure_gateway(shadow_enabled=True)
-        reset_cache_state()
+        reset_and_verify_cache_state()
         ret = run_k6("02_shadow_evaluation.js", "shadow_run_2.json", extra_env={"PAIR_ID": "pair2"})
         if ret != 0:
             raise RuntimeError("Shadow run 2 failed")
@@ -424,7 +473,7 @@ def main():
 
         # 2B: Baseline
         ensure_gateway(shadow_enabled=False)
-        reset_cache_state()
+        reset_and_verify_cache_state()
         ret = run_k6("01_baseline_exact_cache.js", "baseline_run_2.json", extra_env={"PAIR_ID": "pair2"})
         if ret != 0:
             raise RuntimeError("Baseline run 2 failed")
@@ -436,7 +485,7 @@ def main():
         print("\n>>> STARTING PAIR 3 (Token: pair3, Order: Baseline -> Shadow [Alternated]) <<<")
         # 3A: Baseline
         ensure_gateway(shadow_enabled=False)
-        reset_cache_state()
+        reset_and_verify_cache_state()
         ret = run_k6("01_baseline_exact_cache.js", "baseline_run_3.json", extra_env={"PAIR_ID": "pair3"})
         if ret != 0:
             raise RuntimeError("Baseline run 3 failed")
@@ -444,7 +493,7 @@ def main():
 
         # 3B: Shadow
         ensure_gateway(shadow_enabled=True)
-        reset_cache_state()
+        reset_and_verify_cache_state()
         ret = run_k6("02_shadow_evaluation.js", "shadow_run_3.json", extra_env={"PAIR_ID": "pair3"})
         if ret != 0:
             raise RuntimeError("Shadow run 3 failed")
