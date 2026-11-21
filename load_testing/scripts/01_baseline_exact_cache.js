@@ -87,10 +87,11 @@ export default function (data) {
   const prng = createPRNG(data.seed + __VU * 10000 + __ITER)
   const item = deterministicPick(comparativeDataset, prng)
 
+  const pairId = __ENV.PAIR_ID || `seed-${data.seed}`
   let payload = item.payload
   if (item.intent === 'unique_miss') {
     payload = {
-      prompt: `${item.payload.prompt} [seed-${data.seed}-vu-${__VU}-iter-${__ITER}]`,
+      prompt: `${item.payload.prompt} [${pairId}-vu-${__VU}-iter-${__ITER}]`,
       temperature: 0.0,
     }
   }

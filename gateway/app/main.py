@@ -574,18 +574,39 @@ def create_app() -> FastAPI:
         tags=["Cache"],
         summary="Clear Configured Cache Namespace",
     )
+    @app.post(
+        "/admin/cache/clear",
+        dependencies=[Depends(verify_admin_token)],
+        tags=["Cache"],
+        summary="Clear Configured Cache Namespace (Admin Alias)",
+    )
     async def clear_cache_namespace(
+        request: Request,
         current_settings: Settings = Depends(get_settings),
         cache: BaseCache = Depends(get_query_cache),
     ) -> Dict[str, Any]:
         """Purge entries from the server-configured cache namespace. Requires administrative token."""
-        target_ns = current_settings.cache_namespace
-        await cache.clear(namespace=target_ns)
+        target_ns = request.query_params.get("namespace", current_settings.cache_namespace)
+        if target_ns == "all":
+            await cache.clear(namespace=None)
+        else:
+            await cache.clear(namespace=target_ns)
         return {
             "status": "ok",
             "message": f"Query cache namespace '{target_ns}' cleared successfully.",
             "namespace": target_ns,
         }
+
+    @app.post(
+        "/admin/metrics/reset",
+        dependencies=[Depends(verify_admin_token)],
+        tags=["Metrics"],
+        summary="Reset In-Memory Metrics Counters",
+    )
+    async def reset_metrics() -> Dict[str, str]:
+        """Resets in-memory runtime telemetry counters. Requires administrative token."""
+        get_metrics_collector().reset()
+        return {"status": "ok", "message": "Metrics counters reset successfully."}
 
     return app
 

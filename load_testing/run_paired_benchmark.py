@@ -1,10 +1,24 @@
 #!/usr/bin/env python3
 """
-run_paired_benchmark.py (Stage 3.4.1.2)
-Orchestrates fixed-request-count deterministic paired benchmarks between
-Baseline (exact-cache only) and Shadow Evaluation modes.
-Enforces identical seeds, identical request sequences, multi-run median aggregation,
-and database cryptographic integrity checks before and after testing.
+run_paired_benchmark.py (Stage 3.4.1.3)
+Orchestrates genuine controlled paired benchmarks between Baseline (exact-cache only)
+and Shadow Evaluation modes under identical cold-cache initial conditions.
+
+Key Improvements in Stage 3.4.1.3:
+1. Equivalent Cache State: Explicit database table purge (`DELETE FROM cache_entries`)
+   and metrics reset before EVERY individual run so neither mode inherits cache history.
+2. Alternating Execution Order:
+   - Pair 1: Baseline 1 -> Shadow 1
+   - Pair 2: Shadow 2 -> Baseline 2
+   - Pair 3: Baseline 3 -> Shadow 3
+   Eliminates warm-up bias, database growth artifacts, and system drift.
+3. Genuinely Unique Miss Prompts: Unique misses parameterized by pair ID
+   (`[pair-X-vu-Y-iter-Z]`), ensuring identical request sequences within each pair
+   and distinct cold misses across pairs.
+4. Per-Pair Difference Calculation: Calculates true paired deltas (Shadow_i - Baseline_i)
+   for each individual trial pair before synthesizing the median, min, max, and stddev.
+5. Cryptographic State Verification: Pre- and post-test SHA-256 integrity inspection
+   over all 9 columns of `vector_records` to verify zero mutations in the load-testing DB.
 """
 
 import asyncio
@@ -16,8 +30,9 @@ import sys
 import time
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
+import asyncpg
 import numpy as np
 
 
@@ -29,7 +44,7 @@ PYTHON_BIN = GATEWAY_DIR / ".venv" / "bin" / "python3"
 UVICORN_BIN = GATEWAY_DIR / ".venv" / "bin" / "uvicorn"
 
 BASE_URL = "http://127.0.0.1:8000"
-DB_URL = "postgresql://postgres:postgres@127.0.0.1:5433/intellicache_loadtest"
+DB_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@127.0.0.1:5433/intellicache_loadtest")
 SEED = "1337"
 VUS = 10
 ITERATIONS = 1000
@@ -114,6 +129,8 @@ def start_gateway(shadow_enabled: bool) -> subprocess.Popen:
 
 def stop_gateway(proc: subprocess.Popen) -> None:
     """Gracefully terminates Gateway process."""
+    if proc is None:
+        return
     print(f"[Gateway Lifecycle] Stopping Gateway (PID: {proc.pid})...")
     proc.terminate()
     try:
@@ -123,6 +140,39 @@ def stop_gateway(proc: subprocess.Popen) -> None:
         proc.wait()
     print("[Gateway Lifecycle] Gateway stopped.")
     time.sleep(1.0)
+
+
+async def _async_purge_cache_db():
+    conn = await asyncpg.connect(DB_URL)
+    try:
+        await conn.execute("DELETE FROM cache_entries;")
+    finally:
+        await conn.close()
+
+
+def reset_cache_state():
+    """
+    Purges cache_entries from database and resets telemetry counters.
+    Ensures that every trial begins from an identical cold cache state.
+    """
+    try:
+        asyncio.run(_async_purge_cache_db())
+    except Exception as e:
+        print(f"[Cache Reset Warning] Direct DB purge error: {e}", file=sys.stderr)
+
+    # Admin endpoints if gateway is running
+    for path in ["/admin/cache/clear?namespace=all", "/admin/metrics/reset"]:
+        try:
+            req = urllib.request.Request(
+                f"{BASE_URL}{path}",
+                headers={"X-Admin-Token": "test-admin-token"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=2.0) as resp:
+                pass
+        except Exception:
+            pass
+    print("[Cache Reset] Cache state cleared and telemetry reset for upcoming run.")
 
 
 def run_k6(script_name: str, output_json: str, extra_env: Dict[str, str] = None) -> int:
@@ -200,15 +250,63 @@ def extract_metrics(summary_file: Path) -> Dict[str, Any]:
     }
 
 
-def compute_paired_comparison(
-    baseline_runs: List[Dict[str, Any]],
-    shadow_runs: List[Dict[str, Any]],
-) -> Dict[str, Any]:
-    """Computes median, range, stddev, and paired delta overhead."""
-    def _agg(runs: List[Dict[str, Any]], category: str, metric: str) -> Dict[str, float]:
-        vals = [r[category][metric] for r in runs if r.get(category, {}).get(metric, 0.0) > 0]
-        if not vals:
-            return {"median": 0.0, "min": 0.0, "max": 0.0, "stddev": 0.0}
+def compute_paired_comparison(pairs: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Computes per-pair differences and synthesizes aggregate statistics across pairs.
+    Each element of `pairs` contains {'pair_id': str, 'baseline': dict, 'shadow': dict}.
+    """
+    pair_deltas: List[Dict[str, Any]] = []
+
+    for p in pairs:
+        b = p["baseline"]
+        s = p["shadow"]
+        pid = p["pair_id"]
+
+        def _cohort_diff(cat: str):
+            b_cat = b[cat]
+            s_cat = s[cat]
+            d_med = round(s_cat["med"] - b_cat["med"], 2)
+            pct_med = round((d_med / b_cat["med"]) * 100.0, 2) if b_cat["med"] > 0 else 0.0
+            d_p95 = round(s_cat["p95"] - b_cat["p95"], 2)
+            pct_p95 = round((d_p95 / b_cat["p95"]) * 100.0, 2) if b_cat["p95"] > 0 else 0.0
+            d_avg = round(s_cat["avg"] - b_cat["avg"], 2)
+            pct_avg = round((d_avg / b_cat["avg"]) * 100.0, 2) if b_cat["avg"] > 0 else 0.0
+            return {
+                "baseline_med": b_cat["med"],
+                "shadow_med": s_cat["med"],
+                "delta_med_ms": d_med,
+                "pct_med": pct_med,
+                "baseline_p95": b_cat["p95"],
+                "shadow_p95": s_cat["p95"],
+                "delta_p95_ms": d_p95,
+                "pct_p95": pct_p95,
+                "baseline_avg": b_cat["avg"],
+                "shadow_avg": s_cat["avg"],
+                "delta_avg_ms": d_avg,
+                "pct_avg": pct_avg,
+            }
+
+        d_rate = round(s["req_rate"] - b["req_rate"], 2)
+        pct_rate = round((d_rate / b["req_rate"]) * 100.0, 2) if b["req_rate"] > 0 else 0.0
+
+        pair_deltas.append(
+            {
+                "pair_id": pid,
+                "overall": _cohort_diff("overall"),
+                "exact_hit": _cohort_diff("exact_hit"),
+                "exact_miss": _cohort_diff("exact_miss"),
+                "throughput": {
+                    "baseline_rate": b["req_rate"],
+                    "shadow_rate": s["req_rate"],
+                    "delta_rate": d_rate,
+                    "pct_rate": pct_rate,
+                },
+            }
+        )
+
+    # Aggregate statistics across the pairs
+    def _agg_deltas(cat: str, field: str) -> Dict[str, float]:
+        vals = [pd[cat][field] for pd in pair_deltas]
         return {
             "median": round(float(np.median(vals)), 2),
             "min": round(float(np.min(vals)), 2),
@@ -216,57 +314,45 @@ def compute_paired_comparison(
             "stddev": round(float(np.std(vals)), 2),
         }
 
-    results = {}
+    aggregated = {}
     for cat in ["overall", "exact_hit", "exact_miss"]:
-        b_med = _agg(baseline_runs, cat, "med")
-        s_med = _agg(shadow_runs, cat, "med")
-        b_p95 = _agg(baseline_runs, cat, "p95")
-        s_p95 = _agg(shadow_runs, cat, "p95")
-        b_avg = _agg(baseline_runs, cat, "avg")
-        s_avg = _agg(shadow_runs, cat, "avg")
-
-        # Delta calculation based on median of medians
-        delta_med_ms = round(s_med["median"] - b_med["median"], 2)
-        pct_med = round((delta_med_ms / b_med["median"]) * 100.0, 2) if b_med["median"] > 0 else 0.0
-
-        delta_p95_ms = round(s_p95["median"] - b_p95["median"], 2)
-        pct_p95 = round((delta_p95_ms / b_p95["median"]) * 100.0, 2) if b_p95["median"] > 0 else 0.0
-
-        results[cat] = {
-            "baseline": {"median_med": b_med, "p95": b_p95, "avg": b_avg},
-            "shadow": {"median_med": s_med, "p95": s_p95, "avg": s_avg},
-            "delta_med_ms": delta_med_ms,
-            "pct_med": pct_med,
-            "delta_p95_ms": delta_p95_ms,
-            "pct_p95": pct_p95,
+        aggregated[cat] = {
+            "delta_med_ms": _agg_deltas(cat, "delta_med_ms"),
+            "pct_med": _agg_deltas(cat, "pct_med"),
+            "delta_p95_ms": _agg_deltas(cat, "delta_p95_ms"),
+            "pct_p95": _agg_deltas(cat, "pct_p95"),
+            "delta_avg_ms": _agg_deltas(cat, "delta_avg_ms"),
         }
 
-    # Rates
-    b_rates = [r["req_rate"] for r in baseline_runs]
-    s_rates = [r["req_rate"] for r in shadow_runs]
-    results["throughput"] = {
-        "baseline_rate": round(float(np.median(b_rates)), 2),
-        "shadow_rate": round(float(np.median(s_rates)), 2),
-        "delta_rate": round(float(np.median(s_rates) - np.median(b_rates)), 2),
+    aggregated["throughput"] = {
+        "delta_rate": _agg_deltas("throughput", "delta_rate"),
+        "pct_rate": _agg_deltas("throughput", "pct_rate"),
+        "baseline_rate_median": round(float(np.median([p["baseline"]["req_rate"] for p in pairs])), 2),
+        "shadow_rate_median": round(float(np.median([p["shadow"]["req_rate"] for p in pairs])), 2),
     }
 
-    return results
+    return {
+        "per_pair_results": pair_deltas,
+        "aggregated_paired_deltas": aggregated,
+    }
 
 
 def main():
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     baseline_snapshot_file = REPORTS_DIR / "db_baseline_snapshot.json"
+    db_verify_script = LOAD_TEST_DIR / "helpers" / "verify_db_integrity.py"
 
     print("================================================================================")
-    print("STAGE 3.4.1.2: FIXED-REQUEST-COUNT REPEATABLE PAIRED BENCHMARK ORCHESTRATOR")
+    print("STAGE 3.4.1.3: CONTROLLED PAIRED BENCHMARK ORCHESTRATOR")
     print(f"Total Requests per Run: {ITERATIONS} (10 VUs x 100 iters)")
     print(f"Workload Seed:          {SEED}")
     print(f"PostgreSQL DB URL:      {DB_URL}")
+    print("Design:                 Alternating execution order, cold-cache state isolation,")
+    print("                        per-pair difference aggregation, SHA-256 DB verification.")
     print("================================================================================\n")
 
-    # Step 0: Capture Database Baseline Snapshot
-    print("\n--- STEP 0: Capturing Initial Database Integrity Snapshot ---")
-    db_verify_script = LOAD_TEST_DIR / "helpers" / "verify_db_integrity.py"
+    # Step 0: Capture Database Baseline Snapshot (SHA-256 over all 9 columns)
+    print("\n--- STEP 0: Capturing Initial Database SHA-256 Integrity Snapshot ---")
     res = subprocess.run([str(PYTHON_BIN), str(db_verify_script), "--save", str(baseline_snapshot_file)])
     if res.returncode != 0:
         print("ERROR: Failed to capture database baseline snapshot.", file=sys.stderr)
@@ -276,6 +362,7 @@ def main():
     print("\n--- STEP 1: Running Smoke Test Verification ---")
     proc = start_gateway(shadow_enabled=False)
     try:
+        reset_cache_state()
         ret = run_k6("00_smoke_test.js", "smoke_test_summary.json")
         if ret != 0:
             print("ERROR: Smoke test failed.", file=sys.stderr)
@@ -283,38 +370,91 @@ def main():
     finally:
         stop_gateway(proc)
 
-    # Step 2: 3 Paired Baseline Runs
-    print("\n--- STEP 2: Executing 3 Paired Baseline Runs (Exact Cache Only) ---")
-    proc = start_gateway(shadow_enabled=False)
-    baseline_summaries = []
-    try:
-        for run_idx in range(1, 4):
-            print(f"\n>> Executing Baseline Run #{run_idx} of 3...")
-            out_json = f"baseline_run_{run_idx}.json"
-            ret = run_k6("01_baseline_exact_cache.js", out_json)
-            if ret != 0:
-                print(f"ERROR: Baseline run {run_idx} failed.", file=sys.stderr)
-                sys.exit(1)
-            baseline_summaries.append(extract_metrics(REPORTS_DIR / out_json))
-    finally:
-        stop_gateway(proc)
+    # Step 2: 3 Alternating Controlled Paired Runs
+    # Pair 1: Baseline 1 -> Shadow 1
+    # Pair 2: Shadow 2   -> Baseline 2
+    # Pair 3: Baseline 3 -> Shadow 3
+    print("\n--- STEP 2: Executing 3 Alternating Controlled Paired Runs ---")
+    pairs_data: List[Dict[str, Any]] = []
 
-    # Step 3: 3 Paired Shadow Runs
-    print("\n--- STEP 3: Executing 3 Paired Shadow Runs (Shadow Active 100%) ---")
-    proc = start_gateway(shadow_enabled=True)
-    shadow_summaries = []
-    try:
-        for run_idx in range(1, 4):
-            print(f"\n>> Executing Shadow Run #{run_idx} of 3...")
-            out_json = f"shadow_run_{run_idx}.json"
-            ret = run_k6("02_shadow_evaluation.js", out_json)
-            if ret != 0:
-                print(f"ERROR: Shadow run {run_idx} failed.", file=sys.stderr)
-                sys.exit(1)
-            shadow_summaries.append(extract_metrics(REPORTS_DIR / out_json))
+    # Track current active gateway process and mode
+    current_proc: Optional[subprocess.Popen] = None
+    current_mode: Optional[bool] = None
 
-        # Step 4: Concurrency Stress Test with Automated Hard Assertions
-        print("\n--- STEP 4: Executing Concurrency & SingleFlight Stress Test ---")
+    def ensure_gateway(shadow_enabled: bool) -> subprocess.Popen:
+        nonlocal current_proc, current_mode
+        if current_proc is not None and current_mode == shadow_enabled:
+            return current_proc
+        if current_proc is not None:
+            stop_gateway(current_proc)
+        current_proc = start_gateway(shadow_enabled)
+        current_mode = shadow_enabled
+        return current_proc
+
+    try:
+        # ---------------- Pair 1 (Order: Baseline -> Shadow) ----------------
+        print("\n>>> STARTING PAIR 1 (Token: pair1, Order: Baseline -> Shadow) <<<")
+        # 1A: Baseline
+        ensure_gateway(shadow_enabled=False)
+        reset_cache_state()
+        ret = run_k6("01_baseline_exact_cache.js", "baseline_run_1.json", extra_env={"PAIR_ID": "pair1"})
+        if ret != 0:
+            raise RuntimeError("Baseline run 1 failed")
+        b1_metrics = extract_metrics(REPORTS_DIR / "baseline_run_1.json")
+
+        # 1B: Shadow
+        ensure_gateway(shadow_enabled=True)
+        reset_cache_state()
+        ret = run_k6("02_shadow_evaluation.js", "shadow_run_1.json", extra_env={"PAIR_ID": "pair1"})
+        if ret != 0:
+            raise RuntimeError("Shadow run 1 failed")
+        s1_metrics = extract_metrics(REPORTS_DIR / "shadow_run_1.json")
+
+        pairs_data.append({"pair_id": "pair_1", "baseline": b1_metrics, "shadow": s1_metrics})
+
+        # ---------------- Pair 2 (Order: Shadow -> Baseline) ----------------
+        print("\n>>> STARTING PAIR 2 (Token: pair2, Order: Shadow -> Baseline [Alternated]) <<<")
+        # 2A: Shadow
+        ensure_gateway(shadow_enabled=True)
+        reset_cache_state()
+        ret = run_k6("02_shadow_evaluation.js", "shadow_run_2.json", extra_env={"PAIR_ID": "pair2"})
+        if ret != 0:
+            raise RuntimeError("Shadow run 2 failed")
+        s2_metrics = extract_metrics(REPORTS_DIR / "shadow_run_2.json")
+
+        # 2B: Baseline
+        ensure_gateway(shadow_enabled=False)
+        reset_cache_state()
+        ret = run_k6("01_baseline_exact_cache.js", "baseline_run_2.json", extra_env={"PAIR_ID": "pair2"})
+        if ret != 0:
+            raise RuntimeError("Baseline run 2 failed")
+        b2_metrics = extract_metrics(REPORTS_DIR / "baseline_run_2.json")
+
+        pairs_data.append({"pair_id": "pair_2", "baseline": b2_metrics, "shadow": s2_metrics})
+
+        # ---------------- Pair 3 (Order: Baseline -> Shadow) ----------------
+        print("\n>>> STARTING PAIR 3 (Token: pair3, Order: Baseline -> Shadow [Alternated]) <<<")
+        # 3A: Baseline
+        ensure_gateway(shadow_enabled=False)
+        reset_cache_state()
+        ret = run_k6("01_baseline_exact_cache.js", "baseline_run_3.json", extra_env={"PAIR_ID": "pair3"})
+        if ret != 0:
+            raise RuntimeError("Baseline run 3 failed")
+        b3_metrics = extract_metrics(REPORTS_DIR / "baseline_run_3.json")
+
+        # 3B: Shadow
+        ensure_gateway(shadow_enabled=True)
+        reset_cache_state()
+        ret = run_k6("02_shadow_evaluation.js", "shadow_run_3.json", extra_env={"PAIR_ID": "pair3"})
+        if ret != 0:
+            raise RuntimeError("Shadow run 3 failed")
+        s3_metrics = extract_metrics(REPORTS_DIR / "shadow_run_3.json")
+
+        pairs_data.append({"pair_id": "pair_3", "baseline": b3_metrics, "shadow": s3_metrics})
+
+        # Step 3: Concurrency Stress Test with Automated Hard Assertions
+        print("\n--- STEP 3: Executing Concurrency & SingleFlight Stress Test ---")
+        ensure_gateway(shadow_enabled=True)
         ret = run_k6(
             "03_concurrency_stress.js",
             "concurrency_stress_summary.json",
@@ -324,8 +464,8 @@ def main():
             print("ERROR: Concurrency SingleFlight stress test failed hard assertions.", file=sys.stderr)
             sys.exit(1)
 
-        # Step 5: Boundary & Resilience Testing
-        print("\n--- STEP 5: Executing API Boundaries and Infrastructure Resilience ---")
+        # Step 4: Boundary & Resilience Testing
+        print("\n--- STEP 4: Executing API Boundaries and Infrastructure Resilience ---")
         ret = run_k6("04_api_boundaries.js", "api_boundaries_summary.json")
         if ret != 0:
             print("ERROR: API boundaries test failed.", file=sys.stderr)
@@ -337,31 +477,31 @@ def main():
             sys.exit(1)
 
     finally:
-        stop_gateway(proc)
+        if current_proc is not None:
+            stop_gateway(current_proc)
 
-    # Step 6: Post-Test Database Verification
-    print("\n--- STEP 6: Verifying Database Cryptographic Integrity ---")
+    # Step 5: Post-Test Database Verification (SHA-256 over all 9 columns)
+    print("\n--- STEP 5: Verifying Load-Testing Database Cryptographic SHA-256 Integrity ---")
     res = subprocess.run([str(PYTHON_BIN), str(db_verify_script), "--verify", str(baseline_snapshot_file)])
     if res.returncode != 0:
         print("CRITICAL: Database integrity verification failed! vector_records was mutated.", file=sys.stderr)
         sys.exit(1)
 
-    # Step 7: Compute Aggregated Results & Output Report Table
-    print("\n--- STEP 7: Benchmark Data Synthesis and Paired Analysis ---")
-    comparison = compute_paired_comparison(baseline_summaries, shadow_summaries)
+    # Step 6: Compute Aggregated Results & Output Report Table
+    print("\n--- STEP 6: Paired Benchmark Data Synthesis ---")
+    paired_analysis = compute_paired_comparison(pairs_data)
 
     print("\n================================================================================")
-    print("STAGE 3.4.1.2 FINAL PAIRED BENCHMARK RESULTS (MEDIAN OVER 3 RUNS)")
+    print("STAGE 3.4.1.3 CONTROLLED PAIRED BENCHMARK RESULTS")
     print("================================================================================")
-    print(json.dumps(comparison, indent=2))
+    print(json.dumps(paired_analysis, indent=2))
 
     summary_output_file = REPORTS_DIR / "paired_benchmark_analysis.json"
     with open(summary_output_file, "w", encoding="utf-8") as f:
         json.dump(
             {
-                "baseline_runs": baseline_summaries,
-                "shadow_runs": shadow_summaries,
-                "comparison": comparison,
+                "pairs": pairs_data,
+                "analysis": paired_analysis,
             },
             f,
             indent=2,

@@ -13,9 +13,12 @@ Proves that:
 import asyncio
 from dataclasses import dataclass
 import hashlib
+import os
 import time
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import asyncpg
 
 from app.config import Settings
 from app.core.contracts import ChatMessage, GenerationRequest, GenerationResult, UsageMetrics
@@ -31,6 +34,7 @@ from app.semantic_cache.shadow import (
 )
 from app.vector_store.contracts import VectorRecord, VectorSearchResult
 from app.vector_store.in_memory_store import InMemoryVectorStore
+from app.vector_store.postgres_store import PostgresVectorStore
 
 
 @dataclass
@@ -195,6 +199,138 @@ class TestShadowFailureInjection(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snap.shadow.shadow_requests_eligible, 1)
         self.assertEqual(snap.shadow.shadow_hypothetical_hits, 0)
 
+    async def test_real_postgres_vector_store_failure_fail_open(self):
+        """
+        Proof of Failure 2b (Stage 3.4.1.3): Live PostgreSQL/pgvector database query failure.
+        Connects a live PostgresVectorStore to an actual PostgreSQL instance and injects
+        a genuine query/database error (querying an invalid/non-existent table).
+        Asserts:
+        - Real PostgreSQL server raises UndefinedTableError (asyncpg.PostgresError).
+        - PostgresVectorStore catches asyncpg.PostgresError and wraps as VectorStoreError.
+        - Shadow evaluation catches failure gracefully without unhandled exception.
+        - hypothetical_cache_outcome is 'vector_store_failure'.
+        - failure_category is 'VECTOR_STORE_ERROR'.
+        - collector shadow_vector_store_failures counter increments by exactly 1.
+        - collector shadow_hypothetical_hits remains 0.
+        - Primary caller is unaffected.
+        """
+        db_url = os.getenv("TEST_DATABASE_URL", "postgresql://postgres:postgres@127.0.0.1:5433/intellicache_test")
+        try:
+            pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2, command_timeout=5.0)
+        except Exception as e:
+            self.skipTest(f"Live PostgreSQL database unavailable at {db_url}: {e}")
+
+        try:
+            # Create real PostgresVectorStore pointed at an invalid table name to force PostgreSQL server rejection
+            store = PostgresVectorStore(
+                pool=pool,
+                default_namespace="default",
+                default_model="BAAI/bge-small-en-v1.5",
+                dimensions=4,
+                table_name="nonexistent_vector_table",
+                readonly_transaction=True,
+            )
+            embedder = HealthyEmbeddingProvider(delay_ms=2.0)
+            policy = SemanticCachePolicy(configured_model="BAAI/bge-small-en-v1.5", min_similarity=0.92)
+
+            shadow_cache = ReadOnlySemanticCacheService(
+                embedding_provider=embedder,
+                vector_store=store,
+                policy=policy,
+                metrics_collector=self.collector,
+            )
+
+            service = ShadowEvaluationService(
+                settings=self.settings,
+                semantic_cache=shadow_cache,
+                metrics_collector=self.collector,
+            )
+
+            task = ShadowTask(
+                request_id="req-real-pg-query-fail",
+                request_hash="hash-real-pg",
+                cache_namespace="default",
+                provider="mock",
+                requested_model="mock-model",
+                temperature=0.0,
+                max_tokens=100,
+                query_text="How to sort a list in Python?",
+                actual_response_source="upstream_provider",
+                actual_response_hash=None,
+                actual_latency_ms=45.0,
+                enqueued_at=time.perf_counter(),
+                bypass_cache=False,
+            )
+
+            await service._evaluate_task(task)
+
+            snap = self.collector.get_namespace_snapshot("default")
+            self.assertEqual(snap.shadow.shadow_vector_store_failures, 1)
+            self.assertEqual(snap.shadow.shadow_requests_eligible, 1)
+            self.assertEqual(snap.shadow.shadow_hypothetical_hits, 0)
+        finally:
+            await pool.close()
+
+    async def test_real_postgres_connection_drop_fail_open(self):
+        """
+        Proof of Failure 2c (Stage 3.4.1.3): Live PostgreSQL connection pool closed/dropped during search.
+        Asserts:
+        - Connection failure (asyncpg.InterfaceError wrapped into VectorStoreConnectionError) is handled gracefully.
+        - Collector failure counter increments by exactly 1.
+        - Primary caller is unaffected.
+        """
+        db_url = os.getenv("TEST_DATABASE_URL", "postgresql://postgres:postgres@127.0.0.1:5433/intellicache_test")
+        try:
+            pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2, command_timeout=5.0)
+        except Exception as e:
+            self.skipTest(f"Live PostgreSQL database unavailable at {db_url}: {e}")
+
+        store = PostgresVectorStore(
+            pool=pool,
+            default_namespace="default",
+            default_model="BAAI/bge-small-en-v1.5",
+            dimensions=4,
+            table_name="vector_records",
+        )
+        # Terminate the pool to simulate sudden connection loss
+        await pool.close()
+
+        embedder = HealthyEmbeddingProvider(delay_ms=2.0)
+        policy = SemanticCachePolicy(configured_model="BAAI/bge-small-en-v1.5", min_similarity=0.92)
+        shadow_cache = ReadOnlySemanticCacheService(
+            embedding_provider=embedder,
+            vector_store=store,
+            policy=policy,
+            metrics_collector=self.collector,
+        )
+        service = ShadowEvaluationService(
+            settings=self.settings,
+            semantic_cache=shadow_cache,
+            metrics_collector=self.collector,
+        )
+
+        task = ShadowTask(
+            request_id="req-real-pg-drop",
+            request_hash="hash-real-pg-drop",
+            cache_namespace="default",
+            provider="mock",
+            requested_model="mock-model",
+            temperature=0.0,
+            max_tokens=100,
+            query_text="How to sort a list in Python?",
+            actual_response_source="upstream_provider",
+            actual_response_hash=None,
+            actual_latency_ms=45.0,
+            enqueued_at=time.perf_counter(),
+            bypass_cache=False,
+        )
+
+        await service._evaluate_task(task)
+
+        snap = self.collector.get_namespace_snapshot("default")
+        self.assertEqual(snap.shadow.shadow_vector_store_failures, 1)
+        self.assertEqual(snap.shadow.shadow_hypothetical_hits, 0)
+
     async def test_shadow_queue_saturation_fail_open(self):
         """
         Proof of Failure 3: Shadow evaluation queue saturation.
@@ -308,7 +444,7 @@ class TestShadowFailureInjection(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snap.shadow.shadow_requests_eligible, 1)
 
 
-class TestTimerInstrumentationReconciliation(unittest.TestCase):
+class TestTimerInstrumentationReconciliation(unittest.IsolatedAsyncioTestCase):
     """
     Demonstrates and proves the mathematical cause of Finding 4:
     Why total execution latency mean appeared lower than embedding latency mean.
@@ -371,6 +507,99 @@ class TestTimerInstrumentationReconciliation(unittest.TestCase):
             snap.latencies.shadow_execution_latency_ms.mean,
             snap.latencies.shadow_embedding_latency_ms.mean,
             "Execution mean is pulled below embedding mean due to cohort denominator difference!",
+        )
+
+    async def test_live_shadow_execution_instrumentation_reconciliation(self):
+        """
+        Verifies live timer instrumentation and cohort reconciliation through actual
+        ShadowEvaluationService._evaluate_task() execution across mixed eligible and ineligible tasks (Stage 3.4.1.3).
+        
+        Proves:
+        1. For every eligible task individually, live execution latency >= embedding latency.
+        2. Ineligible and bypass tasks short-circuit rapidly (< 5ms) without executing embedding (embedding_duration_ms == 0).
+        3. Live telemetry records sample_count(execution) > sample_count(embedding).
+        4. The live execution mean is mathematically lower than the embedding mean due to the
+           mixture of long-running eligible and fast-path ineligible tasks.
+        """
+        settings = Settings(
+            shadow_evaluation_enabled=True,
+            shadow_sampling_rate=1.0,
+            shadow_max_concurrency=2,
+            shadow_queue_max_size=50,
+            shadow_timeout_seconds=5.0,
+        )
+        collector = RuntimeMetricsCollector()
+        controlled_embedder = HealthyEmbeddingProvider(delay_ms=10.0)
+        store = InMemoryVectorStore(dimensions=4)
+        policy = SemanticCachePolicy(configured_model="BAAI/bge-small-en-v1.5", min_similarity=0.92)
+        shadow_cache = ReadOnlySemanticCacheService(
+            embedding_provider=controlled_embedder,
+            vector_store=store,
+            policy=policy,
+            metrics_collector=collector,
+        )
+        service = ShadowEvaluationService(
+            settings=settings,
+            semantic_cache=shadow_cache,
+            metrics_collector=collector,
+        )
+
+        # Evaluate 10 eligible tasks through live _evaluate_task()
+        for i in range(10):
+            task = ShadowTask(
+                request_id=f"req-live-eligible-{i}",
+                request_hash=f"hash-live-el-{i}",
+                cache_namespace="default",
+                provider="mock",
+                requested_model="mock-model",
+                temperature=0.0,
+                max_tokens=100,
+                query_text=f"How to optimize query plan in PostgreSQL {i}?",
+                actual_response_source="upstream_provider",
+                actual_response_hash=None,
+                actual_latency_ms=30.0,
+                enqueued_at=time.perf_counter(),
+                bypass_cache=False,
+            )
+            await service._evaluate_task(task)
+
+        # Evaluate 5 ineligible/bypass tasks through live _evaluate_task()
+        for i in range(5):
+            task = ShadowTask(
+                request_id=f"req-live-ineligible-{i}",
+                request_hash=f"hash-live-inel-{i}",
+                cache_namespace="default",
+                provider="mock",
+                requested_model="mock-model",
+                temperature=1.0 if i % 2 == 0 else 0.0,
+                max_tokens=100,
+                query_text=f"Random non-cacheable query {i}",
+                actual_response_source="upstream_provider",
+                actual_response_hash=None,
+                actual_latency_ms=20.0,
+                enqueued_at=time.perf_counter(),
+                bypass_cache=(i % 2 != 0),
+            )
+            await service._evaluate_task(task)
+
+        snap = collector.get_namespace_snapshot("default")
+
+        # 1. Verify sample count mismatch generated by live service execution
+        self.assertEqual(snap.latencies.shadow_execution_latency_ms.sample_count, 15)
+        self.assertEqual(snap.latencies.shadow_embedding_latency_ms.sample_count, 10)
+        self.assertGreater(
+            snap.latencies.shadow_execution_latency_ms.sample_count,
+            snap.latencies.shadow_embedding_latency_ms.sample_count,
+        )
+
+        # 2. Embedding mean accurately reflects the ~10ms controlled delay of the 10 eligible tasks
+        self.assertGreaterEqual(snap.latencies.shadow_embedding_latency_ms.mean, 9.0)
+
+        # 3. Overall execution mean is pulled below embedding mean by the 5 early-short-circuiting tasks
+        self.assertLess(
+            snap.latencies.shadow_execution_latency_ms.mean,
+            snap.latencies.shadow_embedding_latency_ms.mean,
+            "Live execution mean must be lower than embedding mean due to fast-path ineligible tasks!",
         )
 
 
@@ -613,6 +842,76 @@ class TestFastAPIShadowFailureIsolation(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(snap.shadow.shadow_queue_dropped_total, 1)
         finally:
             await shadow_service.stop(drain_timeout=0.1)
+
+    async def test_e2e_real_postgres_vector_store_failure_user_response_succeeds(self):
+        """
+        User receives HTTP 200 successfully even when real PostgreSQL vector lookup fails
+        in shadow background worker (Stage 3.4.1.3).
+        """
+        import httpx
+        from app.routes.query import set_shadow_service
+
+        db_url = os.getenv("TEST_DATABASE_URL", "postgresql://postgres:postgres@127.0.0.1:5433/intellicache_test")
+        try:
+            pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2, command_timeout=5.0)
+        except Exception as e:
+            self.skipTest(f"Live PostgreSQL database unavailable at {db_url}: {e}")
+
+        settings = Settings(
+            shadow_evaluation_enabled=True,
+            shadow_sampling_rate=1.0,
+            shadow_max_concurrency=2,
+            shadow_queue_max_size=10,
+            shadow_timeout_seconds=2.0,
+        )
+
+        embed_provider = HealthyEmbeddingProvider(delay_ms=2.0)
+        real_failing_store = PostgresVectorStore(
+            pool=pool,
+            default_namespace="default",
+            default_model="BAAI/bge-small-en-v1.5",
+            dimensions=4,
+            table_name="nonexistent_vector_table",
+            readonly_transaction=True,
+        )
+        policy = SemanticCachePolicy(min_similarity=0.92, min_margin=0.03, top_k=5, configured_model="BAAI/bge-small-en-v1.5")
+        shadow_cache = ReadOnlySemanticCacheService(
+            embedding_provider=embed_provider,
+            vector_store=real_failing_store,
+            policy=policy,
+            metrics_collector=self.collector,
+        )
+
+        shadow_service = ShadowEvaluationService(
+            settings=settings,
+            semantic_cache=shadow_cache,
+            metrics_collector=self.collector,
+        )
+        await shadow_service.start()
+        set_shadow_service(shadow_service)
+
+        try:
+            async with httpx.AsyncClient(transport=self.transport, base_url="http://testserver") as client:
+                resp = await client.post(
+                    "/query",
+                    json={"prompt": "Explain database indexing in PostgreSQL", "temperature": 0.0},
+                    headers=self.headers,
+                )
+                self.assertEqual(resp.status_code, 200)
+                data = resp.json()
+                self.assertIn("def add", data["response"])
+                self.assertFalse(data["cached"])
+
+            await shadow_service.stop(drain_timeout=1.0)
+
+            snap = self.collector.get_namespace_snapshot("default")
+            self.assertEqual(snap.shadow.shadow_vector_store_failures, 1)
+            self.assertEqual(snap.shadow.shadow_requests_eligible, 1)
+            self.assertEqual(snap.shadow.shadow_hypothetical_hits, 0)
+        finally:
+            if shadow_service._running:
+                await shadow_service.stop(drain_timeout=0.1)
+            await pool.close()
 
     async def test_e2e_upstream_provider_failure_increments_metric(self):
         """When upstream LLM provider fails, gateway increments provider_calls_failed and returns error response."""

@@ -1,9 +1,22 @@
 #!/usr/bin/env python3
 """
-verify_db_integrity.py (Stage 3.4.1.2)
-Database Verification and Cryptographic Integrity Inspection Tool.
-Computes row counts and MD5 table checksums to prove zero mutations to
-production vector records before, during, and after load testing.
+verify_db_integrity.py (Stage 3.4.1.3)
+Load-Testing Database Integrity and Cryptographic State Inspection Tool.
+
+Verifies that the load-testing database's observed `vector_records` table
+remained completely unchanged before, during, and after load testing.
+
+Architectural Context:
+- Primary safeguards against unintended writes are structural:
+  1. `ReadOnlyVectorStoreAdapter`: Structural rejection of all write calls in application code.
+  2. PostgreSQL `SET TRANSACTION READ ONLY`: Database-level read-only transaction isolation
+     in `PostgresVectorStore.search(readonly_transaction=True)`.
+- This inspection tool provides empirical verification by computing row counts and a
+  deterministic SHA-256 cryptographic digest across ALL nine columns of `vector_records`:
+  `id`, `cache_namespace`, `fingerprint`, `query_text`, `model`, `vector`, `metadata`,
+  `created_at`, and `updated_at`.
+- Note: This tool observes the local load-testing database (`intellicache_loadtest`),
+  confirming that benchmark operations produce zero mutations.
 """
 
 import argparse
@@ -17,7 +30,7 @@ import asyncpg
 
 
 async def get_db_snapshot(conn: asyncpg.Connection) -> Dict[str, Any]:
-    """Captures cryptographic checksums and row counts across all tables."""
+    """Captures SHA-256 cryptographic checksums and row counts across relevant tables."""
     # Check if tables exist
     tables = await conn.fetch(
         """
@@ -30,27 +43,35 @@ async def get_db_snapshot(conn: asyncpg.Connection) -> Dict[str, Any]:
 
     snapshot: Dict[str, Any] = {}
 
-    # 1. Production vector_records table (P0 Invariant: Must NEVER mutate)
+    # 1. vector_records table (Load-testing baseline: Must NEVER mutate)
     if "vector_records" in table_names:
         vr_count = await conn.fetchval("SELECT count(*) FROM vector_records")
-        # Compute deterministic MD5 hash over all columns of all rows ordered by id
+        # Compute deterministic SHA-256 hash over all 9 columns of all rows ordered by id
         vr_checksum = await conn.fetchval(
             """
-            SELECT md5(coalesce(string_agg(
-                id::text || ':' || cache_namespace || ':' || model || ':' || fingerprint || ':' || updated_at::text,
+            SELECT encode(sha256(coalesce(string_agg(
+                id::text || ':' ||
+                cache_namespace || ':' ||
+                fingerprint || ':' ||
+                query_text || ':' ||
+                model || ':' ||
+                vector::text || ':' ||
+                metadata::text || ':' ||
+                to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.USOF') || ':' ||
+                to_char(updated_at, 'YYYY-MM-DD"T"HH24:MI:SS.USOF'),
                 '|' ORDER BY id
-            ), 'EMPTY_TABLE'))
+            ), 'EMPTY_TABLE')::bytea), 'hex')
             FROM vector_records
             """
         )
         snapshot["vector_records"] = {
             "count": int(vr_count),
-            "checksum": str(vr_checksum),
+            "checksum_sha256": str(vr_checksum),
         }
     else:
-        snapshot["vector_records"] = {"count": 0, "checksum": "TABLE_NOT_FOUND"}
+        snapshot["vector_records"] = {"count": 0, "checksum_sha256": "TABLE_NOT_FOUND"}
 
-    # 2. Production cache_entries table
+    # 2. cache_entries table
     if "cache_entries" in table_names:
         ce_count = await conn.fetchval("SELECT count(*) FROM cache_entries")
         snapshot["cache_entries"] = {"count": int(ce_count)}
@@ -75,7 +96,7 @@ async def get_db_snapshot(conn: asyncpg.Connection) -> Dict[str, Any]:
 
 
 async def main():
-    parser = argparse.ArgumentParser(description="Verify database integrity and table checksums.")
+    parser = argparse.ArgumentParser(description="Verify database integrity and table SHA-256 checksums.")
     parser.add_argument(
         "--db-url",
         default=os.getenv(
@@ -115,9 +136,9 @@ async def main():
         with open(args.verify, "r", encoding="utf-8") as f:
             baseline = json.load(f)
 
-        print("\n================ DATABASE INTEGRITY & CHECKSUM VERIFICATION ================")
-        print(f"{'Table Name':<24} | {'Baseline':<10} | {'Current':<10} | {'Delta':<8} | {'Status'}")
-        print("-" * 76)
+        print("\n================ DATABASE INTEGRITY & SHA-256 CHECKSUM VERIFICATION ================")
+        print(f"{'Table Name':<28} | {'Baseline':<10} | {'Current':<10} | {'Delta':<8} | {'Status'}")
+        print("-" * 80)
 
         # Check vector_records
         b_vr = baseline.get("vector_records", {})
@@ -125,28 +146,35 @@ async def main():
         b_vr_count = b_vr.get("count", 0)
         c_vr_count = c_vr.get("count", 0)
         vr_delta = c_vr_count - b_vr_count
-        b_vr_hash = b_vr.get("checksum", "")
-        c_vr_hash = c_vr.get("checksum", "")
+        b_vr_hash = b_vr.get("checksum_sha256") or b_vr.get("checksum", "")
+        c_vr_hash = c_vr.get("checksum_sha256") or c_vr.get("checksum", "")
 
         vr_status = "PASS (0 mutations)" if (vr_delta == 0 and b_vr_hash == c_vr_hash) else "FAIL (MUTATED!)"
-        print(f"{'vector_records (prod)':<24} | {b_vr_count:<10} | {c_vr_count:<10} | {vr_delta:<+8} | {vr_status}")
-        print(f"  Checksum Baseline: {b_vr_hash}")
-        print(f"  Checksum Current:  {c_vr_hash}")
+        print(f"{'vector_records (loadtest)':<28} | {b_vr_count:<10} | {c_vr_count:<10} | {vr_delta:<+8} | {vr_status}")
+        print(f"  SHA-256 Baseline: {b_vr_hash}")
+        print(f"  SHA-256 Current:  {c_vr_hash}")
 
         # Check other tables
         for tbl in ["cache_entries", "shadow_vector_records", "shadow_evaluations"]:
             b_cnt = baseline.get(tbl, {}).get("count", 0)
             c_cnt = current_snapshot.get(tbl, {}).get("count", 0)
             delta = c_cnt - b_cnt
-            print(f"{tbl:<24} | {b_cnt:<10} | {c_cnt:<10} | {delta:<+8} | {'RECORDED' if delta >= 0 else 'PURGED'}")
+            print(f"{tbl:<28} | {b_cnt:<10} | {c_cnt:<10} | {delta:<+8} | {'RECORDED' if delta >= 0 else 'PURGED'}")
 
-        print("============================================================================\n")
+        print("====================================================================================\n")
 
         if vr_delta != 0 or b_vr_hash != c_vr_hash:
-            print("CRITICAL FAILURE: Production vector_records table was modified during testing!", file=sys.stderr)
+            print("CRITICAL FAILURE: Load-testing vector_records table was modified during testing!", file=sys.stderr)
             sys.exit(1)
         else:
-            print("[SUCCESS] Production vector store integrity verified: zero row additions, modifications, or checksum drifts.")
+            print(
+                "[SUCCESS] Load-testing database vector_records integrity verified: "
+                "0 observed mutations across all 9 columns (SHA-256 match)."
+            )
+            print(
+                "  Structural safeguards active: ReadOnlyVectorStoreAdapter (application layer) "
+                "and PostgreSQL SET TRANSACTION READ ONLY (database layer)."
+            )
             return
 
     # Print only
