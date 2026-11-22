@@ -38,9 +38,12 @@ import time
 import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+import statistics
 
-import asyncpg
-import numpy as np
+try:
+    import asyncpg
+except ImportError:
+    asyncpg = None
 
 
 class MetricValidationError(ValueError):
@@ -692,10 +695,10 @@ def compute_paired_comparison(pairs: List[Dict[str, Any]]) -> Dict[str, Any]:
     def _agg_deltas(cat: str, field: str) -> Dict[str, float]:
         vals = [pd[cat][field] for pd in pair_deltas]
         return {
-            "median": round(float(np.median(vals)), 2),
-            "min": round(float(np.min(vals)), 2),
-            "max": round(float(np.max(vals)), 2),
-            "stddev": round(float(np.std(vals)), 2),
+            "median": round(float(statistics.median(vals)), 2),
+            "min": round(float(min(vals)), 2),
+            "max": round(float(max(vals)), 2),
+            "stddev": round(float(statistics.pstdev(vals)), 2),
         }
 
     aggregated = {}
@@ -711,15 +714,15 @@ def compute_paired_comparison(pairs: List[Dict[str, Any]]) -> Dict[str, Any]:
     aggregated["workload_throughput"] = {
         "delta_rate": _agg_deltas("workload_throughput", "delta_rate"),
         "pct_rate": _agg_deltas("workload_throughput", "pct_rate"),
-        "baseline_rate_median": round(float(np.median([p["baseline"]["workload_rate"] for p in pairs])), 2),
-        "shadow_rate_median": round(float(np.median([p["shadow"]["workload_rate"] for p in pairs])), 2),
+        "baseline_rate_median": round(float(statistics.median([p["baseline"]["workload_rate"] for p in pairs])), 2),
+        "shadow_rate_median": round(float(statistics.median([p["shadow"]["workload_rate"] for p in pairs])), 2),
     }
 
     aggregated["global_throughput"] = {
         "delta_rate": _agg_deltas("global_throughput", "delta_rate"),
         "pct_rate": _agg_deltas("global_throughput", "pct_rate"),
-        "baseline_rate_median": round(float(np.median([p["baseline"]["k6_global_rate"] for p in pairs])), 2),
-        "shadow_rate_median": round(float(np.median([p["shadow"]["k6_global_rate"] for p in pairs])), 2),
+        "baseline_rate_median": round(float(statistics.median([p["baseline"]["k6_global_rate"] for p in pairs])), 2),
+        "shadow_rate_median": round(float(statistics.median([p["shadow"]["k6_global_rate"] for p in pairs])), 2),
     }
 
     return {
