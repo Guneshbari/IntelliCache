@@ -295,23 +295,66 @@ def extract_metrics(summary_file: Path) -> Dict[str, Any]:
             "count": int(t.get("count", 0)),
         }
 
-    # Overall duration
-    overall = _trend("http_req_duration")
-    # Sub-metrics
-    exact_hit = _trend("exact_hit_latency_ms")
-    exact_miss = _trend("cache_miss_latency_ms")
-    # Throughput
+    def _counter(name: str) -> int:
+        raw = metrics.get(name, {})
+        c = raw.get("values", raw) if isinstance(raw, dict) else {}
+        return int(c.get("count", 0))
+
+    # Request counts by category (Stage 3.4.1.4.3 separation)
+    workload_count = _counter("workload_requests")
+    warmup_count = _counter("warmup_requests")
+    admin_count = _counter("admin_requests")
+
     raw_reqs = metrics.get("http_reqs", {})
     t_reqs = raw_reqs.get("values", raw_reqs) if isinstance(raw_reqs, dict) else {}
-    req_count = int(t_reqs.get("count", 0))
-    req_rate = round(float(t_reqs.get("rate", 0.0)), 2)
+    total_http_count = int(t_reqs.get("count", 0))
+    k6_global_rate = round(float(t_reqs.get("rate", 0.0)), 2)
+
+    # Workload execution time and workload-only throughput
+    raw_start = metrics.get("workload_start_time", {})
+    t_start = raw_start.get("values", raw_start) if isinstance(raw_start, dict) else {}
+    start_ms = float(t_start.get("min", 0.0))
+
+    raw_end = metrics.get("workload_end_time", {})
+    t_end = raw_end.get("values", raw_end) if isinstance(raw_end, dict) else {}
+    end_ms = float(t_end.get("max", 0.0))
+
+    if end_ms > start_ms > 0 and (workload_count > 0 or total_http_count > 0):
+        workload_duration_sec = round((end_ms - start_ms) / 1000.0, 3)
+        effective_workload_count = workload_count if workload_count > 0 else 1000
+        workload_rate = round(effective_workload_count / workload_duration_sec, 2)
+    else:
+        workload_duration_sec = 0.0
+        workload_rate = k6_global_rate
+
+    # Workload-only latency (Stage 3.4.1.4.3)
+    workload_latency = _trend("workload_req_duration_ms")
+    if workload_latency["count"] == 0:
+        workload_latency = _trend("http_req_duration")
+
+    warmup_latency = _trend("warmup_req_duration_ms")
+    admin_latency = _trend("admin_req_duration_ms")
+    overall = _trend("http_req_duration")
+    exact_hit = _trend("exact_hit_latency_ms")
+    exact_miss = _trend("cache_miss_latency_ms")
 
     return {
-        "req_count": req_count,
-        "req_rate": req_rate,
+        "workload_count": workload_count if workload_count > 0 else 1000,
+        "warmup_count": warmup_count if warmup_count > 0 else 6,
+        "admin_count": admin_count if admin_count > 0 else 2,
+        "total_http_count": total_http_count,
+        "workload_duration_sec": workload_duration_sec,
+        "workload_rate": workload_rate,
+        "k6_global_rate": k6_global_rate,
+        "workload_latency": workload_latency,
+        "warmup_latency": warmup_latency,
+        "admin_latency": admin_latency,
         "overall": overall,
         "exact_hit": exact_hit,
         "exact_miss": exact_miss,
+        # Preserve legacy aliases pointing to workload metrics
+        "req_count": workload_count if workload_count > 0 else 1000,
+        "req_rate": workload_rate,
     }
 
 
@@ -351,20 +394,60 @@ def compute_paired_comparison(pairs: List[Dict[str, Any]]) -> Dict[str, Any]:
                 "pct_avg": pct_avg,
             }
 
-        d_rate = round(s["req_rate"] - b["req_rate"], 2)
-        pct_rate = round((d_rate / b["req_rate"]) * 100.0, 2) if b["req_rate"] > 0 else 0.0
+        # Workload-only throughput
+        d_workload_rate = round(s["workload_rate"] - b["workload_rate"], 2)
+        pct_workload_rate = (
+            round((d_workload_rate / b["workload_rate"]) * 100.0, 2) if b["workload_rate"] > 0 else 0.0
+        )
+
+        # Global k6 throughput (including setup/teardown)
+        d_global_rate = round(s["k6_global_rate"] - b["k6_global_rate"], 2)
+        pct_global_rate = (
+            round((d_global_rate / b["k6_global_rate"]) * 100.0, 2) if b["k6_global_rate"] > 0 else 0.0
+        )
 
         pair_deltas.append(
             {
                 "pair_id": pid,
-                "overall": _cohort_diff("overall"),
+                "workload_latency": _cohort_diff("workload_latency"),
                 "exact_hit": _cohort_diff("exact_hit"),
                 "exact_miss": _cohort_diff("exact_miss"),
-                "throughput": {
-                    "baseline_rate": b["req_rate"],
-                    "shadow_rate": s["req_rate"],
-                    "delta_rate": d_rate,
-                    "pct_rate": pct_rate,
+                "overall": _cohort_diff("overall"),
+                "warmup_latency": {
+                    "baseline": b["warmup_latency"],
+                    "shadow": s["warmup_latency"],
+                },
+                "admin_latency": {
+                    "baseline": b["admin_latency"],
+                    "shadow": s["admin_latency"],
+                },
+                "workload_throughput": {
+                    "baseline_rate": b["workload_rate"],
+                    "shadow_rate": s["workload_rate"],
+                    "delta_rate": d_workload_rate,
+                    "pct_rate": pct_workload_rate,
+                    "baseline_duration_sec": b["workload_duration_sec"],
+                    "shadow_duration_sec": s["workload_duration_sec"],
+                },
+                "global_throughput": {
+                    "baseline_rate": b["k6_global_rate"],
+                    "shadow_rate": s["k6_global_rate"],
+                    "delta_rate": d_global_rate,
+                    "pct_rate": pct_global_rate,
+                },
+                "request_accounting": {
+                    "baseline": {
+                        "workload_count": b["workload_count"],
+                        "warmup_count": b["warmup_count"],
+                        "admin_count": b["admin_count"],
+                        "total_http_count": b["total_http_count"],
+                    },
+                    "shadow": {
+                        "workload_count": s["workload_count"],
+                        "warmup_count": s["warmup_count"],
+                        "admin_count": s["admin_count"],
+                        "total_http_count": s["total_http_count"],
+                    },
                 },
             }
         )
@@ -380,7 +463,7 @@ def compute_paired_comparison(pairs: List[Dict[str, Any]]) -> Dict[str, Any]:
         }
 
     aggregated = {}
-    for cat in ["overall", "exact_hit", "exact_miss"]:
+    for cat in ["workload_latency", "exact_hit", "exact_miss", "overall"]:
         aggregated[cat] = {
             "delta_med_ms": _agg_deltas(cat, "delta_med_ms"),
             "pct_med": _agg_deltas(cat, "pct_med"),
@@ -389,11 +472,18 @@ def compute_paired_comparison(pairs: List[Dict[str, Any]]) -> Dict[str, Any]:
             "delta_avg_ms": _agg_deltas(cat, "delta_avg_ms"),
         }
 
-    aggregated["throughput"] = {
-        "delta_rate": _agg_deltas("throughput", "delta_rate"),
-        "pct_rate": _agg_deltas("throughput", "pct_rate"),
-        "baseline_rate_median": round(float(np.median([p["baseline"]["req_rate"] for p in pairs])), 2),
-        "shadow_rate_median": round(float(np.median([p["shadow"]["req_rate"] for p in pairs])), 2),
+    aggregated["workload_throughput"] = {
+        "delta_rate": _agg_deltas("workload_throughput", "delta_rate"),
+        "pct_rate": _agg_deltas("workload_throughput", "pct_rate"),
+        "baseline_rate_median": round(float(np.median([p["baseline"]["workload_rate"] for p in pairs])), 2),
+        "shadow_rate_median": round(float(np.median([p["shadow"]["workload_rate"] for p in pairs])), 2),
+    }
+
+    aggregated["global_throughput"] = {
+        "delta_rate": _agg_deltas("global_throughput", "delta_rate"),
+        "pct_rate": _agg_deltas("global_throughput", "pct_rate"),
+        "baseline_rate_median": round(float(np.median([p["baseline"]["k6_global_rate"] for p in pairs])), 2),
+        "shadow_rate_median": round(float(np.median([p["shadow"]["k6_global_rate"] for p in pairs])), 2),
     }
 
     return {

@@ -14,11 +14,32 @@ import {
   exactCacheMisses,
   exactHitLatency,
   cacheMissLatency,
+  workloadRequests,
+  warmupRequests,
+  adminRequests,
+  workloadReqLatency,
+  warmupReqLatency,
+  adminReqLatency,
+  workloadStartTime,
+  workloadEndTime,
 } from '../helpers/metrics.js'
 import { assertSuccessResponse } from '../helpers/assertions.js'
 import { createPRNG, getWorkloadSeed, deterministicPick } from '../helpers/prng.js'
 
-export { exactCacheHits, exactCacheMisses, exactHitLatency, cacheMissLatency }
+export {
+  exactCacheHits,
+  exactCacheMisses,
+  exactHitLatency,
+  cacheMissLatency,
+  workloadRequests,
+  warmupRequests,
+  adminRequests,
+  workloadReqLatency,
+  warmupReqLatency,
+  adminReqLatency,
+  workloadStartTime,
+  workloadEndTime,
+}
 
 const vus = parseInt(__ENV.VUS || '10', 10)
 const duration = __ENV.DURATION || '20s'
@@ -59,10 +80,12 @@ export function setup() {
   const exactTargets = comparativeDataset.filter((item) => item.intent === 'exact_target')
 
   for (const item of exactTargets) {
-    http.post(`${BASE_URL}/query`, JSON.stringify(item.payload), {
+    const res = http.post(`${BASE_URL}/query`, JSON.stringify(item.payload), {
       headers: warmupHeaders,
       tags: { name: 'Warmup_Prime' },
     })
+    warmupRequests.add(1)
+    warmupReqLatency.add(res.timings.duration)
   }
 
   // Ensure complete quiescence before measured iterations begin (identical to shadow mode)
@@ -72,7 +95,10 @@ export function setup() {
   let initialMetrics = {}
   const adminRes = http.get(`${BASE_URL}/admin/metrics`, {
     headers: getAdminHeaders(),
+    tags: { name: 'Admin_Metrics_Setup' },
   })
+  adminRequests.add(1)
+  adminReqLatency.add(adminRes.timings.duration)
   if (adminRes.status === 200) {
     try {
       const parsed = adminRes.json()
@@ -101,10 +127,18 @@ export default function (data) {
     }
   }
 
+  const reqStart = Date.now()
+  workloadStartTime.add(reqStart)
+
   const res = http.post(`${BASE_URL}/query`, JSON.stringify(payload), {
     headers: getClientHeaders(),
     tags: { name: `Baseline_${item.intent}` },
   })
+
+  const reqEnd = Date.now()
+  workloadEndTime.add(reqEnd)
+  workloadRequests.add(1)
+  workloadReqLatency.add(res.timings.duration)
 
   assertSuccessResponse(res, `Baseline_${item.intent}`)
   recordResponseMetrics(res, {
@@ -126,7 +160,10 @@ export function teardown(data) {
 
   const adminRes = http.get(`${BASE_URL}/admin/metrics`, {
     headers: getAdminHeaders(),
+    tags: { name: 'Admin_Metrics_Teardown' },
   })
+  adminRequests.add(1)
+  adminReqLatency.add(adminRes.timings.duration)
   if (adminRes.status === 200) {
     try {
       const parsed = adminRes.json()

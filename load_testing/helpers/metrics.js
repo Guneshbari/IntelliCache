@@ -18,6 +18,11 @@ export const bypassRequests = new Counter('bypass_requests')
 export const ineligibleRequests = new Counter('ineligible_requests')
 export const invalidRequests = new Counter('invalid_requests')
 
+// Workload vs Lifecycle Counters (Stage 3.4.1.4.3)
+export const workloadRequests = new Counter('workload_requests')
+export const warmupRequests = new Counter('warmup_requests')
+export const adminRequests = new Counter('admin_requests')
+
 // Critical Invariant: semantic hits served to user MUST BE 0!
 export const semanticHitsServed = new Counter('semantic_hits_served')
 
@@ -25,6 +30,13 @@ export const semanticHitsServed = new Counter('semantic_hits_served')
 export const exactHitLatency = new Trend('exact_hit_latency_ms', true)
 export const cacheMissLatency = new Trend('cache_miss_latency_ms', true)
 export const gatewayProcessingLatency = new Trend('gateway_reported_latency_ms', true)
+
+// Workload vs Lifecycle Latency Trends (Stage 3.4.1.4.3)
+export const workloadReqLatency = new Trend('workload_req_duration_ms', true)
+export const warmupReqLatency = new Trend('warmup_req_duration_ms', true)
+export const adminReqLatency = new Trend('admin_req_duration_ms', true)
+export const workloadStartTime = new Trend('workload_start_time', false)
+export const workloadEndTime = new Trend('workload_end_time', false)
 
 /**
  * Classifies and records response metrics.
