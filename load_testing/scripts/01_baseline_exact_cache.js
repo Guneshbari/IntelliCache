@@ -53,7 +53,7 @@ export function setup() {
   console.log(`[Baseline Load] VUs: ${vus}, Duration: ${duration}, Seed: ${seed}`)
 
   // 1. Warm up exact targets so they are primed in cache
-  const warmupHeaders = Object.assign({}, getClientHeaders(), {
+  const warmupHeaders = Object.assign({}, getClientHeaders(), getAdminHeaders(), {
     'X-Warmup-Prime': 'true',
   })
   const exactTargets = comparativeDataset.filter((item) => item.intent === 'exact_target')

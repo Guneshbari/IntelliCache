@@ -1141,6 +1141,11 @@ class TestShadowFastAPIIntegration(unittest.IsolatedAsyncioTestCase):
         await shadow_service.start()
         set_shadow_service(shadow_service)
 
+        from app.config import get_settings
+        from app.main import app
+        orig_get_settings = app.dependency_overrides.get(get_settings)
+        app.dependency_overrides[get_settings] = lambda: settings
+
         try:
             async with httpx.AsyncClient(transport=self.transport, base_url="http://testserver") as client:
                 # 1. Upstream request
@@ -1209,6 +1214,11 @@ class TestShadowFastAPIIntegration(unittest.IsolatedAsyncioTestCase):
         await shadow_service.start()
         set_shadow_service(shadow_service)
 
+        from app.config import get_settings
+        from app.main import app
+        orig_get_settings = app.dependency_overrides.get(get_settings)
+        app.dependency_overrides[get_settings] = lambda: settings
+
         try:
             async with httpx.AsyncClient(transport=self.transport, base_url="http://testserver") as client:
                 resp = await client.post(
@@ -1226,6 +1236,117 @@ class TestShadowFastAPIIntegration(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(snap.shadow.shadow_requests_total, 1)
             # Streaming queries are ineligible for semantic caching -> ineligible_request
             self.assertEqual(snap.shadow.shadow_requests_eligible, 0)
+        finally:
+            await shadow_service.stop(drain_timeout=0.5)
+
+    async def test_warmup_prime_header_authorization_boundary(self):
+        """
+        Verifies that X-Warmup-Prime suppresses shadow evaluation only when accompanied
+        by valid administrative authorization. Ordinary client tokens cannot bypass
+        shadow evaluation (Stage 3.4.1.4.1).
+        """
+        import httpx
+        from app.routes.query import set_shadow_service
+
+        raw_store = InMemoryVectorStore(dimensions=4)
+        adapter = ReadOnlyVectorStoreAdapter(raw_store)
+        embed_provider = MockEmbeddingProvider()
+        policy = SemanticCachePolicy(min_similarity=0.92, min_margin=0.03, top_k=5, configured_model="BAAI/bge-small-en-v1.5")
+        shadow_cache = ReadOnlySemanticCacheService(
+            embedding_provider=embed_provider,
+            vector_store=adapter,
+            policy=policy,
+            default_namespace="default",
+        )
+        settings = Settings(
+            cache_backend="memory",
+            shadow_evaluation_enabled=True,
+            shadow_sampling_rate=1.0,
+            shadow_max_concurrency=2,
+            shadow_queue_max_size=10,
+            shadow_timeout_seconds=2.0,
+            admin_api_token="test-admin-secret",
+        )
+        shadow_service = ShadowEvaluationService(
+            settings=settings,
+            semantic_cache=shadow_cache,
+            db_pool=None,
+            metrics_collector=self.collector,
+        )
+        await shadow_service.start()
+        set_shadow_service(shadow_service)
+
+        from app.config import get_settings
+        from app.main import app
+        orig_get_settings = app.dependency_overrides.get(get_settings)
+        app.dependency_overrides[get_settings] = lambda: settings
+
+        try:
+            async with httpx.AsyncClient(transport=self.transport, base_url="http://testserver") as client:
+                # 1. Ordinary client sending X-Warmup-Prime: true without admin credentials
+                # MUST NOT suppress shadow evaluation!
+                ordinary_headers = {
+                    "X-Client-Token": "test-client-token",
+                    "X-Warmup-Prime": "true",
+                }
+                resp1 = await client.post(
+                    "/query",
+                    json={"prompt": "Ordinary client warmup attempt", "temperature": 0.0},
+                    headers=ordinary_headers,
+                )
+                self.assertEqual(resp1.status_code, 200)
+                await shadow_service.queue.join()
+
+                snap1 = self.collector.get_namespace_snapshot("default")
+                self.assertEqual(
+                    snap1.shadow.shadow_requests_total,
+                    1,
+                    "Ordinary client must NOT be able to suppress shadow evaluation with X-Warmup-Prime",
+                )
+
+                # 2. Authorized caller sending X-Warmup-Prime: true WITH valid X-Admin-Token
+                # MUST suppress shadow evaluation!
+                authorized_headers = {
+                    "X-Client-Token": "test-client-token",
+                    "X-Admin-Token": "test-admin-secret",
+                    "X-Warmup-Prime": "true",
+                }
+                resp2 = await client.post(
+                    "/query",
+                    json={"prompt": "Authorized benchmark warmup prime", "temperature": 0.0},
+                    headers=authorized_headers,
+                )
+                self.assertEqual(resp2.status_code, 200)
+                await shadow_service.queue.join()
+
+                snap2 = self.collector.get_namespace_snapshot("default")
+                self.assertEqual(
+                    snap2.shadow.shadow_requests_total,
+                    1,
+                    "Authorized caller with X-Admin-Token and X-Warmup-Prime MUST skip shadow evaluation",
+                )
+
+                # 3. Caller with INVALID admin token sending X-Warmup-Prime: true
+                # MUST NOT suppress shadow evaluation!
+                invalid_admin_headers = {
+                    "X-Client-Token": "test-client-token",
+                    "X-Admin-Token": "wrong-token",
+                    "X-Warmup-Prime": "true",
+                }
+                resp3 = await client.post(
+                    "/query",
+                    json={"prompt": "Invalid admin warmup attempt", "temperature": 0.0},
+                    headers=invalid_admin_headers,
+                )
+                self.assertEqual(resp3.status_code, 200)
+                await shadow_service.queue.join()
+
+                snap3 = self.collector.get_namespace_snapshot("default")
+                self.assertEqual(
+                    snap3.shadow.shadow_requests_total,
+                    2,
+                    "Caller with invalid admin token must NOT suppress shadow evaluation",
+                )
         finally:
             await shadow_service.stop(drain_timeout=0.5)
 
@@ -1285,6 +1406,11 @@ class TestShadowFastAPIIntegration(unittest.IsolatedAsyncioTestCase):
         )
         await shadow_service.start()
         set_shadow_service(shadow_service)
+
+        from app.config import get_settings
+        from app.main import app
+        orig_get_settings = app.dependency_overrides.get(get_settings)
+        app.dependency_overrides[get_settings] = lambda: settings
 
         try:
             async with httpx.AsyncClient(transport=self.transport, base_url="http://testserver") as client:

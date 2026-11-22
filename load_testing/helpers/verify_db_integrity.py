@@ -35,34 +35,44 @@ from typing import Any, Dict
 import asyncpg
 
 
-async def get_db_snapshot(conn: asyncpg.Connection) -> Dict[str, Any]:
+async def get_db_snapshot(conn: asyncpg.Connection, expected_db: str = None) -> Dict[str, Any]:
     """Captures SHA-256 cryptographic checksums and row counts across relevant tables."""
     # Validate database name and schema
     db_name = await conn.fetchval("SELECT current_database()")
-    schema_name = await conn.fetchval("SELECT current_schema()")
+    if expected_db and db_name != expected_db:
+        raise RuntimeError(
+            f"CRITICAL: Target database mismatch! Expected '{expected_db}', but connected to '{db_name}'. "
+            "Integrity verification strictly requires the target database to match the configured benchmark database."
+        )
 
-    # Check if tables exist in public schema
+    schema_name = await conn.fetchval("SELECT current_schema()")
+    if schema_name != "public":
+        raise RuntimeError(
+            f"CRITICAL: Current schema mismatch! Expected 'public', but connected to '{schema_name}'. "
+            "Integrity verification strictly requires schema 'public'."
+        )
+
+    # Check if tables exist specifically in public schema
     tables = await conn.fetch(
         """
         SELECT table_name 
         FROM information_schema.tables 
-        WHERE table_schema = $1
-        """,
-        schema_name,
+        WHERE table_schema = 'public'
+        """
     )
     table_names = {row["table_name"] for row in tables}
 
     snapshot: Dict[str, Any] = {
         "meta": {
             "database": db_name,
-            "schema": schema_name,
+            "schema": "public",
         }
     }
 
-    # 1. vector_records table: MUST EXIST (Hard verification requirement)
+    # 1. vector_records table: MUST EXIST in schema public (Hard verification requirement)
     if "vector_records" not in table_names:
         raise RuntimeError(
-            f"CRITICAL: Table 'vector_records' does not exist in schema '{schema_name}' of database '{db_name}'. "
+            f"CRITICAL: Table 'vector_records' does not exist in schema 'public' of database '{db_name}'. "
             "Integrity verification requires the target table to be present and initialized."
         )
 
@@ -125,6 +135,11 @@ async def main():
         ),
         help="PostgreSQL connection URL",
     )
+    parser.add_argument(
+        "--expected-db",
+        default=os.getenv("EXPECTED_DB_NAME", "intellicache_loadtest"),
+        help="Expected database name (defaults to 'intellicache_loadtest')",
+    )
     parser.add_argument("--save", metavar="FILE", help="Capture and save baseline snapshot to JSON file")
     parser.add_argument("--verify", metavar="FILE", help="Verify current database state against baseline JSON file")
     parser.add_argument("--print-only", action="store_true", help="Print current database metrics and exit")
@@ -137,7 +152,7 @@ async def main():
         sys.exit(2)
 
     try:
-        current_snapshot = await get_db_snapshot(conn)
+        current_snapshot = await get_db_snapshot(conn, expected_db=args.expected_db)
     except Exception as exc:
         print(f"ERROR: Failed to capture database snapshot: {exc}", file=sys.stderr)
         await conn.close()
@@ -163,9 +178,15 @@ async def main():
         # 1. Database and schema consistency check
         b_meta = baseline.get("meta", {})
         c_meta = current_snapshot.get("meta", {})
-        if b_meta.get("database") != c_meta.get("database") or b_meta.get("schema") != c_meta.get("schema"):
+        if (
+            b_meta.get("database") != c_meta.get("database")
+            or b_meta.get("schema") != c_meta.get("schema")
+            or (args.expected_db and c_meta.get("database") != args.expected_db)
+            or c_meta.get("schema") != "public"
+        ):
             print(
                 f"CRITICAL FAILURE: Target database or schema mismatch!\n"
+                f"  Expected: database={args.expected_db}, schema=public\n"
                 f"  Baseline: database={b_meta.get('database')}, schema={b_meta.get('schema')}\n"
                 f"  Current:  database={c_meta.get('database')}, schema={c_meta.get('schema')}",
                 file=sys.stderr,

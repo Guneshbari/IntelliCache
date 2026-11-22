@@ -392,7 +392,7 @@ def main():
     db_verify_script = LOAD_TEST_DIR / "helpers" / "verify_db_integrity.py"
 
     print("================================================================================")
-    print("STAGE 3.4.1.3: CONTROLLED PAIRED BENCHMARK ORCHESTRATOR")
+    print("STAGE 3.4.1.4: CONTROLLED PAIRED BENCHMARK ORCHESTRATOR")
     print(f"Total Requests per Run: {ITERATIONS} (10 VUs x 100 iters)")
     print(f"Workload Seed:          {SEED}")
     print(f"PostgreSQL DB URL:      {DB_URL}")
@@ -402,7 +402,16 @@ def main():
 
     # Step 0: Capture Database Baseline Snapshot (SHA-256 over all 9 columns)
     print("\n--- STEP 0: Capturing Initial Database SHA-256 Integrity Snapshot ---")
-    res = subprocess.run([str(PYTHON_BIN), str(db_verify_script), "--save", str(baseline_snapshot_file)])
+    res = subprocess.run(
+        [
+            str(PYTHON_BIN),
+            str(db_verify_script),
+            "--save",
+            str(baseline_snapshot_file),
+            "--expected-db",
+            "intellicache_loadtest",
+        ]
+    )
     if res.returncode != 0:
         print("ERROR: Failed to capture database baseline snapshot.", file=sys.stderr)
         sys.exit(1)
@@ -531,7 +540,16 @@ def main():
 
     # Step 5: Post-Test Database Verification (SHA-256 over all 9 columns)
     print("\n--- STEP 5: Verifying Load-Testing Database Cryptographic SHA-256 Integrity ---")
-    res = subprocess.run([str(PYTHON_BIN), str(db_verify_script), "--verify", str(baseline_snapshot_file)])
+    res = subprocess.run(
+        [
+            str(PYTHON_BIN),
+            str(db_verify_script),
+            "--verify",
+            str(baseline_snapshot_file),
+            "--expected-db",
+            "intellicache_loadtest",
+        ]
+    )
     if res.returncode != 0:
         print("CRITICAL: Database integrity verification failed! vector_records was mutated.", file=sys.stderr)
         sys.exit(1)
@@ -541,7 +559,7 @@ def main():
     paired_analysis = compute_paired_comparison(pairs_data)
 
     print("\n================================================================================")
-    print("STAGE 3.4.1.3 CONTROLLED PAIRED BENCHMARK RESULTS")
+    print("STAGE 3.4.1.4 CONTROLLED PAIRED BENCHMARK RESULTS")
     print("================================================================================")
     print(json.dumps(paired_analysis, indent=2))
 

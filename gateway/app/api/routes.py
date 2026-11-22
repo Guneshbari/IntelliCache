@@ -200,6 +200,30 @@ def verify_admin_token(
         )
 
 
+def is_authorized_admin_request(
+    request: Request,
+    settings: Settings,
+) -> bool:
+    """
+    Checks if a request is accompanied by valid administrative credentials.
+    Does not raise HTTPException; returns True if authorized, False otherwise.
+    Used to protect benchmark/administrative flags on client-facing endpoints (Stage 3.4.1.4.1).
+    """
+    if not settings.admin_api_token:
+        return False
+
+    token_candidate: Optional[str] = request.headers.get("X-Admin-Token")
+    if not token_candidate:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.lower().startswith("bearer "):
+            token_candidate = auth_header[7:].strip()
+
+    if not token_candidate:
+        return False
+
+    return hmac.compare_digest(token_candidate, settings.admin_api_token)
+
+
 def _is_loopback_address(host: Optional[str]) -> bool:
     """
     Checks if a host/IP string represents a loopback address.
@@ -952,10 +976,16 @@ async def execute_query(
                         yield "data: [DONE]\n\n"
 
                         # Non-blocking shadow observation trigger for streaming (Stage 3.3)
-                        # Explicitly skipped during warm-up priming to eliminate background evaluation contamination (Stage 3.4.1.4)
-                        is_warmup_prime = raw_request.headers.get("X-Warmup-Prime", "").strip().lower() == "true"
+                        # Explicitly skipped during authorized warm-up priming to eliminate background evaluation contamination (Stage 3.4.1.4.1)
+                        # The X-Warmup-Prime header requires administrative authorization to prevent ordinary clients from bypassing shadow evaluation.
+                        has_warmup_hdr = raw_request.headers.get("X-Warmup-Prime", "").strip().lower() == "true"
+                        is_authorized_warmup = has_warmup_hdr and is_authorized_admin_request(raw_request, settings)
+                        if has_warmup_hdr and not is_authorized_warmup:
+                            logger.warning(
+                                "Unauthorized X-Warmup-Prime header received on /query stream; ignored for shadow evaluation suppression."
+                            )
                         shadow_svc = get_shadow_service()
-                        if shadow_svc and shadow_svc.settings.shadow_evaluation_enabled and not is_warmup_prime:
+                        if shadow_svc and shadow_svc.settings.shadow_evaluation_enabled and not is_authorized_warmup:
                             try:
                                 full_text = "".join(accumulated_text)
                                 prompt_text = request.get_effective_prompt()
@@ -1084,10 +1114,16 @@ async def execute_query(
         completed_cleanly = True
 
         # Non-blocking shadow observation trigger (Stage 3.3)
-        # Explicitly skipped during warm-up priming to eliminate background evaluation contamination (Stage 3.4.1.4)
-        is_warmup_prime = raw_request.headers.get("X-Warmup-Prime", "").strip().lower() == "true"
+        # Explicitly skipped during authorized warm-up priming to eliminate background evaluation contamination (Stage 3.4.1.4.1)
+        # The X-Warmup-Prime header requires administrative authorization to prevent ordinary clients from bypassing shadow evaluation.
+        has_warmup_hdr = raw_request.headers.get("X-Warmup-Prime", "").strip().lower() == "true"
+        is_authorized_warmup = has_warmup_hdr and is_authorized_admin_request(raw_request, settings)
+        if has_warmup_hdr and not is_authorized_warmup:
+            logger.warning(
+                "Unauthorized X-Warmup-Prime header received on /query; ignored for shadow evaluation suppression."
+            )
         shadow_svc = get_shadow_service()
-        if shadow_svc and shadow_svc.settings.shadow_evaluation_enabled and not is_warmup_prime:
+        if shadow_svc and shadow_svc.settings.shadow_evaluation_enabled and not is_authorized_warmup:
             try:
                 prompt_text = request.get_effective_prompt()
                 actual_src = "exact_cache" if result.cached else ("bypass" if effective_bypass_cache else "upstream_provider")
