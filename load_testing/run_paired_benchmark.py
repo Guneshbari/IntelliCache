@@ -338,8 +338,22 @@ def extract_metrics(summary_file: Path) -> Dict[str, Any]:
     exact_hit = _trend("exact_hit_latency_ms")
     exact_miss = _trend("cache_miss_latency_ms")
 
+    # Explicit observation sample counts from counters (Stage 3.4.1.4.4)
+    exact_hit_count = _counter("exact_cache_hits")
+    exact_miss_count = _counter("exact_cache_misses")
+    bypass_count = _counter("bypass_requests")
+    ineligible_count = _counter("ineligible_requests")
+
+    exact_hit["count"] = exact_hit_count
+    exact_miss["count"] = exact_miss_count
+    workload_latency["count"] = workload_count if workload_count > 0 else 1000
+
     return {
         "workload_count": workload_count if workload_count > 0 else 1000,
+        "exact_hit_count": exact_hit_count,
+        "exact_miss_count": exact_miss_count,
+        "bypass_count": bypass_count,
+        "ineligible_count": ineligible_count,
         "warmup_count": warmup_count if warmup_count > 0 else 6,
         "admin_count": admin_count if admin_count > 0 else 2,
         "total_http_count": total_http_count,
@@ -438,12 +452,20 @@ def compute_paired_comparison(pairs: List[Dict[str, Any]]) -> Dict[str, Any]:
                 "request_accounting": {
                     "baseline": {
                         "workload_count": b["workload_count"],
+                        "exact_hit_count": b["exact_hit_count"],
+                        "exact_miss_count": b["exact_miss_count"],
+                        "bypass_count": b["bypass_count"],
+                        "ineligible_count": b["ineligible_count"],
                         "warmup_count": b["warmup_count"],
                         "admin_count": b["admin_count"],
                         "total_http_count": b["total_http_count"],
                     },
                     "shadow": {
                         "workload_count": s["workload_count"],
+                        "exact_hit_count": s["exact_hit_count"],
+                        "exact_miss_count": s["exact_miss_count"],
+                        "bypass_count": s["bypass_count"],
+                        "ineligible_count": s["ineligible_count"],
                         "warmup_count": s["warmup_count"],
                         "admin_count": s["admin_count"],
                         "total_http_count": s["total_http_count"],
