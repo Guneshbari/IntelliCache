@@ -23,6 +23,8 @@ import {
   adminReqLatency,
   workloadStartTime,
   workloadEndTime,
+  invalidRequests,
+  semanticHitsServed,
 } from '../helpers/metrics.js'
 import { assertSuccessResponse } from '../helpers/assertions.js'
 import { createPRNG, getWorkloadSeed, deterministicPick } from '../helpers/prng.js'
@@ -40,6 +42,8 @@ export {
   adminReqLatency,
   workloadStartTime,
   workloadEndTime,
+  invalidRequests,
+  semanticHitsServed,
 }
 
 const vus = parseInt(__ENV.VUS || '10', 10)
@@ -58,6 +62,7 @@ export const options =
             maxDuration: '120s',
           },
         },
+        summaryTrendStats: ['avg', 'min', 'med', 'max', 'p(90)', 'p(95)', 'p(99)', 'count'],
         thresholds: standardThresholds,
       }
     : {
@@ -66,6 +71,7 @@ export const options =
           { duration: duration, target: vus }, // Steady-state load
           { duration: '2s', target: 0 }, // Cooldown
         ],
+        summaryTrendStats: ['avg', 'min', 'med', 'max', 'p(90)', 'p(95)', 'p(99)', 'count'],
         thresholds: standardThresholds,
       }
 
@@ -73,6 +79,10 @@ const comparativeDataset = JSON.parse(open('../datasets/comparative_workload.jso
 
 export function setup() {
   console.log(`[Shadow Load] VUs: ${vus}, Duration: ${duration}, Seed: ${seed}`)
+
+  // Explicitly initialize zero-counters so k6 exports them in metrics summary
+  invalidRequests.add(0)
+  semanticHitsServed.add(0)
 
   // 1. Warm up exact targets so they are primed in cache (isolated from shadow evaluation)
   const warmupHeaders = Object.assign({}, getClientHeaders(), getAdminHeaders(), {

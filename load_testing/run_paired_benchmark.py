@@ -28,7 +28,9 @@ Key Improvements in Stage 3.4.1.4:
 
 import asyncio
 import json
+import math
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -39,6 +41,12 @@ from typing import Any, Dict, List, Optional
 
 import asyncpg
 import numpy as np
+
+
+class MetricValidationError(ValueError):
+    """Raised when a k6 summary fails strict schema, completeness, or accounting validation."""
+
+    pass
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -258,13 +266,55 @@ def run_k6(script_name: str, output_json: str, extra_env: Dict[str, str] = None)
     if extra_env:
         env.update(extra_env)
 
-    cmd = [
-        "k6",
-        "run",
-        "--summary-export",
-        str(summary_path),
-        str(script_path),
-    ]
+    use_docker = os.environ.get("K6_USE_DOCKER", "1") == "1" and shutil.which("docker") is not None
+    if use_docker:
+        cmd = [
+            "docker",
+            "run",
+            "--rm",
+            "--network",
+            "host",
+            "--user",
+            f"{os.getuid()}:{os.getgid()}",
+            "-v",
+            f"{REPO_ROOT}/load_testing:/load_testing",
+            "-e",
+            f"BASE_URL={env['BASE_URL']}",
+            "-e",
+            f"CLIENT_TOKEN={env['CLIENT_TOKEN']}",
+            "-e",
+            f"ADMIN_TOKEN={env['ADMIN_TOKEN']}",
+            "-e",
+            f"WORKLOAD_SEED={env['WORKLOAD_SEED']}",
+            "-e",
+            f"VUS={env['VUS']}",
+            "-e",
+            f"ITERATIONS={env['ITERATIONS']}",
+        ]
+        if extra_env:
+            for k, v in extra_env.items():
+                cmd.extend(["-e", f"{k}={v}"])
+        cmd.extend(
+            [
+                "grafana/k6:latest",
+                "run",
+                "--summary-trend-stats",
+                "avg,min,med,max,p(90),p(95),p(99),count",
+                "--summary-export",
+                f"/load_testing/reports/{output_json}",
+                f"/load_testing/scripts/{script_name}",
+            ]
+        )
+    else:
+        cmd = [
+            "k6",
+            "run",
+            "--summary-trend-stats",
+            "avg,min,med,max,p(90),p(95),p(99),count",
+            "--summary-export",
+            str(summary_path),
+            str(script_path),
+        ]
 
     print(f"[k6 Runner] Executing: {' '.join(cmd)}")
     start = time.perf_counter()
@@ -274,100 +324,260 @@ def run_k6(script_name: str, output_json: str, extra_env: Dict[str, str] = None)
     return res.returncode
 
 
-def extract_metrics(summary_file: Path) -> Dict[str, Any]:
-    """Extracts duration, hit latency, miss latency, and throughput from k6 summary JSON."""
-    with open(summary_file, "r", encoding="utf-8") as f:
-        data = json.load(f)
+def extract_metrics(
+    summary_file: Path,
+    expected_workload_requests: int = ITERATIONS,
+    expected_warmup_requests: int = 6,
+    expected_admin_requests: int = 2,
+) -> Dict[str, Any]:
+    """
+    Extracts duration, hit latency, miss latency, and throughput from k6 summary JSON.
+    Enforces strict validation on every required metric:
+    - Rejects missing metrics, malformed metric objects, missing values, non-numeric values,
+      negative counts, NaN, and infinite values.
+    - Does NOT replace missing values with assumed counts or fallback distributions.
+    - Reconciles request accounting and verifies latency trend observation counts match counters.
+    - Calculates workload throughput strictly from validated workload timestamp boundaries.
+    """
+    if not summary_file.exists():
+        raise MetricValidationError(f"Summary file does not exist: {summary_file}")
 
-    metrics = data.get("metrics", {})
+    try:
+        with open(summary_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as exc:
+        raise MetricValidationError(f"Malformed JSON in summary file '{summary_file}': {exc}") from exc
 
-    def _trend(name: str) -> Dict[str, float]:
-        raw = metrics.get(name, {})
-        t = raw.get("values", raw) if isinstance(raw, dict) else {}
+    if not isinstance(data, dict):
+        raise MetricValidationError(f"Top-level summary must be a JSON object, got {type(data).__name__}")
+
+    raw_metrics = data.get("metrics")
+    if not isinstance(raw_metrics, dict) or not raw_metrics:
+        raise MetricValidationError("Summary is missing required non-empty 'metrics' object")
+
+    def _validate_numeric(val: Any, metric_name: str, field_name: str, allow_float: bool = True) -> float:
+        if val is None:
+            raise MetricValidationError(f"Metric '{metric_name}' field '{field_name}' is missing or null")
+        if isinstance(val, bool):
+            raise MetricValidationError(f"Metric '{metric_name}' field '{field_name}' cannot be a boolean: {val}")
+        if not isinstance(val, (int, float)):
+            raise MetricValidationError(
+                f"Metric '{metric_name}' field '{field_name}' must be numeric, got {type(val).__name__} ({val!r})"
+            )
+        f_val = float(val)
+        if math.isnan(f_val):
+            raise MetricValidationError(f"Metric '{metric_name}' field '{field_name}' cannot be NaN")
+        if math.isinf(f_val):
+            raise MetricValidationError(f"Metric '{metric_name}' field '{field_name}' cannot be infinite")
+        return f_val
+
+    def _validate_counter(metric_name: str) -> int:
+        if metric_name not in raw_metrics:
+            raise MetricValidationError(f"Required counter metric '{metric_name}' is missing from k6 summary")
+        entry = raw_metrics[metric_name]
+        if not isinstance(entry, dict):
+            raise MetricValidationError(f"Metric '{metric_name}' must be an object, got {type(entry).__name__}")
+
+        # Check both direct 'count' and nested 'values.count'
+        count_val = entry.get("count")
+        if count_val is None and "values" in entry and isinstance(entry["values"], dict):
+            count_val = entry["values"].get("count")
+
+        num = _validate_numeric(count_val, metric_name, "count", allow_float=False)
+        if num < 0:
+            raise MetricValidationError(f"Counter '{metric_name}' count cannot be negative: {num}")
+        if not num.is_integer():
+            raise MetricValidationError(f"Counter '{metric_name}' count must be an integer: {num}")
+        return int(num)
+
+    def _validate_trend(metric_name: str) -> Dict[str, Any]:
+        if metric_name not in raw_metrics:
+            raise MetricValidationError(f"Required trend metric '{metric_name}' is missing from k6 summary")
+        entry = raw_metrics[metric_name]
+        if not isinstance(entry, dict):
+            raise MetricValidationError(f"Metric '{metric_name}' must be an object, got {type(entry).__name__}")
+
+        t = entry.get("values", entry) if isinstance(entry.get("values"), dict) else entry
+
+        # Validate observation count
+        count_val = t.get("count")
+        num_count = _validate_numeric(count_val, metric_name, "count", allow_float=False)
+        if num_count < 0:
+            raise MetricValidationError(f"Trend '{metric_name}' count cannot be negative: {num_count}")
+        if not num_count.is_integer():
+            raise MetricValidationError(f"Trend '{metric_name}' count must be an integer: {num_count}")
+        int_count = int(num_count)
+
+        # Validate statistical summary fields
+        req_stat_fields = ["avg", "min", "med", "max", "p(90)", "p(95)"]
+        validated_stats: Dict[str, float] = {}
+        for sf in req_stat_fields:
+            if sf not in t:
+                raise MetricValidationError(f"Trend '{metric_name}' is missing required stat '{sf}'")
+            validated_stats[sf] = _validate_numeric(t[sf], metric_name, sf)
+
+        # Optional p(99)
+        p99 = None
+        if "p(99)" in t and t["p(99)"] is not None:
+            p99 = round(_validate_numeric(t["p(99)"], metric_name, "p(99)"), 2)
+
+        avg_val = validated_stats["avg"]
+        min_val = validated_stats["min"]
+        med_val = validated_stats["med"]
+        max_val = validated_stats["max"]
+        p90_val = validated_stats["p(90)"]
+        p95_val = validated_stats["p(95)"]
+
+        if int_count > 0:
+            if min_val > max_val:
+                raise MetricValidationError(f"Trend '{metric_name}' min ({min_val}) > max ({max_val})")
+            if not (min_val <= med_val <= max_val):
+                raise MetricValidationError(f"Trend '{metric_name}' med ({med_val}) out of bounds [{min_val}, {max_val}]")
+            if not (min_val <= avg_val <= max_val):
+                raise MetricValidationError(f"Trend '{metric_name}' avg ({avg_val}) out of bounds [{min_val}, {max_val}]")
+            if not (min_val <= p90_val <= max_val):
+                raise MetricValidationError(f"Trend '{metric_name}' p(90) ({p90_val}) out of bounds [{min_val}, {max_val}]")
+            if not (min_val <= p95_val <= max_val):
+                raise MetricValidationError(f"Trend '{metric_name}' p(95) ({p95_val}) out of bounds [{min_val}, {max_val}]")
+
         return {
-            "avg": round(float(t.get("avg", 0.0)), 2),
-            "min": round(float(t.get("min", 0.0)), 2),
-            "med": round(float(t.get("med", 0.0)), 2),
-            "p90": round(float(t.get("p(90)", 0.0)), 2),
-            "p95": round(float(t.get("p(95)", 0.0)), 2),
-            "p99": round(float(t.get("p(99)", 0.0)), 2),
-            "max": round(float(t.get("max", 0.0)), 2),
-            "count": int(t.get("count", 0)),
+            "avg": round(avg_val, 2),
+            "min": round(min_val, 2),
+            "med": round(med_val, 2),
+            "p90": round(p90_val, 2),
+            "p95": round(p95_val, 2),
+            "p99": p99 if p99 is not None else round(p95_val, 2),
+            "max": round(max_val, 2),
+            "count": int_count,
         }
 
-    def _counter(name: str) -> int:
-        raw = metrics.get(name, {})
-        c = raw.get("values", raw) if isinstance(raw, dict) else {}
-        return int(c.get("count", 0))
+    # 1. Required Metric Validation (Requirement I1)
+    workload_count = _validate_counter("workload_requests")
+    warmup_count = _validate_counter("warmup_requests")
+    admin_count = _validate_counter("admin_requests")
+    total_http_count = _validate_counter("http_reqs")
+    exact_hit_count = _validate_counter("exact_cache_hits")
+    exact_miss_count = _validate_counter("exact_cache_misses")
+    bypass_count = _validate_counter("bypass_requests")
+    ineligible_count = _validate_counter("ineligible_requests")
+    invalid_count = _validate_counter("invalid_requests")
+    semantic_hits_served = _validate_counter("semantic_hits_served")
 
-    # Request counts by category (Stage 3.4.1.4.3 separation)
-    workload_count = _counter("workload_requests")
-    warmup_count = _counter("warmup_requests")
-    admin_count = _counter("admin_requests")
+    workload_latency = _validate_trend("workload_req_duration_ms")
+    warmup_latency = _validate_trend("warmup_req_duration_ms")
+    admin_latency = _validate_trend("admin_req_duration_ms")
+    workload_start = _validate_trend("workload_start_time")
+    workload_end = _validate_trend("workload_end_time")
+    exact_hit_latency = _validate_trend("exact_hit_latency_ms")
+    cache_miss_latency = _validate_trend("cache_miss_latency_ms")
+    overall_latency = _validate_trend("http_req_duration")
 
-    raw_reqs = metrics.get("http_reqs", {})
-    t_reqs = raw_reqs.get("values", raw_reqs) if isinstance(raw_reqs, dict) else {}
-    total_http_count = int(t_reqs.get("count", 0))
-    k6_global_rate = round(float(t_reqs.get("rate", 0.0)), 2)
+    # Diagnostic rate from http_reqs
+    entry_http_reqs = raw_metrics["http_reqs"]
+    t_http_reqs = entry_http_reqs.get("values", entry_http_reqs) if isinstance(entry_http_reqs, dict) else {}
+    diagnostic_global_k6_rate = round(_validate_numeric(t_http_reqs.get("rate"), "http_reqs", "rate"), 2)
 
-    # Workload execution time and workload-only throughput
-    raw_start = metrics.get("workload_start_time", {})
-    t_start = raw_start.get("values", raw_start) if isinstance(raw_start, dict) else {}
-    start_ms = float(t_start.get("min", 0.0))
+    # 2. Request Accounting Assertions (Requirement I2 & I4)
+    if workload_count != expected_workload_requests:
+        raise MetricValidationError(
+            f"Workload request count mismatch: expected {expected_workload_requests}, got {workload_count}"
+        )
+    if warmup_count != expected_warmup_requests:
+        raise MetricValidationError(
+            f"Warm-up request count mismatch: expected {expected_warmup_requests}, got {warmup_count}"
+        )
+    if admin_count != expected_admin_requests:
+        raise MetricValidationError(
+            f"Admin telemetry request count mismatch: expected {expected_admin_requests}, got {admin_count}"
+        )
+    expected_total_http = expected_workload_requests + expected_warmup_requests + expected_admin_requests
+    if total_http_count != expected_total_http:
+        raise MetricValidationError(
+            f"Total HTTP request count mismatch: expected {expected_total_http}, got {total_http_count}"
+        )
 
-    raw_end = metrics.get("workload_end_time", {})
-    t_end = raw_end.get("values", raw_end) if isinstance(raw_end, dict) else {}
-    end_ms = float(t_end.get("max", 0.0))
+    # Reconcile trend observation counts with counters (Requirement I2 & I4)
+    if workload_latency["count"] != workload_count:
+        raise MetricValidationError(
+            f"workload_req_duration_ms observation count ({workload_latency['count']}) does not match workload_requests ({workload_count})"
+        )
+    if workload_start["count"] != workload_count:
+        raise MetricValidationError(
+            f"workload_start_time observation count ({workload_start['count']}) does not match workload_requests ({workload_count})"
+        )
+    if workload_end["count"] != workload_count:
+        raise MetricValidationError(
+            f"workload_end_time observation count ({workload_end['count']}) does not match workload_requests ({workload_count})"
+        )
+    if exact_hit_latency["count"] != exact_hit_count:
+        raise MetricValidationError(
+            f"exact_hit_latency_ms observation count ({exact_hit_latency['count']}) does not match exact_cache_hits ({exact_hit_count})"
+        )
+    if cache_miss_latency["count"] != exact_miss_count:
+        raise MetricValidationError(
+            f"cache_miss_latency_ms observation count ({cache_miss_latency['count']}) does not match exact_cache_misses ({exact_miss_count})"
+        )
 
-    if end_ms > start_ms > 0 and (workload_count > 0 or total_http_count > 0):
-        workload_duration_sec = round((end_ms - start_ms) / 1000.0, 3)
-        effective_workload_count = workload_count if workload_count > 0 else 1000
-        workload_rate = round(effective_workload_count / workload_duration_sec, 2)
-    else:
-        workload_duration_sec = 0.0
-        workload_rate = k6_global_rate
+    # Reconcile complete workload breakdown (Requirement I2)
+    category_sum = exact_hit_count + exact_miss_count + bypass_count + ineligible_count + invalid_count
+    if category_sum != workload_count:
+        raise MetricValidationError(
+            f"Workload category sum ({category_sum}) does not equal workload_requests ({workload_count}) "
+            f"[exact_hits={exact_hit_count}, exact_misses={exact_miss_count}, bypass={bypass_count}, "
+            f"ineligible={ineligible_count}, invalid={invalid_count}]"
+        )
 
-    # Workload-only latency (Stage 3.4.1.4.3)
-    workload_latency = _trend("workload_req_duration_ms")
-    if workload_latency["count"] == 0:
-        workload_latency = _trend("http_req_duration")
+    # Invariant counters (Requirement I2)
+    if invalid_count != 0:
+        raise MetricValidationError(
+            f"invalid_requests must be 0 for an accepted benchmark, got {invalid_count}"
+        )
+    if semantic_hits_served != 0:
+        raise MetricValidationError(
+            f"CRITICAL INVARIANT VIOLATION: semantic_hits_served must be 0, got {semantic_hits_served}"
+        )
 
-    warmup_latency = _trend("warmup_req_duration_ms")
-    admin_latency = _trend("admin_req_duration_ms")
-    overall = _trend("http_req_duration")
-    exact_hit = _trend("exact_hit_latency_ms")
-    exact_miss = _trend("cache_miss_latency_ms")
+    # 3. Workload Throughput Calculation (Requirement I3)
+    start_ms = workload_start["min"]
+    end_ms = workload_end["max"]
+    if start_ms <= 0 or end_ms <= 0:
+        raise MetricValidationError(
+            f"Workload timestamps must be positive: start_ms={start_ms}, end_ms={end_ms}"
+        )
+    if end_ms <= start_ms:
+        raise MetricValidationError(
+            f"Workload end timestamp ({end_ms}) must be strictly greater than start timestamp ({start_ms})"
+        )
 
-    # Explicit observation sample counts from counters (Stage 3.4.1.4.4)
-    exact_hit_count = _counter("exact_cache_hits")
-    exact_miss_count = _counter("exact_cache_misses")
-    bypass_count = _counter("bypass_requests")
-    ineligible_count = _counter("ineligible_requests")
-
-    exact_hit["count"] = exact_hit_count
-    exact_miss["count"] = exact_miss_count
-    workload_latency["count"] = workload_count if workload_count > 0 else 1000
+    workload_duration_sec = round((end_ms - start_ms) / 1000.0, 3)
+    if workload_duration_sec <= 0:
+        raise MetricValidationError(
+            f"Calculated workload duration must be positive, got {workload_duration_sec}s"
+        )
+    workload_rate = round(workload_count / workload_duration_sec, 2)
 
     return {
-        "workload_count": workload_count if workload_count > 0 else 1000,
+        "workload_count": workload_count,
         "exact_hit_count": exact_hit_count,
         "exact_miss_count": exact_miss_count,
         "bypass_count": bypass_count,
         "ineligible_count": ineligible_count,
-        "warmup_count": warmup_count if warmup_count > 0 else 6,
-        "admin_count": admin_count if admin_count > 0 else 2,
+        "invalid_count": invalid_count,
+        "semantic_hits_served": semantic_hits_served,
+        "warmup_count": warmup_count,
+        "admin_count": admin_count,
         "total_http_count": total_http_count,
         "workload_duration_sec": workload_duration_sec,
         "workload_rate": workload_rate,
-        "k6_global_rate": k6_global_rate,
+        "k6_global_rate": diagnostic_global_k6_rate,
         "workload_latency": workload_latency,
         "warmup_latency": warmup_latency,
         "admin_latency": admin_latency,
-        "overall": overall,
-        "exact_hit": exact_hit,
-        "exact_miss": exact_miss,
+        "overall": overall_latency,
+        "exact_hit": exact_hit_latency,
+        "exact_miss": cache_miss_latency,
         # Preserve legacy aliases pointing to workload metrics
-        "req_count": workload_count if workload_count > 0 else 1000,
+        "req_count": workload_count,
         "req_rate": workload_rate,
     }
 
@@ -456,6 +666,8 @@ def compute_paired_comparison(pairs: List[Dict[str, Any]]) -> Dict[str, Any]:
                         "exact_miss_count": b["exact_miss_count"],
                         "bypass_count": b["bypass_count"],
                         "ineligible_count": b["ineligible_count"],
+                        "invalid_count": b["invalid_count"],
+                        "semantic_hits_served": b["semantic_hits_served"],
                         "warmup_count": b["warmup_count"],
                         "admin_count": b["admin_count"],
                         "total_http_count": b["total_http_count"],
@@ -466,6 +678,8 @@ def compute_paired_comparison(pairs: List[Dict[str, Any]]) -> Dict[str, Any]:
                         "exact_miss_count": s["exact_miss_count"],
                         "bypass_count": s["bypass_count"],
                         "ineligible_count": s["ineligible_count"],
+                        "invalid_count": s["invalid_count"],
+                        "semantic_hits_served": s["semantic_hits_served"],
                         "warmup_count": s["warmup_count"],
                         "admin_count": s["admin_count"],
                         "total_http_count": s["total_http_count"],
