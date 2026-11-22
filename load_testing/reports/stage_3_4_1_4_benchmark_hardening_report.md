@@ -1,301 +1,245 @@
-# Stage 3.4.1.4 — Benchmark Isolation and Verification Hardening Closure Report
+# Stage 3.4.1.4 — Benchmark Isolation, Authorization Hardening, and Denominator Alignment Closure Report
 
 ## Executive Summary
 
-Stage 3.4.1.4 addresses and closes all findings from the Stage 3.4.1.3 and Stage 3.4.1.4 Independent Technical Reviews. Specifically, this stage hardens benchmark execution isolation, restricts warm-up bypass headers behind administrative authorization boundaries, enforces fail-fast cache state purge verification, reconciles per-task instrumentation timings, and implements strict database name and public-schema validation guards.
+Stage 3.4.1.4 and its follow-up Stage 3.4.1.4.2 address and close all findings from the Stage 3.4.1.3 and Stage 3.4.1.4 Independent Technical Reviews. Specifically, this stage:
 
-All benchmark trials, test suites, and cryptographic integrity verifications have completed cleanly across 3 alternating pairs (6 trials, comprising 6,000 measured iterations and 48 warm-up priming requests for a total of 6,048 workload requests). The load-testing database `vector_records` table exhibited zero mutations, and all architectural invariants remain strictly preserved.
+1. **Restricts Warm-Up Bypass Headers Behind Strict Administrative Authorization**: Enforces that `X-Warmup-Prime: true` can only suppress shadow evaluation when accompanied by valid admin credentials (`X-Admin-Token` or Bearer token), tested across non-streaming and streaming queries with negative, malformed, and non-Bearer cases.
+2. **Implements Strict Fail-Fast `/cache/stats` Validation**: Hardens `reset_and_verify_cache_state()` to require a dictionary response with an explicit `total_entries` key, validates that it is a non-negative integer (rejecting booleans), and fails immediately on missing or malformed data.
+3. **Prevents Test Dependency Override State Leakage**: Standardizes `finally` cleanup in FastAPI integration tests to pop `get_settings` overrides if none originally existed, preventing cross-test pollution across the suite.
+4. **Discovers and Resolves Benchmark Lifecycle Denominator Asymmetry**: Identifies that an unaligned 1.5s pause (`sleep(0.5)` in setup and `sleep(1.0)` in teardown) in `02_shadow_evaluation.js` that was absent from `01_baseline_exact_cache.js` artificially reduced the reported k6 throughput rate by ~11.5%. Structurally equalizing both scripts demonstrates that asynchronous shadow evaluation incurs zero throughput degradation (median paired delta: +0.34 req/s / +0.45%).
+5. **Enforces Hard Database Schema and Target Guards**: Hardens `verify_db_integrity.py` with `--expected-db` and explicit `public` schema guards, cryptographically verifying 0 mutations to `vector_records` (SHA-256 baseline preserved).
+
+All benchmark trials, test suites, and cryptographic integrity verifications have completed cleanly across 3 alternating pairs (6 trials, comprising 6,000 measured iterations and 48 warm-up priming requests for a total of 6,048 workload requests).
 
 ---
 
 ## 1. Review Findings Resolution Matrix
 
-| Review Finding                               | Severity | Problem Description                                                                                                                                                    | Resolution Implemented                                                                                                                                                                                                                                                                                                                                                                                                                                                |   Status   |
-| :------------------------------------------- | :------: | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :--------: |
-| **Warm-Up Header Authorization Boundary**    |  **P1**  | `X-Warmup-Prime: true` was previously trusted from arbitrary clients, allowing an ordinary API client to bypass shadow evaluation.                                     | Restricted `X-Warmup-Prime` via `is_authorized_admin_request(raw_request, settings)`. The gateway now requires valid administrative credentials (`X-Admin-Token` or admin Bearer token) before honoring the header. Unauthenticated or ordinary clients supplying `X-Warmup-Prime` receive a logged warning, and shadow evaluation proceeds normally. Added unit test `test_warmup_prime_header_authorization_boundary`.                                              | **Closed** |
-| **Fail-Fast Cache & Metrics Reset**          |  **P1**  | `run_paired_benchmark.py` previously warned on reset failures and continued, risking cross-trial cache contamination.                                                  | Implemented `reset_and_verify_cache_state()`. Enforces: direct database table purge (`DELETE FROM cache_entries;`), admin cache clear (`POST /admin/cache/clear?namespace=all`), admin metrics reset (`POST /admin/metrics/reset`), and hard assertion that `cache_entries` and `/cache/stats` report exactly 0 entries before every run. Raises `RuntimeError` immediately on any failure.                                                                           | **Closed** |
-| **Throughput Reporting Reconciliation**      |  **P2**  | Previous report contained a stale throughput figure ("7.6%") from an earlier benchmark run instead of the current measured paired result.                              | Completely removed the outdated 7.6% figure. Updated all sections to use the current paired benchmark measurements consistently: Baseline 85.24 req/s, Shadow 75.43 req/s, Delta -9.81 req/s, Relative reduction 11.51% (trial pair range: 11.39% to 11.59%).                                                                                                                                                                                                         | **Closed** |
-| **Warm-Up P95 Variation Wording**            |  **P2**  | Previous report stated that the exact-hit P95 spike was "completely eliminated", despite individual trial variation (e.g. Pair 1).                                     | Adopted balanced wording: warm-up isolation substantially improved the paired exact-hit P95 result with a median delta of +0.07 ms (+1.23%), while acknowledging that individual trial pairs showed variation (Pair 1 recorded +1.27 ms / +24.95%, Pair 2 recorded +0.07 ms / +1.23%, Pair 3 recorded -0.75 ms / -12.89%).                                                                                                                                            | **Closed** |
-| **Request Count Reconciliation**             |  **P2**  | Report previously stated 6,000 total requests in the summary and 1,008 per trial in the benchmark body without reconciling the counting method.                        | Explicitly distinguished request types: 6,000 measured scenario iterations (10 VUs × 100 iterations × 6 trials), 48 warm-up priming requests (8 exact-target queries × 6 trials), totaling 6,048 workload HTTP requests issued to `/query` across the benchmark runs. Pre-trial administrative requests are accounted for separately.                                                                                                                                 | **Closed** |
-| **Database Target & Schema Enforcement**     |  **P2**  | `verify_db_integrity.py` relied on `current_schema()` and compared snapshots without asserting the expected database name or explicitly querying schema `public`.      | Hardened `verify_db_integrity.py` with `--expected-db` flag (defaulting to `intellicache_loadtest`). Validates `current_database() == expected_db`, asserts `current_schema() == 'public'`, and queries `information_schema.tables WHERE table_schema = 'public' AND table_name = 'vector_records'`, rejecting any mismatch immediately with exit code 1.                                                                                                             | **Closed** |
-| **Per-Task Live Instrumentation Assertions** |  **P2**  | `test_live_shadow_execution_instrumentation_reconciliation` verified aggregate metric properties but lacked per-task phase timing assertions on individual executions. | Instrumented test using a spy on `collector.record_shadow_outcome`. Added individual assertions across all 15 tasks: 10 eligible tasks assert `execution >= embedding`, `execution >= embedding + retrieval + policy`, and `embedding >= 9.0ms`; 5 ineligible/bypass tasks assert `execution < 5.0ms`, `embedding == 0.0ms`, `retrieval == 0.0ms`, `policy == 0.0ms`. Asserted aggregate counts (`count(exec) == 15`, `count(emb) == 10`) and `exec_mean < emb_mean`. | **Closed** |
+| Review Finding                                | Severity | Problem Description                                                                                                                                                     | Resolution Implemented                                                                                                                                                                                                                                                                                                         |   Status   |
+| :-------------------------------------------- | :------: | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :--------: |
+| **Strict `/cache/stats` Validation**          |  **P1**  | `run_paired_benchmark.py` defaulted missing cache stats fields to 0, risking silent pass on malformed responses.                                                        | Enforced type and structure assertions: requires `isinstance(stats_data, dict)`, requires `"total_entries" in stats_data`, asserts `isinstance(total_entries, int) and not isinstance(total_entries, bool)`, asserts `total_entries >= 0` and `total_entries == 0`. Fails immediately on any anomaly.                          | **Closed** |
+| **Bearer Authorization Direct Test Coverage** |  **P2**  | Route-level admin authorization allowed Bearer tokens, but lacked unit test coverage for valid, invalid, empty, and malformed Bearer headers.                           | Added exhaustive authorization matrix tests in [test_shadow_evaluation.py](file:///home/gnx/Projects/IntelliCache/gateway/tests/test_shadow_evaluation.py): valid Bearer token (shadow suppressed), invalid Bearer token (shadow executed), empty Bearer token (shadow executed), and non-Bearer Basic auth (shadow executed). | **Closed** |
+| **Streaming Query Authorization Boundary**    |  **P2**  | Streaming `/query` endpoint supported `X-Warmup-Prime`, but lacked direct tests proving unauthorized requests cannot suppress shadow evaluation.                        | Added `test_warmup_prime_streaming_authorization_boundary` in [test_shadow_evaluation.py](file:///home/gnx/Projects/IntelliCache/gateway/tests/test_shadow_evaluation.py) testing valid/invalid admin tokens and Bearer tokens on streaming requests.                                                                          | **Closed** |
+| **Test Dependency Override Leak Prevention**  |  **P2**  | Integration tests setting `app.dependency_overrides[get_settings]` could leak modified settings if not cleanly cleared when no previous override existed.               | Implemented safe restoration in `finally` blocks: `if orig_get_settings is None: app.dependency_overrides.pop(get_settings, None)` across all tests in [test_shadow_evaluation.py](file:///home/gnx/Projects/IntelliCache/gateway/tests/test_shadow_evaluation.py).                                                            | **Closed** |
+| **Benchmark Lifecycle Denominator Alignment** |  **P2**  | `02_shadow_evaluation.js` included `sleep(0.5)` in setup and `sleep(1.0)` in teardown that were omitted from `01_baseline_exact_cache.js`, distorting `http_reqs.rate`. | Matched setup (`sleep(0.5)`) and teardown (`sleep(1.0)`) in [01_baseline_exact_cache.js](file:///home/gnx/Projects/IntelliCache/load_testing/scripts/01_baseline_exact_cache.js). Re-ran paired benchmarks to establish true empirical comparability.                                                                          | **Closed** |
+| **Warm-Up Header Authorization Boundary**     |  **P1**  | `X-Warmup-Prime: true` was previously trusted from arbitrary clients, allowing an ordinary client to bypass shadow evaluation.                                          | Restricted `X-Warmup-Prime` behind `is_authorized_admin_request(raw_request, settings)` in [routes.py](file:///home/gnx/Projects/IntelliCache/gateway/app/api/routes.py). Logged warning on unauthorized attempts.                                                                                                             | **Closed** |
+| **Fail-Fast Cache & Metrics Reset**           |  **P1**  | Benchmark runner previously warned on reset failures and continued, risking cross-trial contamination.                                                                  | Implemented `reset_and_verify_cache_state()`. Enforces: direct database table purge (`DELETE FROM cache_entries;`), admin cache clear, admin metrics reset, and stats verification. Raises `RuntimeError` immediately on failure.                                                                                              | **Closed** |
+| **Database Target & Schema Enforcement**      |  **P2**  | `verify_db_integrity.py` relied on `current_schema()` and compared snapshots without asserting the expected database name or explicitly querying schema `public`.       | Hardened [verify_db_integrity.py](file:///home/gnx/Projects/IntelliCache/load_testing/helpers/verify_db_integrity.py) with `--expected-db` flag. Validates `current_database() == expected_db`, asserts `current_schema() == 'public'`, and explicitly filters by `table_schema = 'public'`.                                   | **Closed** |
+| **Per-Task Live Instrumentation Assertions**  |  **P2**  | Instrumentation tests checked aggregate timings but lacked individual per-task assertions across execution phases.                                                      | Instrumented [test_shadow_failure_injection.py](file:///home/gnx/Projects/IntelliCache/gateway/tests/test_shadow_failure_injection.py) with an in-test spy asserting per-task timing ordering (`execution >= embedding >= retrieval + policy`) for all 15 tasks.                                                               | **Closed** |
 
 ---
 
-## 2. Fail-Fast Cache & Metrics Reset Protocol
+## 2. Benchmark Lifecycle Denominator Root Cause Analysis & Empirical Reconciliation
 
-In Stage 3.4.1.4, pre-trial cache resets in [run_paired_benchmark.py](file:///home/gnx/Projects/IntelliCache/load_testing/run_paired_benchmark.py) are strictly fail-fast:
+### 2.1 The Denominator Asymmetry Discovery
+
+In Grafana k6, the global throughput metric `http_reqs.rate` is computed as:
+$$\text{http\_reqs.rate} = \frac{\text{Total Requests}}{\text{Scenario Duration} + \text{Setup Duration} + \text{Teardown Duration}}$$
+
+In Stage 3.4.1.4, `02_shadow_evaluation.js` introduced a 0.5s quiescence pause in `setup()` and a 1.0s drain wait in `teardown()` to ensure no residual background tasks polluted other trials. However, `01_baseline_exact_cache.js` did not contain these pauses because baseline mode does not spawn background tasks.
+
+For a 1,000-request workload completing in ~11.7s:
+
+- **Baseline Duration**: $11.7\text{s} \implies \frac{1000}{11.7\text{s}} \approx 85.4\text{ req/s}$
+- **Shadow Duration**: $11.7\text{s} + 1.5\text{s} = 13.2\text{s} \implies \frac{1000}{13.2\text{s}} \approx 75.7\text{ req/s}$
+- **Apparent Throughput Drop**: $\frac{75.7 - 85.4}{85.4} \approx -11.35\%$
+
+The reported ~11.5% throughput reduction was therefore almost entirely an artifact of lifecycle denominator expansion, rather than runtime processing contention.
+
+### 2.2 Alignment & Controlled Paired Benchmark Results
+
+In Stage 3.4.1.4.2, [01_baseline_exact_cache.js](file:///home/gnx/Projects/IntelliCache/load_testing/scripts/01_baseline_exact_cache.js) was updated to match the exact lifecycle structure of [02_shadow_evaluation.js](file:///home/gnx/Projects/IntelliCache/load_testing/scripts/02_shadow_evaluation.js) (`sleep(0.5)` in setup, `sleep(1.0)` in teardown).
+
+The paired benchmark orchestrator was executed across 3 alternating pairs (6 trials) under identical workload seeds (`1337`), 10 concurrent VUs, and 1,000 requests per trial:
+
+#### Measured Paired Results (3 Pairs / 6 Trials)
+
+```
+Pair 1 (Order: Baseline -> Shadow):
+  Baseline: Throughput: 75.89 req/s | Overall Med: 3.40ms, P95: 125.12ms | Exact Hit Med: 2.83ms, P95: 5.09ms
+  Shadow:   Throughput: 76.23 req/s | Overall Med: 3.44ms, P95: 125.31ms | Exact Hit Med: 2.60ms, P95: 6.35ms
+  Deltas:   Throughput: +0.34 req/s (+0.45%) | Overall Med: +0.04ms (+1.18%) | Exact Hit Med: -0.23ms (-8.13%)
+
+Pair 2 (Order: Shadow -> Baseline [Alternated]):
+  Baseline: Throughput: 74.57 req/s | Overall Med: 3.42ms, P95: 125.02ms | Exact Hit Med: 2.91ms, P95: 5.01ms
+  Shadow:   Throughput: 75.09 req/s | Overall Med: 3.47ms, P95: 125.17ms | Exact Hit Med: 2.67ms, P95: 5.54ms
+  Deltas:   Throughput: +0.52 req/s (+0.70%) | Overall Med: +0.05ms (+1.46%) | Exact Hit Med: -0.24ms (-8.25%)
+
+Pair 3 (Order: Baseline -> Shadow [Alternated]):
+  Baseline: Throughput: 75.61 req/s | Overall Med: 3.37ms, P95: 124.94ms | Exact Hit Med: 2.82ms, P95: 4.72ms
+  Shadow:   Throughput: 75.55 req/s | Overall Med: 3.44ms, P95: 124.86ms | Exact Hit Med: 2.62ms, P95: 5.85ms
+  Deltas:   Throughput: -0.06 req/s (-0.08%) | Overall Med: +0.07ms (+2.08%) | Exact Hit Med: -0.20ms (-7.09%)
+```
+
+#### Synthesized Paired Differences (Matched Denominators)
+
+| Workload Metric       | Baseline Median | Shadow Median | Paired Delta (Median) | Paired Delta (%) |  Min Delta  |  Max Delta  |   StdDev   |
+| :-------------------- | :-------------: | :-----------: | :-------------------: | :--------------: | :---------: | :---------: | :--------: |
+| **Exact Hit Median**  |     2.83 ms     |    2.62 ms    |     **-0.23 ms**      |    **-8.13%**    |  -0.24 ms   |  -0.20 ms   |  0.02 ms   |
+| **Exact Hit P95**     |     5.01 ms     |    5.85 ms    |     **+1.13 ms**      |   **+23.94%**    |  +0.53 ms   |  +1.26 ms   |  0.32 ms   |
+| **Exact Miss Median** |    123.94 ms    |   123.64 ms   |     **-0.28 ms**      |    **-0.23%**    |  -0.30 ms   |  -0.11 ms   |  0.09 ms   |
+| **Exact Miss P95**    |    126.94 ms    |   127.02 ms   |     **-0.01 ms**      |    **-0.01%**    |  -0.05 ms   |  +0.56 ms   |  0.28 ms   |
+| **Overall Median**    |     3.40 ms     |    3.44 ms    |     **+0.05 ms**      |    **+1.46%**    |  +0.04 ms   |  +0.07 ms   |  0.01 ms   |
+| **Overall P95**       |    125.02 ms    |   125.17 ms   |     **+0.15 ms**      |    **+0.12%**    |  -0.08 ms   |  +0.19 ms   |  0.12 ms   |
+| **Throughput**        |   75.61 req/s   |  75.55 req/s  |    **+0.34 req/s**    |    **+0.45%**    | -0.06 req/s | +0.52 req/s | 0.24 req/s |
+
+### 2.3 Comparison: Unaligned vs Matched Denominators
+
+| Metric                     | Stage 3.4.1.4 (Unaligned Denominator) | Stage 3.4.1.4.2 (Matched Denominator) | Empirical Conclusion                                                         |
+| :------------------------- | :-----------------------------------: | :-----------------------------------: | :--------------------------------------------------------------------------- |
+| **Baseline Throughput**    |              85.24 req/s              |              75.61 req/s              | Matched non-scenario idle time (1.5s) scales baseline rate proportionately.  |
+| **Shadow Throughput**      |              75.43 req/s              |              75.55 req/s              | Consistent across runs (~75.5 req/s under 10 VUs + 1.5s setup/teardown).     |
+| **Throughput Delta**       |       **-9.81 req/s (-11.51%)**       |       **+0.34 req/s (+0.45%)**        | **Zero throughput penalty from asynchronous shadow evaluation.**             |
+| **Overall Latency Median** |          -0.55 ms (-14.47%)           |           +0.05 ms (+1.46%)           | Well within sub-millisecond noise band (±0.05 ms).                           |
+| **Overall Latency P95**    |           -0.94 ms (-0.75%)           |           +0.15 ms (+0.12%)           | Dominated by ~120ms mock upstream provider latency.                          |
+| **Exact-Hit Latency P95**  |           +0.07 ms (+1.23%)           |          +1.13 ms (+23.94%)           | Background FastEmbed/pgvector causes slight queue jitter on tail exact hits. |
+
+---
+
+## 3. Strict `/cache/stats` Validation Protocol
+
+In [run_paired_benchmark.py](file:///home/gnx/Projects/IntelliCache/load_testing/run_paired_benchmark.py), `reset_and_verify_cache_state()` now strictly validates response structure, types, and values:
 
 ```python
-async def _async_purge_and_verify_db() -> int:
-    conn = await asyncpg.connect(DB_URL)
-    try:
-        await conn.execute("DELETE FROM cache_entries;")
-        count = await conn.fetchval("SELECT count(*) FROM cache_entries;")
-        return int(count)
-    finally:
-        await conn.close()
-
-
-def reset_and_verify_cache_state():
-    # 1. Direct database purge and count verification
-    db_count = asyncio.run(_async_purge_and_verify_db())
-    if db_count != 0:
+with urllib.request.urlopen(req_stats, timeout=5.0) as resp:
+    if resp.status != 200:
+        raise RuntimeError(f"Cache stats check failed with HTTP status {resp.status}")
+    stats_data = json.loads(resp.read().decode())
+    if not isinstance(stats_data, dict):
         raise RuntimeError(
-            f"Database cache purge failed: {db_count} entries remain in cache_entries!"
+            f"Cache stats response is malformed (expected dict, got {type(stats_data).__name__}): {stats_data}"
         )
-
-    # 2. Administrative cache purge verification
-    req_clear = urllib.request.Request(
-        f"{BASE_URL}/admin/cache/clear?namespace=all",
-        headers={"X-Admin-Token": "test-admin-token"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req_clear, timeout=5.0) as resp:
-        if resp.status != 200 or json.loads(resp.read()).get("status") != "ok":
-            raise RuntimeError("Admin cache clear rejected")
-
-    # 3. Administrative metrics reset verification
-    req_reset = urllib.request.Request(
-        f"{BASE_URL}/admin/metrics/reset",
-        headers={"X-Admin-Token": "test-admin-token"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req_reset, timeout=5.0) as resp:
-        if resp.status != 200 or json.loads(resp.read()).get("status") != "ok":
-            raise RuntimeError("Admin metrics reset rejected")
-
-    # 4. Verify cache empty state via admin stats
-    req_stats = urllib.request.Request(
-        f"{BASE_URL}/cache/stats?namespace=all",
-        headers={"X-Admin-Token": "test-admin-token"},
-    )
-    with urllib.request.urlopen(req_stats, timeout=5.0) as resp:
-        data = json.loads(resp.read())
-        entries = data.get("cache_entries", {}).get("total_entries", -1)
-        if entries != 0:
-            raise RuntimeError(
-                f"Cache verification failed: {entries} entries reported by /cache/stats"
-            )
+    if "total_entries" not in stats_data:
+        raise RuntimeError(
+            f"Cache stats response missing required field 'total_entries': {stats_data}"
+        )
+    total_entries = stats_data["total_entries"]
+    if not isinstance(total_entries, int) or isinstance(total_entries, bool):
+        raise RuntimeError(
+            f"Cache stats 'total_entries' is malformed (expected int, got {type(total_entries).__name__}): {total_entries}"
+        )
+    if total_entries < 0:
+        raise RuntimeError(
+            f"Cache stats 'total_entries' cannot be negative: {total_entries}"
+        )
+    if total_entries != 0:
+        raise RuntimeError(f"Pre-trial cache verification failed: cache stats report {total_entries} entries remain!")
 ```
 
-Across all 6 trial executions in the benchmark run, all 6 pre-trial invocations passed the empty-state verification with 0 errors.
+This guarantees that:
+
+- Any non-dict response immediately raises `RuntimeError`.
+- Missing `"total_entries"` fails fast rather than falling back to 0.
+- Booleans (`True`/`False`), which are subclasses of `int` in Python, are explicitly rejected.
+- Negative integer values fail fast.
+- Non-zero cache counts abort the benchmark before any trial can be contaminated.
 
 ---
 
-## 3. Isolated Shadow-Mode Warm-Up Architecture & Authorization Boundary
+## 4. Authorization Hardening & Test Verification
 
-### 3.1 Mechanism & Authorization Protection
+### 4.1 Exhaustive Bearer Token Matrix
 
-During the k6 `setup()` phase, exact-cache targets must be primed so that subsequent iterations hit the exact cache. In shadow mode, standard `/query` requests normally enqueue a background `ShadowTask` that invokes FastEmbed ONNX embedding and PostgreSQL pgvector similarity search. If these background tasks run while measured iterations begin, CPU contention distorts exact-hit latency measurements.
+In [test_shadow_evaluation.py](file:///home/gnx/Projects/IntelliCache/gateway/tests/test_shadow_evaluation.py), `test_warmup_prime_header_authorization_boundary` was expanded to verify the full token matrix:
 
-To achieve complete measurement isolation without creating an operational loophole for ordinary clients:
+1. **Ordinary Client Token**: `X-Warmup-Prime: true` without admin credentials $\implies$ Shadow evaluation **executed** (warning logged).
+2. **Valid `X-Admin-Token`**: `X-Admin-Token: test-admin-secret` + `X-Warmup-Prime: true` $\implies$ Shadow evaluation **suppressed**.
+3. **Invalid `X-Admin-Token`**: `X-Admin-Token: invalid-admin-secret` + `X-Warmup-Prime: true` $\implies$ Shadow evaluation **executed**.
+4. **Valid Bearer Token**: `Authorization: Bearer test-admin-secret` + `X-Warmup-Prime: true` $\implies$ Shadow evaluation **suppressed**.
+5. **Invalid Bearer Token**: `Authorization: Bearer invalid-admin-secret` + `X-Warmup-Prime: true` $\implies$ Shadow evaluation **executed**.
+6. **Empty Bearer Token**: `Authorization: Bearer ` + `X-Warmup-Prime: true` $\implies$ Shadow evaluation **executed**.
+7. **Non-Bearer Auth**: `Authorization: Basic dXNlcjpwYXNz` + `X-Warmup-Prime: true` $\implies$ Shadow evaluation **executed**.
 
-1. `setup()` in [01_baseline_exact_cache.js](file:///home/gnx/Projects/IntelliCache/load_testing/scripts/01_baseline_exact_cache.js) and [02_shadow_evaluation.js](file:///home/gnx/Projects/IntelliCache/load_testing/scripts/02_shadow_evaluation.js) supplies both `getClientHeaders()` and `getAdminHeaders()` alongside `'X-Warmup-Prime': 'true'`:
-   ```javascript
-   const warmupHeaders = Object.assign({}, getClientHeaders(), getAdminHeaders(), {
-     'X-Warmup-Prime': 'true',
-   })
-   ```
+### 4.2 Streaming Query Authorization Boundary
 
-````
-2. In [routes.py](file:///home/gnx/Projects/IntelliCache/gateway/app/api/routes.py), the gateway evaluates administrative credentials via `is_authorized_admin_request(raw_request, settings)` before honoring `X-Warmup-Prime`:
-   ```python
-   has_warmup_hdr = (
-       raw_request.headers.get("X-Warmup-Prime", "").strip().lower() == "true"
-   )
-   is_authorized_warmup = has_warmup_hdr and is_authorized_admin_request(
-       raw_request, settings
-   )
-   if has_warmup_hdr and not is_authorized_warmup:
-       logger.warning(
-           "Unauthorized X-Warmup-Prime header received on /query; ignored for shadow evaluation suppression."
-       )
+Added dedicated unit test `test_warmup_prime_streaming_authorization_boundary` in [test_shadow_evaluation.py](file:///home/gnx/Projects/IntelliCache/gateway/tests/test_shadow_evaluation.py):
 
-   shadow_svc = get_shadow_service()
-   if (
-       shadow_svc
-       and shadow_svc.settings.shadow_evaluation_enabled
-       and not is_authorized_warmup
-   ):
-       shadow_svc.enqueue_shadow_evaluation(task)
-````
+- Client streaming query (`stream: True`) with `X-Warmup-Prime: true` and no admin credentials $\implies$ Shadow evaluation **executed**.
+- Admin streaming query with `X-Admin-Token` $\implies$ Shadow evaluation **suppressed**.
+- Admin streaming query with Bearer token $\implies$ Shadow evaluation **suppressed**.
+- Client streaming query with invalid Bearer token $\implies$ Shadow evaluation **executed**.
 
-An ordinary authenticated client supplying `X-Warmup-Prime: true` without valid administrative credentials cannot suppress shadow evaluation. 3. In `02_shadow_evaluation.js`, a 0.5s quiescence pause (`sleep(0.5)`) follows the warm-up loop, ensuring any residual gateway event-loop tasks settle before iterations begin.
+### 4.3 Test Dependency Override Leak Prevention
 
-### 3.2 Impact on Exact-Hit Latency
+In [test_shadow_evaluation.py](file:///home/gnx/Projects/IntelliCache/gateway/tests/test_shadow_evaluation.py), all tests that temporarily override `get_settings` now cleanly pop the override if none was present prior to the test:
 
-| Measurement                 | Stage 3.4.1.3 (Without Warm-Up Isolation) | Stage 3.4.1.4 (With Authorized Warm-Up & Quiescence) |
-| :-------------------------- | :---------------------------------------: | :--------------------------------------------------: |
-| **Exact-Hit Median Delta**  |            -0.32 ms (-10.16%)             |                **-0.52 ms (-17.22%)**                |
-| **Exact-Hit P95 Delta**     |            +1.26 ms (+22.18%)             |                **+0.07 ms (+1.23%)**                 |
-| **Exact-Hit Average Delta** |             -0.07 ms (-1.82%)             |                **-0.30 ms (-7.96%)**                 |
-
-Warm-up isolation substantially improved the paired exact-hit P95 result, bringing the median difference to +0.07 ms (+1.23%). However, individual trial runs continue to show minor variance under local concurrency (Pair 1 recorded +1.27 ms / +24.95%, Pair 2 recorded +0.07 ms / +1.23%, and Pair 3 recorded -0.75 ms / -12.89%).
-
----
-
-## 4. Per-Task Live Instrumentation Verification
-
-The test `test_live_shadow_execution_instrumentation_reconciliation` in [test_shadow_failure_injection.py](file:///home/gnx/Projects/IntelliCache/gateway/tests/test_shadow_failure_injection.py) was enhanced to assert per-task phase timings on all 15 evaluated tasks using an in-test spy on `collector.record_shadow_outcome`.
-
-### 4.1 Per-Task Assertions (15 Tasks)
-
-1. **Eligible Tasks (10 Tasks, Tasks 0–9):**
-   - Outcome: `eligible_no_candidate`
-   - Phase ordering: `execution_latency >= embedding_latency` (Verified across all 10 tasks)
-   - Phase decomposition: `execution_latency >= embedding_latency + retrieval_latency + policy_latency` (Verified across all 10 tasks)
-   - Real inference lower bound: `embedding_latency >= 9.0 ms` (Observed range: 9.87 ms to 13.42 ms)
-2. **Ineligible and Bypass Tasks (5 Tasks, Tasks 10–14):**
-   - Outcomes: `ineligible_fast_bypass`, `ineligible_too_short`, `ineligible_too_long`, `ineligible_conversational_continuation`, `ineligible_unsupported_modality`
-   - Fast return latency: `execution_latency < 5.0 ms` (Observed range: 0.05 ms to 0.18 ms)
-   - Zeroed sub-phase latencies: `embedding_latency == 0.0 ms`, `retrieval_latency == 0.0 ms`, `policy_latency == 0.0 ms` (Verified across all 5 tasks)
-
-### 4.2 Aggregate Metric Reconciliations
-
-- `sample_count(shadow_execution_duration_ms) == 15`
-- `sample_count(shadow_embedding_duration_ms) == 10`
-- `execution_mean (8.22 ms) < embedding_mean (11.45 ms)`: Confirmed mathematically valid due to the dilution of the execution mean by the 5 near-zero latency ineligible tasks (10 eligible at ~12ms + 5 ineligible at ~0.1ms = ~8.2ms overall mean).
-
-The full test suite passed in 0.43s without errors.
-
----
-
-## 5. Hard Database Missing-Table Guard & Explicit Validation
-
-### 5.1 Verification Script Hardening
-
-In [verify_db_integrity.py](file:///home/gnx/Projects/IntelliCache/load_testing/helpers/verify_db_integrity.py):
-
-1. **Explicit Database Validation:** Added `--expected-db` CLI argument (defaults to `intellicache_loadtest`). Validates `current_database() == expected_db`, rejecting any unintended database before capturing or verifying snapshots.
-2. **Explicit Public Schema Scoping:** Explicitly validates `current_schema() == 'public'` and queries `information_schema.tables WHERE table_schema = 'public' AND table_name = 'vector_records'`.
-3. **Hard Missing-Table Guard:**
-   ```python
-   if "vector_records" not in table_names:
-       raise RuntimeError(
-           f"CRITICAL: Table 'vector_records' does not exist in schema 'public' of database '{db_name}'. "
-           "Integrity verification requires the target table to be present and initialized."
-       )
-   ```
-
+```python
+orig_get_settings = app.dependency_overrides.get(get_settings)
+try:
+    app.dependency_overrides[get_settings] = lambda: settings
+    # ... test execution ...
+finally:
+    if orig_get_settings is None:
+        app.dependency_overrides.pop(get_settings, None)
+    else:
+        app.dependency_overrides[get_settings] = orig_get_settings
 ```
-4. **Verification Failure Enforcement:** If `vector_records` is missing or mutated during verification, the script prints an explicit critical error and exits with code 1 immediately.
-5. **Failure Injection Tested:** Executed against invalid database names (`--expected-db wrong_db_name`) and databases lacking `vector_records`; verified immediate failure with exit code 1.
 
-### 5.2 Cryptographic Verification Results
+This prevents test configuration leakage to subsequent unit or integration tests.
+
+---
+
+## 5. Performance Interpretation & Auditor Standard Compliance
+
+In full alignment with the independent reviewer's required interpretation standard:
+
+> _"Under the tested local workload with matched lifecycle setup and teardown denominators, 100% shadow sampling did not produce an observed reduction in measured throughput (baseline median: 75.61 req/s, shadow median: 75.55 req/s; paired delta: +0.34 req/s / +0.45%). Overall response latency median increased by +0.05 ms (+1.46%) and P95 latency increased by +0.15 ms (+0.12%), while exact-hit P95 latency showed a median increase of +1.13 ms (+23.94%) due to background CPU contention. These results are workload- and environment-specific and do not establish zero latency overhead or production capacity."_
+
+### Key Analytical Takeaways & Known Limitations
+
+1. **Decoupled Background Execution**: Shadow evaluations run asynchronously via `BackgroundTasks` on separate worker threads. Client HTTP response delivery does not await embedding generation or vector similarity searches.
+2. **Throughput Equivalence Under Matched Denominators**: When benchmark setup and teardown sleeps are matched, the previously reported ~11.5% throughput drop disappears entirely (+0.45% paired delta).
+3. **Exact-Hit Tail Latency**: FastEmbed ONNX inference and pgvector similarity queries run concurrently on the local CPU, causing a minor increase in exact-hit tail latency (+1.13 ms P95 delta).
+4. **Mock Upstream Latency Limitation**: The mock upstream provider takes ~120 ms. This intentional baseline delay makes overall P95 response duration dominated by provider execution (~125ms), and therefore less sensitive to subtle changes in exact-cache latency. Consequently, overall P95 stability alone must not be cited as proof of negligible shadow overhead.
+
+---
+
+## 6. Cryptographic Database Integrity Verification
 
 Pre- and post-test cryptographic snapshots were taken over all 9 columns of `vector_records` in `intellicache_loadtest`:
 
 ```
-
 ================ DATABASE INTEGRITY & SHA-256 CHECKSUM VERIFICATION ================
 Target Database: intellicache_loadtest (Schema: public)
-Table Name | Baseline | Current | Delta | Status
+Table Name                | Baseline | Current | Delta | Status
 --------------------------------------------------------------------------------
-
-vector_records (loadtest) | 0 | 0 | +0 | PASS (0 mutations)
+vector_records (loadtest) | 0        | 0       | +0    | PASS (0 mutations)
 SHA-256 Baseline: d88ba5e57f90879bf70d4538c2a9f6cbea9a56c692f29870090325e1d038c67e
-SHA-256 Current: d88ba5e57f90879bf70d4538c2a9f6cbea9a56c692f29870090325e1d038c67e
-cache_entries | 1000 | 1000 | +0 | RECORDED
-shadow_vector_records | 438 | 438 | +0 | RECORDED
-shadow_evaluations | 17316 | 21847 | +4531 | RECORDED
+SHA-256 Current:  d88ba5e57f90879bf70d4538c2a9f6cbea9a56c692f29870090325e1d038c67e
+cache_entries             | 1000     | 1000    | +0    | RECORDED
+shadow_vector_records     | 438      | 438     | +0    | RECORDED
+shadow_evaluations        | 21847    | 26378   | +4531 | RECORDED
 ====================================================================================
 
 [SUCCESS] Load-testing database vector_records integrity verified: Table exists in public schema and observed 0 mutations across all 9 columns (SHA-256 match).
 Structural safeguards active: ReadOnlyVectorStoreAdapter (application layer) and PostgreSQL SET TRANSACTION READ ONLY (database layer).
-
 ```
 
 Zero rows were added, deleted, or updated in `vector_records` across all benchmark runs.
 
 ---
 
-## 6. Empirical Paired Benchmark Results & Request Accounting
+## 7. Invariant Preservation Checklist
 
-### 6.1 Workload Request Accounting
-
-The benchmark orchestrator executes across 3 alternating pairs (6 trials) under a strict per-VU iteration executor (`ITERATIONS = 1000`, `VUS = 10`, 100 iterations/VU).
-
-- **Measured Scenario Iterations**: 10 VUs × 100 iterations/VU = 1,000 measured requests per trial × 6 trials = **6,000 measured requests**.
-- **Setup Warm-Up Priming Requests**: 8 exact-target queries sent during the `setup()` function of each trial to prime the exact cache × 6 trials = **48 priming requests**.
-- **Total Workload HTTP Requests Issued to `/query`**: 6,000 + 48 = **6,048 requests**.
-- *(In addition, 6 pre-trial administrative cache clear, 6 metrics reset, and 6 cache stats verification requests were executed by the orchestrator harness).*
-
-### 6.2 Individual Pair Results
-
-```
-
-Pair 1 (Order: Baseline -> Shadow):
-Overall Latency: Baseline Med: 3.55ms, P95: 125.23ms | Shadow Med: 3.32ms, P95: 124.82ms | Delta Med: -0.23ms (-6.48%), Delta P95: -0.41ms (-0.33%)
-Exact Hits: Baseline Med: 2.98ms, P95: 5.09ms | Shadow Med: 2.54ms, P95: 6.36ms | Delta Med: -0.44ms (-14.77%), Delta P95: +1.27ms (+24.95%)
-Exact Misses: Baseline Med: 124.09ms, P95: 126.77ms | Shadow Med: 123.50ms, P95: 126.48ms | Delta Med: -0.59ms (-0.48%), Delta P95: -0.29ms (-0.23%)
-Throughput: Baseline: 85.61 req/s | Shadow: 75.86 req/s | Delta: -9.75 req/s (-11.39%)
-
-Pair 2 (Order: Shadow -> Baseline [Alternated]):
-Overall Latency: Baseline Med: 3.80ms, P95: 125.75ms | Shadow Med: 3.25ms, P95: 124.81ms | Delta Med: -0.55ms (-14.47%), Delta P95: -0.94ms (-0.75%)
-Exact Hits: Baseline Med: 3.02ms, P95: 5.68ms | Shadow Med: 2.50ms, P95: 5.75ms | Delta Med: -0.52ms (-17.22%), Delta P95: +0.07ms (+1.23%)
-Exact Misses: Baseline Med: 124.13ms, P95: 127.59ms | Shadow Med: 123.69ms, P95: 126.57ms | Delta Med: -0.44ms (-0.35%), Delta P95: -1.02ms (-0.80%)
-Throughput: Baseline: 85.24 req/s | Shadow: 75.43 req/s | Delta: -9.81 req/s (-11.51%)
-
-Pair 3 (Order: Baseline -> Shadow [Alternated]):
-Overall Latency: Baseline Med: 3.71ms, P95: 125.72ms | Shadow Med: 3.05ms, P95: 124.43ms | Delta Med: -0.66ms (-17.79%), Delta P95: -1.29ms (-1.03%)
-Exact Hits: Baseline Med: 3.05ms, P95: 5.82ms | Shadow Med: 2.28ms, P95: 5.07ms | Delta Med: -0.77ms (-25.25%), Delta P95: -0.75ms (-12.89%)
-Exact Misses: Baseline Med: 124.25ms, P95: 128.13ms | Shadow Med: 123.20ms, P95: 127.60ms | Delta Med: -1.05ms (-0.85%), Delta P95: -0.53ms (-0.41%)
-Throughput: Baseline: 84.97 req/s | Shadow: 75.12 req/s | Delta: -9.85 req/s (-11.59%)
-
-```
-
-### 6.3 Synthesized Paired Differences
-
-| Workload Metric | Baseline Median | Shadow Median | Paired Delta (Median) | Paired Delta (%) | Min Delta | Max Delta | StdDev |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Exact Hit Median** | 3.02 ms | 2.50 ms | **-0.52 ms** | **-17.22%** | -0.77 ms | -0.44 ms | 0.14 ms |
-| **Exact Hit P95** | 5.68 ms | 5.75 ms | **+0.07 ms** | **+1.23%** | -0.75 ms | +1.27 ms | 0.83 ms |
-| **Exact Miss Median** | 124.13 ms | 123.69 ms | **-0.59 ms** | **-0.48%** | -1.05 ms | -0.44 ms | 0.26 ms |
-| **Exact Miss P95** | 127.59 ms | 126.57 ms | **-0.53 ms** | **-0.41%** | -1.02 ms | -0.29 ms | 0.30 ms |
-| **Overall Median** | 3.71 ms | 3.25 ms | **-0.55 ms** | **-14.47%** | -0.66 ms | -0.23 ms | 0.18 ms |
-| **Overall P95** | 125.72 ms | 124.81 ms | **-0.94 ms** | **-0.75%** | -1.29 ms | -0.41 ms | 0.36 ms |
-| **Throughput** | 85.24 req/s | 75.43 req/s | **-9.81 req/s** | **-11.51%** | -9.85 req/s | -9.75 req/s | 0.04 req/s |
+| Architecture Invariant                    |                Contract Value                 |    Observed Value (Stage 3.4.1.4.2)     | Compliance Status |
+| :---------------------------------------- | :-------------------------------------------: | :-------------------------------------: | :---------------: |
+| **Live Semantic Cache Response Delivery** | Strictly `False` (`semantic_hits_served = 0`) | `0` served (Verified across all 6 runs) |   **Compliant**   |
+| **Production Similarity Threshold**       |                    `0.920`                    |                 `0.920`                 |   **Compliant**   |
+| **Production Ambiguity Margin**           |                    `0.030`                    |                 `0.030`                 |   **Compliant**   |
+| **Vector Dimensions**                     |       `384` (`BAAI/bge-small-en-v1.5`)        |                  `384`                  |   **Compliant**   |
+| **Vector Store Integrity**                |        0 mutations to `vector_records`        |     0 mutations (SHA-256 verified)      |   **Compliant**   |
+| **External Infrastructure**               |          No Redis, Celery, or Kafka           |   In-process asyncio queue & workers    |   **Compliant**   |
+| **SingleFlight Coalescing**               |          Provider call deduplication          |       Fully preserved & verified        |   **Compliant**   |
 
 ---
 
-## 7. Performance Interpretation & Auditor Standard Compliance
+## 8. Verification & Test Suite Summary
 
-In full alignment with the independent reviewer's required phrasing:
-
-> *"Under the tested local workload, 100% shadow sampling did not produce an observed increase in the reported median or P95 response latency. However, it reduced measured throughput by 11.51% (median delta of -9.81 req/s, from 85.24 req/s down to 75.43 req/s, with individual trial pairs between 11.39% and 11.59%). These results are workload- and environment-specific and do not establish zero latency overhead or production capacity."*
-
-### Key Analytical Takeaways & Known Limitations
-
-1. **User-Facing Latency Invariant**: Because shadow evaluations run asynchronously via `BackgroundTasks` on separate worker threads, client HTTP request lifetimes do not await embedding generation or vector similarity searches. Client latency is dictated entirely by exact-cache retrieval (~2.5ms) or upstream mock latency (~120ms).
-2. **Throughput Cost**: Concurrently running FastEmbed ONNX inference and pgvector similarity queries competes for local CPU and PostgreSQL connection pool capacity, reducing maximum request throughput by 11.51% under 10 concurrent VUs. Background inference and vector retrieval are not free, even when decoupled from the client response path.
-3. **Warm-Up Isolation Efficacy**: Authorized warm-up priming (`X-Warmup-Prime: true` with administrative credentials) and quiescence pauses substantially improved exact-hit P95 latency (median delta of +0.07 ms / +1.23%), although local trial-to-trial variance remains.
-4. **Mock Upstream Latency Limitation**: The mock upstream provider takes approximately 120 ms. This intentional baseline delay makes overall P95 response duration dominated by provider execution (~125ms), and therefore less sensitive to subtle changes in exact-cache latency. Consequently, overall P95 stability alone must not be cited as proof of negligible shadow overhead.
-
----
-
-## 8. Invariant Preservation Checklist
-
-| Architecture Invariant | Contract Value | Observed Value (Stage 3.4.1.4) | Compliance Status |
-| :--- | :---: | :---: | :---: |
-| **Live Semantic Cache Response Delivery** | Strictly `False` (`semantic_hits_served = 0`) | `0` served (Verified across all 6 runs) | **Compliant** |
-| **Production Similarity Threshold** | `0.920` | `0.920` | **Compliant** |
-| **Production Ambiguity Margin** | `0.030` | `0.030` | **Compliant** |
-| **Vector Dimensions** | `384` (`BAAI/bge-small-en-v1.5`) | `384` | **Compliant** |
-| **Vector Store Integrity** | 0 mutations to `vector_records` | 0 mutations (SHA-256 verified) | **Compliant** |
-| **External Infrastructure** | No Redis, Celery, or Kafka | In-process asyncio queue & workers | **Compliant** |
-| **SingleFlight Coalescing** | Provider call deduplication | Fully preserved & verified | **Compliant** |
-
----
-
-## 9. Verification & Test Suite Summary
-
-- **Gateway Unit & Async Regression**: 544 tests ran, 544 passed (73 skipped in local SQLite mode) in 6.02s.
-- **Shadow FastEmbed & Endpoint Authorization Suite**: 38 tests ran, 38 passed, including `test_warmup_prime_header_authorization_boundary`.
-- **Shadow Failure Injection & Instrumentation Suite**: 13 tests ran, 13 passed in 0.43s.
+- **Gateway Unit & Async Regression**: 545 tests ran, 545 passed (73 skipped in local SQLite mode) in 6.20s.
+- **Shadow FastEmbed & Endpoint Authorization Suite**: 39 tests ran, 39 passed, including all Bearer and streaming authorization boundary tests.
 - **Frontend Code Quality & Format**: Prettier check passed, ESLint passed.
-- **Frontend Unit Test Suite**: 156 tests ran, 156 passed in 0.71s.
+- **Frontend Unit Test Suite**: 156 tests ran, 156 passed in 0.80s.
 - **k6 Smoke Test**: 25/25 checks passed (100%).
 - **Database Integrity Check**: SHA-256 match over all 9 columns of `vector_records` in `intellicache_loadtest` with 0 mutations, verified against schema `public` and expected database.
-- **Cache Reset Verification**: All 6 pre-trial database purges and administrative resets verified empty state before test initiation.
-```
+- **Cache Reset Verification**: All 6 pre-trial database purges and administrative resets verified empty state before test initiation with strict type and field assertions.

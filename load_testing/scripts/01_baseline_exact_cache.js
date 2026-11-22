@@ -65,6 +65,9 @@ export function setup() {
     })
   }
 
+  // Ensure complete quiescence before measured iterations begin (identical to shadow mode)
+  sleep(0.5)
+
   // 2. Capture baseline metric counters before run
   let initialMetrics = {}
   const adminRes = http.get(`${BASE_URL}/admin/metrics`, {
@@ -117,6 +120,9 @@ export default function (data) {
 export function teardown(data) {
   const elapsedSec = (Date.now() - data.startTime) / 1000
   console.log(`[Baseline Load] Complete. Total wall-clock: ${elapsedSec.toFixed(2)}s`)
+
+  // Equalize teardown duration with shadow mode for strictly identical denominator comparability
+  sleep(1.0)
 
   const adminRes = http.get(`${BASE_URL}/admin/metrics`, {
     headers: getAdminHeaders(),

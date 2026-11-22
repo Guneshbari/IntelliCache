@@ -215,9 +215,25 @@ def reset_and_verify_cache_state():
             if resp.status != 200:
                 raise RuntimeError(f"Cache stats check failed with HTTP status {resp.status}")
             stats_data = json.loads(resp.read().decode())
-            current_entries = stats_data.get("current_entries", stats_data.get("total_entries", 0))
-            if current_entries != 0:
-                raise RuntimeError(f"Pre-trial cache verification failed: cache stats report {current_entries} entries!")
+            if not isinstance(stats_data, dict):
+                raise RuntimeError(
+                    f"Cache stats response is malformed (expected dict, got {type(stats_data).__name__}): {stats_data}"
+                )
+            if "total_entries" not in stats_data:
+                raise RuntimeError(
+                    f"Cache stats response missing required field 'total_entries': {stats_data}"
+                )
+            total_entries = stats_data["total_entries"]
+            if not isinstance(total_entries, int) or isinstance(total_entries, bool):
+                raise RuntimeError(
+                    f"Cache stats 'total_entries' is malformed (expected int, got {type(total_entries).__name__}): {total_entries}"
+                )
+            if total_entries < 0:
+                raise RuntimeError(
+                    f"Cache stats 'total_entries' cannot be negative: {total_entries}"
+                )
+            if total_entries != 0:
+                raise RuntimeError(f"Pre-trial cache verification failed: cache stats report {total_entries} entries remain!")
     except Exception as exc:
         raise RuntimeError(f"Pre-trial cache stats verification failed: {exc}") from exc
 

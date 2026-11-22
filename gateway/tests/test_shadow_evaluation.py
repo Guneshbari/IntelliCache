@@ -1180,6 +1180,10 @@ class TestShadowFastAPIIntegration(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(snap.request_and_cache.exact_cache_hits, 1)
             self.assertEqual(snap.request_and_cache.semantic_hits, 0)
         finally:
+            if orig_get_settings is None:
+                app.dependency_overrides.pop(get_settings, None)
+            else:
+                app.dependency_overrides[get_settings] = orig_get_settings
             await shadow_service.stop(drain_timeout=0.5)
 
     async def test_shadow_mode_observes_streaming_query(self):
@@ -1237,13 +1241,18 @@ class TestShadowFastAPIIntegration(unittest.IsolatedAsyncioTestCase):
             # Streaming queries are ineligible for semantic caching -> ineligible_request
             self.assertEqual(snap.shadow.shadow_requests_eligible, 0)
         finally:
+            if orig_get_settings is None:
+                app.dependency_overrides.pop(get_settings, None)
+            else:
+                app.dependency_overrides[get_settings] = orig_get_settings
             await shadow_service.stop(drain_timeout=0.5)
 
     async def test_warmup_prime_header_authorization_boundary(self):
         """
         Verifies that X-Warmup-Prime suppresses shadow evaluation only when accompanied
-        by valid administrative authorization. Ordinary client tokens cannot bypass
-        shadow evaluation (Stage 3.4.1.4.1).
+        by valid administrative authorization (via X-Admin-Token or Bearer token).
+        Ordinary client tokens, invalid tokens, and malformed Bearer headers cannot bypass
+        shadow evaluation (Stage 3.4.1.4.1 & Stage 3.4.1.4.2).
         """
         import httpx
         from app.routes.query import set_shadow_service
@@ -1347,7 +1356,235 @@ class TestShadowFastAPIIntegration(unittest.IsolatedAsyncioTestCase):
                     2,
                     "Caller with invalid admin token must NOT suppress shadow evaluation",
                 )
+
+                # 4. Authorized caller with valid Bearer token sending X-Warmup-Prime: true
+                # MUST suppress shadow evaluation!
+                valid_bearer_headers = {
+                    "X-Client-Token": "test-client-token",
+                    "Authorization": "Bearer test-admin-secret",
+                    "X-Warmup-Prime": "true",
+                }
+                resp4 = await client.post(
+                    "/query",
+                    json={"prompt": "Authorized Bearer warmup prime", "temperature": 0.0},
+                    headers=valid_bearer_headers,
+                )
+                self.assertEqual(resp4.status_code, 200)
+                await shadow_service.queue.join()
+
+                snap4 = self.collector.get_namespace_snapshot("default")
+                self.assertEqual(
+                    snap4.shadow.shadow_requests_total,
+                    2,
+                    "Authorized caller with Bearer admin token and X-Warmup-Prime MUST skip shadow evaluation",
+                )
+
+                # 5. Caller with INVALID Bearer token sending X-Warmup-Prime: true
+                # MUST NOT suppress shadow evaluation!
+                invalid_bearer_headers = {
+                    "X-Client-Token": "test-client-token",
+                    "Authorization": "Bearer invalid-admin-secret",
+                    "X-Warmup-Prime": "true",
+                }
+                resp5 = await client.post(
+                    "/query",
+                    json={"prompt": "Invalid Bearer warmup attempt", "temperature": 0.0},
+                    headers=invalid_bearer_headers,
+                )
+                self.assertEqual(resp5.status_code, 200)
+                await shadow_service.queue.join()
+
+                snap5 = self.collector.get_namespace_snapshot("default")
+                self.assertEqual(
+                    snap5.shadow.shadow_requests_total,
+                    3,
+                    "Caller with invalid Bearer token must NOT suppress shadow evaluation",
+                )
+
+                # 6. Caller with MISSING/MALFORMED Bearer token sending X-Warmup-Prime: true
+                # MUST NOT suppress shadow evaluation!
+                empty_bearer_headers = {
+                    "X-Client-Token": "test-client-token",
+                    "Authorization": "Bearer ",
+                    "X-Warmup-Prime": "true",
+                }
+                resp6 = await client.post(
+                    "/query",
+                    json={"prompt": "Empty Bearer warmup attempt", "temperature": 0.0},
+                    headers=empty_bearer_headers,
+                )
+                self.assertEqual(resp6.status_code, 200)
+                await shadow_service.queue.join()
+
+                snap6 = self.collector.get_namespace_snapshot("default")
+                self.assertEqual(
+                    snap6.shadow.shadow_requests_total,
+                    4,
+                    "Caller with empty Bearer token must NOT suppress shadow evaluation",
+                )
+
+                # 7. Caller with NON-BEARER authorization (e.g. Basic) sending X-Warmup-Prime: true
+                # MUST NOT suppress shadow evaluation!
+                non_bearer_headers = {
+                    "X-Client-Token": "test-client-token",
+                    "Authorization": "Basic dGVzdC1hZG1pbi1zZWNyZXQ=",
+                    "X-Warmup-Prime": "true",
+                }
+                resp7 = await client.post(
+                    "/query",
+                    json={"prompt": "Non-Bearer warmup attempt", "temperature": 0.0},
+                    headers=non_bearer_headers,
+                )
+                self.assertEqual(resp7.status_code, 200)
+                await shadow_service.queue.join()
+
+                snap7 = self.collector.get_namespace_snapshot("default")
+                self.assertEqual(
+                    snap7.shadow.shadow_requests_total,
+                    5,
+                    "Caller with non-Bearer auth header must NOT suppress shadow evaluation",
+                )
         finally:
+            if orig_get_settings is None:
+                app.dependency_overrides.pop(get_settings, None)
+            else:
+                app.dependency_overrides[get_settings] = orig_get_settings
+            await shadow_service.stop(drain_timeout=0.5)
+
+    async def test_warmup_prime_streaming_authorization_boundary(self):
+        """
+        Verifies that unauthorized X-Warmup-Prime headers cannot suppress shadow evaluation
+        on streaming requests (stream: True), and authorized headers do suppress it (Stage 3.4.1.4.2).
+        """
+        import httpx
+        from app.routes.query import set_shadow_service
+
+        raw_store = InMemoryVectorStore(dimensions=4)
+        adapter = ReadOnlyVectorStoreAdapter(raw_store)
+        embed_provider = MockEmbeddingProvider()
+        policy = SemanticCachePolicy(min_similarity=0.92, min_margin=0.03, top_k=5, configured_model="BAAI/bge-small-en-v1.5")
+        shadow_cache = ReadOnlySemanticCacheService(
+            embedding_provider=embed_provider,
+            vector_store=adapter,
+            policy=policy,
+            default_namespace="default",
+        )
+        settings = Settings(
+            cache_backend="memory",
+            shadow_evaluation_enabled=True,
+            shadow_sampling_rate=1.0,
+            shadow_max_concurrency=2,
+            shadow_queue_max_size=10,
+            shadow_timeout_seconds=2.0,
+            admin_api_token="test-admin-secret",
+        )
+        shadow_service = ShadowEvaluationService(
+            settings=settings,
+            semantic_cache=shadow_cache,
+            db_pool=None,
+            metrics_collector=self.collector,
+        )
+        await shadow_service.start()
+        set_shadow_service(shadow_service)
+
+        from app.config import get_settings
+        from app.main import app
+        orig_get_settings = app.dependency_overrides.get(get_settings)
+        app.dependency_overrides[get_settings] = lambda: settings
+
+        try:
+            async with httpx.AsyncClient(transport=self.transport, base_url="http://testserver") as client:
+                # 1. Ordinary client streaming request with X-Warmup-Prime: true
+                # MUST NOT suppress shadow evaluation!
+                ordinary_stream_headers = {
+                    "X-Client-Token": "test-client-token",
+                    "X-Warmup-Prime": "true",
+                }
+                resp1 = await client.post(
+                    "/query",
+                    json={"prompt": "Ordinary streaming warmup attempt", "temperature": 0.0, "stream": True},
+                    headers=ordinary_stream_headers,
+                )
+                self.assertEqual(resp1.status_code, 200)
+                await shadow_service.queue.join()
+
+                snap1 = self.collector.get_namespace_snapshot("default")
+                self.assertEqual(
+                    snap1.shadow.shadow_requests_total,
+                    1,
+                    "Ordinary client streaming request must NOT suppress shadow evaluation with X-Warmup-Prime",
+                )
+
+                # 2. Authorized caller streaming request with X-Admin-Token
+                # MUST suppress shadow evaluation!
+                admin_token_headers = {
+                    "X-Client-Token": "test-client-token",
+                    "X-Admin-Token": "test-admin-secret",
+                    "X-Warmup-Prime": "true",
+                }
+                resp2 = await client.post(
+                    "/query",
+                    json={"prompt": "Authorized X-Admin-Token streaming warmup", "temperature": 0.0, "stream": True},
+                    headers=admin_token_headers,
+                )
+                self.assertEqual(resp2.status_code, 200)
+                await shadow_service.queue.join()
+
+                snap2 = self.collector.get_namespace_snapshot("default")
+                self.assertEqual(
+                    snap2.shadow.shadow_requests_total,
+                    1,
+                    "Authorized caller with X-Admin-Token on streaming query MUST skip shadow evaluation",
+                )
+
+                # 3. Authorized caller streaming request with valid Bearer token
+                # MUST suppress shadow evaluation!
+                bearer_admin_headers = {
+                    "X-Client-Token": "test-client-token",
+                    "Authorization": "Bearer test-admin-secret",
+                    "X-Warmup-Prime": "true",
+                }
+                resp3 = await client.post(
+                    "/query",
+                    json={"prompt": "Authorized Bearer streaming warmup", "temperature": 0.0, "stream": True},
+                    headers=bearer_admin_headers,
+                )
+                self.assertEqual(resp3.status_code, 200)
+                await shadow_service.queue.join()
+
+                snap3 = self.collector.get_namespace_snapshot("default")
+                self.assertEqual(
+                    snap3.shadow.shadow_requests_total,
+                    1,
+                    "Authorized caller with Bearer token on streaming query MUST skip shadow evaluation",
+                )
+
+                # 4. Caller with invalid Bearer token on streaming request
+                # MUST NOT suppress shadow evaluation!
+                invalid_bearer_stream_headers = {
+                    "X-Client-Token": "test-client-token",
+                    "Authorization": "Bearer wrong-admin-token",
+                    "X-Warmup-Prime": "true",
+                }
+                resp4 = await client.post(
+                    "/query",
+                    json={"prompt": "Invalid Bearer streaming warmup", "temperature": 0.0, "stream": True},
+                    headers=invalid_bearer_stream_headers,
+                )
+                self.assertEqual(resp4.status_code, 200)
+                await shadow_service.queue.join()
+
+                snap4 = self.collector.get_namespace_snapshot("default")
+                self.assertEqual(
+                    snap4.shadow.shadow_requests_total,
+                    2,
+                    "Caller with invalid Bearer token on streaming query must NOT suppress shadow evaluation",
+                )
+        finally:
+            if orig_get_settings is None:
+                app.dependency_overrides.pop(get_settings, None)
+            else:
+                app.dependency_overrides[get_settings] = orig_get_settings
             await shadow_service.stop(drain_timeout=0.5)
 
     async def test_shadow_mode_candidate_match_verification(self):
@@ -1433,6 +1670,10 @@ class TestShadowFastAPIIntegration(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(snap.shadow.shadow_hypothetical_hits, 1)
             self.assertEqual(snap.shadow.shadow_no_candidate, 0)
         finally:
+            if orig_get_settings is None:
+                app.dependency_overrides.pop(get_settings, None)
+            else:
+                app.dependency_overrides[get_settings] = orig_get_settings
             await shadow_service.stop(drain_timeout=0.5)
 
 
