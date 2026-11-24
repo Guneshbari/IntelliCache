@@ -65,7 +65,7 @@ services:
       - intellicache-loadtest-net
 
   k6:
-    image: grafana/k6:latest
+    image: grafana/k6@sha256:3d8e5c7f1d53ec59408c2ffbd9943602a0985ffcbd4a2430ec00f3ffca89796e
     container_name: intellicache-loadtest-k6
     volumes:
       - .:/load_testing

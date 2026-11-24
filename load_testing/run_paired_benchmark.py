@@ -65,6 +65,31 @@ SEED = "1337"
 VUS = 10
 ITERATIONS = 1000
 
+# Pinned k6 container image by digest and verified runtime version (Stage 3.4.1 Final Closure)
+K6_IMAGE_DIGEST = "sha256:3d8e5c7f1d53ec59408c2ffbd9943602a0985ffcbd4a2430ec00f3ffca89796e"
+K6_PINNED_IMAGE = f"grafana/k6@{K6_IMAGE_DIGEST}"
+K6_IMAGE = os.environ.get("K6_IMAGE", K6_PINNED_IMAGE)
+K6_EXPECTED_RUNTIME_VERSION = "k6 v2.4.0 (commit/dd9395906d, go1.27.3, linux/amd64)"
+
+
+def verify_and_record_k6_runtime_version() -> str:
+    """Verifies that the pinned k6 Docker image or local k6 binary runs the expected version."""
+    use_docker = os.environ.get("K6_USE_DOCKER", "1") == "1" and shutil.which("docker") is not None
+    if use_docker:
+        cmd = ["docker", "run", "--rm", K6_IMAGE, "version"]
+    else:
+        cmd = ["k6", "version"]
+
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        version_str = res.stdout.strip()
+        print(f"[k6 Runtime] Executing with image/binary: {K6_IMAGE if use_docker else 'local k6'}")
+        print(f"[k6 Runtime] Verified runtime version: {version_str}")
+        return version_str
+    except Exception as exc:
+        print(f"[k6 Runtime] Warning: Could not verify k6 runtime version via {cmd}: {exc}")
+        return "unknown"
+
 
 def get_base_env(shadow_enabled: bool) -> Dict[str, str]:
     """Generates standard environment variables for Gateway execution."""
@@ -299,7 +324,7 @@ def run_k6(script_name: str, output_json: str, extra_env: Dict[str, str] = None)
                 cmd.extend(["-e", f"{k}={v}"])
         cmd.extend(
             [
-                "grafana/k6:latest",
+                K6_IMAGE,
                 "run",
                 "--summary-trend-stats",
                 "avg,min,med,max,p(90),p(95),p(99),count",
@@ -358,7 +383,14 @@ def extract_metrics(
     if not isinstance(raw_metrics, dict) or not raw_metrics:
         raise MetricValidationError("Summary is missing required non-empty 'metrics' object")
 
-    def _validate_numeric(val: Any, metric_name: str, field_name: str, allow_float: bool = True) -> float:
+    def _validate_numeric(
+        val: Any,
+        metric_name: str,
+        field_name: str,
+        allow_float: bool = True,
+        must_be_positive: bool = False,
+        must_be_non_negative: bool = False,
+    ) -> float:
         if val is None:
             raise MetricValidationError(f"Metric '{metric_name}' field '{field_name}' is missing or null")
         if isinstance(val, bool):
@@ -372,6 +404,14 @@ def extract_metrics(
             raise MetricValidationError(f"Metric '{metric_name}' field '{field_name}' cannot be NaN")
         if math.isinf(f_val):
             raise MetricValidationError(f"Metric '{metric_name}' field '{field_name}' cannot be infinite")
+        if must_be_non_negative and f_val < 0.0:
+            raise MetricValidationError(
+                f"Metric '{metric_name}' stat '{field_name}' cannot be negative: {val}"
+            )
+        if must_be_positive and f_val <= 0.0:
+            raise MetricValidationError(
+                f"Metric '{metric_name}' timestamp stat '{field_name}' must be positive: {val}"
+            )
         return f_val
 
     def _validate_counter(metric_name: str) -> int:
@@ -386,14 +426,14 @@ def extract_metrics(
         if count_val is None and "values" in entry and isinstance(entry["values"], dict):
             count_val = entry["values"].get("count")
 
-        num = _validate_numeric(count_val, metric_name, "count", allow_float=False)
-        if num < 0:
-            raise MetricValidationError(f"Counter '{metric_name}' count cannot be negative: {num}")
+        num = _validate_numeric(
+            count_val, metric_name, "count", allow_float=False, must_be_non_negative=True
+        )
         if not num.is_integer():
             raise MetricValidationError(f"Counter '{metric_name}' count must be an integer: {num}")
         return int(num)
 
-    def _validate_trend(metric_name: str) -> Dict[str, Any]:
+    def _validate_trend(metric_name: str, is_timestamp: bool = False) -> Dict[str, Any]:
         if metric_name not in raw_metrics:
             raise MetricValidationError(f"Required trend metric '{metric_name}' is missing from k6 summary")
         entry = raw_metrics[metric_name]
@@ -404,25 +444,26 @@ def extract_metrics(
 
         # Validate observation count
         count_val = t.get("count")
-        num_count = _validate_numeric(count_val, metric_name, "count", allow_float=False)
-        if num_count < 0:
-            raise MetricValidationError(f"Trend '{metric_name}' count cannot be negative: {num_count}")
+        num_count = _validate_numeric(
+            count_val, metric_name, "count", allow_float=False, must_be_non_negative=True
+        )
         if not num_count.is_integer():
             raise MetricValidationError(f"Trend '{metric_name}' count must be an integer: {num_count}")
         int_count = int(num_count)
 
-        # Validate statistical summary fields
-        req_stat_fields = ["avg", "min", "med", "max", "p(90)", "p(95)"]
+        # Validate statistical summary fields (all 7 required, including p(99) without fallback)
+        req_stat_fields = ["avg", "min", "med", "max", "p(90)", "p(95)", "p(99)"]
         validated_stats: Dict[str, float] = {}
         for sf in req_stat_fields:
-            if sf not in t:
+            if sf not in t or t[sf] is None:
                 raise MetricValidationError(f"Trend '{metric_name}' is missing required stat '{sf}'")
-            validated_stats[sf] = _validate_numeric(t[sf], metric_name, sf)
-
-        # Optional p(99)
-        p99 = None
-        if "p(99)" in t and t["p(99)"] is not None:
-            p99 = round(_validate_numeric(t["p(99)"], metric_name, "p(99)"), 2)
+            validated_stats[sf] = _validate_numeric(
+                t[sf],
+                metric_name,
+                sf,
+                must_be_positive=is_timestamp,
+                must_be_non_negative=not is_timestamp,
+            )
 
         avg_val = validated_stats["avg"]
         min_val = validated_stats["min"]
@@ -430,6 +471,7 @@ def extract_metrics(
         max_val = validated_stats["max"]
         p90_val = validated_stats["p(90)"]
         p95_val = validated_stats["p(95)"]
+        p99_val = validated_stats["p(99)"]
 
         if int_count > 0:
             if min_val > max_val:
@@ -442,6 +484,13 @@ def extract_metrics(
                 raise MetricValidationError(f"Trend '{metric_name}' p(90) ({p90_val}) out of bounds [{min_val}, {max_val}]")
             if not (min_val <= p95_val <= max_val):
                 raise MetricValidationError(f"Trend '{metric_name}' p(95) ({p95_val}) out of bounds [{min_val}, {max_val}]")
+            if not (min_val <= p99_val <= max_val):
+                raise MetricValidationError(f"Trend '{metric_name}' p(99) ({p99_val}) out of bounds [{min_val}, {max_val}]")
+            if not (p90_val <= p95_val <= p99_val):
+                raise MetricValidationError(
+                    f"Trend '{metric_name}' percentiles must be non-decreasing: "
+                    f"p(90)={p90_val}, p(95)={p95_val}, p(99)={p99_val}"
+                )
 
         return {
             "avg": round(avg_val, 2),
@@ -449,7 +498,7 @@ def extract_metrics(
             "med": round(med_val, 2),
             "p90": round(p90_val, 2),
             "p95": round(p95_val, 2),
-            "p99": p99 if p99 is not None else round(p95_val, 2),
+            "p99": round(p99_val, 2),
             "max": round(max_val, 2),
             "count": int_count,
         }
@@ -466,14 +515,14 @@ def extract_metrics(
     invalid_count = _validate_counter("invalid_requests")
     semantic_hits_served = _validate_counter("semantic_hits_served")
 
-    workload_latency = _validate_trend("workload_req_duration_ms")
-    warmup_latency = _validate_trend("warmup_req_duration_ms")
-    admin_latency = _validate_trend("admin_req_duration_ms")
-    workload_start = _validate_trend("workload_start_time")
-    workload_end = _validate_trend("workload_end_time")
-    exact_hit_latency = _validate_trend("exact_hit_latency_ms")
-    cache_miss_latency = _validate_trend("cache_miss_latency_ms")
-    overall_latency = _validate_trend("http_req_duration")
+    workload_latency = _validate_trend("workload_req_duration_ms", is_timestamp=False)
+    warmup_latency = _validate_trend("warmup_req_duration_ms", is_timestamp=False)
+    admin_latency = _validate_trend("admin_req_duration_ms", is_timestamp=False)
+    workload_start = _validate_trend("workload_start_time", is_timestamp=True)
+    workload_end = _validate_trend("workload_end_time", is_timestamp=True)
+    exact_hit_latency = _validate_trend("exact_hit_latency_ms", is_timestamp=False)
+    cache_miss_latency = _validate_trend("cache_miss_latency_ms", is_timestamp=False)
+    overall_latency = _validate_trend("http_req_duration", is_timestamp=False)
 
     # Diagnostic rate from http_reqs
     entry_http_reqs = raw_metrics["http_reqs"]
@@ -503,6 +552,18 @@ def extract_metrics(
     if workload_latency["count"] != workload_count:
         raise MetricValidationError(
             f"workload_req_duration_ms observation count ({workload_latency['count']}) does not match workload_requests ({workload_count})"
+        )
+    if warmup_latency["count"] != warmup_count:
+        raise MetricValidationError(
+            f"warmup_req_duration_ms observation count ({warmup_latency['count']}) does not match warmup_requests ({warmup_count})"
+        )
+    if admin_latency["count"] != admin_count:
+        raise MetricValidationError(
+            f"admin_req_duration_ms observation count ({admin_latency['count']}) does not match admin_requests ({admin_count})"
+        )
+    if overall_latency["count"] != total_http_count:
+        raise MetricValidationError(
+            f"http_req_duration observation count ({overall_latency['count']}) does not match http_reqs ({total_http_count})"
         )
     if workload_start["count"] != workload_count:
         raise MetricValidationError(
@@ -698,6 +759,7 @@ def compute_paired_comparison(pairs: List[Dict[str, Any]]) -> Dict[str, Any]:
             "median": round(float(statistics.median(vals)), 2),
             "min": round(float(min(vals)), 2),
             "max": round(float(max(vals)), 2),
+            "pstdev": round(float(statistics.pstdev(vals)), 2),
             "stddev": round(float(statistics.pstdev(vals)), 2),
         }
 
@@ -744,6 +806,9 @@ def main():
     print("Design:                 Alternating execution order, cold-cache state isolation,")
     print("                        per-pair difference aggregation, SHA-256 DB verification.")
     print("================================================================================\n")
+
+    # Step -1: Verify and record pinned k6 runtime version
+    verify_and_record_k6_runtime_version()
 
     # Step 0: Capture Database Baseline Snapshot (SHA-256 over all 9 columns)
     print("\n--- STEP 0: Capturing Initial Database SHA-256 Integrity Snapshot ---")

@@ -52,6 +52,7 @@ def _make_valid_summary_data() -> dict:
                 "max": 10.0,
                 "p(90)": 8.0,
                 "p(95)": 9.5,
+                "p(99)": 9.9,
             },
             "admin_req_duration_ms": {
                 "count": 2,
@@ -61,6 +62,7 @@ def _make_valid_summary_data() -> dict:
                 "max": 3.5,
                 "p(90)": 3.4,
                 "p(95)": 3.45,
+                "p(99)": 3.48,
             },
             "workload_start_time": {
                 "count": 1000,
@@ -70,6 +72,7 @@ def _make_valid_summary_data() -> dict:
                 "max": 1700000010000.0,
                 "p(90)": 1700000009000.0,
                 "p(95)": 1700000009500.0,
+                "p(99)": 1700000009800.0,
             },
             "workload_end_time": {
                 "count": 1000,
@@ -79,6 +82,7 @@ def _make_valid_summary_data() -> dict:
                 "max": 1700000011000.0,
                 "p(90)": 1700000010000.0,
                 "p(95)": 1700000010500.0,
+                "p(99)": 1700000010800.0,
             },
             "exact_hit_latency_ms": {
                 "count": 711,
@@ -88,6 +92,7 @@ def _make_valid_summary_data() -> dict:
                 "max": 12.0,
                 "p(90)": 5.0,
                 "p(95)": 8.1,
+                "p(99)": 10.5,
             },
             "cache_miss_latency_ms": {
                 "count": 218,
@@ -97,6 +102,7 @@ def _make_valid_summary_data() -> dict:
                 "max": 180.2,
                 "p(90)": 135.0,
                 "p(95)": 140.0,
+                "p(99)": 160.0,
             },
             "http_req_duration": {
                 "count": 1008,
@@ -106,6 +112,7 @@ def _make_valid_summary_data() -> dict:
                 "max": 180.2,
                 "p(90)": 121.0,
                 "p(95)": 127.0,
+                "p(99)": 150.0,
             },
         }
     }
@@ -266,6 +273,7 @@ class BenchmarkMetricValidationTests(unittest.TestCase):
         data["metrics"]["workload_end_time"]["avg"] = 1700000002000.0
         data["metrics"]["workload_end_time"]["p(90)"] = 1700000003000.0
         data["metrics"]["workload_end_time"]["p(95)"] = 1700000004000.0
+        data["metrics"]["workload_end_time"]["p(99)"] = 1700000004000.0
         data["metrics"]["workload_end_time"]["max"] = 1700000004000.0
         self._write_summary(data)
         with self.assertRaises(MetricValidationError) as ctx:
@@ -297,6 +305,69 @@ class BenchmarkMetricValidationTests(unittest.TestCase):
         with self.assertRaises(MetricValidationError) as ctx:
             extract_metrics(self.summary_file)
         self.assertIn("must be numeric", str(ctx.exception))
+
+    def test_warmup_trend_count_mismatch(self):
+        """Mismatch between warmup_requests and warmup_req_duration_ms count causes failure."""
+        data = _make_valid_summary_data()
+        data["metrics"]["warmup_req_duration_ms"]["count"] = 5  # Counter is 6
+        self._write_summary(data)
+        with self.assertRaises(MetricValidationError) as ctx:
+            extract_metrics(self.summary_file)
+        self.assertIn("warmup_req_duration_ms observation count (5) does not match warmup_requests (6)", str(ctx.exception))
+
+    def test_admin_trend_count_mismatch(self):
+        """Mismatch between admin_requests and admin_req_duration_ms count causes failure."""
+        data = _make_valid_summary_data()
+        data["metrics"]["admin_req_duration_ms"]["count"] = 1  # Counter is 2
+        self._write_summary(data)
+        with self.assertRaises(MetricValidationError) as ctx:
+            extract_metrics(self.summary_file)
+        self.assertIn("admin_req_duration_ms observation count (1) does not match admin_requests (2)", str(ctx.exception))
+
+    def test_http_req_duration_trend_count_mismatch(self):
+        """Mismatch between http_reqs and http_req_duration count causes failure."""
+        data = _make_valid_summary_data()
+        data["metrics"]["http_req_duration"]["count"] = 1000  # Counter is 1008
+        self._write_summary(data)
+        with self.assertRaises(MetricValidationError) as ctx:
+            extract_metrics(self.summary_file)
+        self.assertIn("http_req_duration observation count (1000) does not match http_reqs (1008)", str(ctx.exception))
+
+    def test_missing_p99_in_trend_raises(self):
+        """Missing p(99) raises MetricValidationError without fallback to p(95)."""
+        data = _make_valid_summary_data()
+        del data["metrics"]["workload_req_duration_ms"]["p(99)"]
+        self._write_summary(data)
+        with self.assertRaises(MetricValidationError) as ctx:
+            extract_metrics(self.summary_file)
+        self.assertIn("Trend 'workload_req_duration_ms' is missing required stat 'p(99)'", str(ctx.exception))
+
+    def test_negative_latency_in_trend_stat_raises(self):
+        """Negative latency in trend stat raises MetricValidationError."""
+        data = _make_valid_summary_data()
+        data["metrics"]["workload_req_duration_ms"]["min"] = -0.5
+        self._write_summary(data)
+        with self.assertRaises(MetricValidationError) as ctx:
+            extract_metrics(self.summary_file)
+        self.assertIn("cannot be negative", str(ctx.exception))
+
+    def test_negative_or_zero_timestamp_stat_raises(self):
+        """Zero or negative timestamp raises MetricValidationError."""
+        data = _make_valid_summary_data()
+        data["metrics"]["workload_start_time"]["min"] = 0.0
+        self._write_summary(data)
+        with self.assertRaises(MetricValidationError) as ctx:
+            extract_metrics(self.summary_file)
+        self.assertIn("timestamp stat 'min' must be positive", str(ctx.exception))
+
+    def test_non_monotonic_percentiles_raises(self):
+        """Non-monotonic percentiles (p90 > p95 or p95 > p99) raise MetricValidationError."""
+        data = _make_valid_summary_data()
+        data["metrics"]["workload_req_duration_ms"]["p(95)"] = 160.0  # Greater than p(99) which is 150.0
+        self._write_summary(data)
+        with self.assertRaises(MetricValidationError) as ctx:
+            extract_metrics(self.summary_file)
+        self.assertIn("percentiles must be non-decreasing", str(ctx.exception))
 
 
 if __name__ == "__main__":

@@ -204,7 +204,7 @@ jobs:
             -e BASE_URL=http://127.0.0.1:8000 \
             -e CLIENT_TOKEN=test-client-token \
             -e ADMIN_TOKEN=test-admin-token \
-            grafana/k6:latest run /load_testing/scripts/00_smoke_test.js
+            grafana/k6@sha256:3d8e5c7f1d53ec59408c2ffbd9943602a0985ffcbd4a2430ec00f3ffca89796e run /load_testing/scripts/00_smoke_test.js
           kill $GATEWAY_PID || true
 
   gateway-fastembed-real-inference:

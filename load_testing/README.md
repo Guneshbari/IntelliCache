@@ -35,9 +35,9 @@ load_testing/
 
 ---
 
-## 2. Docker-Based Execution (Using `grafana/k6:latest`)
+## 2. Docker-Based Execution (Using Pinned `grafana/k6`)
 
-All tests execute via the pre-pulled **`grafana/k6:latest`** Docker image. No local host installation of k6 is required.
+All tests execute via the pinned **`grafana/k6@sha256:3d8e5c7f1d53ec59408c2ffbd9943602a0985ffcbd4a2430ec00f3ffca89796e`** Docker image (`k6 v2.4.0 (commit/dd9395906d, go1.27.3, linux/amd64)`). No local host installation of k6 is required.
 
 ### 2.1 Mode A: Host Gateway with Host Networking (Recommended for Local Dev)
 
@@ -50,7 +50,7 @@ docker run --rm -i \
   -e BASE_URL="http://127.0.0.1:8000" \
   -e CLIENT_TOKEN="test-client-token" \
   -e ADMIN_TOKEN="test-admin-token" \
-  grafana/k6:latest run /load_testing/scripts/00_smoke_test.js
+  grafana/k6@sha256:3d8e5c7f1d53ec59408c2ffbd9943602a0985ffcbd4a2430ec00f3ffca89796e run /load_testing/scripts/00_smoke_test.js
 ```
 
 ### 2.2 Mode B: Isolated Docker Compose Environment
