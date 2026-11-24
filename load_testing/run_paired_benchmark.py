@@ -52,6 +52,12 @@ class MetricValidationError(ValueError):
     pass
 
 
+class K6RuntimeVerificationError(RuntimeError):
+    """Raised when k6 container image or runtime fails strict pinning and version verification."""
+
+    pass
+
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 GATEWAY_DIR = REPO_ROOT / "gateway"
 LOAD_TEST_DIR = REPO_ROOT / "load_testing"
@@ -68,27 +74,63 @@ ITERATIONS = 1000
 # Pinned k6 container image by digest and verified runtime version (Stage 3.4.1 Final Closure)
 K6_IMAGE_DIGEST = "sha256:3d8e5c7f1d53ec59408c2ffbd9943602a0985ffcbd4a2430ec00f3ffca89796e"
 K6_PINNED_IMAGE = f"grafana/k6@{K6_IMAGE_DIGEST}"
-K6_IMAGE = os.environ.get("K6_IMAGE", K6_PINNED_IMAGE)
+K6_IMAGE = K6_PINNED_IMAGE
 K6_EXPECTED_RUNTIME_VERSION = "k6 v2.4.0 (commit/dd9395906d, go1.27.3, linux/amd64)"
 
 
-def verify_and_record_k6_runtime_version() -> str:
-    """Verifies that the pinned k6 Docker image or local k6 binary runs the expected version."""
-    use_docker = os.environ.get("K6_USE_DOCKER", "1") == "1" and shutil.which("docker") is not None
-    if use_docker:
-        cmd = ["docker", "run", "--rm", K6_IMAGE, "version"]
-    else:
-        cmd = ["k6", "version"]
+def verify_and_record_k6_runtime_version(
+    image: Optional[str] = None,
+    expected_version: str = K6_EXPECTED_RUNTIME_VERSION,
+) -> str:
+    """
+    Verifies that the pinned k6 Docker image exists and executes the exact expected runtime version.
+    Fails fast and closed if:
+    - An image is provided/overridden and does not match K6_PINNED_IMAGE.
+    - K6_USE_DOCKER is explicitly disabled ("0").
+    - Docker executable is not found in PATH.
+    - Docker execution fails or exits non-zero.
+    - The actual runtime version does not match expected_version.
+    """
+    effective_image = image if image is not None else os.environ.get("K6_IMAGE", K6_PINNED_IMAGE)
+    if effective_image != K6_PINNED_IMAGE:
+        raise K6RuntimeVerificationError(
+            f"k6 image '{effective_image}' does not match pinned image digest '{K6_PINNED_IMAGE}'"
+        )
 
+    if os.environ.get("K6_USE_DOCKER", "1") == "0":
+        raise K6RuntimeVerificationError(
+            "K6_USE_DOCKER is disabled (0). Pinned containerized verification requires Docker."
+        )
+
+    docker_path = shutil.which("docker")
+    if not docker_path:
+        raise K6RuntimeVerificationError(
+            "Docker executable not found in PATH. Pinned k6 execution requires Docker."
+        )
+
+    cmd = ["docker", "run", "--rm", effective_image, "version"]
     try:
         res = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        version_str = res.stdout.strip()
-        print(f"[k6 Runtime] Executing with image/binary: {K6_IMAGE if use_docker else 'local k6'}")
-        print(f"[k6 Runtime] Verified runtime version: {version_str}")
-        return version_str
+    except subprocess.CalledProcessError as exc:
+        stderr_msg = exc.stderr.strip() if exc.stderr else str(exc)
+        raise K6RuntimeVerificationError(
+            f"Failed to execute k6 version check via Docker (exit code {exc.returncode}): {stderr_msg}"
+        ) from exc
     except Exception as exc:
-        print(f"[k6 Runtime] Warning: Could not verify k6 runtime version via {cmd}: {exc}")
-        return "unknown"
+        raise K6RuntimeVerificationError(
+            f"Failed to execute Docker command '{' '.join(cmd)}': {exc}"
+        ) from exc
+
+    version_str = res.stdout.strip()
+
+    if version_str != expected_version:
+        raise K6RuntimeVerificationError(
+            f"k6 runtime version mismatch: expected '{expected_version}', got '{version_str}'"
+        )
+
+    print(f"[k6 Runtime] Executing with pinned image: {effective_image}")
+    print(f"[k6 Runtime] Verified runtime version: {version_str}")
+    return version_str
 
 
 def get_base_env(shadow_enabled: bool) -> Dict[str, str]:
@@ -294,55 +336,54 @@ def run_k6(script_name: str, output_json: str, extra_env: Dict[str, str] = None)
     if extra_env:
         env.update(extra_env)
 
-    use_docker = os.environ.get("K6_USE_DOCKER", "1") == "1" and shutil.which("docker") is not None
-    if use_docker:
-        cmd = [
-            "docker",
-            "run",
-            "--rm",
-            "--network",
-            "host",
-            "--user",
-            f"{os.getuid()}:{os.getgid()}",
-            "-v",
-            f"{REPO_ROOT}/load_testing:/load_testing",
-            "-e",
-            f"BASE_URL={env['BASE_URL']}",
-            "-e",
-            f"CLIENT_TOKEN={env['CLIENT_TOKEN']}",
-            "-e",
-            f"ADMIN_TOKEN={env['ADMIN_TOKEN']}",
-            "-e",
-            f"WORKLOAD_SEED={env['WORKLOAD_SEED']}",
-            "-e",
-            f"VUS={env['VUS']}",
-            "-e",
-            f"ITERATIONS={env['ITERATIONS']}",
-        ]
-        if extra_env:
-            for k, v in extra_env.items():
-                cmd.extend(["-e", f"{k}={v}"])
-        cmd.extend(
-            [
-                K6_IMAGE,
-                "run",
-                "--summary-trend-stats",
-                "avg,min,med,max,p(90),p(95),p(99),count",
-                "--summary-export",
-                f"/load_testing/reports/{output_json}",
-                f"/load_testing/scripts/{script_name}",
-            ]
+    # Fail closed: Do not silently fall back to an unverified local binary
+    if os.environ.get("K6_USE_DOCKER", "1") == "0":
+        raise K6RuntimeVerificationError(
+            "K6_USE_DOCKER is disabled (0). Pinned containerized benchmark execution requires Docker."
         )
-    else:
-        cmd = [
-            "k6",
+
+    if not shutil.which("docker"):
+        raise K6RuntimeVerificationError(
+            "Docker executable not found in PATH. Pinned k6 execution requires Docker."
+        )
+
+    cmd = [
+        "docker",
+        "run",
+        "--rm",
+        "--network",
+        "host",
+        "--user",
+        f"{os.getuid()}:{os.getgid()}",
+        "-v",
+        f"{REPO_ROOT}/load_testing:/load_testing",
+        "-e",
+        f"BASE_URL={env['BASE_URL']}",
+        "-e",
+        f"CLIENT_TOKEN={env['CLIENT_TOKEN']}",
+        "-e",
+        f"ADMIN_TOKEN={env['ADMIN_TOKEN']}",
+        "-e",
+        f"WORKLOAD_SEED={env['WORKLOAD_SEED']}",
+        "-e",
+        f"VUS={env['VUS']}",
+        "-e",
+        f"ITERATIONS={env['ITERATIONS']}",
+    ]
+    if extra_env:
+        for k, v in extra_env.items():
+            cmd.extend(["-e", f"{k}={v}"])
+    cmd.extend(
+        [
+            K6_PINNED_IMAGE,
             "run",
             "--summary-trend-stats",
             "avg,min,med,max,p(90),p(95),p(99),count",
             "--summary-export",
-            str(summary_path),
-            str(script_path),
+            f"/load_testing/reports/{output_json}",
+            f"/load_testing/scripts/{script_name}",
         ]
+    )
 
     print(f"[k6 Runner] Executing: {' '.join(cmd)}")
     start = time.perf_counter()
@@ -807,8 +848,12 @@ def main():
     print("                        per-pair difference aggregation, SHA-256 DB verification.")
     print("================================================================================\n")
 
-    # Step -1: Verify and record pinned k6 runtime version
-    verify_and_record_k6_runtime_version()
+    # Step -1: Verify and record pinned k6 runtime version (fail-closed)
+    try:
+        verify_and_record_k6_runtime_version()
+    except K6RuntimeVerificationError as exc:
+        print(f"CRITICAL: k6 runtime verification failed: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     # Step 0: Capture Database Baseline Snapshot (SHA-256 over all 9 columns)
     print("\n--- STEP 0: Capturing Initial Database SHA-256 Integrity Snapshot ---")

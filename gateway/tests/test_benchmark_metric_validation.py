@@ -6,10 +6,14 @@ malformed, or inconsistent summary data instead of substituting fabricated defau
 
 import json
 import math
+import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 # Ensure load_testing module is on path
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -17,7 +21,15 @@ LOAD_TEST_DIR = REPO_ROOT / "load_testing"
 if str(LOAD_TEST_DIR) not in sys.path:
     sys.path.insert(0, str(LOAD_TEST_DIR))
 
-from run_paired_benchmark import MetricValidationError, extract_metrics  # noqa: E402
+from run_paired_benchmark import (  # noqa: E402
+    K6_EXPECTED_RUNTIME_VERSION,
+    K6_PINNED_IMAGE,
+    K6RuntimeVerificationError,
+    MetricValidationError,
+    extract_metrics,
+    run_k6,
+    verify_and_record_k6_runtime_version,
+)
 
 
 def _make_valid_summary_data() -> dict:
@@ -368,6 +380,112 @@ class BenchmarkMetricValidationTests(unittest.TestCase):
         with self.assertRaises(MetricValidationError) as ctx:
             extract_metrics(self.summary_file)
         self.assertIn("percentiles must be non-decreasing", str(ctx.exception))
+
+
+class K6RuntimeVerificationTests(unittest.TestCase):
+    """
+    Tests for fail-closed k6 runtime verification:
+    - Rejects overridden or mismatched image digests.
+    - Rejects mismatched runtime versions.
+    - Rejects failed Docker command execution.
+    - Rejects missing Docker executable or disabled K6_USE_DOCKER.
+    - Verifies that run_k6 fails closed if Docker is unavailable.
+    - Verifies that exact pinned image and expected version pass cleanly.
+    """
+
+    def test_overridden_image_parameter_raises(self):
+        """Passing an unpinned or mismatched image raises K6RuntimeVerificationError."""
+        with self.assertRaises(K6RuntimeVerificationError) as ctx:
+            verify_and_record_k6_runtime_version(image="grafana/k6:latest")
+        self.assertIn("does not match pinned image digest", str(ctx.exception))
+
+    def test_overridden_image_env_raises(self):
+        """Setting K6_IMAGE to an unpinned image raises K6RuntimeVerificationError."""
+        with patch.dict(os.environ, {"K6_IMAGE": "grafana/k6:v0.45.0"}):
+            with self.assertRaises(K6RuntimeVerificationError) as ctx:
+                verify_and_record_k6_runtime_version()
+            self.assertIn("does not match pinned image digest", str(ctx.exception))
+
+    def test_mismatched_runtime_version_raises(self):
+        """When Docker returns a different k6 version string, verification fails fast."""
+        mock_proc = subprocess.CompletedProcess(
+            args=["docker", "run", "--rm", K6_PINNED_IMAGE, "version"],
+            returncode=0,
+            stdout="k6 v0.49.0 (commit/12345678, go1.22.0, linux/amd64)\n",
+        )
+        with patch("shutil.which", return_value="/usr/bin/docker"), patch(
+            "subprocess.run", return_value=mock_proc
+        ):
+            with self.assertRaises(K6RuntimeVerificationError) as ctx:
+                verify_and_record_k6_runtime_version()
+            self.assertIn("k6 runtime version mismatch", str(ctx.exception))
+            self.assertIn("expected 'k6 v2.4.0", str(ctx.exception))
+
+    def test_failed_docker_command_raises(self):
+        """When docker run exits non-zero, verification raises K6RuntimeVerificationError."""
+        err = subprocess.CalledProcessError(
+            returncode=125,
+            cmd=["docker", "run", "--rm", K6_PINNED_IMAGE, "version"],
+            stderr="docker: Error response from daemon: container error\n",
+        )
+        with patch("shutil.which", return_value="/usr/bin/docker"), patch(
+            "subprocess.run", side_effect=err
+        ):
+            with self.assertRaises(K6RuntimeVerificationError) as ctx:
+                verify_and_record_k6_runtime_version()
+            self.assertIn("Failed to execute k6 version check via Docker", str(ctx.exception))
+            self.assertIn("exit code 125", str(ctx.exception))
+
+    def test_unavailable_docker_runtime_raises(self):
+        """When Docker executable is not in PATH, verification raises K6RuntimeVerificationError."""
+        with patch("shutil.which", return_value=None):
+            with self.assertRaises(K6RuntimeVerificationError) as ctx:
+                verify_and_record_k6_runtime_version()
+            self.assertIn("Docker executable not found in PATH", str(ctx.exception))
+
+    def test_disabled_docker_env_raises(self):
+        """When K6_USE_DOCKER is disabled ('0'), verification raises K6RuntimeVerificationError."""
+        with patch.dict(os.environ, {"K6_USE_DOCKER": "0"}):
+            with self.assertRaises(K6RuntimeVerificationError) as ctx:
+                verify_and_record_k6_runtime_version()
+            self.assertIn("K6_USE_DOCKER is disabled", str(ctx.exception))
+
+    def test_run_k6_without_docker_raises(self):
+        """run_k6() fails fast if Docker is missing from PATH (no silent fallback)."""
+        with patch("shutil.which", return_value=None):
+            with self.assertRaises(K6RuntimeVerificationError) as ctx:
+                run_k6("00_smoke_test.js", "dummy.json")
+            self.assertIn("Docker executable not found in PATH", str(ctx.exception))
+
+    def test_run_k6_disabled_docker_raises(self):
+        """run_k6() fails fast if K6_USE_DOCKER is '0'."""
+        with patch.dict(os.environ, {"K6_USE_DOCKER": "0"}):
+            with self.assertRaises(K6RuntimeVerificationError) as ctx:
+                run_k6("00_smoke_test.js", "dummy.json")
+            self.assertIn("K6_USE_DOCKER is disabled", str(ctx.exception))
+
+    def test_valid_pinned_runtime_succeeds(self):
+        """When Docker returns the exact expected version for the pinned digest, verification succeeds."""
+        mock_proc = subprocess.CompletedProcess(
+            args=["docker", "run", "--rm", K6_PINNED_IMAGE, "version"],
+            returncode=0,
+            stdout=f"{K6_EXPECTED_RUNTIME_VERSION}\n",
+        )
+        with patch("shutil.which", return_value="/usr/bin/docker"), patch(
+            "subprocess.run", return_value=mock_proc
+        ):
+            ver = verify_and_record_k6_runtime_version()
+            self.assertEqual(ver, K6_EXPECTED_RUNTIME_VERSION)
+
+    def test_real_docker_verification_if_available(self):
+        """If host has Docker and image is present, live verification succeeds."""
+        if not shutil.which("docker") or os.environ.get("CI"):
+            self.skipTest("Skipping live docker test in environment without docker or in CI unit test runner")
+        try:
+            ver = verify_and_record_k6_runtime_version()
+            self.assertEqual(ver, K6_EXPECTED_RUNTIME_VERSION)
+        except K6RuntimeVerificationError as exc:
+            self.fail(f"Live verification failed unexpectedly on host: {exc}")
 
 
 if __name__ == "__main__":
