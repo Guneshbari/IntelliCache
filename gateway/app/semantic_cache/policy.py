@@ -12,10 +12,16 @@ import logging
 import re
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
-from .compatibility import CompatibilityExtractor, compare_compatibility
+from .compatibility import (
+    CompatibilityExtractor,
+    compare_compatibility_decision,
+    extract_effective_user_query,
+)
 from .contracts import (
     CURRENT_SCHEMA_VERSION,
+    CompatibilityDecision,
     CompatibilityReasonCode,
+    CompatibilityStatus,
     EligibilityResult,
     MetadataStatus,
     SUPPORTED_SCHEMA_VERSIONS,
@@ -49,11 +55,14 @@ _TECHNICAL_KEYWORDS = {
     "python", "javascript", "typescript", "rust", "golang", "go", "java", "c++",
     "c#", "c", "sql", "html", "css", "bash", "shell", "sh", "zsh", "powershell",
     "php", "ruby", "swift", "kotlin", "scala", "r", "perl", "lua", "elixir",
-    # Frameworks & tools
+    "dart", "haskell", "clojure", "erlang", "zig", "ocaml", "solidity", "groovy",
+    # Frameworks, libraries & tools
     "react", "vue", "angular", "next.js", "nextjs", "fastapi", "flask", "django",
     "express", "node", "nodejs", "spring", "docker", "dockerfile", "kubernetes",
     "k8s", "git", "github", "postgres", "postgresql", "mysql", "sqlite", "redis",
     "linux", "ubuntu", "debian", "arch", "webpack", "vite", "vitest", "pytest",
+    "pydantic", "sqlalchemy", "pandas", "numpy", "pytorch", "tensorflow", "prisma",
+    "nestjs", "svelte", "laravel", "rails", "dom", "vdom",
     # Concepts & queries
     "algorithm", "function", "class", "method", "variable", "interface", "struct",
     "array", "list", "dict", "hashmap", "queue", "stack", "tree", "graph",
@@ -119,6 +128,7 @@ class SemanticCachePolicy:
         self.top_k = int(top_k)
         self.configured_model = str(configured_model).strip()
         self.extractor = extractor or CompatibilityExtractor()
+        self._last_evaluation_diagnostics: Optional[Dict[str, Any]] = None
 
     def check_eligibility(self, request: GenerationRequest) -> EligibilityResult:
         """
@@ -198,6 +208,21 @@ class SemanticCachePolicy:
                     "Code-generation request without an established programming language is ineligible for semantic caching.",
                 )
 
+        # 2b. Freshness and single-turn context boundaries
+        ctx_dim = req_meta.dimensions.get("context_dependency")
+        if ctx_dim and ctx_dim.status != MetadataStatus.NOT_APPLICABLE:
+            return EligibilityResult(
+                False,
+                "Single-turn request contains unresolved prior-context dependencies.",
+            )
+
+        fresh_dim = req_meta.dimensions.get("freshness")
+        if fresh_dim and fresh_dim.status != MetadataStatus.NOT_APPLICABLE:
+            return EligibilityResult(
+                False,
+                "Time-sensitive or freshness-dependent requests are excluded from unverified semantic caching.",
+            )
+
         # 3. Check for contradictory or ambiguous dimensions
         for dim_name, dim_val in req_meta.dimensions.items():
             if dim_val.status == MetadataStatus.UNKNOWN:
@@ -228,6 +253,146 @@ class SemanticCachePolicy:
 
         return False
 
+    def validate_candidate(
+        self,
+        candidate: VectorSearchResult,
+        request: GenerationRequest,
+        request_metadata: Optional[SemanticCompatibilityMetadata] = None,
+    ) -> CompatibilityDecision:
+        """
+        Evaluates candidate compatibility and returns an explicit tri-state CompatibilityDecision.
+        Only CompatibilityStatus.COMPATIBLE authorizes downstream similarity/ambiguity checks.
+        Both INCOMPATIBLE and UNCERTAIN fail closed.
+        """
+        if not candidate.cached_response or not candidate.cached_response.strip():
+            code = CompatibilityReasonCode.NO_ASSOCIATED_RESPONSE
+            return CompatibilityDecision(
+                status=CompatibilityStatus.INCOMPATIBLE,
+                reason_code=code,
+                message=f"{code}: Candidate has no associated active exact-cache response.",
+                dimension="response",
+            )
+
+        if candidate.cache_namespace != request.namespace:
+            code = CompatibilityReasonCode.NAMESPACE_MISMATCH
+            return CompatibilityDecision(
+                status=CompatibilityStatus.INCOMPATIBLE,
+                reason_code=code,
+                message=f"{code}: Namespace mismatch: candidate '{candidate.cache_namespace}' != request '{request.namespace}'.",
+                dimension="namespace",
+            )
+
+        if candidate.model != self.configured_model:
+            code = CompatibilityReasonCode.EMBEDDING_MODEL_MISMATCH
+            return CompatibilityDecision(
+                status=CompatibilityStatus.INCOMPATIBLE,
+                reason_code=code,
+                message=f"{code}: Embedding model mismatch: candidate '{candidate.model}' != configured '{self.configured_model}'.",
+                dimension="embedding_contract",
+            )
+
+        meta_dict = candidate.metadata or {}
+        if not meta_dict or "schema_version" not in meta_dict:
+            code = CompatibilityReasonCode.LEGACY_METADATA_MISSING
+            msg = (
+                f"{code}: Candidate is missing semantic compatibility metadata."
+                if not meta_dict
+                else f"{code}: Candidate lacks versioned semantic metadata (legacy record)."
+            )
+            return CompatibilityDecision(
+                status=CompatibilityStatus.UNCERTAIN,
+                reason_code=code,
+                message=msg,
+                dimension="schema_version",
+            )
+
+        if meta_dict["schema_version"] not in SUPPORTED_SCHEMA_VERSIONS:
+            code = CompatibilityReasonCode.UNSUPPORTED_SCHEMA_VERSION
+            return CompatibilityDecision(
+                status=CompatibilityStatus.INCOMPATIBLE,
+                reason_code=code,
+                message=f"{code}: Unsupported metadata schema version {meta_dict['schema_version']}.",
+                dimension="schema_version",
+                evidence={"schema_version": meta_dict.get("schema_version")},
+            )
+
+        try:
+            cand_meta = SemanticCompatibilityMetadata.from_dict(meta_dict)
+        except Exception as exc:
+            code = CompatibilityReasonCode.INVALID_METADATA_FORMAT
+            return CompatibilityDecision(
+                status=CompatibilityStatus.UNCERTAIN,
+                reason_code=code,
+                message=f"{code}: Candidate metadata malformed: {exc}.",
+                dimension="metadata",
+            )
+
+        gen_cand = cand_meta.generation_contract
+        if gen_cand.provider != request.provider:
+            code = CompatibilityReasonCode.GENERATION_PROVIDER_MISMATCH
+            return CompatibilityDecision(
+                status=CompatibilityStatus.INCOMPATIBLE,
+                reason_code=code,
+                message=f"{code}: Provider mismatch: candidate '{gen_cand.provider}' != request '{request.provider}'.",
+                dimension="generation_provider",
+                evidence={"request": request.provider, "candidate": gen_cand.provider},
+            )
+
+        if gen_cand.model != request.model:
+            code = CompatibilityReasonCode.GENERATION_MODEL_MISMATCH
+            return CompatibilityDecision(
+                status=CompatibilityStatus.INCOMPATIBLE,
+                reason_code=code,
+                message=f"{code}: Model mismatch: candidate '{gen_cand.model}' != request '{request.model}'.",
+                dimension="generation_model",
+                evidence={"request": request.model, "candidate": gen_cand.model},
+            )
+
+        try:
+            if abs(float(gen_cand.temperature) - float(request.temperature)) > 1e-4:
+                code = CompatibilityReasonCode.GENERATION_TEMPERATURE_MISMATCH
+                return CompatibilityDecision(
+                    status=CompatibilityStatus.INCOMPATIBLE,
+                    reason_code=code,
+                    message=f"{code}: Temperature mismatch: candidate {gen_cand.temperature} != request {request.temperature}.",
+                    dimension="generation_temperature",
+                    evidence={"request": request.temperature, "candidate": gen_cand.temperature},
+                )
+        except (ValueError, TypeError):
+            code = CompatibilityReasonCode.GENERATION_TEMPERATURE_MISMATCH
+            return CompatibilityDecision(
+                status=CompatibilityStatus.INCOMPATIBLE,
+                reason_code=code,
+                message=f"{code}: Candidate has invalid temperature configuration.",
+                dimension="generation_temperature",
+            )
+
+        if gen_cand.max_tokens != request.max_tokens:
+            code = CompatibilityReasonCode.GENERATION_MAX_TOKENS_MISMATCH
+            return CompatibilityDecision(
+                status=CompatibilityStatus.INCOMPATIBLE,
+                reason_code=code,
+                message=f"{code}: max_tokens mismatch: candidate {gen_cand.max_tokens} != request {request.max_tokens}.",
+                dimension="generation_max_tokens",
+                evidence={"request": request.max_tokens, "candidate": gen_cand.max_tokens},
+            )
+
+        if request_metadata is not None:
+            req_meta = request_metadata
+        else:
+            try:
+                req_meta = self.extractor.extract(request, self.configured_model)
+            except Exception as exc:
+                code = CompatibilityReasonCode.INVALID_METADATA_FORMAT
+                return CompatibilityDecision(
+                    status=CompatibilityStatus.UNCERTAIN,
+                    reason_code=code,
+                    message=f"{code}: Failed to extract request metadata: {exc}.",
+                    dimension="request_metadata",
+                )
+
+        return compare_compatibility_decision(req_meta, cand_meta, raw_candidate_metadata=meta_dict)
+
     def is_candidate_compatible(
         self,
         candidate: VectorSearchResult,
@@ -235,66 +400,12 @@ class SemanticCachePolicy:
         request_metadata: Optional[SemanticCompatibilityMetadata] = None,
     ) -> Tuple[bool, str]:
         """
-        Verifies that a nearest-neighbour vector candidate matches all required
-        compatibility criteria: namespace, embedding model, LLM provider, LLM model,
-        temperature, max_tokens, validated metadata schema, and all domain dimensions.
+        Backwards-compatible boolean adapter over validate_candidate().
+        Fail-closed: only CompatibilityStatus.COMPATIBLE returns True; both
+        INCOMPATIBLE and UNCERTAIN return False with diagnostic message.
         """
-        if not candidate.cached_response or not candidate.cached_response.strip():
-            return False, f"{CompatibilityReasonCode.NO_ASSOCIATED_RESPONSE}: Candidate has no associated active exact-cache response."
-
-        if candidate.cache_namespace != request.namespace:
-            return False, f"{CompatibilityReasonCode.NAMESPACE_MISMATCH}: Namespace mismatch: candidate '{candidate.cache_namespace}' != request '{request.namespace}'."
-
-        if candidate.model != self.configured_model:
-            return False, f"{CompatibilityReasonCode.EMBEDDING_MODEL_MISMATCH}: Embedding model mismatch: candidate '{candidate.model}' != configured '{self.configured_model}'."
-
-        meta_dict = candidate.metadata or {}
-        if not meta_dict:
-            return False, f"{CompatibilityReasonCode.LEGACY_METADATA_MISSING}: Candidate is missing semantic compatibility metadata."
-
-        if "schema_version" not in meta_dict:
-            return False, f"{CompatibilityReasonCode.LEGACY_METADATA_MISSING}: Candidate lacks versioned semantic metadata (legacy record)."
-
-        if meta_dict["schema_version"] not in SUPPORTED_SCHEMA_VERSIONS:
-            return False, f"{CompatibilityReasonCode.UNSUPPORTED_SCHEMA_VERSION}: Unsupported metadata schema version {meta_dict['schema_version']}."
-
-        try:
-            cand_meta = SemanticCompatibilityMetadata.from_dict(meta_dict)
-        except Exception as exc:
-            return False, f"{CompatibilityReasonCode.INVALID_METADATA_FORMAT}: Candidate metadata malformed: {exc}."
-
-        # Generation contract validation
-        gen_cand = cand_meta.generation_contract
-        if gen_cand.provider != request.provider:
-            return False, f"{CompatibilityReasonCode.GENERATION_PROVIDER_MISMATCH}: Provider mismatch: candidate '{gen_cand.provider}' != request '{request.provider}'."
-
-        if gen_cand.model != request.model:
-            return False, f"{CompatibilityReasonCode.GENERATION_MODEL_MISMATCH}: Model mismatch: candidate '{gen_cand.model}' != request '{request.model}'."
-
-        try:
-            if abs(float(gen_cand.temperature) - float(request.temperature)) > 1e-4:
-                return False, f"{CompatibilityReasonCode.GENERATION_TEMPERATURE_MISMATCH}: Temperature mismatch: candidate {gen_cand.temperature} != request {request.temperature}."
-        except (ValueError, TypeError):
-            return False, f"{CompatibilityReasonCode.GENERATION_TEMPERATURE_MISMATCH}: Candidate has invalid temperature configuration."
-
-        if gen_cand.max_tokens != request.max_tokens:
-            return False, f"{CompatibilityReasonCode.GENERATION_MAX_TOKENS_MISMATCH}: max_tokens mismatch: candidate {gen_cand.max_tokens} != request {request.max_tokens}."
-
-        # Extract incoming request metadata once if not pre-extracted
-        if request_metadata is not None:
-            req_meta = request_metadata
-        else:
-            try:
-                req_meta = self.extractor.extract(request, self.configured_model)
-            except Exception as exc:
-                return False, f"{CompatibilityReasonCode.INVALID_METADATA_FORMAT}: Failed to extract request metadata: {exc}."
-
-        # Deterministic domain compatibility comparison
-        is_compat, reason_code, message = compare_compatibility(req_meta, cand_meta)
-        if not is_compat:
-            return False, message
-
-        return True, f"{CompatibilityReasonCode.COMPATIBLE}: Candidate satisfied all generation and domain requirements."
+        decision = self.validate_candidate(candidate, request, request_metadata=request_metadata)
+        return decision.is_compatible, decision.message
 
     def evaluate_candidates(
         self,
@@ -304,17 +415,20 @@ class SemanticCachePolicy:
     ) -> Tuple[Optional[VectorSearchResult], Optional[str]]:
         """
         Evaluates nearest-neighbour candidates in order of similarity.
-        Applies mandatory compatibility checks before similarity thresholding, ensuring
-        high dense similarity cannot override domain incompatibility.
-
-        Returns:
-            (winning_candidate, None) on successful match, or
-            (None, rejection_reason) on rejection.
+        Rejects both INCOMPATIBLE and UNCERTAIN candidates while continuing evaluation across
+        lower-ranked candidates, before applying similarity threshold and ambiguity margin rules.
         """
         if not candidates:
+            self._last_evaluation_diagnostics = {
+                "outcome": "empty_candidates",
+                "decision_status": CompatibilityStatus.UNCERTAIN.value,
+                "reason_code": CompatibilityReasonCode.ALL_CANDIDATES_REJECTED.value,
+                "dimension": None,
+                "decision_evidence": {},
+                "candidate_decisions": [],
+            }
             return None, "No vector candidates retrieved."
 
-        # Extract request metadata once across all candidate comparisons if not provided
         req_meta = request_metadata
         if req_meta is None:
             try:
@@ -323,44 +437,98 @@ class SemanticCachePolicy:
                 logger.debug("Failed to extract request metadata in evaluate_candidates: %s", exc)
                 req_meta = None
 
-        # 1. Filter candidates by deterministic compatibility
         compatible_candidates: List[VectorSearchResult] = []
+        rejected_decisions: List[Tuple[VectorSearchResult, CompatibilityDecision]] = []
+        decision_records: List[Dict[str, Any]] = []
+
         for cand in candidates:
-            is_compat, reason = self.is_candidate_compatible(cand, request, request_metadata=req_meta)
-            if is_compat:
+            decision = self.validate_candidate(cand, request, request_metadata=req_meta)
+            decision_records.append({
+                "fingerprint_prefix": (cand.fingerprint or "")[:12],
+                "similarity": cand.similarity,
+                "decision": decision.to_dict(),
+            })
+            if decision.is_compatible:
                 compatible_candidates.append(cand)
             else:
+                rejected_decisions.append((cand, decision))
                 logger.debug(
-                    "Candidate fingerprint='%s...' rejected for compatibility: %s",
-                    cand.fingerprint[:12],
-                    reason,
+                    "Candidate fingerprint='%s...' rejected (%s / %s): %s",
+                    (cand.fingerprint or "")[:12],
+                    decision.status.value,
+                    decision.reason_code.value,
+                    decision.message,
                 )
 
         if not compatible_candidates:
-            return None, "No compatible candidates satisfied generation and domain requirements."
+            primary_decision = rejected_decisions[0][1] if rejected_decisions else CompatibilityDecision(
+                status=CompatibilityStatus.UNCERTAIN,
+                reason_code=CompatibilityReasonCode.ALL_CANDIDATES_REJECTED,
+                message=f"{CompatibilityReasonCode.ALL_CANDIDATES_REJECTED}: No candidates evaluated.",
+            )
+            self._last_evaluation_diagnostics = {
+                "outcome": "compatibility_rejected",
+                "decision_status": primary_decision.status.value,
+                "reason_code": primary_decision.reason_code.value,
+                "dimension": primary_decision.dimension,
+                "decision_evidence": dict(primary_decision.evidence),
+                "candidate_decisions": decision_records,
+            }
+            return (
+                None,
+                f"{CompatibilityReasonCode.ALL_CANDIDATES_REJECTED.value}: No compatible candidates satisfied generation and domain requirements. "
+                f"Top rejection ({primary_decision.status.value}): {primary_decision.message}",
+            )
 
-        # Ensure candidates are sorted descending by similarity / ascending by distance
         compatible_candidates.sort(key=lambda c: c.similarity, reverse=True)
         top_cand = compatible_candidates[0]
 
-        # 2. Minimum similarity threshold check on top compatible candidate
         if top_cand.similarity < self.min_similarity:
+            self._last_evaluation_diagnostics = {
+                "outcome": "below_threshold",
+                "decision_status": CompatibilityStatus.COMPATIBLE.value,
+                "reason_code": CompatibilityReasonCode.COMPATIBLE.value,
+                "dimension": "similarity_threshold",
+                "decision_evidence": {
+                    "top_similarity": round(float(top_cand.similarity), 6),
+                    "min_similarity": round(float(self.min_similarity), 6),
+                },
+                "candidate_decisions": decision_records,
+            }
             return (
                 None,
                 f"Similarity below threshold: {top_cand.similarity:.4f} < {self.min_similarity:.4f}.",
             )
 
-        # 3. Ambiguity check: check top candidate against other compatible candidates
         top_response = (top_cand.cached_response or "").strip()
         for other in compatible_candidates[1:]:
             margin = top_cand.similarity - other.similarity
             if margin < self.min_margin:
                 other_response = (other.cached_response or "").strip()
                 if other_response != top_response:
+                    self._last_evaluation_diagnostics = {
+                        "outcome": "ambiguous",
+                        "decision_status": CompatibilityStatus.UNCERTAIN.value,
+                        "reason_code": CompatibilityReasonCode.AMBIGUOUS_CANDIDATES.value,
+                        "dimension": "ambiguity_margin",
+                        "decision_evidence": {
+                            "margin": round(float(margin), 6),
+                            "min_margin": round(float(self.min_margin), 6),
+                        },
+                        "candidate_decisions": decision_records,
+                    }
                     return (
                         None,
                         f"Ambiguous candidate: nearest alternative candidate margin ({margin:.4f}) "
                         f"is below minimum margin ({self.min_margin:.4f}) with a different answer.",
                     )
 
+        self._last_evaluation_diagnostics = {
+            "outcome": "compatible",
+            "decision_status": CompatibilityStatus.COMPATIBLE.value,
+            "reason_code": CompatibilityReasonCode.COMPATIBLE.value,
+            "dimension": None,
+            "decision_evidence": {},
+            "candidate_decisions": decision_records,
+        }
         return top_cand, None

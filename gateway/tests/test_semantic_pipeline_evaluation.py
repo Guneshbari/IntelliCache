@@ -221,8 +221,8 @@ class TestCandidateLevelAmbiguityAccounting(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.compat_meta = {
-            "schema_version": 2,
-            "extractor_version": "compat-extractor-v2",
+            "schema_version": 3,
+            "extractor_version": "compat-extractor-v3",
             "task_kind": {"status": "KNOWN", "value": "conceptual"},
             "dimensions": {
                 "language": {"status": "NOT_APPLICABLE", "value": None},
@@ -231,9 +231,17 @@ class TestCandidateLevelAmbiguityAccounting(unittest.TestCase):
                 "framework_version": {"status": "NOT_APPLICABLE", "value": None},
                 "runtime": {"status": "NOT_APPLICABLE", "value": None},
                 "runtime_version": {"status": "NOT_APPLICABLE", "value": None},
+                "dependencies": {"status": "NOT_APPLICABLE", "value": None},
                 "execution_model": {"status": "NOT_APPLICABLE", "value": None},
                 "output_format": {"status": "NOT_APPLICABLE", "value": None},
+                "output_constraints": {"status": "NOT_APPLICABLE", "value": None},
                 "constraints": {"status": "NOT_APPLICABLE", "value": None},
+                "freshness": {"status": "NOT_APPLICABLE", "value": None},
+                "context_dependency": {"status": "NOT_APPLICABLE", "value": None},
+            },
+            "compatibility_evidence": {
+                "source": "compat-extractor-v3",
+                "evidence_tier": "request_derived",
             },
             "generation_contract": {"provider": "groq", "model": "qwen/qwen3.8-27b", "temperature": 0.7, "max_tokens": 1000},
             "embedding_contract": {"model": "BAAI/bge-small-en-v1.5"},
@@ -662,8 +670,8 @@ class TestLiveFastEmbedPgvectorPipelineIntegration(unittest.IsolatedAsyncioTestC
         embed_res = await self.embedding_provider.embed(canonical_query, task=EmbeddingTask.DOCUMENT)
         fp = "live_test_fp_001"
         meta = {
-            "schema_version": 2,
-            "extractor_version": "compat-extractor-v2",
+            "schema_version": 3,
+            "extractor_version": "compat-extractor-v3",
             "task_kind": {"status": "KNOWN", "value": "conceptual"},
             "dimensions": {
                 "language": {"status": "NOT_APPLICABLE", "value": None},
@@ -672,9 +680,17 @@ class TestLiveFastEmbedPgvectorPipelineIntegration(unittest.IsolatedAsyncioTestC
                 "framework_version": {"status": "NOT_APPLICABLE", "value": None},
                 "runtime": {"status": "NOT_APPLICABLE", "value": None},
                 "runtime_version": {"status": "NOT_APPLICABLE", "value": None},
+                "dependencies": {"status": "NOT_APPLICABLE", "value": None},
                 "execution_model": {"status": "NOT_APPLICABLE", "value": None},
                 "output_format": {"status": "NOT_APPLICABLE", "value": None},
+                "output_constraints": {"status": "NOT_APPLICABLE", "value": None},
                 "constraints": {"status": "NOT_APPLICABLE", "value": None},
+                "freshness": {"status": "NOT_APPLICABLE", "value": None},
+                "context_dependency": {"status": "NOT_APPLICABLE", "value": None},
+            },
+            "compatibility_evidence": {
+                "source": "compat-extractor-v3",
+                "evidence_tier": "request_derived",
             },
             "generation_contract": {"provider": "groq", "model": "qwen/qwen3.8-27b", "temperature": 0.7, "max_tokens": 1000},
             "embedding_contract": {"model": "BAAI/bge-small-en-v1.5"},

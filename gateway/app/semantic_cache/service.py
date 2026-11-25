@@ -11,7 +11,13 @@ import logging
 import time
 from typing import Any, Callable, Dict, Optional
 
-from .contracts import EligibilityResult, SemanticCacheStats, SemanticHit
+from .compatibility import extract_effective_user_query
+from .contracts import (
+    CompatibilityReasonCode,
+    EligibilityResult,
+    SemanticCacheStats,
+    SemanticHit,
+)
 from .interfaces import BaseSemanticCache
 from .policy import SemanticCachePolicy
 from ..core.contracts import GenerationRequest, GenerationResult
@@ -83,7 +89,7 @@ class SemanticCacheService(BaseSemanticCache):
         collector = self._get_collector()
         ns = request.namespace or self.default_namespace
         lookup_start = time.perf_counter()
-        query_text = (request.messages[0].content or "").strip() if request.messages else ""
+        query_text = extract_effective_user_query(request)
         query_hash = hashlib.sha256(query_text.encode("utf-8")).hexdigest()
 
         eligibility = self.is_eligible(request)
@@ -222,6 +228,8 @@ class SemanticCacheService(BaseSemanticCache):
 
         # 3. Evaluate candidates against policy
         eval_start = time.perf_counter()
+        if hasattr(self.policy, "_last_evaluation_diagnostics"):
+            self.policy._last_evaluation_diagnostics = None
         try:
             winning_candidate, rejection_reason = self.policy.evaluate_candidates(
                 candidates,
@@ -255,6 +263,9 @@ class SemanticCacheService(BaseSemanticCache):
                     "candidates": candidates,
                     "winning_candidate": None,
                     "rejection_reason": f"Policy evaluation failure: {exc}",
+                    "reason_code": CompatibilityReasonCode.VALIDATOR_EXCEPTION.value,
+                    "decision_status": "UNCERTAIN",
+                    "dimension": None,
                 },
                 hook=diagnostics_hook,
             )
@@ -264,34 +275,44 @@ class SemanticCacheService(BaseSemanticCache):
         collector.record_latency(ns, "candidate_policy_latency_ms", eval_lat_ms)
         sem_lat_ms = (time.perf_counter() - lookup_start) * 1000.0
         collector.record_latency(ns, "semantic_lookup_latency_ms", sem_lat_ms)
+        eval_diag = getattr(self.policy, "_last_evaluation_diagnostics", None)
 
         if winning_candidate is None:
             self.stats.misses += 1
             collector.record_semantic_miss(ns)
-            if rejection_reason and "ambiguous" in rejection_reason.lower():
+            eval_outcome = eval_diag.get("outcome") if isinstance(eval_diag, dict) else None
+            if eval_outcome == "ambiguous" or (
+                eval_outcome is None and rejection_reason and "ambiguous" in rejection_reason.lower()
+            ):
                 self.stats.ambiguous_candidates += 1
                 collector.record_ambiguous_candidate(ns)
-            elif rejection_reason and "compatible" in rejection_reason.lower():
+            elif eval_outcome == "compatibility_rejected" or (
+                eval_outcome is None and rejection_reason and "compatible" in rejection_reason.lower()
+            ):
                 self.stats.rejected_candidates += 1
                 collector.record_incompatible_candidate(ns)
 
             logger.debug("Semantic lookup miss: %s", rejection_reason)
-            self._emit_diagnostics(
-                {
-                    "query_hash": query_hash,
-                    "eligible": True,
-                    "reason": eligibility.reason,
-                    "metadata": eligibility.metadata,
-                    "embed_latency_ms": embed_lat_ms,
-                    "search_latency_ms": search_lat_ms,
-                    "eval_latency_ms": eval_lat_ms,
-                    "lookup_latency_ms": sem_lat_ms,
-                    "candidates": candidates,
-                    "winning_candidate": None,
-                    "rejection_reason": rejection_reason,
-                },
-                hook=diagnostics_hook,
-            )
+            diag_payload: Dict[str, Any] = {
+                "query_hash": query_hash,
+                "eligible": True,
+                "reason": eligibility.reason,
+                "metadata": eligibility.metadata,
+                "embed_latency_ms": embed_lat_ms,
+                "search_latency_ms": search_lat_ms,
+                "eval_latency_ms": eval_lat_ms,
+                "lookup_latency_ms": sem_lat_ms,
+                "candidates": candidates,
+                "winning_candidate": None,
+                "rejection_reason": rejection_reason,
+            }
+            if isinstance(eval_diag, dict):
+                diag_payload["decision_status"] = eval_diag.get("decision_status")
+                diag_payload["reason_code"] = eval_diag.get("reason_code")
+                diag_payload["dimension"] = eval_diag.get("dimension")
+                diag_payload["decision_evidence"] = eval_diag.get("decision_evidence")
+                diag_payload["candidate_decisions"] = eval_diag.get("candidate_decisions")
+            self._emit_diagnostics(diag_payload, hook=diagnostics_hook)
             return None
 
         # 4. Successful semantic cache hit
@@ -350,7 +371,7 @@ class SemanticCacheService(BaseSemanticCache):
         if not eligibility.eligible:
             return False
 
-        query_text = request.messages[0].content.strip()
+        query_text = extract_effective_user_query(request)
         ns = request.namespace or self.default_namespace
 
         collector = self._get_collector()

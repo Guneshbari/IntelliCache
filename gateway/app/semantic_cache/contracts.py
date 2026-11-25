@@ -5,8 +5,9 @@ Isolated from FastAPI, Groq SDK, Ollama SDK, and database implementations.
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from enum import Enum
 import math
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 class MetadataStatus:
@@ -33,8 +34,18 @@ class TaskKind:
     })
 
 
-class CompatibilityReasonCode:
-    """Stable diagnostic reason codes for candidate compatibility verification."""
+class CompatibilityStatus(str, Enum):
+    """Explicit tri-state outcome for semantic compatibility evaluation."""
+    COMPATIBLE = "COMPATIBLE"
+    INCOMPATIBLE = "INCOMPATIBLE"
+    UNCERTAIN = "UNCERTAIN"
+
+    def __str__(self) -> str:
+        return self.value
+
+
+class CompatibilityReasonCode(str, Enum):
+    """Stable machine-readable diagnostic reason codes for compatibility verification."""
     COMPATIBLE = "COMPATIBLE"
     NO_ASSOCIATED_RESPONSE = "NO_ASSOCIATED_RESPONSE"
     NAMESPACE_MISMATCH = "NAMESPACE_MISMATCH"
@@ -53,17 +64,77 @@ class CompatibilityReasonCode:
     FRAMEWORK_VERSION_MISMATCH = "FRAMEWORK_VERSION_MISMATCH"
     RUNTIME_MISMATCH = "RUNTIME_MISMATCH"
     RUNTIME_VERSION_MISMATCH = "RUNTIME_VERSION_MISMATCH"
+    DEPENDENCY_MISMATCH = "DEPENDENCY_MISMATCH"
+    DEPENDENCY_VERSION_MISMATCH = "DEPENDENCY_VERSION_MISMATCH"
     EXECUTION_MODEL_MISMATCH = "EXECUTION_MODEL_MISMATCH"
     OUTPUT_FORMAT_MISMATCH = "OUTPUT_FORMAT_MISMATCH"
+    OUTPUT_CONSTRAINT_MISMATCH = "OUTPUT_CONSTRAINT_MISMATCH"
     CONSTRAINT_MISMATCH = "CONSTRAINT_MISMATCH"
     UNKNOWN_MATERIAL_DIMENSION = "UNKNOWN_MATERIAL_DIMENSION"
+    UNKNOWN_LANGUAGE = "UNKNOWN_LANGUAGE"
+    UNKNOWN_FRAMEWORK = "UNKNOWN_FRAMEWORK"
+    UNKNOWN_DEPENDENCY = "UNKNOWN_DEPENDENCY"
+    UNKNOWN_VERSION = "UNKNOWN_VERSION"
+    UNKNOWN_RUNTIME = "UNKNOWN_RUNTIME"
+    UNKNOWN_EXECUTION_MODEL = "UNKNOWN_EXECUTION_MODEL"
+    UNKNOWN_OUTPUT_FORMAT = "UNKNOWN_OUTPUT_FORMAT"
+    MISSING_REQUIRED_METADATA = "MISSING_REQUIRED_METADATA"
+    UNVERIFIED_COMPATIBILITY_EVIDENCE = "UNVERIFIED_COMPATIBILITY_EVIDENCE"
+    UNVERIFIED_OUTPUT_ARTIFACT = "UNVERIFIED_OUTPUT_ARTIFACT"
+    FRESHNESS_NOT_ESTABLISHED = "FRESHNESS_NOT_ESTABLISHED"
+    CONTEXT_DEPENDENCY_UNRESOLVED = "CONTEXT_DEPENDENCY_UNRESOLVED"
+    AMBIGUOUS_COMPATIBILITY_EVIDENCE = "AMBIGUOUS_COMPATIBILITY_EVIDENCE"
+    AMBIGUOUS_CANDIDATES = "AMBIGUOUS_CANDIDATES"
+    ALL_CANDIDATES_REJECTED = "ALL_CANDIDATES_REJECTED"
     VALIDATOR_EXCEPTION = "VALIDATOR_EXCEPTION"
 
+    def __str__(self) -> str:
+        return self.value
 
-CURRENT_SCHEMA_VERSION = 2
-SUPPORTED_SCHEMA_VERSIONS = frozenset({2})
 
-REQUIRED_DIMENSIONS = frozenset({
+CURRENT_SCHEMA_VERSION = 3
+LEGACY_SCHEMA_VERSIONS = frozenset({2})
+SUPPORTED_SCHEMA_VERSIONS = frozenset({2, 3})
+
+EVIDENCE_TIER_REQUEST_DERIVED = "request_derived"
+EVIDENCE_TIER_RESPONSE_VERIFIED = "response_verified"
+VALID_EVIDENCE_TIERS = frozenset({
+    EVIDENCE_TIER_REQUEST_DERIVED,
+    EVIDENCE_TIER_RESPONSE_VERIFIED,
+})
+
+TRUSTED_REQUEST_EXTRACTOR_ID = "compat-extractor-v3"
+TRUSTED_RESPONSE_VERIFIER_ID = "response-artifact-verifier-v1"
+TRUSTED_CURATED_EVIDENCE_ID = "compat-evidence-curator-v1"
+
+TRUSTED_REQUEST_EVIDENCE_PRODUCERS = frozenset({
+    TRUSTED_REQUEST_EXTRACTOR_ID,
+})
+TRUSTED_RESPONSE_EVIDENCE_PRODUCERS = frozenset({
+    TRUSTED_RESPONSE_VERIFIER_ID,
+    TRUSTED_CURATED_EVIDENCE_ID,
+})
+
+# Keys forbidden in diagnostic evidence payloads to prevent prompt/response/secret leakage.
+_SENSITIVE_DIAGNOSTIC_KEYS = frozenset({
+    "prompt",
+    "query",
+    "query_text",
+    "raw_text",
+    "content",
+    "messages",
+    "cached_response",
+    "response",
+    "response_text",
+    "api_key",
+    "token",
+    "secret",
+    "password",
+    "authorization",
+    "cookie",
+})
+
+V2_REQUIRED_DIMENSIONS = frozenset({
     "language",
     "language_version",
     "framework",
@@ -73,6 +144,22 @@ REQUIRED_DIMENSIONS = frozenset({
     "execution_model",
     "output_format",
     "constraints",
+})
+
+REQUIRED_DIMENSIONS = frozenset({
+    "language",
+    "language_version",
+    "framework",
+    "framework_version",
+    "runtime",
+    "runtime_version",
+    "dependencies",
+    "execution_model",
+    "output_format",
+    "output_constraints",
+    "constraints",
+    "freshness",
+    "context_dependency",
 })
 
 
@@ -105,23 +192,48 @@ class DimensionValue:
         return {"status": self.status, "value": val}
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "DimensionValue":
+    def from_dict(
+        cls,
+        data: Dict[str, Any],
+        dimension_name: Optional[str] = None,
+    ) -> "DimensionValue":
         if not isinstance(data, dict):
             raise ValueError(f"Expected dict for DimensionValue, got {type(data).__name__}")
         raw_status = data.get("status")
         if not isinstance(raw_status, str) or not raw_status.strip():
             raise ValueError(f"DimensionValue 'status' must be a non-empty string, got {raw_status} ({type(raw_status).__name__})")
         raw_val = data.get("value")
-        # Handle list of constraint items if present
+        # Handle list of structured constraint or dependency items if present
         if isinstance(raw_val, list):
             parsed_list = []
             for item in raw_val:
-                if isinstance(item, dict):
-                    parsed_list.append(ConstraintItem.from_dict(item))
-                elif isinstance(item, ConstraintItem):
+                if dimension_name == "dependencies":
+                    if isinstance(item, dict):
+                        parsed_list.append(DependencyItem.from_dict(item))
+                    elif isinstance(item, DependencyItem):
+                        parsed_list.append(item)
+                    else:
+                        raise ValueError(f"Expected dict or DependencyItem in dependencies list, got {type(item).__name__}")
+                elif dimension_name in ("constraints", "output_constraints"):
+                    if isinstance(item, dict):
+                        parsed_list.append(ConstraintItem.from_dict(item))
+                    elif isinstance(item, ConstraintItem):
+                        parsed_list.append(item)
+                    else:
+                        raise ValueError(f"Expected dict or ConstraintItem in {dimension_name} list, got {type(item).__name__}")
+                elif isinstance(item, dict):
+                    has_name = "name" in item
+                    has_key = "key" in item
+                    if has_name and not has_key:
+                        parsed_list.append(DependencyItem.from_dict(item))
+                    elif has_key and not has_name:
+                        parsed_list.append(ConstraintItem.from_dict(item))
+                    else:
+                        raise ValueError("Ambiguous or invalid structured list item in DimensionValue.")
+                elif isinstance(item, (ConstraintItem, DependencyItem)):
                     parsed_list.append(item)
                 else:
-                    raise ValueError(f"Expected dict or ConstraintItem in constraints list, got {type(item).__name__}")
+                    raise ValueError(f"Expected dict, ConstraintItem, or DependencyItem in list, got {type(item).__name__}")
             raw_val = parsed_list
         return cls(status=raw_status.strip(), value=raw_val)
 
@@ -167,6 +279,294 @@ class ConstraintItem:
             operator=raw_op.strip(),
             value=raw_val.strip(),
         )
+
+
+@dataclass(frozen=True)
+class DependencyItem:
+    """Normalized library or dependency requirement with optional version pin."""
+    name: str
+    version: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.name, str) or not self.name.strip():
+            raise ValueError("Dependency name must be a non-empty string.")
+        norm_name = self.name.strip().lower()
+        object.__setattr__(self, "name", norm_name)
+
+        if self.version is not None:
+            if not isinstance(self.version, str) or not self.version.strip():
+                raise ValueError("Dependency version must be None or a non-empty string.")
+            norm_ver = self.version.strip().lower()
+            object.__setattr__(self, "version", norm_ver)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"name": self.name, "version": self.version}
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "DependencyItem":
+        if not isinstance(data, dict):
+            raise ValueError(f"Expected dict for DependencyItem, got {type(data).__name__}")
+        raw_name = data.get("name")
+        if not isinstance(raw_name, str) or not raw_name.strip():
+            raise ValueError(
+                f"DependencyItem 'name' must be a non-empty string, got {raw_name!r} ({type(raw_name).__name__})"
+            )
+        raw_ver = data.get("version")
+        if raw_ver is not None and (not isinstance(raw_ver, str) or not raw_ver.strip()):
+            raise ValueError(
+                f"DependencyItem 'version' must be None or a non-empty string, got {raw_ver!r} ({type(raw_ver).__name__})"
+            )
+        return cls(
+            name=raw_name.strip().lower(),
+            version=raw_ver.strip().lower() if raw_ver is not None else None,
+        )
+
+
+def _normalize_string_tuple(raw: Any, field_name: str) -> Tuple[str, ...]:
+    """Validates and normalizes a collection of non-empty strings into a sorted unique tuple."""
+    if raw is None:
+        return ()
+    if not isinstance(raw, (list, tuple, set, frozenset)):
+        raise ValueError(f"CompatibilityEvidence '{field_name}' must be a sequence of strings, got {type(raw).__name__}")
+    items: List[str] = []
+    for entry in raw:
+        if not isinstance(entry, str) or not entry.strip():
+            raise ValueError(f"CompatibilityEvidence '{field_name}' entries must be non-empty strings, got {entry!r}")
+        items.append(entry.strip().lower())
+    return tuple(sorted(set(items)))
+
+
+@dataclass(frozen=True)
+class CompatibilityEvidence:
+    """
+    Explicit provenance-bound evidence supporting conditional compatibility decisions.
+    Separates request-derived extracted attributes from trusted response-verified artifacts.
+    """
+    source: str
+    evidence_tier: str = EVIDENCE_TIER_REQUEST_DERIVED
+    version_independent: bool = False
+    compatible_language_versions: Tuple[str, ...] = ()
+    compatible_framework_versions: Tuple[str, ...] = ()
+    compatible_dependency_versions: Tuple[str, ...] = ()
+    language_independent: bool = False
+    context_independent: bool = False
+    verified_output_format: Optional[str] = None
+    verified_json_valid: bool = False
+    freshness_verified: bool = False
+    artifact_schema_version: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.source, str) or not self.source.strip():
+            raise ValueError("CompatibilityEvidence 'source' must be a non-empty string.")
+        object.__setattr__(self, "source", self.source.strip())
+
+        if not isinstance(self.evidence_tier, str) or not self.evidence_tier.strip():
+            raise ValueError("CompatibilityEvidence 'evidence_tier' must be a non-empty string.")
+        object.__setattr__(self, "evidence_tier", self.evidence_tier.strip())
+
+        for bool_field in (
+            "version_independent",
+            "language_independent",
+            "context_independent",
+            "verified_json_valid",
+            "freshness_verified",
+        ):
+            val = getattr(self, bool_field)
+            if not isinstance(val, bool):
+                raise ValueError(f"CompatibilityEvidence '{bool_field}' must be a boolean, got {type(val).__name__}")
+
+        object.__setattr__(
+            self,
+            "compatible_language_versions",
+            _normalize_string_tuple(self.compatible_language_versions, "compatible_language_versions"),
+        )
+        object.__setattr__(
+            self,
+            "compatible_framework_versions",
+            _normalize_string_tuple(self.compatible_framework_versions, "compatible_framework_versions"),
+        )
+        object.__setattr__(
+            self,
+            "compatible_dependency_versions",
+            _normalize_string_tuple(self.compatible_dependency_versions, "compatible_dependency_versions"),
+        )
+
+        if self.verified_output_format is not None:
+            if not isinstance(self.verified_output_format, str) or not self.verified_output_format.strip():
+                raise ValueError("CompatibilityEvidence 'verified_output_format' must be None or a non-empty string.")
+            object.__setattr__(self, "verified_output_format", self.verified_output_format.strip().lower())
+
+        if self.artifact_schema_version is not None:
+            if (
+                not isinstance(self.artifact_schema_version, int)
+                or isinstance(self.artifact_schema_version, bool)
+                or self.artifact_schema_version <= 0
+            ):
+                raise ValueError(
+                    f"CompatibilityEvidence 'artifact_schema_version' must be a positive int, got {self.artifact_schema_version!r}"
+                )
+
+    @classmethod
+    def default_request_derived(cls, source: str = TRUSTED_REQUEST_EXTRACTOR_ID) -> "CompatibilityEvidence":
+        return cls(source=source, evidence_tier=EVIDENCE_TIER_REQUEST_DERIVED)
+
+    def has_independence_or_verification_claims(self) -> bool:
+        """True if any independence relaxation or response-level artifact claim is asserted."""
+        return bool(
+            self.version_independent
+            or self.compatible_language_versions
+            or self.compatible_framework_versions
+            or self.compatible_dependency_versions
+            or self.language_independent
+            or self.context_independent
+            or self.verified_output_format is not None
+            or self.verified_json_valid
+            or self.freshness_verified
+        )
+
+    def is_trusted_response_verified(self) -> bool:
+        """True only when issued at response_verified tier by an explicitly trusted producer."""
+        return (
+            self.evidence_tier == EVIDENCE_TIER_RESPONSE_VERIFIED
+            and self.source in TRUSTED_RESPONSE_EVIDENCE_PRODUCERS
+        )
+
+    def is_trusted_request_derived(self) -> bool:
+        """True when emitted by the deterministic request extractor without response claims."""
+        return (
+            self.evidence_tier == EVIDENCE_TIER_REQUEST_DERIVED
+            and self.source in TRUSTED_REQUEST_EVIDENCE_PRODUCERS
+            and not self.has_independence_or_verification_claims()
+        )
+
+    def has_conflicting_claims(self) -> bool:
+        """Detects internally inconsistent or ambiguous claims within CompatibilityEvidence."""
+        if self.evidence_tier not in VALID_EVIDENCE_TIERS:
+            return True
+        if self.evidence_tier == EVIDENCE_TIER_REQUEST_DERIVED and self.has_independence_or_verification_claims():
+            return True
+        if self.verified_json_valid and self.verified_output_format is not None and self.verified_output_format != "json":
+            return True
+        if self.version_independent and (
+            self.compatible_language_versions
+            or self.compatible_framework_versions
+            or self.compatible_dependency_versions
+        ):
+            return True
+        return False
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "source": self.source,
+            "evidence_tier": self.evidence_tier,
+            "version_independent": self.version_independent,
+            "compatible_language_versions": list(self.compatible_language_versions),
+            "compatible_framework_versions": list(self.compatible_framework_versions),
+            "compatible_dependency_versions": list(self.compatible_dependency_versions),
+            "language_independent": self.language_independent,
+            "context_independent": self.context_independent,
+            "verified_output_format": self.verified_output_format,
+            "verified_json_valid": self.verified_json_valid,
+            "freshness_verified": self.freshness_verified,
+            "artifact_schema_version": self.artifact_schema_version,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "CompatibilityEvidence":
+        if not isinstance(data, dict):
+            raise ValueError(f"Expected dict for CompatibilityEvidence, got {type(data).__name__}")
+        raw_source = data.get("source")
+        if not isinstance(raw_source, str) or not raw_source.strip():
+            raise ValueError(f"CompatibilityEvidence 'source' must be a non-empty string, got {raw_source!r}")
+        raw_tier = data.get("evidence_tier")
+        if not isinstance(raw_tier, str) or not raw_tier.strip():
+            raise ValueError(f"CompatibilityEvidence 'evidence_tier' must be a non-empty string, got {raw_tier!r}")
+        return cls(
+            source=raw_source.strip(),
+            evidence_tier=raw_tier.strip(),
+            version_independent=data.get("version_independent", False),
+            compatible_language_versions=tuple(data.get("compatible_language_versions") or ()),
+            compatible_framework_versions=tuple(data.get("compatible_framework_versions") or ()),
+            compatible_dependency_versions=tuple(data.get("compatible_dependency_versions") or ()),
+            language_independent=data.get("language_independent", False),
+            context_independent=data.get("context_independent", False),
+            verified_output_format=data.get("verified_output_format"),
+            verified_json_valid=data.get("verified_json_valid", False),
+            freshness_verified=data.get("freshness_verified", False),
+            artifact_schema_version=data.get("artifact_schema_version"),
+        )
+
+
+def _sanitize_diagnostic_value(val: Any) -> Any:
+    if isinstance(val, Enum):
+        return val.value
+    if isinstance(val, dict):
+        return sanitize_diagnostic_evidence(val)
+    if isinstance(val, (list, tuple)):
+        return [_sanitize_diagnostic_value(v) for v in val[:25]]
+    if isinstance(val, str):
+        return val[:200]
+    if isinstance(val, (int, float, bool)) or val is None:
+        return val
+    return str(val)[:200]
+
+
+def sanitize_diagnostic_evidence(raw: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Removes potentially sensitive payload keys before attaching diagnostic evidence."""
+    if not raw or not isinstance(raw, dict):
+        return {}
+    cleaned: Dict[str, Any] = {}
+    for k, v in raw.items():
+        key_str = str(k).strip()
+        if key_str.lower() in _SENSITIVE_DIAGNOSTIC_KEYS:
+            continue
+        cleaned[key_str] = _sanitize_diagnostic_value(v)
+    return cleaned
+
+
+@dataclass(frozen=True)
+class CompatibilityDecision:
+    """
+    Explicit structured tri-state compatibility outcome.
+    Replaces ambiguous boolean-only results across validation and candidate filtering.
+    """
+    status: CompatibilityStatus
+    reason_code: CompatibilityReasonCode
+    message: str
+    dimension: Optional[str] = None
+    evidence: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.status, CompatibilityStatus):
+            object.__setattr__(self, "status", CompatibilityStatus(self.status))
+        if not isinstance(self.reason_code, CompatibilityReasonCode):
+            object.__setattr__(self, "reason_code", CompatibilityReasonCode(self.reason_code))
+        if not isinstance(self.message, str) or not self.message.strip():
+            raise ValueError("CompatibilityDecision 'message' must be a non-empty string.")
+        if self.dimension is not None and (not isinstance(self.dimension, str) or not self.dimension.strip()):
+            raise ValueError("CompatibilityDecision 'dimension' must be None or a non-empty string.")
+        object.__setattr__(self, "evidence", sanitize_diagnostic_evidence(self.evidence))
+
+    @property
+    def is_compatible(self) -> bool:
+        return self.status == CompatibilityStatus.COMPATIBLE
+
+    @property
+    def is_incompatible(self) -> bool:
+        return self.status == CompatibilityStatus.INCOMPATIBLE
+
+    @property
+    def is_uncertain(self) -> bool:
+        return self.status == CompatibilityStatus.UNCERTAIN
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "status": self.status.value,
+            "reason_code": self.reason_code.value,
+            "message": self.message,
+            "dimension": self.dimension,
+            "evidence": dict(self.evidence),
+        }
 
 
 @dataclass(frozen=True)
@@ -269,6 +669,7 @@ class SemanticCompatibilityMetadata:
     generation_contract: GenerationContract
     embedding_contract: EmbeddingContract
     indexed_at: Optional[str] = None
+    compatibility_evidence: Optional[CompatibilityEvidence] = None
 
     def __post_init__(self) -> None:
         self.validate()
@@ -291,7 +692,8 @@ class SemanticCompatibilityMetadata:
         if not isinstance(self.dimensions, dict):
             raise ValueError(f"dimensions must be a dictionary, got {type(self.dimensions).__name__}")
 
-        missing_dims = REQUIRED_DIMENSIONS - set(self.dimensions.keys())
+        required_dims = V2_REQUIRED_DIMENSIONS if self.schema_version == 2 else REQUIRED_DIMENSIONS
+        missing_dims = required_dims - set(self.dimensions.keys())
         if missing_dims:
             raise ValueError(f"Missing required dimensions: {sorted(list(missing_dims))}")
 
@@ -299,12 +701,18 @@ class SemanticCompatibilityMetadata:
             if not isinstance(dim_val, DimensionValue):
                 raise ValueError(f"Dimension '{dim_name}' must be DimensionValue, got {type(dim_val).__name__}")
             if dim_val.status == MetadataStatus.KNOWN:
-                if dim_name == "constraints":
+                if dim_name in ("constraints", "output_constraints"):
                     if not isinstance(dim_val.value, list):
                         raise ValueError(f"Dimension '{dim_name}' value must be a list of ConstraintItem, got {type(dim_val.value).__name__}")
                     for c_item in dim_val.value:
                         if not isinstance(c_item, ConstraintItem):
-                            raise ValueError(f"Constraints list item must be ConstraintItem, got {type(c_item).__name__}")
+                            raise ValueError(f"{dim_name} list item must be ConstraintItem, got {type(c_item).__name__}")
+                elif dim_name == "dependencies":
+                    if not isinstance(dim_val.value, list):
+                        raise ValueError(f"Dimension '{dim_name}' value must be a list of DependencyItem, got {type(dim_val.value).__name__}")
+                    for d_item in dim_val.value:
+                        if not isinstance(d_item, DependencyItem):
+                            raise ValueError(f"Dependencies list item must be DependencyItem, got {type(d_item).__name__}")
                 else:
                     if not isinstance(dim_val.value, str):
                         raise ValueError(f"Dimension '{dim_name}' value must be a string, got {type(dim_val.value).__name__}")
@@ -313,10 +721,14 @@ class SemanticCompatibilityMetadata:
             raise ValueError(f"generation_contract must be GenerationContract, got {type(self.generation_contract).__name__}")
         if not isinstance(self.embedding_contract, EmbeddingContract):
             raise ValueError(f"embedding_contract must be EmbeddingContract, got {type(self.embedding_contract).__name__}")
+        if self.compatibility_evidence is not None and not isinstance(self.compatibility_evidence, CompatibilityEvidence):
+            raise ValueError(
+                f"compatibility_evidence must be CompatibilityEvidence or None, got {type(self.compatibility_evidence).__name__}"
+            )
 
     def to_dict(self) -> Dict[str, Any]:
         """Serializes metadata to standard JSON-compatible dictionary."""
-        return {
+        payload = {
             "schema_version": self.schema_version,
             "extractor_version": self.extractor_version,
             "task_kind": self.task_kind.to_dict(),
@@ -324,12 +736,16 @@ class SemanticCompatibilityMetadata:
             "generation_contract": self.generation_contract.to_dict(),
             "embedding_contract": self.embedding_contract.to_dict(),
             "indexed_at": self.indexed_at or datetime.now(timezone.utc).isoformat(),
+            "compatibility_evidence": (
+                self.compatibility_evidence.to_dict() if self.compatibility_evidence is not None else None
+            ),
             # Supplementary keys for backwards-compatible diagnostics
             "llm_provider": self.generation_contract.provider,
             "llm_model": self.generation_contract.model,
             "temperature": self.generation_contract.temperature,
             "max_tokens": self.generation_contract.max_tokens,
         }
+        return payload
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SemanticCompatibilityMetadata":
@@ -343,6 +759,8 @@ class SemanticCompatibilityMetadata:
         if not isinstance(raw_ver, int) or isinstance(raw_ver, bool):
             raise ValueError(f"Invalid 'schema_version': {raw_ver}. Must be an integer.")
         ver = raw_ver
+        if ver not in SUPPORTED_SCHEMA_VERSIONS:
+            raise ValueError(f"Unsupported schema_version: {ver}. Expected one of {sorted(SUPPORTED_SCHEMA_VERSIONS)}.")
 
         raw_ext = data.get("extractor_version")
         if not isinstance(raw_ext, str) or not raw_ext.strip():
@@ -358,14 +776,15 @@ class SemanticCompatibilityMetadata:
         if not isinstance(raw_dims, dict):
             raise ValueError("Missing or invalid 'dimensions' in metadata.")
 
+        required_dims = V2_REQUIRED_DIMENSIONS if ver == 2 else REQUIRED_DIMENSIONS
         dimensions: Dict[str, DimensionValue] = {}
-        for dim_name in REQUIRED_DIMENSIONS:
+        for dim_name in required_dims:
             if dim_name not in raw_dims:
                 raise ValueError(f"Missing required dimension '{dim_name}' in metadata.")
             dim_dict = raw_dims[dim_name]
             if not isinstance(dim_dict, dict):
                 raise ValueError(f"Invalid dimension dict for '{dim_name}'")
-            dimensions[dim_name] = DimensionValue.from_dict(dim_dict)
+            dimensions[dim_name] = DimensionValue.from_dict(dim_dict, dimension_name=dim_name)
 
         raw_gen = data.get("generation_contract")
         if not isinstance(raw_gen, dict):
@@ -377,6 +796,11 @@ class SemanticCompatibilityMetadata:
             raise ValueError("Missing or invalid 'embedding_contract' in metadata dictionary.")
         embedding_contract = EmbeddingContract.from_dict(raw_emb)
 
+        raw_ev = data.get("compatibility_evidence")
+        compatibility_evidence: Optional[CompatibilityEvidence] = None
+        if raw_ev is not None:
+            compatibility_evidence = CompatibilityEvidence.from_dict(raw_ev)
+
         return cls(
             schema_version=ver,
             extractor_version=ext_ver,
@@ -385,6 +809,7 @@ class SemanticCompatibilityMetadata:
             generation_contract=generation_contract,
             embedding_contract=embedding_contract,
             indexed_at=data.get("indexed_at"),
+            compatibility_evidence=compatibility_evidence,
         )
 
 

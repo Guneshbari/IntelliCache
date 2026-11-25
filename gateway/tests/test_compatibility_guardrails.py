@@ -65,9 +65,13 @@ class TestMetadataContractValidation(unittest.TestCase):
             "framework_version": DimensionValue(status=MetadataStatus.NOT_APPLICABLE, value=None),
             "runtime": DimensionValue(status=MetadataStatus.NOT_APPLICABLE, value=None),
             "runtime_version": DimensionValue(status=MetadataStatus.NOT_APPLICABLE, value=None),
+            "dependencies": DimensionValue(status=MetadataStatus.NOT_APPLICABLE, value=None),
             "execution_model": DimensionValue(status=MetadataStatus.NOT_APPLICABLE, value=None),
             "output_format": DimensionValue(status=MetadataStatus.NOT_APPLICABLE, value=None),
+            "output_constraints": DimensionValue(status=MetadataStatus.NOT_APPLICABLE, value=None),
             "constraints": DimensionValue(status=MetadataStatus.NOT_APPLICABLE, value=None),
+            "freshness": DimensionValue(status=MetadataStatus.NOT_APPLICABLE, value=None),
+            "context_dependency": DimensionValue(status=MetadataStatus.NOT_APPLICABLE, value=None),
         }
 
     def test_valid_metadata_roundtrip(self):
