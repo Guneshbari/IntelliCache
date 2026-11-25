@@ -449,7 +449,7 @@ class TestInMemoryVectorStore(unittest.IsolatedAsyncioTestCase):
         # Verification:
         # 1. The store must still hold the record
         self.assertEqual(await store.get_record_count("default"), 1)
-        stored_rec = store._records.get(("default", "fp_concurrent", "test-model"))
+        stored_rec = store._records.get(("default", "fp_concurrent", "test-model", ""))
         # 2. It must be rec_new, NOT rec_old
         self.assertIs(stored_rec, rec_new)
         self.assertEqual(stored_rec.query_text, "Replacement query during concurrent flight")
@@ -468,7 +468,7 @@ class TestInMemoryVectorStore(unittest.IsolatedAsyncioTestCase):
             model="m1",
         )
         await store.upsert(rec1)
-        key1 = ("default", "fp1", "m1")
+        key1 = ("default", "fp1", "m1", "")
         self.assertIn(key1, store._record_versions)
         v1 = store._record_versions[key1]
 

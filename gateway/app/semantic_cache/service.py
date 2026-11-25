@@ -315,6 +315,11 @@ class SemanticCacheService(BaseSemanticCache):
                 collector.record_ambiguous_candidate(ns)
             elif eval_outcome == "compatibility_rejected":
                 self.stats.rejected_candidates += 1
+                self.stats.all_candidates_rejected_misses += 1
+                collector.record_all_candidates_rejected_miss(ns)
+                if isinstance(eval_diag, dict) and eval_diag.get("retrieval_budget_exhausted"):
+                    self.stats.retrieval_budget_exhaustions += 1
+                    collector.record_retrieval_budget_exhaustion(ns)
                 if decision_status == CompatibilityStatus.UNCERTAIN.value:
                     self.stats.uncertain_candidates += 1
                     collector.record_uncertain_candidate(ns)
@@ -347,6 +352,9 @@ class SemanticCacheService(BaseSemanticCache):
                 diag_payload["candidates_incompatible"] = eval_diag.get("candidates_incompatible")
                 diag_payload["candidates_uncertain"] = eval_diag.get("candidates_uncertain")
                 diag_payload["candidates_legacy"] = eval_diag.get("candidates_legacy")
+                diag_payload["all_candidates_rejected"] = eval_diag.get("all_candidates_rejected")
+                diag_payload["retrieval_budget_exhausted"] = eval_diag.get("retrieval_budget_exhausted")
+                diag_payload["retrieval_budget"] = eval_diag.get("retrieval_budget")
             self._emit_diagnostics(diag_payload, hook=diagnostics_hook)
             return None
 
@@ -512,49 +520,6 @@ class SemanticCacheService(BaseSemanticCache):
                 provider=request.provider,
             )
 
-        # Prevent distinct v3 variant records from silently overwriting each other on the same key
-        if callable(getattr(type(self.vector_store), "get_by_fingerprint", None)):
-            try:
-                existing = await self.vector_store.get_by_fingerprint(
-                    effective_fp,
-                    namespace=ns,
-                    model=self.policy.configured_model,
-                )
-                if isinstance(existing, VectorRecord) and isinstance(existing.metadata, dict):
-                    ex_meta = existing.metadata
-                    ex_vk = ex_meta.get("variant_key")
-                    ex_sv = ex_meta.get("schema_version")
-                    if ex_sv == 3 and ex_vk and ex_vk != variant_key:
-                        self.stats.admission_rejected += 1
-                        collector.record_admission_outcome(ns, AdmissionStatus.REJECT.value)
-                        self.last_admission_decision = AdmissionDecision(
-                            status=AdmissionStatus.REJECT,
-                            reason_code=CompatibilityReasonCode.ADMISSION_REJECTED_VARIANT_COLLISION,
-                            message=(
-                                f"{CompatibilityReasonCode.ADMISSION_REJECTED_VARIANT_COLLISION}: "
-                                f"Refusing overwrite of existing variant '{ex_vk}' with distinct '{variant_key}'."
-                            ),
-                            variant_key=variant_key,
-                            verification=verification,
-                        )
-                        return False
-            except Exception as exc:
-                self.stats.indexing_failures += 1
-                collector.record_indexing_failure(ns)
-                self.last_admission_decision = AdmissionDecision(
-                    status=AdmissionStatus.UNCERTAIN,
-                    reason_code=CompatibilityReasonCode.ADMISSION_UNCERTAIN_VERIFICATION,
-                    message=f"Variant collision check failed cleanly: {exc}",
-                    variant_key=variant_key,
-                    verification=verification,
-                )
-                logger.warning(
-                    "Variant collision check failed during indexing (%s): %s",
-                    type(exc).__name__,
-                    sanitize_error_message(str(exc)),
-                )
-                return False
-
         # 2. Mint cryptographically bound response_verified CompatibilityEvidence
         try:
             bound_evidence = self.evidence_authority.mint_response_verified_evidence(
@@ -630,6 +595,8 @@ class SemanticCacheService(BaseSemanticCache):
             vector=embed_res.vector,
             model=self.policy.configured_model,
             metadata=meta,
+            variant_key=variant_key,
+            response_text=result.text,
         )
 
         # 4. Upsert verified record into vector store
@@ -687,6 +654,8 @@ class SemanticCacheService(BaseSemanticCache):
             "ambiguous_candidates": s.ambiguous_candidate_rejections,
             "no_candidate_misses": s.no_candidate_misses,
             "threshold_rejections": s.threshold_rejections,
+            "all_candidates_rejected_misses": s.all_candidates_rejected_misses,
+            "retrieval_budget_exhaustions": s.retrieval_budget_exhaustions,
             "eligibility_rejections": s.semantic_eligibility_rejections,
             "embedding_failures": s.embedding_failures,
             "vector_store_failures": s.vector_store_failures,

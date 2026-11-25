@@ -111,34 +111,64 @@ class PostgresVectorStore(BaseVectorStore):
         vec_str = _format_vector(record.vector)
         meta_json = json.dumps(record.metadata or {})
         created_at = record.created_at or datetime.now(timezone.utc)
+        variant_key = (record.variant_key or "").strip()
 
-        query = f"""
-            INSERT INTO {self.table_name} (
-                cache_namespace, fingerprint, query_text, model, vector, metadata, created_at, updated_at
+        if self.table_name == "vector_records" and variant_key and record.response_text is not None:
+            query = """
+                INSERT INTO semantic_variant_records (
+                    cache_namespace, fingerprint, variant_key, query_text, model, vector,
+                    metadata, cached_response, created_at, updated_at
+                )
+                VALUES (
+                    $1, $2, $3, $4, $5, $6::vector, $7::jsonb, $8, $9, NOW()
+                )
+                ON CONFLICT (cache_namespace, fingerprint, model, variant_key)
+                DO UPDATE SET
+                    query_text = EXCLUDED.query_text,
+                    vector = EXCLUDED.vector,
+                    metadata = EXCLUDED.metadata,
+                    cached_response = EXCLUDED.cached_response,
+                    updated_at = NOW();
+            """
+            params = (
+                ns,
+                record.fingerprint,
+                variant_key,
+                record.query_text,
+                record.model,
+                vec_str,
+                meta_json,
+                record.response_text,
+                created_at,
             )
-            VALUES (
-                $1, $2, $3, $4, $5::vector, $6::jsonb, $7, NOW()
+        else:
+            query = f"""
+                INSERT INTO {self.table_name} (
+                    cache_namespace, fingerprint, query_text, model, vector, metadata, created_at, updated_at
+                )
+                VALUES (
+                    $1, $2, $3, $4, $5::vector, $6::jsonb, $7, NOW()
+                )
+                ON CONFLICT (cache_namespace, fingerprint, model)
+                DO UPDATE SET
+                    query_text = EXCLUDED.query_text,
+                    vector = EXCLUDED.vector,
+                    metadata = EXCLUDED.metadata,
+                    updated_at = NOW();
+            """
+            params = (
+                ns,
+                record.fingerprint,
+                record.query_text,
+                record.model,
+                vec_str,
+                meta_json,
+                created_at,
             )
-            ON CONFLICT (cache_namespace, fingerprint, model)
-            DO UPDATE SET
-                query_text = EXCLUDED.query_text,
-                vector = EXCLUDED.vector,
-                metadata = EXCLUDED.metadata,
-                updated_at = NOW();
-        """
 
         try:
             async with self.pool.acquire() as conn:
-                await conn.execute(
-                    query,
-                    ns,
-                    record.fingerprint,
-                    record.query_text,
-                    record.model,
-                    vec_str,
-                    meta_json,
-                    created_at,
-                )
+                await conn.execute(query, *params)
             logger.debug(
                 "Upserted vector record: namespace='%s', fingerprint='%s', model='%s', dimensions=%d",
                 ns,
@@ -216,13 +246,83 @@ class PostgresVectorStore(BaseVectorStore):
             LIMIT $4;
         """
 
+        sv_legacy_filter = legacy_filter.replace("v.metadata", "sv.metadata")
+        combined_query = f"""
+            WITH combined AS (
+                (SELECT
+                    v.id,
+                    v.cache_namespace,
+                    v.fingerprint,
+                    v.query_text,
+                    v.model,
+                    v.metadata,
+                    v.created_at,
+                    (v.vector <=> $1::vector) AS distance,
+                    c.response AS cached_response,
+                    c.prompt_tokens,
+                    c.completion_tokens,
+                    c.total_tokens,
+                    c.latency_ms AS original_latency_ms
+                FROM vector_records v
+                JOIN cache_entries c
+                    ON v.cache_namespace = c.cache_namespace
+                   AND v.fingerprint = c.fingerprint
+                   AND (c.expires_at IS NULL OR c.expires_at > NOW())
+                WHERE v.cache_namespace = $2
+                  AND v.model = $3
+                  {legacy_filter}
+                ORDER BY distance ASC
+                LIMIT $4)
+                UNION ALL
+                (SELECT
+                    sv.id,
+                    sv.cache_namespace,
+                    sv.fingerprint,
+                    sv.query_text,
+                    sv.model,
+                    sv.metadata,
+                    sv.created_at,
+                    (sv.vector <=> $1::vector) AS distance,
+                    sv.cached_response AS cached_response,
+                    c.prompt_tokens,
+                    c.completion_tokens,
+                    c.total_tokens,
+                    c.latency_ms AS original_latency_ms
+                FROM semantic_variant_records sv
+                JOIN cache_entries c
+                    ON sv.cache_namespace = c.cache_namespace
+                   AND sv.fingerprint = c.fingerprint
+                   AND (c.expires_at IS NULL OR c.expires_at > NOW())
+                WHERE sv.cache_namespace = $2
+                  AND sv.model = $3
+                  {sv_legacy_filter}
+                ORDER BY distance ASC
+                LIMIT $4)
+            )
+            SELECT * FROM combined ORDER BY distance ASC LIMIT $4;
+        """
+
         try:
             async with self.pool.acquire() as conn:
-                if self.readonly_transaction:
-                    async with conn.transaction(readonly=True):
-                        rows = await conn.fetch(query, vec_str, ns, target_model, top_k)
+                if self.table_name == "vector_records":
+                    try:
+                        if self.readonly_transaction:
+                            async with conn.transaction(readonly=True):
+                                rows = await conn.fetch(combined_query, vec_str, ns, target_model, top_k)
+                        else:
+                            rows = await conn.fetch(combined_query, vec_str, ns, target_model, top_k)
+                    except asyncpg.UndefinedTableError:
+                        if self.readonly_transaction:
+                            async with conn.transaction(readonly=True):
+                                rows = await conn.fetch(query, vec_str, ns, target_model, top_k)
+                        else:
+                            rows = await conn.fetch(query, vec_str, ns, target_model, top_k)
                 else:
-                    rows = await conn.fetch(query, vec_str, ns, target_model, top_k)
+                    if self.readonly_transaction:
+                        async with conn.transaction(readonly=True):
+                            rows = await conn.fetch(query, vec_str, ns, target_model, top_k)
+                    else:
+                        rows = await conn.fetch(query, vec_str, ns, target_model, top_k)
 
             results: List[VectorSearchResult] = []
             for row in rows:
@@ -255,7 +355,7 @@ class PostgresVectorStore(BaseVectorStore):
                     )
                 )
 
-            results.sort(key=lambda r: (r.distance, r.fingerprint))
+            results.sort(key=lambda r: (r.distance, r.fingerprint, str((r.metadata or {}).get("variant_key") or "")))
             logger.debug(
                 "Vector search completed: namespace='%s', model='%s', top_k=%d, found=%d",
                 ns,
@@ -274,8 +374,9 @@ class PostgresVectorStore(BaseVectorStore):
         fingerprint: str,
         namespace: Optional[str] = None,
         model: Optional[str] = None,
+        variant_key: Optional[str] = None,
     ) -> Optional[VectorRecord]:
-        """Retrieves a specific vector record by namespace, fingerprint, and model."""
+        """Retrieves a specific vector record by namespace, fingerprint, and model (optionally scoped by variant_key)."""
         fp = (fingerprint or "").strip()
         if not fp:
             raise VectorInvalidError("Fingerprint cannot be empty.")
@@ -296,7 +397,69 @@ class PostgresVectorStore(BaseVectorStore):
 
         try:
             async with self.pool.acquire() as conn:
-                row = await conn.fetchrow(query, ns, fp, target_model)
+                if self.table_name == "vector_records":
+                    try:
+                        if variant_key is not None:
+                            sv_row = await conn.fetchrow(
+                                """
+                                SELECT cache_namespace, fingerprint, variant_key, query_text, model, vector, metadata, cached_response, created_at
+                                FROM semantic_variant_records
+                                WHERE cache_namespace = $1 AND fingerprint = $2 AND model = $3 AND variant_key = $4
+                                LIMIT 1
+                                """,
+                                ns,
+                                fp,
+                                target_model,
+                                variant_key.strip(),
+                            )
+                        else:
+                            sv_row = await conn.fetchrow(
+                                """
+                                SELECT cache_namespace, fingerprint, variant_key, query_text, model, vector, metadata, cached_response, created_at
+                                FROM semantic_variant_records
+                                WHERE cache_namespace = $1 AND fingerprint = $2 AND model = $3
+                                ORDER BY updated_at DESC
+                                LIMIT 1
+                                """,
+                                ns,
+                                fp,
+                                target_model,
+                            )
+                    except asyncpg.UndefinedTableError:
+                        sv_row = None
+
+                    if sv_row is not None:
+                        raw_meta = sv_row["metadata"]
+                        meta = json.loads(raw_meta) if isinstance(raw_meta, str) else dict(raw_meta or {})
+                        return VectorRecord(
+                            cache_namespace=sv_row["cache_namespace"],
+                            fingerprint=sv_row["fingerprint"],
+                            query_text=sv_row["query_text"],
+                            model=sv_row["model"],
+                            vector=_parse_vector(sv_row["vector"]),
+                            metadata=meta,
+                            created_at=sv_row["created_at"],
+                            variant_key=sv_row["variant_key"],
+                            response_text=sv_row["cached_response"],
+                        )
+                    if variant_key is not None:
+                        row = await conn.fetchrow(
+                            f"""
+                            SELECT cache_namespace, fingerprint, query_text, model, vector, metadata, created_at
+                            FROM {self.table_name}
+                            WHERE cache_namespace = $1 AND fingerprint = $2 AND model = $3
+                              AND metadata->>'variant_key' = $4
+                            """,
+                            ns,
+                            fp,
+                            target_model,
+                            variant_key.strip(),
+                        )
+                    else:
+                        row = await conn.fetchrow(query, ns, fp, target_model)
+                else:
+                    row = await conn.fetchrow(query, ns, fp, target_model)
+
                 if not row:
                     return None
 
@@ -323,40 +486,15 @@ class PostgresVectorStore(BaseVectorStore):
         fingerprint: str,
         namespace: Optional[str] = None,
         model: Optional[str] = None,
+        variant_key: Optional[str] = None,
     ) -> Optional[VectorRecord]:
-        """Retrieves an existing vector record for (namespace, fingerprint, model), if any."""
+        """Retrieves an existing vector record for (namespace, fingerprint, model[, variant_key]), if any."""
         ns = (namespace or self.default_namespace).strip()
         target_model = (model or self.default_model).strip()
         fp = (fingerprint or "").strip()
         if not ns or not fp or not target_model:
             return None
-
-        query = f"""
-            SELECT cache_namespace, fingerprint, query_text, model, vector, metadata, created_at
-            FROM {self.table_name}
-            WHERE cache_namespace = $1 AND fingerprint = $2 AND model = $3
-            LIMIT 1;
-        """
-        try:
-            async with self.pool.acquire() as conn:
-                row = await conn.fetchrow(query, ns, fp, target_model)
-            if not row:
-                return None
-            raw_meta = row["metadata"]
-            meta = json.loads(raw_meta) if isinstance(raw_meta, str) else dict(raw_meta or {})
-            return VectorRecord(
-                cache_namespace=row["cache_namespace"],
-                fingerprint=row["fingerprint"],
-                query_text=row["query_text"],
-                model=row["model"],
-                vector=_parse_vector(row["vector"]),
-                metadata=meta,
-                created_at=row["created_at"],
-            )
-        except asyncpg.PostgresError as e:
-            raise VectorStoreError(f"Database error during vector lookup: {e}") from e
-        except Exception as e:
-            raise VectorStoreConnectionError(f"Connection failure during vector lookup: {e}") from e
+        return await self.get(fp, namespace=ns, model=target_model, variant_key=variant_key)
 
     async def delete(self, fingerprint: str, namespace: Optional[str] = None) -> bool:
         """Deletes vector records matching fingerprint and namespace."""
@@ -370,11 +508,21 @@ class PostgresVectorStore(BaseVectorStore):
 
         query = f"DELETE FROM {self.table_name} WHERE cache_namespace = $1 AND fingerprint = $2"
         try:
+            total_deleted = 0
             async with self.pool.acquire() as conn:
                 result_tag = await conn.execute(query, ns, fp)
-            # Result tag is e.g. "DELETE 1" or "DELETE 0"
-            count = int(result_tag.split()[-1]) if result_tag else 0
-            return count > 0
+                total_deleted += int(result_tag.split()[-1]) if result_tag else 0
+                if self.table_name == "vector_records":
+                    try:
+                        sv_tag = await conn.execute(
+                            "DELETE FROM semantic_variant_records WHERE cache_namespace = $1 AND fingerprint = $2",
+                            ns,
+                            fp,
+                        )
+                        total_deleted += int(sv_tag.split()[-1]) if sv_tag else 0
+                    except asyncpg.UndefinedTableError:
+                        pass
+            return total_deleted > 0
         except asyncpg.PostgresError as e:
             raise VectorStoreError(f"Database error during vector deletion: {e}") from e
         except Exception as e:
@@ -388,9 +536,19 @@ class PostgresVectorStore(BaseVectorStore):
 
         query = f"DELETE FROM {self.table_name} WHERE cache_namespace = $1"
         try:
+            count = 0
             async with self.pool.acquire() as conn:
                 result_tag = await conn.execute(query, ns)
-            count = int(result_tag.split()[-1]) if result_tag else 0
+                count += int(result_tag.split()[-1]) if result_tag else 0
+                if self.table_name == "vector_records":
+                    try:
+                        sv_tag = await conn.execute(
+                            "DELETE FROM semantic_variant_records WHERE cache_namespace = $1",
+                            ns,
+                        )
+                        count += int(sv_tag.split()[-1]) if sv_tag else 0
+                    except asyncpg.UndefinedTableError:
+                        pass
             logger.info("Cleared %d vector records in namespace '%s'", count, ns)
             return count
         except asyncpg.PostgresError as e:

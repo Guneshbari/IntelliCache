@@ -89,7 +89,8 @@ class InMemoryVectorStore(BaseVectorStore):
         if not ns:
             raise VectorInvalidError("Cache namespace cannot be empty.")
 
-        key = (ns, record.fingerprint.strip(), record.model.strip())
+        variant_key = (record.variant_key or "").strip()
+        key = (ns, record.fingerprint.strip(), record.model.strip(), variant_key)
 
         async with self._lock:
             # If inserting a new record and at capacity, evict
@@ -98,7 +99,7 @@ class InMemoryVectorStore(BaseVectorStore):
                 if self.exact_cache is not None:
                     stale_keys = []
                     for k in list(self._records.keys()):
-                        k_ns, k_fp, _ = k
+                        k_ns, k_fp = k[0], k[1]
                         if hasattr(self.exact_cache, "peek"):
                             e = await self.exact_cache.peek(k_fp, namespace=k_ns)
                         else:
@@ -218,14 +219,14 @@ class InMemoryVectorStore(BaseVectorStore):
                     orphaned_candidates.append((k, rec, ver))
                     continue
 
-                cached_resp = entry.response
+                cached_resp = rec.response_text if rec.response_text is not None else entry.response
                 usage = entry.usage
                 prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
                 completion_tokens = getattr(usage, "completion_tokens", 0) or 0
                 total_tokens = getattr(usage, "total_tokens", 0) or 0
                 original_latency_ms = entry.latency_ms
             else:
-                cached_resp = rec.metadata.get("cached_response")
+                cached_resp = rec.response_text if rec.response_text is not None else rec.metadata.get("cached_response")
 
             scored_candidates.append(
                 VectorSearchResult(
@@ -257,8 +258,8 @@ class InMemoryVectorStore(BaseVectorStore):
                         self._record_timestamps.pop(ok, None)
                         self._record_versions.pop(ok, None)
 
-        # Order by cosine distance ascending (closest / highest similarity first), with deterministic tie-breaking on fingerprint
-        scored_candidates.sort(key=lambda c: (c.distance, c.fingerprint))
+        # Order by cosine distance ascending (closest / highest similarity first), with deterministic tie-breaking on fingerprint & variant_key
+        scored_candidates.sort(key=lambda c: (c.distance, c.fingerprint, str((c.metadata or {}).get("variant_key") or "")))
         return scored_candidates[:top_k]
 
     async def get_by_fingerprint(
@@ -266,15 +267,21 @@ class InMemoryVectorStore(BaseVectorStore):
         fingerprint: str,
         namespace: Optional[str] = None,
         model: Optional[str] = None,
+        variant_key: Optional[str] = None,
     ) -> Optional[VectorRecord]:
-        """Retrieves an existing vector record for (namespace, fingerprint, model), if any."""
+        """Retrieves an existing vector record for (namespace, fingerprint, model[, variant_key]), if any."""
         ns = (namespace or self.default_namespace).strip()
         target_model = (model or self.default_model).strip()
         fp = (fingerprint or "").strip()
         if not ns or not fp or not target_model:
             return None
         async with self._lock:
-            return self._records.get((ns, fp, target_model))
+            if variant_key is not None:
+                return self._records.get((ns, fp, target_model, variant_key.strip()))
+            for k, rec in self._records.items():
+                if k[0] == ns and k[1] == fp and k[2] == target_model:
+                    return rec
+            return None
 
     async def delete(self, fingerprint: str, namespace: Optional[str] = None) -> bool:
         """Deletes a vector record by namespace and exact-cache fingerprint."""
@@ -315,7 +322,7 @@ class InMemoryVectorStore(BaseVectorStore):
             if namespace is None:
                 return len(self._records)
             ns = namespace.strip()
-            return sum(1 for (r_ns, _, _) in self._records.keys() if r_ns == ns)
+            return sum(1 for k in self._records.keys() if k[0] == ns)
 
     async def close(self) -> None:
         """Cleans up in-memory vector store resources."""

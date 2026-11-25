@@ -56,6 +56,8 @@ class SemanticMetrics(BaseModel):
     uncertain_candidate_rejections: int = 0
     no_candidate_misses: int = 0
     threshold_rejections: int = 0
+    all_candidates_rejected_misses: int = 0
+    retrieval_budget_exhaustions: int = 0
     embedding_failures: int = 0
     vector_store_failures: int = 0
     indexing_successes: int = 0

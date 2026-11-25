@@ -184,6 +184,7 @@ class TestLifespanStartupAndShutdown(unittest.IsolatedAsyncioTestCase):
             "VECTOR_STORE_BACKEND": "postgres",
             "DATABASE_URL": "postgresql://test_user:pass@localhost:5432/test_db",
             "SEMANTIC_CACHE_ENABLED": "true",
+            "SEMANTIC_CACHE_EVIDENCE_SECRET": "test-postgres-semantic-evidence-secret-0123456789",
             "EMBEDDING_PROVIDER": "ollama",
             "GROQ_API_KEY": "gsk_test",
         }, clear=False):
@@ -278,6 +279,7 @@ class TestLifespanStartupAndShutdown(unittest.IsolatedAsyncioTestCase):
             "VECTOR_STORE_BACKEND": "postgres",
             "DATABASE_URL": "postgresql://test_user:pass@localhost:5432/test_db",
             "SEMANTIC_CACHE_ENABLED": "true",
+            "SEMANTIC_CACHE_EVIDENCE_SECRET": "test-postgres-semantic-evidence-secret-0123456789",
             "GROQ_API_KEY": "gsk_test",
         }, clear=False):
             reload_settings()
@@ -313,6 +315,7 @@ class TestLifespanStartupAndShutdown(unittest.IsolatedAsyncioTestCase):
             "VECTOR_STORE_BACKEND": "postgres",
             "DATABASE_URL": "postgresql://test_user:pass@localhost:5432/test_db",
             "SEMANTIC_CACHE_ENABLED": "true",
+            "SEMANTIC_CACHE_EVIDENCE_SECRET": "test-postgres-semantic-evidence-secret-0123456789",
             "GROQ_API_KEY": "gsk_test",
         }, clear=False):
             reload_settings()
@@ -372,6 +375,7 @@ class TestLifespanStartupAndShutdown(unittest.IsolatedAsyncioTestCase):
             "VECTOR_STORE_BACKEND": "postgres",
             "DATABASE_URL": "postgresql://test_user:pass@localhost:5432/test_db",
             "SEMANTIC_CACHE_ENABLED": "true",
+            "SEMANTIC_CACHE_EVIDENCE_SECRET": "test-postgres-semantic-evidence-secret-0123456789",
             "GROQ_API_KEY": "gsk_test",
         }, clear=False):
             reload_settings()

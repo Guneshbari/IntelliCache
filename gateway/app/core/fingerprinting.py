@@ -91,3 +91,32 @@ def generate_fingerprint(
         ensure_ascii=True,
     )
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def derive_variant_exact_fingerprint(
+    base_fingerprint: str,
+    metadata: Optional[Dict[str, Any]],
+) -> str:
+    """
+    Preserves base_fingerprint unchanged unless response-affecting metadata
+    (e.g., json_schema, output_schema, response_schema) is explicitly supplied,
+    in which case exact-cache lookup and persistence are isolated per schema variant.
+    """
+    if not isinstance(metadata, dict) or not metadata:
+        return base_fingerprint
+
+    schema_scope: Dict[str, Any] = {}
+    for key in ("json_schema", "output_schema", "response_schema"):
+        val = metadata.get(key)
+        if val is not None:
+            schema_scope[key] = val
+
+    if not schema_scope:
+        return base_fingerprint
+
+    payload = {
+        "base_fingerprint": base_fingerprint,
+        "response_constraints": schema_scope,
+    }
+    serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()

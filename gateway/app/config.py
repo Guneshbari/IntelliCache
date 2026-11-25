@@ -173,6 +173,9 @@ class Settings(BaseModel):
     semantic_cache_evidence_secret: Optional[str] = Field(
         default_factory=lambda: (os.getenv("SEMANTIC_CACHE_EVIDENCE_SECRET") or "").strip() or None
     )
+    semantic_cache_evidence_previous_secrets: List[str] = Field(
+        default_factory=lambda: _get_list_from_env("SEMANTIC_CACHE_EVIDENCE_PREVIOUS_SECRETS", [])
+    )
     vector_store_backend: Optional[str] = Field(
         default_factory=lambda: (os.getenv("VECTOR_STORE_BACKEND") or "").lower().strip() or None
     )
@@ -291,6 +294,35 @@ class Settings(BaseModel):
 
         return self
 
+    @staticmethod
+    def _validate_evidence_secret_strength(raw_secret: str, env_name: str) -> str:
+        cleaned = raw_secret.strip()
+        insecure_placeholders = {
+            "secret",
+            "changeme",
+            "change-me",
+            "default",
+            "password",
+            "replace_with_your_key",
+            "replace_with_a_secure_random_hex_or_passphrase_at_least_16_chars",
+            "replace_with_a_strong_256bit_hex_secret",
+            "intellicache-default-identity-secret-change-in-production",
+        }
+        if cleaned.lower() in insecure_placeholders:
+            raise ValueError(
+                f"{env_name} cannot use a known public or placeholder value. "
+                "Generate a dedicated 256-bit secret (e.g., `openssl rand -hex 32`)."
+            )
+        if len(cleaned) < 32:
+            raise ValueError(
+                f"{env_name} must be at least 32 characters long for HMAC-SHA256 evidence security."
+            )
+        if len(set(cleaned)) < 8:
+            raise ValueError(
+                f"{env_name} lacks sufficient entropy (requires at least 8 distinct characters)."
+            )
+        return cleaned
+
     @model_validator(mode="after")
     def validate_semantic_cache_config(self) -> "Settings":
         if self.vector_dimensions is not None and self.vector_dimensions <= 0:
@@ -303,6 +335,32 @@ class Settings(BaseModel):
             raise ValueError("SEMANTIC_CACHE_MIN_MARGIN must be between 0.0 and 1.0.")
         if self.semantic_cache_top_k <= 0:
             raise ValueError("SEMANTIC_CACHE_TOP_K must be positive.")
+
+        if self.semantic_cache_evidence_secret is not None:
+            validated = self._validate_evidence_secret_strength(
+                self.semantic_cache_evidence_secret,
+                "SEMANTIC_CACHE_EVIDENCE_SECRET",
+            )
+            object.__setattr__(self, "semantic_cache_evidence_secret", validated)
+
+        validated_prev: List[str] = []
+        for idx, prev_raw in enumerate(self.semantic_cache_evidence_previous_secrets):
+            validated_prev.append(
+                self._validate_evidence_secret_strength(
+                    prev_raw,
+                    f"SEMANTIC_CACHE_EVIDENCE_PREVIOUS_SECRETS[{idx}]",
+                )
+            )
+        object.__setattr__(self, "semantic_cache_evidence_previous_secrets", validated_prev)
+
+        if self.semantic_cache_enabled and self.vector_store_backend == "postgres":
+            if not self.semantic_cache_evidence_secret:
+                raise ValueError(
+                    "SEMANTIC_CACHE_EVIDENCE_SECRET is required when SEMANTIC_CACHE_ENABLED=true "
+                    "with VECTOR_STORE_BACKEND='postgres'. Persistent semantic records require a stable "
+                    "HMAC signing key shared across all gateway workers and restarts."
+                )
+
         return self
 
     @model_validator(mode="after")

@@ -25,7 +25,7 @@ from urllib.parse import urlsplit
 import asyncpg
 from fastapi.testclient import TestClient
 
-from app.cache.exact_cache import ExactCache
+from app.cache.exact_cache import CacheEntry, ExactCache
 from app.cache.migration import run_migrations
 from app.cache.postgres_cache import PostgresCache
 from app.config import Settings, reload_settings
@@ -453,6 +453,104 @@ class TestStage353VerifierAndEvidence(unittest.TestCase):
         self.assertEqual(s.semantic_cache_top_k, 5)
         self.assertEqual(s.semantic_cache_max_retrieval_candidates, 25)
 
+    def test_persistent_evidence_secret_validation_restart_multiworker_and_rotation(self):
+        # 1. Persistent PostgreSQL semantic cache MUST reject missing secret at config load
+        with self.assertRaises(ValueError) as ctx_missing:
+            Settings(
+                _env_file=None,
+                groq_api_key="gsk_test",
+                cache_backend="postgres",
+                vector_store_backend="postgres",
+                database_url="postgresql://user:pass@localhost:5432/intellicache_test",
+                semantic_cache_enabled=True,
+            )
+        self.assertIn("SEMANTIC_CACHE_EVIDENCE_SECRET is required", str(ctx_missing.exception))
+
+        # 2. Rejects weak/placeholder/short/low-entropy secrets
+        for weak in ("changeme", "short-secret-123", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"):
+            with self.assertRaises(ValueError):
+                Settings(
+                    _env_file=None,
+                    groq_api_key="gsk_test",
+                    cache_backend="postgres",
+                    vector_store_backend="postgres",
+                    database_url="postgresql://user:pass@localhost:5432/intellicache_test",
+                    semantic_cache_enabled=True,
+                    semantic_cache_evidence_secret=weak,
+                )
+
+        # 3. Persistent EvidenceAuthority refuses ephemeral runtime fallback
+        with patch.dict(os.environ, {"SEMANTIC_CACHE_EVIDENCE_SECRET": ""}, clear=False):
+            with self.assertRaises(ValueError):
+                EvidenceAuthority(allow_ephemeral=False)
+
+        # 4. Restart & multi-worker sharing + zero-downtime key rotation
+        k1 = "primary-evidence-secret-k1-0123456789abcdef"
+        k2 = "rotated-evidence-secret-k2-fedcba9876543210"
+        worker_1 = EvidenceAuthority(secret_key=k1, allow_ephemeral=False)
+        worker_2_restart = EvidenceAuthority(secret_key=k1, allow_ephemeral=False)
+
+        meta = self.extractor.extract_from_text("Serialize payload in Python and output strict JSON")
+        resp = '{"status": "ready"}'
+        ver = self.verifier.verify(response_text=resp, request_metadata=meta, finish_reason="stop")
+        ev_k1 = worker_1.mint_response_verified_evidence(
+            cache_namespace="prod_ns",
+            fingerprint="fp_persistent",
+            response_text=resp,
+            metadata=meta,
+            verification=ver,
+        )
+        self.assertIsNotNone(ev_k1.signing_key_id)
+
+        # Worker 2 / Restarted process with same key K1 verifies cleanly
+        ok_w2, _, _ = worker_2_restart.verify_evidence_binding(
+            ev_k1,
+            cache_namespace="prod_ns",
+            fingerprint="fp_persistent",
+            response_text=resp,
+            metadata=meta,
+        )
+        self.assertTrue(ok_w2)
+
+        # Rotated worker with primary=K2 and previous=[K1] still verifies K1 AND mints with K2
+        worker_rotated = EvidenceAuthority(secret_key=k2, previous_secret_keys=[k1], allow_ephemeral=False)
+        ok_rot, _, _ = worker_rotated.verify_evidence_binding(
+            ev_k1,
+            cache_namespace="prod_ns",
+            fingerprint="fp_persistent",
+            response_text=resp,
+            metadata=meta,
+        )
+        self.assertTrue(ok_rot)
+        ev_k2 = worker_rotated.mint_response_verified_evidence(
+            cache_namespace="prod_ns",
+            fingerprint="fp_persistent",
+            response_text=resp,
+            metadata=meta,
+            verification=ver,
+        )
+        self.assertNotEqual(ev_k2.signing_key_id, ev_k1.signing_key_id)
+
+        # After draining old K1 secret, K1 evidence fails closed while K2 succeeds
+        worker_k2_only = EvidenceAuthority(secret_key=k2, allow_ephemeral=False)
+        ok_old_dropped, code_dropped, _ = worker_k2_only.verify_evidence_binding(
+            ev_k1,
+            cache_namespace="prod_ns",
+            fingerprint="fp_persistent",
+            response_text=resp,
+            metadata=meta,
+        )
+        self.assertFalse(ok_old_dropped)
+        self.assertEqual(code_dropped, CompatibilityReasonCode.EVIDENCE_SIGNATURE_INVALID)
+        ok_new_only, _, _ = worker_k2_only.verify_evidence_binding(
+            ev_k2,
+            cache_namespace="prod_ns",
+            fingerprint="fp_persistent",
+            response_text=resp,
+            metadata=meta,
+        )
+        self.assertTrue(ok_new_only)
+
 
 class TestStage353EndToEndInMemory(unittest.IsolatedAsyncioTestCase):
     """End-to-end IntelliCacheCore + InMemoryVectorStore lifecycle scenarios (Scenarios 1..14)."""
@@ -681,7 +779,7 @@ class TestStage353EndToEndInMemory(unittest.IsolatedAsyncioTestCase):
             svc.last_admission_decision.verification.unverified_constraints,
         )
 
-    async def test_scenario_11_variant_collision_protection_and_same_variant_update(self):
+    async def test_scenario_11_same_fingerprint_concurrent_and_sequential_variant_coexistence(self):
         schema_a = {"type": "object", "properties": {"x": {"type": "integer"}}, "required": ["x"]}
         schema_b = {"type": "object", "properties": {"y": {"type": "string"}}, "required": ["y"]}
         embedder = TopicRoutingEmbedder([("encode", 0.0)])
@@ -692,43 +790,200 @@ class TestStage353EndToEndInMemory(unittest.IsolatedAsyncioTestCase):
             evidence_authority=self.authority,
         )
 
-        # Force same fingerprint to simulate hash collision across two distinct schema variants
-        fp = "forced_collision_fp"
-        req_a = _req("Encode item in Python conforming to schema", metadata={"json_schema": schema_a})
+        # Identical prompt, model, temperature, max_tokens, provider & exact shared fingerprint
+        prompt_text = "Encode item in Python conforming to schema"
+        req_a = _req(prompt_text, metadata={"json_schema": schema_a})
+        req_b = _req(prompt_text, metadata={"json_schema": schema_b})
+        shared_fp = generate_fingerprint(
+            messages=req_a.messages,
+            model=req_a.model,
+            temperature=req_a.temperature,
+            max_tokens=req_a.max_tokens,
+            provider=req_a.provider,
+        )
+        await self.exact_cache.set(
+            shared_fp,
+            CacheEntry(
+                response='{"x": 1}',
+                model=req_a.model,
+                usage=UsageMetrics(prompt_tokens=5, completion_tokens=5, total_tokens=10),
+                latency_ms=4.0,
+                provider=req_a.provider,
+            ),
+            namespace="default",
+        )
         res_a = GenerationResult(
             text='{"x": 1}',
             model=req_a.model,
             usage=UsageMetrics(prompt_tokens=5, completion_tokens=5, total_tokens=10),
             latency_ms=4.0,
-            fingerprint=fp,
+            fingerprint=shared_fp,
             finish_reason="stop",
         )
-        ok_a = await svc.index(req_a, res_a)
-        self.assertTrue(ok_a)
-
-        req_b = _req("Encode item in Python conforming to schema", metadata={"json_schema": schema_b})
         res_b = GenerationResult(
             text='{"y": "hi"}',
             model=req_b.model,
             usage=UsageMetrics(prompt_tokens=5, completion_tokens=5, total_tokens=10),
             latency_ms=4.0,
-            fingerprint=fp,
+            fingerprint=shared_fp,
             finish_reason="stop",
         )
-        ok_b = await svc.index(req_b, res_b)
-        self.assertFalse(ok_b)
-        self.assertEqual(svc.last_admission_decision.reason_code, CompatibilityReasonCode.ADMISSION_REJECTED_VARIANT_COLLISION)
 
-        # Updating SAME variant key with newer verified response succeeds cleanly
+        # Concurrent admission sharing identical fingerprint stores BOTH variants atomically
+        results = await asyncio.gather(svc.index(req_a, res_a), svc.index(req_b, res_b))
+        self.assertEqual(results, [True, True])
+        self.assertEqual(await self.vector_store.get_record_count("default"), 2)
+
+        hit_a = await svc.lookup(req_a)
+        hit_b = await svc.lookup(req_b)
+        self.assertIsNotNone(hit_a)
+        self.assertIsNotNone(hit_b)
+        self.assertEqual(hit_a.cached_response, '{"x": 1}')
+        self.assertEqual(hit_b.cached_response, '{"y": "hi"}')
+
+        # Updating SAME variant key updates in-place without duplicating count
         res_a_new = GenerationResult(
             text='{"x": 2}',
             model=req_a.model,
             usage=UsageMetrics(prompt_tokens=5, completion_tokens=5, total_tokens=10),
             latency_ms=4.0,
-            fingerprint=fp,
+            fingerprint=shared_fp,
             finish_reason="stop",
         )
         self.assertTrue(await svc.index(req_a, res_a_new))
+        self.assertEqual(await self.vector_store.get_record_count("default"), 2)
+        hit_a_new = await svc.lookup(req_a)
+        self.assertEqual(hit_a_new.cached_response, '{"x": 2}')
+
+        # Also verify full IntelliCacheCore execution isolates exact-cache & semantic cache per schema
+        calls = []
+
+        def core_responder(req: GenerationRequest) -> GenerationResult:
+            calls.append(req)
+            if req.metadata.get("json_schema") == schema_a:
+                body = '{"x": 77}'
+            else:
+                body = '{"y": "core_b"}'
+            return GenerationResult(
+                text=body,
+                model=req.model,
+                usage=UsageMetrics(prompt_tokens=6, completion_tokens=6, total_tokens=12),
+                latency_ms=5.0,
+                finish_reason="stop",
+            )
+
+        await self.exact_cache.clear(namespace="default")
+        await self.vector_store.clear(namespace="default")
+        core_svc = SemanticCacheService(
+            embedding_provider=embedder,
+            vector_store=self.vector_store,
+            policy=self.policy,
+            evidence_authority=self.authority,
+        )
+        core = IntelliCacheCore(cache=self.exact_cache, cache_enabled=True, semantic_cache=core_svc)
+        out_a = await core.execute_query(_req("Serialize node in Python conforming to schema", metadata={"json_schema": schema_a}), MockUpstream(core_responder))
+        out_b = await core.execute_query(_req("Serialize node in Python conforming to schema", metadata={"json_schema": schema_b}), MockUpstream(core_responder))
+        self.assertFalse(out_a.cached)
+        self.assertFalse(out_b.cached)
+        self.assertEqual(out_a.text, '{"x": 77}')
+        self.assertEqual(out_b.text, '{"y": "core_b"}')
+        self.assertEqual(len(calls), 2)
+
+        # Second identical Schema B request hits exact cache for Schema B (not Schema A)
+        out_b_exact = await core.execute_query(_req("Serialize node in Python conforming to schema", metadata={"json_schema": schema_b}), MockUpstream(core_responder))
+        self.assertTrue(out_b_exact.cached)
+        self.assertEqual(out_b_exact.text, '{"y": "core_b"}')
+
+    async def test_bounded_retrieval_budget_exhaustion_telemetry(self):
+        ext = CompatibilityExtractor()
+        embedder = TopicRoutingEmbedder([("reverse", 0.0)])
+        from app.cache.exact_cache import CacheEntry
+
+        # Seed 25 incompatible Java records at higher similarity + 1 compatible Python record at rank 26
+        for i in range(25):
+            fp = f"fp_incompat_budget_{i}"
+            qp = f"Reverse list {i} in Java"
+            await self.exact_cache.set(
+                fp,
+                CacheEntry(response=f"java_{i}", model="llama-3.3-70b-versatile", usage=UsageMetrics(), latency_ms=2.0, provider="groq"),
+                namespace="default",
+            )
+            m = ext.extract_from_text(qp, configured_model="nomic-embed-text").to_dict()
+            await self.vector_store.upsert(
+                VectorRecord(
+                    cache_namespace="default",
+                    fingerprint=fp,
+                    query_text=qp,
+                    vector=_topic_vec(768, float(i) * 0.2),
+                    model="nomic-embed-text",
+                    metadata=m,
+                    response_text=f"java_{i}",
+                )
+            )
+
+        target_req = _req("Reverse list in Python")
+        target_meta = ext.extract(target_req, "nomic-embed-text")
+        ver = ResponseArtifactVerifier().verify(response_text="list(reversed(x))", request_metadata=target_meta, finish_reason="stop")
+        ev = self.authority.mint_response_verified_evidence(
+            cache_namespace="default",
+            fingerprint="fp_compat_rank26",
+            response_text="list(reversed(x))",
+            metadata=target_meta,
+            verification=ver,
+        )
+        m_target = SemanticCompatibilityMetadata(
+            schema_version=target_meta.schema_version,
+            extractor_version=target_meta.extractor_version,
+            task_kind=target_meta.task_kind,
+            dimensions=target_meta.dimensions,
+            generation_contract=target_meta.generation_contract,
+            embedding_contract=target_meta.embedding_contract,
+            compatibility_evidence=ev,
+        ).to_dict()
+        vk_target = compute_variant_key(target_meta)
+        m_target["variant_key"] = vk_target
+        await self.exact_cache.set(
+            "fp_compat_rank26",
+            CacheEntry(response="list(reversed(x))", model="llama-3.3-70b-versatile", usage=UsageMetrics(), latency_ms=2.0, provider="groq"),
+            namespace="default",
+        )
+        await self.vector_store.upsert(
+            VectorRecord(
+                cache_namespace="default",
+                fingerprint="fp_compat_rank26",
+                query_text="Reverse list in Python",
+                vector=_topic_vec(768, 12.0),
+                model="nomic-embed-text",
+                metadata=m_target,
+                variant_key=vk_target,
+                response_text="list(reversed(x))",
+            )
+        )
+
+        # With default budget 25: rank-26 compatible entry is outside budget -> budget exhausted cleanly recorded
+        svc_25 = SemanticCacheService(embedding_provider=embedder, vector_store=self.vector_store, policy=self.policy, evidence_authority=self.authority)
+        diag = []
+        miss = await svc_25.lookup(_req("How do I reverse a list in Python?"), diagnostics_hook=diag.append)
+        self.assertIsNone(miss)
+        self.assertTrue(diag[-1]["all_candidates_rejected"])
+        self.assertTrue(diag[-1]["retrieval_budget_exhausted"])
+        self.assertEqual(diag[-1]["retrieval_budget"], 25)
+        self.assertEqual(svc_25.get_stats("default")["all_candidates_rejected_misses"], 1)
+        self.assertEqual(svc_25.get_stats("default")["retrieval_budget_exhaustions"], 1)
+
+        # Expanding budget to 30 recovers rank-26 compatible hit
+        policy_30 = SemanticCachePolicy(
+            min_similarity=0.92,
+            min_margin=0.03,
+            top_k=5,
+            configured_model="nomic-embed-text",
+            retrieval_budget=30,
+            evidence_authority=self.authority,
+        )
+        svc_30 = SemanticCacheService(embedding_provider=embedder, vector_store=self.vector_store, policy=policy_30, evidence_authority=self.authority)
+        hit = await svc_30.lookup(_req("How do I reverse a list in Python?"))
+        self.assertIsNotNone(hit)
+        self.assertEqual(hit.cached_response, "list(reversed(x))")
 
     async def test_scenarios_12_and_13_and_14_security_fail_open_and_namespaces(self):
         # Scenario 13: Vector store upsert failure during index() fails open without breaking request
@@ -896,6 +1151,7 @@ class TestStage353PostgresPgvectorLifecycle(unittest.IsolatedAsyncioTestCase):
             evidence_authority=self.authority,
         )
         async with self.pool.acquire() as conn:
+            await conn.execute("DELETE FROM semantic_variant_records WHERE cache_namespace = $1", self.ns)
             await conn.execute("DELETE FROM vector_records WHERE cache_namespace = $1", self.ns)
             await conn.execute("DELETE FROM cache_entries WHERE cache_namespace = $1", self.ns)
 
@@ -903,6 +1159,7 @@ class TestStage353PostgresPgvectorLifecycle(unittest.IsolatedAsyncioTestCase):
         if hasattr(self, "pool"):
             try:
                 async with self.pool.acquire() as conn:
+                    await conn.execute("DELETE FROM semantic_variant_records WHERE cache_namespace = $1", self.ns)
                     await conn.execute("DELETE FROM vector_records WHERE cache_namespace = $1", self.ns)
                     await conn.execute("DELETE FROM cache_entries WHERE cache_namespace = $1", self.ns)
             except Exception:
@@ -1122,10 +1379,10 @@ class TestStage353PostgresPgvectorLifecycle(unittest.IsolatedAsyncioTestCase):
         hit_ok = await svc.lookup(_req("Serialize record in Python and output strict JSON", namespace=self.ns), diagnostics_hook=diag.append)
         self.assertIsNotNone(hit_ok)
 
-        # Attack 1: Tamper exact cached response in Postgres without updating digest/signature -> rejected UNCERTAIN
+        # Attack 1: Tamper cached_response in semantic_variant_records without updating digest/signature -> rejected UNCERTAIN
         async with self.pool.acquire() as conn:
             await conn.execute(
-                "UPDATE cache_entries SET response = $3 WHERE cache_namespace = $1 AND fingerprint = $2",
+                "UPDATE semantic_variant_records SET cached_response = $3 WHERE cache_namespace = $1 AND fingerprint = $2",
                 self.ns, fp1, '{"status":"tampered"}',
             )
         diag.clear()
@@ -1136,15 +1393,15 @@ class TestStage353PostgresPgvectorLifecycle(unittest.IsolatedAsyncioTestCase):
         # Restore response, then Attack 2: Copy row 1's signed metadata into a different fingerprint fp_copied
         async with self.pool.acquire() as conn:
             await conn.execute(
-                "UPDATE cache_entries SET response = $3 WHERE cache_namespace = $1 AND fingerprint = $2",
+                "UPDATE semantic_variant_records SET cached_response = $3 WHERE cache_namespace = $1 AND fingerprint = $2",
                 self.ns, fp1, '{"status":"ok"}',
             )
             row1_meta = await conn.fetchval(
-                "SELECT metadata FROM vector_records WHERE cache_namespace = $1 AND fingerprint = $2",
+                "SELECT metadata FROM semantic_variant_records WHERE cache_namespace = $1 AND fingerprint = $2",
                 self.ns, fp1,
             )
             await conn.execute(
-                "DELETE FROM vector_records WHERE cache_namespace = $1 AND fingerprint = $2",
+                "DELETE FROM semantic_variant_records WHERE cache_namespace = $1 AND fingerprint = $2",
                 self.ns, fp1,
             )
             await conn.execute(
@@ -1167,6 +1424,155 @@ class TestStage353PostgresPgvectorLifecycle(unittest.IsolatedAsyncioTestCase):
         hit_copied = await svc.lookup(_req("Serialize record in Python and output strict JSON", namespace=self.ns), diagnostics_hook=diag.append)
         self.assertIsNone(hit_copied)
         self.assertEqual(diag[-1]["reason_code"], CompatibilityReasonCode.EVIDENCE_BINDING_MISMATCH.value)
+
+    async def test_postgres_same_fingerprint_concurrent_variant_coexistence_and_cascade(self):
+        schema_a = {"type": "object", "properties": {"a": {"type": "integer"}}, "required": ["a"]}
+        schema_b = {"type": "object", "properties": {"b": {"type": "string"}}, "required": ["b"]}
+        schema_c = {"type": "object", "properties": {"c": {"type": "boolean"}}, "required": ["c"]}
+
+        embedder = TopicRoutingEmbedder([("serialize", 0.0)], dim=768)
+        svc = SemanticCacheService(
+            embedding_provider=embedder,
+            vector_store=self.store,
+            policy=self.policy,
+            default_namespace=self.ns,
+            evidence_authority=self.authority,
+        )
+
+        # Same prompt, same model, temperature, max_tokens, provider -> identical exact-cache base fingerprint
+        prompt_text = "Serialize structured payload in Python conforming to schema"
+        req_a = _req(prompt_text, namespace=self.ns, metadata={"json_schema": schema_a})
+        req_b = _req(prompt_text, namespace=self.ns, metadata={"json_schema": schema_b})
+        req_c = _req(prompt_text, namespace=self.ns, metadata={"json_schema": schema_c})
+        shared_fp = generate_fingerprint(
+            messages=req_a.messages,
+            model=req_a.model,
+            temperature=req_a.temperature,
+            max_tokens=req_a.max_tokens,
+            provider=req_a.provider,
+        )
+
+        from app.cache.exact_cache import CacheEntry
+        await self.cache.set(
+            shared_fp,
+            CacheEntry(response='{"a": 1}', model=req_a.model, usage=UsageMetrics(prompt_tokens=6, completion_tokens=6, total_tokens=12), latency_ms=5.0, provider="groq"),
+            namespace=self.ns,
+        )
+
+        res_a = GenerationResult(text='{"a": 1}', model=req_a.model, usage=UsageMetrics(prompt_tokens=6, completion_tokens=6, total_tokens=12), latency_ms=5.0, fingerprint=shared_fp, finish_reason="stop")
+        res_b = GenerationResult(text='{"b": "two"}', model=req_b.model, usage=UsageMetrics(prompt_tokens=6, completion_tokens=6, total_tokens=12), latency_ms=5.0, fingerprint=shared_fp, finish_reason="stop")
+        res_c = GenerationResult(text='{"c": true}', model=req_c.model, usage=UsageMetrics(prompt_tokens=6, completion_tokens=6, total_tokens=12), latency_ms=5.0, fingerprint=shared_fp, finish_reason="stop")
+
+        outcomes = await asyncio.gather(svc.index(req_a, res_a), svc.index(req_b, res_b), svc.index(req_c, res_c))
+        self.assertEqual(outcomes, [True, True, True])
+
+        async with self.pool.acquire() as conn:
+            row_count = await conn.fetchval(
+                "SELECT COUNT(*) FROM semantic_variant_records WHERE cache_namespace = $1 AND fingerprint = $2",
+                self.ns,
+                shared_fp,
+            )
+        self.assertEqual(row_count, 3)
+
+        # Each schema retrieves ONLY its own verified variant response
+        self.assertEqual((await svc.lookup(req_a)).cached_response, '{"a": 1}')
+        self.assertEqual((await svc.lookup(req_b)).cached_response, '{"b": "two"}')
+        self.assertEqual((await svc.lookup(req_c)).cached_response, '{"c": true}')
+
+        # Cascade deletion from cache_entries deletes all 3 coexisting variant rows automatically
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM cache_entries WHERE cache_namespace = $1 AND fingerprint = $2",
+                self.ns,
+                shared_fp,
+            )
+            remaining = await conn.fetchval(
+                "SELECT COUNT(*) FROM semantic_variant_records WHERE cache_namespace = $1 AND fingerprint = $2",
+                self.ns,
+                shared_fp,
+            )
+        self.assertEqual(remaining, 0)
+
+    async def test_legacy_migration_survives_authority_restart_and_rotation(self):
+        ext = CompatibilityExtractor()
+        k1 = "legacy-migration-persistent-k1-0123456789abcdef"
+        k2 = "legacy-migration-rotated-k2-fedcba9876543210"
+        authority_before = EvidenceAuthority(secret_key=k1, allow_ephemeral=False)
+
+        v2_valid = {
+            "schema_version": 2,
+            "extractor_version": "compat-extractor-v2",
+            "task_kind": {"status": "KNOWN", "value": "code_generation"},
+            "dimensions": {
+                "language": {"status": "KNOWN", "value": "python"},
+                "language_version": {"status": "NOT_APPLICABLE", "value": None},
+                "framework": {"status": "NOT_APPLICABLE", "value": None},
+                "framework_version": {"status": "NOT_APPLICABLE", "value": None},
+                "runtime": {"status": "NOT_APPLICABLE", "value": None},
+                "runtime_version": {"status": "NOT_APPLICABLE", "value": None},
+                "execution_model": {"status": "NOT_APPLICABLE", "value": None},
+                "output_format": {"status": "NOT_APPLICABLE", "value": None},
+                "constraints": {"status": "NOT_APPLICABLE", "value": None},
+            },
+            "generation_contract": {"provider": "groq", "model": "llama-3.3-70b-versatile", "temperature": 0.7, "max_tokens": 1000},
+            "embedding_contract": {"model": "nomic-embed-text"},
+        }
+        v2_bad_json = json.loads(json.dumps(v2_valid))
+        v2_bad_json["dimensions"]["output_format"] = {"status": "KNOWN", "value": "json"}
+
+        await self._seed_raw_row(fp="fp_mig_valid", query_text="Reverse a string in Python", resp="s[::-1]", meta=v2_valid, angle_deg=0.0)
+        await self._seed_raw_row(fp="fp_mig_bad", query_text="Parse data in Python as strict JSON", resp="{bad", meta=v2_bad_json, angle_deg=1.0)
+
+        mgr = PostgresLegacyLifecycleManager(pool=self.pool, authority=authority_before)
+        mig = await mgr.migrate(namespace=self.ns, dry_run=False)
+        self.assertEqual(mig.upgraded_to_v3, 1)
+        self.assertEqual(mig.excluded_legacy, 1)
+
+        # Simulate full process restart / separate gateway worker using K1
+        embedder = TopicRoutingEmbedder([("reverse", 0.0)], dim=768)
+        authority_restarted = EvidenceAuthority(secret_key=k1, allow_ephemeral=False)
+        policy_restarted = SemanticCachePolicy(
+            min_similarity=0.92,
+            min_margin=0.03,
+            top_k=5,
+            configured_model="nomic-embed-text",
+            retrieval_budget=25,
+            evidence_authority=authority_restarted,
+        )
+        svc_restarted = SemanticCacheService(
+            embedding_provider=embedder,
+            vector_store=self.store,
+            policy=policy_restarted,
+            default_namespace=self.ns,
+            evidence_authority=authority_restarted,
+        )
+        hit_after_restart = await svc_restarted.lookup(_req("How to reverse a string in Python?", namespace=self.ns))
+        self.assertIsNotNone(hit_after_restart)
+        self.assertEqual(hit_after_restart.cached_response, "s[::-1]")
+
+        # Key rotation: primary=K2 with previous=[K1] keeps migrated record valid
+        authority_rotated = EvidenceAuthority(secret_key=k2, previous_secret_keys=[k1], allow_ephemeral=False)
+        policy_rotated = SemanticCachePolicy(
+            min_similarity=0.92,
+            min_margin=0.03,
+            top_k=5,
+            configured_model="nomic-embed-text",
+            retrieval_budget=25,
+            evidence_authority=authority_rotated,
+        )
+        svc_rotated = SemanticCacheService(
+            embedding_provider=embedder,
+            vector_store=self.store,
+            policy=policy_rotated,
+            default_namespace=self.ns,
+            evidence_authority=authority_rotated,
+        )
+        hit_rotated = await svc_rotated.lookup(_req("How to reverse a string in Python?", namespace=self.ns))
+        self.assertIsNotNone(hit_rotated)
+
+        # Invalid/unverifiable v2 record remains excluded from semantic search
+        search_res = await self.store.search(_topic_vec(768, 0.0), top_k=25, namespace=self.ns, model="nomic-embed-text")
+        self.assertNotIn("fp_mig_bad", [r.fingerprint for r in search_res])
 
     async def test_performance_measurements_and_pgvector_explain_analyze(self):
         # Populate 40 realistic records (10 incompatible/legacy + 30 v3 records) and measure latency + EXPLAIN ANALYZE
@@ -1271,6 +1677,7 @@ class TestStage353FastEmbedRealPostgresE2E(unittest.IsolatedAsyncioTestCase):
             evidence_authority=self.authority,
         )
         async with self.pool.acquire() as conn:
+            await conn.execute("DELETE FROM semantic_variant_records WHERE cache_namespace = $1", self.ns)
             await conn.execute("DELETE FROM vector_records WHERE cache_namespace = $1", self.ns)
             await conn.execute("DELETE FROM cache_entries WHERE cache_namespace = $1", self.ns)
 
@@ -1280,6 +1687,7 @@ class TestStage353FastEmbedRealPostgresE2E(unittest.IsolatedAsyncioTestCase):
         if hasattr(self, "pool"):
             try:
                 async with self.pool.acquire() as conn:
+                    await conn.execute("DELETE FROM semantic_variant_records WHERE cache_namespace = $1", self.ns)
                     await conn.execute("DELETE FROM vector_records WHERE cache_namespace = $1", self.ns)
                     await conn.execute("DELETE FROM cache_entries WHERE cache_namespace = $1", self.ns)
             except Exception:
@@ -1318,7 +1726,9 @@ class TestStage353FastEmbedRealPostgresE2E(unittest.IsolatedAsyncioTestCase):
 
         async def _count_rows() -> int:
             async with self.pool.acquire() as conn:
-                return int(await conn.fetchval("SELECT COUNT(*) FROM vector_records WHERE cache_namespace = $1", self.ns))
+                vr = int(await conn.fetchval("SELECT COUNT(*) FROM vector_records WHERE cache_namespace = $1", self.ns))
+                svr = int(await conn.fetchval("SELECT COUNT(*) FROM semantic_variant_records WHERE cache_namespace = $1", self.ns))
+                return vr + svr
 
         # Admits valid JSON in Python
         await core.execute_query(

@@ -49,6 +49,8 @@ class VectorRecord:
     model: str
     metadata: Dict[str, Any] = field(default_factory=dict)
     created_at: Optional[datetime] = None
+    variant_key: str = ""
+    response_text: Optional[str] = None
 
     def __post_init__(self) -> None:
         if not self.cache_namespace or not self.cache_namespace.strip():
@@ -80,6 +82,12 @@ class VectorRecord:
         object.__setattr__(self, "cache_namespace", self.cache_namespace.strip())
         object.__setattr__(self, "fingerprint", self.fingerprint.strip())
         object.__setattr__(self, "model", self.model.strip())
+        vk = (self.variant_key or "").strip()
+        if not vk and isinstance(self.metadata, dict):
+            raw_vk = self.metadata.get("variant_key")
+            if isinstance(raw_vk, str) and raw_vk.strip():
+                vk = raw_vk.strip()
+        object.__setattr__(self, "variant_key", vk)
         if self.created_at is None:
             object.__setattr__(self, "created_at", datetime.now(timezone.utc))
 

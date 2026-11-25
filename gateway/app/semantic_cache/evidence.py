@@ -4,7 +4,8 @@ Binds response verification evidence to canonical request/candidate metadata, na
 exact-cache fingerprint, and SHA-256 response digest so forged, stale, or copied metadata
 cannot authorize semantic cache hits.
 
-Zero external framework or database dependencies (stdlib only).
+Supports stable secret enforcement for persistent backends and zero-downtime key rotation via
+`previous_secret_keys`. Zero external framework or database dependencies (stdlib only).
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ import hmac
 import json
 import os
 import secrets
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .contracts import (
     CompatibilityEvidence,
@@ -28,9 +29,13 @@ from .contracts import (
     VerificationStatus,
 )
 
-# Ephemeral runtime secret used when SEMANTIC_CACHE_EVIDENCE_SECRET is not explicitly configured.
-# Guarantees in-process tamper detection across services within the gateway lifecycle.
+# Ephemeral runtime secret used ONLY for isolated memory dev/tests when allow_ephemeral=True.
 _PROCESS_RUNTIME_SECRET: bytes = secrets.token_bytes(32)
+
+
+def _derive_hmac_key_and_id(secret_bytes: bytes) -> Tuple[bytes, str]:
+    key_id = hashlib.sha256(secret_bytes).hexdigest()[:12]
+    return secret_bytes, key_id
 
 
 def compute_response_digest(response_text: str) -> str:
@@ -103,30 +108,86 @@ def compute_evidence_binding_digest(
 class EvidenceAuthority:
     """
     Internal server-side minting and verification authority for CompatibilityEvidence.
-    Ensures response_verified evidence can only be created by trusted internal verification
-    and remains bound to its exact namespace, fingerprint, response body, and compatibility metadata.
+    Supports persistent shared HMAC secrets across multiple workers/restarts as well as
+    zero-downtime key rotation via `previous_secret_keys`.
     """
 
-    def __init__(self, secret_key: Optional[str] = None):
+    def __init__(
+        self,
+        secret_key: Optional[str] = None,
+        previous_secret_keys: Optional[Sequence[str]] = None,
+        allow_ephemeral: bool = True,
+    ):
+        resolved_secret: Optional[str] = None
         if secret_key is not None and str(secret_key).strip():
-            self._key = hashlib.sha256(str(secret_key).strip().encode("utf-8")).digest()
-            self._explicit_secret = True
+            resolved_secret = str(secret_key).strip()
         else:
-            env_secret = os.getenv("SEMANTIC_CACHE_EVIDENCE_SECRET")
-            if env_secret and env_secret.strip():
-                self._key = hashlib.sha256(env_secret.strip().encode("utf-8")).digest()
-                self._explicit_secret = True
-            else:
-                self._key = _PROCESS_RUNTIME_SECRET
-                self._explicit_secret = False
+            env_secret = (os.getenv("SEMANTIC_CACHE_EVIDENCE_SECRET") or "").strip()
+            if env_secret:
+                resolved_secret = env_secret
+
+        if resolved_secret is not None:
+            key_bytes = hashlib.sha256(resolved_secret.encode("utf-8")).digest()
+            self._key, self._primary_key_id = _derive_hmac_key_and_id(key_bytes)
+            self._explicit_secret = True
+        elif allow_ephemeral:
+            self._key, self._primary_key_id = _derive_hmac_key_and_id(_PROCESS_RUNTIME_SECRET)
+            self._explicit_secret = False
+        else:
+            raise ValueError(
+                "Persistent EvidenceAuthority requires an explicit SEMANTIC_CACHE_EVIDENCE_SECRET "
+                "(ephemeral keys are disabled when allow_ephemeral=False)."
+            )
+
+        prev_sources: List[str] = []
+        if previous_secret_keys:
+            prev_sources.extend(str(s).strip() for s in previous_secret_keys if str(s).strip())
+        else:
+            raw_env_prev = (os.getenv("SEMANTIC_CACHE_EVIDENCE_PREVIOUS_SECRETS") or "").strip()
+            if raw_env_prev:
+                prev_sources.extend(p.strip() for p in raw_env_prev.split(",") if p.strip())
+
+        self._previous_keys: List[Tuple[str, bytes]] = []
+        seen_ids = {self._primary_key_id}
+        for prev_raw in prev_sources:
+            p_bytes = hashlib.sha256(prev_raw.encode("utf-8")).digest()
+            p_bytes, p_id = _derive_hmac_key_and_id(p_bytes)
+            if p_id not in seen_ids:
+                seen_ids.add(p_id)
+                self._previous_keys.append((p_id, p_bytes))
 
     @property
     def has_explicit_secret(self) -> bool:
         return self._explicit_secret
 
+    @property
+    def primary_key_id(self) -> str:
+        return self._primary_key_id
+
+    @staticmethod
+    def _sign_with_key(key_bytes: bytes, binding_digest: str) -> str:
+        return hmac.new(key_bytes, binding_digest.encode("utf-8"), hashlib.sha256).hexdigest()
+
     def sign_binding_digest(self, binding_digest: str) -> str:
-        """Computes HMAC-SHA256 signature over the canonical binding digest."""
-        return hmac.new(self._key, binding_digest.encode("utf-8"), hashlib.sha256).hexdigest()
+        """Computes HMAC-SHA256 signature over the canonical binding digest using primary key."""
+        return self._sign_with_key(self._key, binding_digest)
+
+    def _verify_signature_across_keyring(
+        self,
+        binding_digest: str,
+        signature: str,
+        signing_key_id: Optional[str],
+    ) -> bool:
+        """Constant-time signature check against primary key plus configured rotation keys."""
+        candidates: List[Tuple[str, bytes]] = [(self._primary_key_id, self._key), *self._previous_keys]
+        if signing_key_id:
+            # Order matching key_id first for fast verification, still verifying exact HMAC
+            candidates.sort(key=lambda item: 0 if item[0] == signing_key_id else 1)
+        for _kid, key_bytes in candidates:
+            expected_sig = self._sign_with_key(key_bytes, binding_digest)
+            if hmac.compare_digest(expected_sig, signature):
+                return True
+        return False
 
     def mint_response_verified_evidence(
         self,
@@ -206,6 +267,7 @@ class EvidenceAuthority:
             evidence_signature=sig,
             verified_constraints=verification.verified_constraints,
             verified_schema_digest=verification.verified_schema_digest,
+            signing_key_id=self._primary_key_id,
             _authority_minted=True,
         )
 
@@ -277,6 +339,7 @@ class EvidenceAuthority:
             evidence_signature=sig,
             verified_constraints=verified_constraints,
             verified_schema_digest=verified_schema_digest,
+            signing_key_id=self._primary_key_id,
             _authority_minted=True,
         )
 
@@ -292,6 +355,7 @@ class EvidenceAuthority:
         """
         Verifies cryptographic provenance and artifact binding of response_verified evidence.
         Fails closed with structured CompatibilityReasonCode on missing, forged, copied, or stale bindings.
+        Supports active key and configured `previous_secret_keys` during rotation transitions.
         """
         if evidence.has_conflicting_claims():
             code = CompatibilityReasonCode.AMBIGUOUS_COMPATIBILITY_EVIDENCE
@@ -343,22 +407,41 @@ class EvidenceAuthority:
             code = CompatibilityReasonCode.EVIDENCE_SIGNATURE_INVALID
             return False, code, f"{code}: Response-verified evidence is missing HMAC signature."
 
-        expected_sig = self.sign_binding_digest(expected_binding_digest)
-        if not hmac.compare_digest(expected_sig, evidence.evidence_signature):
+        if not self._verify_signature_across_keyring(
+            expected_binding_digest,
+            evidence.evidence_signature,
+            evidence.signing_key_id,
+        ):
             code = CompatibilityReasonCode.EVIDENCE_SIGNATURE_INVALID
             return False, code, f"{code}: Evidence signature verification failed."
 
         return True, CompatibilityReasonCode.COMPATIBLE, "Evidence cryptographic binding verified."
 
 
-_DEFAULT_AUTHORITY_CACHE: Dict[Optional[str], EvidenceAuthority] = {}
+_DEFAULT_AUTHORITY_CACHE: Dict[Tuple[Optional[str], Tuple[str, ...], bool], EvidenceAuthority] = {}
 
 
-def get_default_evidence_authority(secret_key: Optional[str] = None) -> EvidenceAuthority:
+def get_default_evidence_authority(
+    secret_key: Optional[str] = None,
+    previous_secret_keys: Optional[Sequence[str]] = None,
+    allow_ephemeral: bool = True,
+) -> EvidenceAuthority:
     """Returns a reusable process-scoped EvidenceAuthority instance."""
     norm = secret_key.strip() if isinstance(secret_key, str) and secret_key.strip() else os.getenv("SEMANTIC_CACHE_EVIDENCE_SECRET")
     if norm is not None:
         norm = norm.strip() or None
-    if norm not in _DEFAULT_AUTHORITY_CACHE:
-        _DEFAULT_AUTHORITY_CACHE[norm] = EvidenceAuthority(secret_key=norm)
-    return _DEFAULT_AUTHORITY_CACHE[norm]
+
+    if previous_secret_keys is not None:
+        norm_prev = tuple(str(p).strip() for p in previous_secret_keys if str(p).strip())
+    else:
+        raw_env_prev = (os.getenv("SEMANTIC_CACHE_EVIDENCE_PREVIOUS_SECRETS") or "").strip()
+        norm_prev = tuple(p.strip() for p in raw_env_prev.split(",") if p.strip()) if raw_env_prev else ()
+
+    cache_key = (norm, norm_prev, bool(allow_ephemeral))
+    if cache_key not in _DEFAULT_AUTHORITY_CACHE:
+        _DEFAULT_AUTHORITY_CACHE[cache_key] = EvidenceAuthority(
+            secret_key=norm,
+            previous_secret_keys=norm_prev,
+            allow_ephemeral=allow_ephemeral,
+        )
+    return _DEFAULT_AUTHORITY_CACHE[cache_key]

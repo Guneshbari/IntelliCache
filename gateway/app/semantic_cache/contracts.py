@@ -409,6 +409,7 @@ class CompatibilityEvidence:
     evidence_signature: Optional[str] = None
     verified_constraints: Tuple[str, ...] = ()
     verified_schema_digest: Optional[str] = None
+    signing_key_id: Optional[str] = None
     _authority_minted: bool = field(default=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -464,6 +465,7 @@ class CompatibilityEvidence:
             "binding_digest",
             "evidence_signature",
             "verified_schema_digest",
+            "signing_key_id",
         ):
             val = getattr(self, opt_field)
             if val is not None:
@@ -516,6 +518,7 @@ class CompatibilityEvidence:
             or self.evidence_signature is not None
             or self.verified_constraints
             or self.verified_schema_digest is not None
+            or self.signing_key_id is not None
         )
 
     def is_trusted_response_verified(self) -> bool:
@@ -576,6 +579,8 @@ class CompatibilityEvidence:
             payload["verified_constraints"] = list(self.verified_constraints)
         if self.verified_schema_digest is not None:
             payload["verified_schema_digest"] = self.verified_schema_digest
+        if self.signing_key_id is not None:
+            payload["signing_key_id"] = self.signing_key_id
         return payload
 
     @classmethod
@@ -607,6 +612,7 @@ class CompatibilityEvidence:
             evidence_signature=data.get("evidence_signature"),
             verified_constraints=tuple(data.get("verified_constraints") or ()),
             verified_schema_digest=data.get("verified_schema_digest"),
+            signing_key_id=data.get("signing_key_id"),
             _authority_minted=False,
         )
 
@@ -1111,6 +1117,8 @@ class SemanticCacheStats:
     ambiguous_candidates: int = 0
     no_candidate_misses: int = 0
     threshold_rejections: int = 0
+    all_candidates_rejected_misses: int = 0
+    retrieval_budget_exhaustions: int = 0
     eligibility_rejections: int = 0
     embedding_failures: int = 0
     vector_store_failures: int = 0
@@ -1131,6 +1139,8 @@ class SemanticCacheStats:
             "ambiguous_candidates": self.ambiguous_candidates,
             "no_candidate_misses": self.no_candidate_misses,
             "threshold_rejections": self.threshold_rejections,
+            "all_candidates_rejected_misses": self.all_candidates_rejected_misses,
+            "retrieval_budget_exhaustions": self.retrieval_budget_exhaustions,
             "eligibility_rejections": self.eligibility_rejections,
             "embedding_failures": self.embedding_failures,
             "vector_store_failures": self.vector_store_failures,

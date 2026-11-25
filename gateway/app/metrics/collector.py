@@ -114,6 +114,8 @@ class _NamespaceData:
         self.uncertain_candidate_rejections = 0
         self.no_candidate_misses = 0
         self.threshold_rejections = 0
+        self.all_candidates_rejected_misses = 0
+        self.retrieval_budget_exhaustions = 0
         self.embedding_failures = 0
         self.vector_store_failures = 0
         self.indexing_successes = 0
@@ -272,6 +274,14 @@ class _NamespaceData:
     def record_threshold_rejection(self) -> None:
         with self.lock:
             self.threshold_rejections += 1
+
+    def record_all_candidates_rejected_miss(self) -> None:
+        with self.lock:
+            self.all_candidates_rejected_misses += 1
+
+    def record_retrieval_budget_exhaustion(self) -> None:
+        with self.lock:
+            self.retrieval_budget_exhaustions += 1
 
     def record_admission_outcome(self, status: str) -> None:
         with self.lock:
@@ -446,6 +456,8 @@ class _NamespaceData:
                 uncertain_candidate_rejections=self.uncertain_candidate_rejections,
                 no_candidate_misses=self.no_candidate_misses,
                 threshold_rejections=self.threshold_rejections,
+                all_candidates_rejected_misses=self.all_candidates_rejected_misses,
+                retrieval_budget_exhaustions=self.retrieval_budget_exhaustions,
                 embedding_failures=self.embedding_failures,
                 vector_store_failures=self.vector_store_failures,
                 indexing_successes=self.indexing_successes,
@@ -727,6 +739,20 @@ class RuntimeMetricsCollector:
         except Exception as e:
             logger.debug("Metrics record_threshold_rejection failed: %s", e)
 
+    def record_all_candidates_rejected_miss(self, namespace: str) -> None:
+        try:
+            ns_data = self.get_or_create_namespace(namespace)
+            ns_data.record_all_candidates_rejected_miss()
+        except Exception as e:
+            logger.debug("Metrics record_all_candidates_rejected_miss failed: %s", e)
+
+    def record_retrieval_budget_exhaustion(self, namespace: str) -> None:
+        try:
+            ns_data = self.get_or_create_namespace(namespace)
+            ns_data.record_retrieval_budget_exhaustion()
+        except Exception as e:
+            logger.debug("Metrics record_retrieval_budget_exhaustion failed: %s", e)
+
     def record_admission_outcome(self, namespace: str, status: str) -> None:
         try:
             ns_data = self.get_or_create_namespace(namespace)
@@ -932,6 +958,8 @@ class RuntimeMetricsCollector:
             agg_sem.uncertain_candidate_rejections += s.uncertain_candidate_rejections
             agg_sem.no_candidate_misses += s.no_candidate_misses
             agg_sem.threshold_rejections += s.threshold_rejections
+            agg_sem.all_candidates_rejected_misses += s.all_candidates_rejected_misses
+            agg_sem.retrieval_budget_exhaustions += s.retrieval_budget_exhaustions
             agg_sem.embedding_failures += s.embedding_failures
             agg_sem.vector_store_failures += s.vector_store_failures
             agg_sem.indexing_successes += s.indexing_successes

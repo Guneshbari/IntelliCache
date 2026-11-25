@@ -465,6 +465,9 @@ class SemanticCachePolicy:
                 "candidates_incompatible": 0,
                 "candidates_uncertain": 0,
                 "candidates_legacy": 0,
+                "all_candidates_rejected": False,
+                "retrieval_budget_exhausted": False,
+                "retrieval_budget": self.retrieval_budget,
             }
             return None, "No vector candidates retrieved."
 
@@ -515,6 +518,7 @@ class SemanticCachePolicy:
                 reason_code=CompatibilityReasonCode.ALL_CANDIDATES_REJECTED,
                 message=f"{CompatibilityReasonCode.ALL_CANDIDATES_REJECTED}: No candidates evaluated.",
             )
+            budget_exhausted = len(candidates) >= self.retrieval_budget
             self._last_evaluation_diagnostics = {
                 "outcome": "compatibility_rejected",
                 "decision_status": primary_decision.status.value,
@@ -528,6 +532,9 @@ class SemanticCachePolicy:
                 "candidates_incompatible": incompatible_count,
                 "candidates_uncertain": uncertain_count,
                 "candidates_legacy": legacy_count,
+                "all_candidates_rejected": True,
+                "retrieval_budget_exhausted": budget_exhausted,
+                "retrieval_budget": self.retrieval_budget,
             }
             return (
                 None,
@@ -558,6 +565,9 @@ class SemanticCachePolicy:
                 "candidates_incompatible": incompatible_count,
                 "candidates_uncertain": uncertain_count,
                 "candidates_legacy": legacy_count,
+                "all_candidates_rejected": False,
+                "retrieval_budget_exhausted": False,
+                "retrieval_budget": self.retrieval_budget,
             }
             return (
                 None,
@@ -586,6 +596,9 @@ class SemanticCachePolicy:
                         "candidates_incompatible": incompatible_count,
                         "candidates_uncertain": uncertain_count,
                         "candidates_legacy": legacy_count,
+                        "all_candidates_rejected": False,
+                        "retrieval_budget_exhausted": False,
+                        "retrieval_budget": self.retrieval_budget,
                     }
                     return (
                         None,
@@ -606,5 +619,8 @@ class SemanticCachePolicy:
             "candidates_incompatible": incompatible_count,
             "candidates_uncertain": uncertain_count,
             "candidates_legacy": legacy_count,
+            "all_candidates_rejected": False,
+            "retrieval_budget_exhausted": False,
+            "retrieval_budget": self.retrieval_budget,
         }
         return top_cand, None

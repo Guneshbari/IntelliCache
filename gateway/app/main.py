@@ -205,7 +205,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     top_k=settings.semantic_cache_top_k,
                     configured_model=settings.embedding_model,
                     retrieval_budget=settings.semantic_cache_max_retrieval_candidates,
-                    evidence_authority=get_default_evidence_authority(settings.semantic_cache_evidence_secret),
+                    evidence_authority=get_default_evidence_authority(
+                        settings.semantic_cache_evidence_secret,
+                        previous_secret_keys=settings.semantic_cache_evidence_previous_secrets,
+                        allow_ephemeral=False,
+                    ),
                 )
                 semantic_cache = SemanticCacheService(
                     embedding_provider=embedding_provider,
@@ -253,7 +257,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     top_k=settings.semantic_cache_top_k,
                     configured_model=settings.embedding_model,
                     retrieval_budget=settings.semantic_cache_max_retrieval_candidates,
-                    evidence_authority=get_default_evidence_authority(settings.semantic_cache_evidence_secret),
+                    evidence_authority=get_default_evidence_authority(
+                        settings.semantic_cache_evidence_secret,
+                        previous_secret_keys=settings.semantic_cache_evidence_previous_secrets,
+                        allow_ephemeral=True,
+                    ),
                 )
                 semantic_cache = SemanticCacheService(
                     embedding_provider=embedding_provider,

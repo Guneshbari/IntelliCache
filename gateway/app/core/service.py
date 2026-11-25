@@ -25,7 +25,7 @@ from .errors import (
     SingleFlightLeaderCancelledError,
     sanitize_error_message,
 )
-from .fingerprinting import generate_fingerprint
+from .fingerprinting import derive_variant_exact_fingerprint, generate_fingerprint
 from .singleflight import SingleFlightCoordinator
 from ..cache.interfaces import BaseCache, CacheEntry
 from ..metrics import RuntimeMetricsCollector, get_metrics_collector
@@ -102,13 +102,14 @@ class IntelliCacheCore:
         8. Writes exact-cache entry first, releases flight key early, then indexes vector record.
         """
         # Consistent model identity across fingerprint and generation
-        fingerprint = generate_fingerprint(
+        base_fingerprint = generate_fingerprint(
             messages=request.messages,
             model=request.model,
             temperature=request.temperature,
             max_tokens=request.max_tokens,
             provider=request.provider,
         )
+        fingerprint = derive_variant_exact_fingerprint(base_fingerprint, request.metadata)
 
         # 1. Exact Cache Read
         if self.cache_enabled and not request.bypass_cache:
@@ -468,13 +469,14 @@ class IntelliCacheCore:
         Yields normalized StreamChunk objects.
         Caches complete successful streams upon completion.
         """
-        fingerprint = generate_fingerprint(
+        base_fingerprint = generate_fingerprint(
             messages=request.messages,
             model=request.model,
             temperature=request.temperature,
             max_tokens=request.max_tokens,
             provider=request.provider,
         )
+        fingerprint = derive_variant_exact_fingerprint(base_fingerprint, request.metadata)
 
         # 1. Cache Read for Streaming
         if self.cache_enabled and not request.bypass_cache:
