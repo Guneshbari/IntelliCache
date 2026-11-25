@@ -6,6 +6,8 @@ Isolated from FastAPI, Groq SDK, Ollama SDK, and database implementations.
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
+import hashlib
+import json
 import math
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -87,6 +89,53 @@ class CompatibilityReasonCode(str, Enum):
     AMBIGUOUS_CANDIDATES = "AMBIGUOUS_CANDIDATES"
     ALL_CANDIDATES_REJECTED = "ALL_CANDIDATES_REJECTED"
     VALIDATOR_EXCEPTION = "VALIDATOR_EXCEPTION"
+    # Stage 3.5.3: Response verification, evidence binding, and admission codes
+    VERIFICATION_PASSED = "VERIFICATION_PASSED"
+    VERIFICATION_FAILED_EMPTY = "VERIFICATION_FAILED_EMPTY"
+    VERIFICATION_FAILED_FORMAT = "VERIFICATION_FAILED_FORMAT"
+    VERIFICATION_FAILED_JSON = "VERIFICATION_FAILED_JSON"
+    VERIFICATION_FAILED_SCHEMA = "VERIFICATION_FAILED_SCHEMA"
+    VERIFICATION_FAILED_CONSTRAINT = "VERIFICATION_FAILED_CONSTRAINT"
+    VERIFICATION_FAILED_TRUNCATED = "VERIFICATION_FAILED_TRUNCATED"
+    VERIFICATION_UNSUPPORTED_CONSTRAINT = "VERIFICATION_UNSUPPORTED_CONSTRAINT"
+    VERIFICATION_UNCERTAIN_TRUNCATION = "VERIFICATION_UNCERTAIN_TRUNCATION"
+    ADMISSION_ADMITTED = "ADMISSION_ADMITTED"
+    ADMISSION_REJECTED_INELIGIBLE = "ADMISSION_REJECTED_INELIGIBLE"
+    ADMISSION_REJECTED_VERIFICATION = "ADMISSION_REJECTED_VERIFICATION"
+    ADMISSION_REJECTED_VARIANT_COLLISION = "ADMISSION_REJECTED_VARIANT_COLLISION"
+    ADMISSION_UNCERTAIN_VERIFICATION = "ADMISSION_UNCERTAIN_VERIFICATION"
+    EVIDENCE_BINDING_MISMATCH = "EVIDENCE_BINDING_MISMATCH"
+    EVIDENCE_SIGNATURE_INVALID = "EVIDENCE_SIGNATURE_INVALID"
+
+    def __str__(self) -> str:
+        return self.value
+
+
+class VerificationStatus(str, Enum):
+    """Explicit tri-state outcome for actual response artifact verification."""
+    VERIFIED = "VERIFIED"
+    FAILED = "FAILED"
+    UNCERTAIN = "UNCERTAIN"
+
+    def __str__(self) -> str:
+        return self.value
+
+
+class TruncationStatus(str, Enum):
+    """Completeness classification of a generated LLM response."""
+    COMPLETE = "COMPLETE"
+    TRUNCATED = "TRUNCATED"
+    UNKNOWN = "UNKNOWN"
+
+    def __str__(self) -> str:
+        return self.value
+
+
+class AdmissionStatus(str, Enum):
+    """Explicit admission controller decision before indexing into vector store."""
+    ADMIT = "ADMIT"
+    REJECT = "REJECT"
+    UNCERTAIN = "UNCERTAIN"
 
     def __str__(self) -> str:
         return self.value
@@ -354,6 +403,13 @@ class CompatibilityEvidence:
     verified_json_valid: bool = False
     freshness_verified: bool = False
     artifact_schema_version: Optional[int] = None
+    verifier_version: Optional[str] = None
+    response_digest: Optional[str] = None
+    binding_digest: Optional[str] = None
+    evidence_signature: Optional[str] = None
+    verified_constraints: Tuple[str, ...] = ()
+    verified_schema_digest: Optional[str] = None
+    _authority_minted: bool = field(default=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.source, str) or not self.source.strip():
@@ -370,6 +426,7 @@ class CompatibilityEvidence:
             "context_independent",
             "verified_json_valid",
             "freshness_verified",
+            "_authority_minted",
         ):
             val = getattr(self, bool_field)
             if not isinstance(val, bool):
@@ -390,11 +447,32 @@ class CompatibilityEvidence:
             "compatible_dependency_versions",
             _normalize_string_tuple(self.compatible_dependency_versions, "compatible_dependency_versions"),
         )
+        object.__setattr__(
+            self,
+            "verified_constraints",
+            _normalize_string_tuple(self.verified_constraints, "verified_constraints"),
+        )
 
         if self.verified_output_format is not None:
             if not isinstance(self.verified_output_format, str) or not self.verified_output_format.strip():
                 raise ValueError("CompatibilityEvidence 'verified_output_format' must be None or a non-empty string.")
             object.__setattr__(self, "verified_output_format", self.verified_output_format.strip().lower())
+
+        for opt_field in (
+            "verifier_version",
+            "response_digest",
+            "binding_digest",
+            "evidence_signature",
+            "verified_schema_digest",
+        ):
+            val = getattr(self, opt_field)
+            if val is not None:
+                if not isinstance(val, str) or not val.strip():
+                    raise ValueError(f"CompatibilityEvidence '{opt_field}' must be None or a non-empty string.")
+                norm_val = val.strip()
+                if opt_field != "verifier_version":
+                    norm_val = norm_val.lower()
+                object.__setattr__(self, opt_field, norm_val)
 
         if self.artifact_schema_version is not None:
             if (
@@ -410,6 +488,15 @@ class CompatibilityEvidence:
     def default_request_derived(cls, source: str = TRUSTED_REQUEST_EXTRACTOR_ID) -> "CompatibilityEvidence":
         return cls(source=source, evidence_tier=EVIDENCE_TIER_REQUEST_DERIVED)
 
+    def has_bound_signature(self) -> bool:
+        """True only when response/binding digests and HMAC signature are present."""
+        return bool(
+            self.verifier_version
+            and self.response_digest
+            and self.binding_digest
+            and self.evidence_signature
+        )
+
     def has_independence_or_verification_claims(self) -> bool:
         """True if any independence relaxation or response-level artifact claim is asserted."""
         return bool(
@@ -422,6 +509,13 @@ class CompatibilityEvidence:
             or self.verified_output_format is not None
             or self.verified_json_valid
             or self.freshness_verified
+            or self.artifact_schema_version is not None
+            or self.verifier_version is not None
+            or self.response_digest is not None
+            or self.binding_digest is not None
+            or self.evidence_signature is not None
+            or self.verified_constraints
+            or self.verified_schema_digest is not None
         )
 
     def is_trusted_response_verified(self) -> bool:
@@ -456,7 +550,7 @@ class CompatibilityEvidence:
         return False
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        payload: Dict[str, Any] = {
             "source": self.source,
             "evidence_tier": self.evidence_tier,
             "version_independent": self.version_independent,
@@ -470,6 +564,19 @@ class CompatibilityEvidence:
             "freshness_verified": self.freshness_verified,
             "artifact_schema_version": self.artifact_schema_version,
         }
+        if self.verifier_version is not None:
+            payload["verifier_version"] = self.verifier_version
+        if self.response_digest is not None:
+            payload["response_digest"] = self.response_digest
+        if self.binding_digest is not None:
+            payload["binding_digest"] = self.binding_digest
+        if self.evidence_signature is not None:
+            payload["evidence_signature"] = self.evidence_signature
+        if self.verified_constraints:
+            payload["verified_constraints"] = list(self.verified_constraints)
+        if self.verified_schema_digest is not None:
+            payload["verified_schema_digest"] = self.verified_schema_digest
+        return payload
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "CompatibilityEvidence":
@@ -494,6 +601,13 @@ class CompatibilityEvidence:
             verified_json_valid=data.get("verified_json_valid", False),
             freshness_verified=data.get("freshness_verified", False),
             artifact_schema_version=data.get("artifact_schema_version"),
+            verifier_version=data.get("verifier_version"),
+            response_digest=data.get("response_digest"),
+            binding_digest=data.get("binding_digest"),
+            evidence_signature=data.get("evidence_signature"),
+            verified_constraints=tuple(data.get("verified_constraints") or ()),
+            verified_schema_digest=data.get("verified_schema_digest"),
+            _authority_minted=False,
         )
 
 
@@ -814,6 +928,149 @@ class SemanticCompatibilityMetadata:
 
 
 @dataclass(frozen=True)
+class ResponseVerificationResult:
+    """Structured outcome from ResponseArtifactVerifier."""
+    status: VerificationStatus
+    truncation_status: TruncationStatus
+    reason_code: CompatibilityReasonCode
+    message: str
+    verifier_version: str = TRUSTED_RESPONSE_VERIFIER_ID
+    verified_output_format: Optional[str] = None
+    verified_json_valid: bool = False
+    verified_schema_version: Optional[int] = None
+    verified_schema_digest: Optional[str] = None
+    verified_constraints: Tuple[str, ...] = ()
+    unverified_constraints: Tuple[str, ...] = ()
+    evidence_details: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.status, VerificationStatus):
+            object.__setattr__(self, "status", VerificationStatus(self.status))
+        if not isinstance(self.truncation_status, TruncationStatus):
+            object.__setattr__(self, "truncation_status", TruncationStatus(self.truncation_status))
+        if not isinstance(self.reason_code, CompatibilityReasonCode):
+            object.__setattr__(self, "reason_code", CompatibilityReasonCode(self.reason_code))
+        object.__setattr__(self, "evidence_details", sanitize_diagnostic_evidence(self.evidence_details))
+
+    @property
+    def is_verified(self) -> bool:
+        return self.status == VerificationStatus.VERIFIED
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "status": self.status.value,
+            "truncation_status": self.truncation_status.value,
+            "reason_code": self.reason_code.value,
+            "message": self.message,
+            "verifier_version": self.verifier_version,
+            "verified_output_format": self.verified_output_format,
+            "verified_json_valid": self.verified_json_valid,
+            "verified_schema_version": self.verified_schema_version,
+            "verified_schema_digest": self.verified_schema_digest,
+            "verified_constraints": list(self.verified_constraints),
+            "unverified_constraints": list(self.unverified_constraints),
+            "evidence_details": dict(self.evidence_details),
+        }
+
+
+@dataclass(frozen=True)
+class AdmissionDecision:
+    """Decision record produced before semantic cache embedding/upsert."""
+    status: AdmissionStatus
+    reason_code: CompatibilityReasonCode
+    message: str
+    variant_key: Optional[str] = None
+    verification: Optional[ResponseVerificationResult] = None
+    diagnostics: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.status, AdmissionStatus):
+            object.__setattr__(self, "status", AdmissionStatus(self.status))
+        if not isinstance(self.reason_code, CompatibilityReasonCode):
+            object.__setattr__(self, "reason_code", CompatibilityReasonCode(self.reason_code))
+        object.__setattr__(self, "diagnostics", sanitize_diagnostic_evidence(self.diagnostics))
+
+    @property
+    def should_admit(self) -> bool:
+        return self.status == AdmissionStatus.ADMIT
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "status": self.status.value,
+            "reason_code": self.reason_code.value,
+            "message": self.message,
+            "variant_key": self.variant_key,
+            "verification": self.verification.to_dict() if self.verification else None,
+            "diagnostics": dict(self.diagnostics),
+        }
+
+
+def compute_variant_key(
+    metadata: SemanticCompatibilityMetadata,
+    schema_digest: Optional[str] = None,
+) -> str:
+    """
+    Computes a deterministic normalized compatibility-variant identity across all technical
+    dimensions, generation contract, embedding contract, schema version, and optional schema digest.
+    Variants that differ in language, framework, runtime, dependency, constraints, output format,
+    or generation parameters yield strictly distinct variant keys so multiple variants can coexist.
+    """
+    norm_dims: Dict[str, Any] = {}
+    for dim_name in sorted(metadata.dimensions.keys()):
+        dim = metadata.dimensions[dim_name]
+        if dim.status != MetadataStatus.KNOWN:
+            norm_dims[dim_name] = {"status": dim.status, "value": None}
+            continue
+        if dim_name == "dependencies" and isinstance(dim.value, list):
+            items = [
+                (d if isinstance(d, DependencyItem) else DependencyItem.from_dict(d)).to_dict()
+                for d in dim.value
+            ]
+            items.sort(key=lambda d: (d["name"], d.get("version") or ""))
+            norm_dims[dim_name] = {"status": dim.status, "value": items}
+        elif dim_name in ("constraints", "output_constraints") and isinstance(dim.value, list):
+            items = [
+                (c if isinstance(c, ConstraintItem) else ConstraintItem.from_dict(c)).to_dict()
+                for c in dim.value
+            ]
+            items.sort(key=lambda c: (c["key"].lower(), c["operator"].lower(), str(c["value"]).lower()))
+            norm_dims[dim_name] = {"status": dim.status, "value": items}
+        else:
+            norm_dims[dim_name] = {
+                "status": dim.status,
+                "value": str(dim.value).strip().lower(),
+            }
+
+    ev_schema_digest = schema_digest
+    if ev_schema_digest is None and metadata.compatibility_evidence is not None:
+        ev_schema_digest = metadata.compatibility_evidence.verified_schema_digest
+
+    canonical_obj = {
+        "schema_version": metadata.schema_version,
+        "task_kind": {
+            "status": metadata.task_kind.status,
+            "value": str(metadata.task_kind.value).strip().lower()
+            if metadata.task_kind.value is not None
+            else None,
+        },
+        "dimensions": norm_dims,
+        "generation_contract": {
+            "provider": metadata.generation_contract.provider.strip(),
+            "model": metadata.generation_contract.model.strip(),
+            "temperature": round(float(metadata.generation_contract.temperature), 8),
+            "max_tokens": metadata.generation_contract.max_tokens,
+        },
+        "embedding_contract": {
+            "model": metadata.embedding_contract.model.strip(),
+        },
+        "schema_digest": ev_schema_digest.strip().lower() if isinstance(ev_schema_digest, str) and ev_schema_digest.strip() else None,
+    }
+    encoded = json.dumps(canonical_obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    digest = hashlib.sha256(encoded).hexdigest()
+    return f"v{metadata.schema_version}:{digest}"
+
+
+@dataclass(frozen=True)
 class EligibilityResult:
     """Result of checking a request's eligibility for semantic caching."""
     eligible: bool
@@ -850,13 +1107,19 @@ class SemanticCacheStats:
     hits: int = 0
     misses: int = 0
     rejected_candidates: int = 0
+    uncertain_candidates: int = 0
     ambiguous_candidates: int = 0
+    no_candidate_misses: int = 0
+    threshold_rejections: int = 0
     eligibility_rejections: int = 0
     embedding_failures: int = 0
     vector_store_failures: int = 0
     indexing_successes: int = 0
     indexing_failures: int = 0
     validator_failures: int = 0
+    admission_verified: int = 0
+    admission_rejected: int = 0
+    admission_uncertain: int = 0
 
     def to_dict(self) -> Dict[str, int]:
         return {
@@ -864,11 +1127,17 @@ class SemanticCacheStats:
             "hits": self.hits,
             "misses": self.misses,
             "rejected_candidates": self.rejected_candidates,
+            "uncertain_candidates": self.uncertain_candidates,
             "ambiguous_candidates": self.ambiguous_candidates,
+            "no_candidate_misses": self.no_candidate_misses,
+            "threshold_rejections": self.threshold_rejections,
             "eligibility_rejections": self.eligibility_rejections,
             "embedding_failures": self.embedding_failures,
             "vector_store_failures": self.vector_store_failures,
             "indexing_successes": self.indexing_successes,
             "indexing_failures": self.indexing_failures,
             "validator_failures": self.validator_failures,
+            "admission_verified": self.admission_verified,
+            "admission_rejected": self.admission_rejected,
+            "admission_uncertain": self.admission_uncertain,
         }

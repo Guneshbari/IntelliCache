@@ -22,12 +22,14 @@ from .contracts import (
     CompatibilityDecision,
     CompatibilityReasonCode,
     CompatibilityStatus,
+    EVIDENCE_TIER_RESPONSE_VERIFIED,
     EligibilityResult,
     MetadataStatus,
     SUPPORTED_SCHEMA_VERSIONS,
     SemanticCompatibilityMetadata,
     TaskKind,
 )
+from .evidence import EvidenceAuthority, get_default_evidence_authority
 from ..vector_store.contracts import VectorSearchResult
 
 if TYPE_CHECKING:
@@ -122,12 +124,16 @@ class SemanticCachePolicy:
         top_k: int = 5,
         configured_model: str = "nomic-embed-text",
         extractor: Optional[CompatibilityExtractor] = None,
+        retrieval_budget: int = 25,
+        evidence_authority: Optional[EvidenceAuthority] = None,
     ):
         self.min_similarity = float(min_similarity)
         self.min_margin = float(min_margin)
         self.top_k = int(top_k)
+        self.retrieval_budget = max(self.top_k, min(50, int(retrieval_budget))) if int(retrieval_budget) <= 50 else max(self.top_k, int(retrieval_budget))
         self.configured_model = str(configured_model).strip()
         self.extractor = extractor or CompatibilityExtractor()
+        self.evidence_authority = evidence_authority or get_default_evidence_authority()
         self._last_evaluation_diagnostics: Optional[Dict[str, Any]] = None
 
     def check_eligibility(self, request: GenerationRequest) -> EligibilityResult:
@@ -391,7 +397,34 @@ class SemanticCachePolicy:
                     dimension="request_metadata",
                 )
 
-        return compare_compatibility_decision(req_meta, cand_meta, raw_candidate_metadata=meta_dict)
+        decision = compare_compatibility_decision(req_meta, cand_meta, raw_candidate_metadata=meta_dict)
+        if decision.is_incompatible:
+            return decision
+
+        # Cryptographic provenance and binding verification for response_verified candidates
+        cand_ev = cand_meta.compatibility_evidence
+        if cand_ev is not None and cand_ev.evidence_tier == EVIDENCE_TIER_RESPONSE_VERIFIED:
+            bound_ok, bound_code, bound_msg = self.evidence_authority.verify_evidence_binding(
+                cand_ev,
+                cache_namespace=candidate.cache_namespace,
+                fingerprint=candidate.fingerprint,
+                response_text=candidate.cached_response or "",
+                metadata=cand_meta,
+            )
+            if not bound_ok:
+                return CompatibilityDecision(
+                    status=CompatibilityStatus.UNCERTAIN,
+                    reason_code=bound_code,
+                    message=bound_msg,
+                    dimension="compatibility_evidence",
+                    evidence={
+                        "source": cand_ev.source,
+                        "evidence_tier": cand_ev.evidence_tier,
+                        "has_bound_signature": cand_ev.has_bound_signature(),
+                    },
+                )
+
+        return decision
 
     def is_candidate_compatible(
         self,
@@ -426,6 +459,12 @@ class SemanticCachePolicy:
                 "dimension": None,
                 "decision_evidence": {},
                 "candidate_decisions": [],
+                "candidates_retrieved": 0,
+                "candidates_compatible": 0,
+                "candidates_rejected": 0,
+                "candidates_incompatible": 0,
+                "candidates_uncertain": 0,
+                "candidates_legacy": 0,
             }
             return None, "No vector candidates retrieved."
 
@@ -440,8 +479,14 @@ class SemanticCachePolicy:
         compatible_candidates: List[VectorSearchResult] = []
         rejected_decisions: List[Tuple[VectorSearchResult, CompatibilityDecision]] = []
         decision_records: List[Dict[str, Any]] = []
+        incompatible_count = 0
+        uncertain_count = 0
+        legacy_count = 0
 
         for cand in candidates:
+            raw_sv = (cand.metadata or {}).get("schema_version")
+            if raw_sv is None or raw_sv == 2:
+                legacy_count += 1
             decision = self.validate_candidate(cand, request, request_metadata=req_meta)
             decision_records.append({
                 "fingerprint_prefix": (cand.fingerprint or "")[:12],
@@ -452,6 +497,10 @@ class SemanticCachePolicy:
                 compatible_candidates.append(cand)
             else:
                 rejected_decisions.append((cand, decision))
+                if decision.is_incompatible:
+                    incompatible_count += 1
+                elif decision.is_uncertain:
+                    uncertain_count += 1
                 logger.debug(
                     "Candidate fingerprint='%s...' rejected (%s / %s): %s",
                     (cand.fingerprint or "")[:12],
@@ -473,6 +522,12 @@ class SemanticCachePolicy:
                 "dimension": primary_decision.dimension,
                 "decision_evidence": dict(primary_decision.evidence),
                 "candidate_decisions": decision_records,
+                "candidates_retrieved": len(candidates),
+                "candidates_compatible": 0,
+                "candidates_rejected": len(rejected_decisions),
+                "candidates_incompatible": incompatible_count,
+                "candidates_uncertain": uncertain_count,
+                "candidates_legacy": legacy_count,
             }
             return (
                 None,
@@ -481,7 +536,10 @@ class SemanticCachePolicy:
             )
 
         compatible_candidates.sort(key=lambda c: c.similarity, reverse=True)
-        top_cand = compatible_candidates[0]
+        # Apply final semantic pool limit after compatibility filtering so starvable legacy/incompatible
+        # entries do not crowd out compatible candidates within retrieval_budget.
+        compatible_pool = compatible_candidates[: max(1, self.top_k)]
+        top_cand = compatible_pool[0]
 
         if top_cand.similarity < self.min_similarity:
             self._last_evaluation_diagnostics = {
@@ -494,6 +552,12 @@ class SemanticCachePolicy:
                     "min_similarity": round(float(self.min_similarity), 6),
                 },
                 "candidate_decisions": decision_records,
+                "candidates_retrieved": len(candidates),
+                "candidates_compatible": len(compatible_candidates),
+                "candidates_rejected": len(rejected_decisions),
+                "candidates_incompatible": incompatible_count,
+                "candidates_uncertain": uncertain_count,
+                "candidates_legacy": legacy_count,
             }
             return (
                 None,
@@ -501,7 +565,7 @@ class SemanticCachePolicy:
             )
 
         top_response = (top_cand.cached_response or "").strip()
-        for other in compatible_candidates[1:]:
+        for other in compatible_pool[1:]:
             margin = top_cand.similarity - other.similarity
             if margin < self.min_margin:
                 other_response = (other.cached_response or "").strip()
@@ -516,6 +580,12 @@ class SemanticCachePolicy:
                             "min_margin": round(float(self.min_margin), 6),
                         },
                         "candidate_decisions": decision_records,
+                        "candidates_retrieved": len(candidates),
+                        "candidates_compatible": len(compatible_candidates),
+                        "candidates_rejected": len(rejected_decisions),
+                        "candidates_incompatible": incompatible_count,
+                        "candidates_uncertain": uncertain_count,
+                        "candidates_legacy": legacy_count,
                     }
                     return (
                         None,
@@ -530,5 +600,11 @@ class SemanticCachePolicy:
             "dimension": None,
             "decision_evidence": {},
             "candidate_decisions": decision_records,
+            "candidates_retrieved": len(candidates),
+            "candidates_compatible": len(compatible_candidates),
+            "candidates_rejected": len(rejected_decisions),
+            "candidates_incompatible": incompatible_count,
+            "candidates_uncertain": uncertain_count,
+            "candidates_legacy": legacy_count,
         }
         return top_cand, None

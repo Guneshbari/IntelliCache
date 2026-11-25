@@ -38,6 +38,7 @@ class InMemoryVectorStore(BaseVectorStore):
         default_model: str = "BAAI/bge-small-en-v1.5",
         max_records: int = 1000,
         exact_cache: Optional[Any] = None,
+        exclude_unmigrated_legacy: bool = False,
     ):
         if isinstance(dimensions, bool) or not isinstance(dimensions, int) or dimensions <= 0:
             raise VectorInvalidError(f"Vector dimensions must be a positive integer, got {dimensions}.")
@@ -49,6 +50,7 @@ class InMemoryVectorStore(BaseVectorStore):
         self.default_model = (default_model or "BAAI/bge-small-en-v1.5").strip()
         self.max_records = max_records
         self.exact_cache = exact_cache
+        self.exclude_unmigrated_legacy = bool(exclude_unmigrated_legacy)
         self._lock = asyncio.Lock()
         # Key: (cache_namespace, fingerprint, model) -> VectorRecord
         self._records: Dict[Tuple[str, str, str], VectorRecord] = {}
@@ -156,11 +158,17 @@ class InMemoryVectorStore(BaseVectorStore):
         self._validate_vector_dimensions(query_vector, context="Query vector")
 
         async with self._lock:
-            candidates = [
-                (k, rec, self._record_versions.get(k, 0))
-                for (k, rec) in self._records.items()
-                if k[0] == ns and k[2] == target_model
-            ]
+            candidates = []
+            for (k, rec) in self._records.items():
+                if k[0] != ns or k[2] != target_model:
+                    continue
+                if rec.metadata.get("legacy_excluded") is True:
+                    continue
+                if self.exclude_unmigrated_legacy:
+                    sv = rec.metadata.get("schema_version")
+                    if not isinstance(sv, int) or isinstance(sv, bool) or sv < 3:
+                        continue
+                candidates.append((k, rec, self._record_versions.get(k, 0)))
 
         if not candidates:
             return []
@@ -252,6 +260,21 @@ class InMemoryVectorStore(BaseVectorStore):
         # Order by cosine distance ascending (closest / highest similarity first), with deterministic tie-breaking on fingerprint
         scored_candidates.sort(key=lambda c: (c.distance, c.fingerprint))
         return scored_candidates[:top_k]
+
+    async def get_by_fingerprint(
+        self,
+        fingerprint: str,
+        namespace: Optional[str] = None,
+        model: Optional[str] = None,
+    ) -> Optional[VectorRecord]:
+        """Retrieves an existing vector record for (namespace, fingerprint, model), if any."""
+        ns = (namespace or self.default_namespace).strip()
+        target_model = (model or self.default_model).strip()
+        fp = (fingerprint or "").strip()
+        if not ns or not fp or not target_model:
+            return None
+        async with self._lock:
+            return self._records.get((ns, fp, target_model))
 
     async def delete(self, fingerprint: str, namespace: Optional[str] = None) -> bool:
         """Deletes a vector record by namespace and exact-cache fingerprint."""

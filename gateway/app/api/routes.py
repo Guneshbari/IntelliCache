@@ -87,6 +87,23 @@ class MessageItem(BaseModel):
     content: str
 
 
+_CLIENT_FORBIDDEN_EVIDENCE_FIELDS = frozenset({
+    "compatibility_evidence",
+    "compatibility_metadata",
+    "evidence_tier",
+    "verified_output_format",
+    "verified_json_valid",
+    "version_independent",
+    "language_independent",
+    "context_independent",
+    "freshness_verified",
+    "artifact_schema_version",
+    "response_digest",
+    "binding_digest",
+    "evidence_signature",
+})
+
+
 class QueryRequest(BaseModel):
     """Inbound request payload for LLM query execution."""
     prompt: Optional[str] = None
@@ -104,6 +121,19 @@ class QueryRequest(BaseModel):
     @classmethod
     def validate_request_payload(cls, data: Any) -> Any:
         if isinstance(data, dict):
+            forbidden_top = sorted(k for k in data.keys() if k in _CLIENT_FORBIDDEN_EVIDENCE_FIELDS)
+            if forbidden_top:
+                raise ValueError(
+                    f"Client payloads cannot supply compatibility/verification evidence fields: {forbidden_top}."
+                )
+            raw_meta = data.get("metadata")
+            if isinstance(raw_meta, dict):
+                forbidden_meta = sorted(k for k in raw_meta.keys() if k in _CLIENT_FORBIDDEN_EVIDENCE_FIELDS)
+                if forbidden_meta:
+                    raise ValueError(
+                        f"Client metadata cannot assert compatibility/verification evidence fields: {forbidden_meta}."
+                    )
+
             prompt = data.get("prompt")
             query = data.get("query")
             messages = data.get("messages")

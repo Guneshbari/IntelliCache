@@ -167,6 +167,12 @@ class Settings(BaseModel):
     semantic_cache_top_k: int = Field(
         default_factory=lambda: int(os.getenv("SEMANTIC_CACHE_TOP_K", "5"))
     )
+    semantic_cache_max_retrieval_candidates: int = Field(
+        default_factory=lambda: int(os.getenv("SEMANTIC_CACHE_MAX_RETRIEVAL_CANDIDATES", "25"))
+    )
+    semantic_cache_evidence_secret: Optional[str] = Field(
+        default_factory=lambda: (os.getenv("SEMANTIC_CACHE_EVIDENCE_SECRET") or "").strip() or None
+    )
     vector_store_backend: Optional[str] = Field(
         default_factory=lambda: (os.getenv("VECTOR_STORE_BACKEND") or "").lower().strip() or None
     )
@@ -235,6 +241,15 @@ class Settings(BaseModel):
             )
         if self.semantic_cache_enabled and self.cache_backend == "postgres" and not self.database_url:
             raise ValueError("DATABASE_URL must be configured when SEMANTIC_CACHE_ENABLED is true.")
+        if self.semantic_cache_top_k < 1:
+            raise ValueError("SEMANTIC_CACHE_TOP_K must be >= 1.")
+        if (
+            self.semantic_cache_max_retrieval_candidates < self.semantic_cache_top_k
+            or self.semantic_cache_max_retrieval_candidates > 50
+        ):
+            raise ValueError(
+                "SEMANTIC_CACHE_MAX_RETRIEVAL_CANDIDATES must be between SEMANTIC_CACHE_TOP_K and 50."
+            )
 
         return self
 

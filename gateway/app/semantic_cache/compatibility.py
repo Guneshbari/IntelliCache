@@ -200,6 +200,7 @@ class CompatibilityExtractor:
     def extract(self, request: GenerationRequest, configured_model: str) -> SemanticCompatibilityMetadata:
         """Extracts complete versioned v3 metadata from a GenerationRequest."""
         query_text = extract_effective_user_query(request)
+        req_extra = getattr(request, "metadata", None)
         return self.extract_from_text(
             text=query_text,
             provider=request.provider,
@@ -207,6 +208,7 @@ class CompatibilityExtractor:
             temperature=request.temperature,
             max_tokens=request.max_tokens,
             configured_model=configured_model,
+            request_metadata=req_extra if isinstance(req_extra, dict) else None,
         )
 
     def extract_from_text(
@@ -217,6 +219,7 @@ class CompatibilityExtractor:
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
         configured_model: str = "nomic-embed-text",
+        request_metadata: Optional[Dict[str, Any]] = None,
     ) -> SemanticCompatibilityMetadata:
         """Deterministic extraction from raw query text plus generation contract parameters."""
         clean_text = (text or "").strip()
@@ -244,7 +247,7 @@ class CompatibilityExtractor:
 
         exec_dim = self._detect_execution_model(clean_text)
         fmt_dim = self._detect_output_format(clean_text)
-        out_constraints_dim = self._detect_output_constraints(clean_text)
+        out_constraints_dim = self._detect_output_constraints(clean_text, request_metadata=request_metadata)
         constraints_dim = self._detect_constraints(clean_text)
         freshness_dim = self._detect_freshness(clean_text)
         context_dep_dim = self._detect_context_dependency(clean_text)
@@ -890,18 +893,59 @@ class CompatibilityExtractor:
 
         return DimensionValue(status=MetadataStatus.NOT_APPLICABLE, value=None)
 
-    def _detect_output_constraints(self, text: str) -> DimensionValue:
+    def _detect_output_constraints(
+        self,
+        text: str,
+        request_metadata: Optional[Dict[str, Any]] = None,
+    ) -> DimensionValue:
+        from .evidence import compute_canonical_schema_digest
+        from .verification import extract_requested_json_schema
+
         lower = text.lower()
         items: List[ConstraintItem] = []
 
         if re.search(r"\b(?:strict\s+json|valid\s+json\s+only|json\s+only|only\s+(?:return|output)\s+json)\b", lower):
             items.append(ConstraintItem(key="strict_format", operator="equals", value="json_only"))
-        if re.search(r"\b(?:json\s+schema|matching\s+(?:the\s+|this\s+)?schema|follow(?:ing)?\s+(?:the\s+|this\s+)?schema|conform(?:ing)?\s+to\s+(?:the\s+|this\s+)?schema)\b", lower):
+
+        has_schema_hint = bool(
+            re.search(
+                r"\b(?:json\s+schema|matching\s+(?:the\s+|this\s+)?schema|follow(?:ing)?\s+(?:the\s+|this\s+)?schema|conform(?:ing)?\s+to\s+(?:the\s+|this\s+)?schema)\b",
+                lower,
+            )
+        )
+        schema_obj, malformed_schema = extract_requested_json_schema(text, request_metadata)
+        if malformed_schema:
+            return DimensionValue(status=MetadataStatus.UNKNOWN, value=None)
+        if schema_obj is not None:
+            schema_digest = compute_canonical_schema_digest(schema_obj)
+            items.append(ConstraintItem(key="schema_adherence", operator="equals", value=f"sha256:{schema_digest}"))
+        elif has_schema_hint:
             items.append(ConstraintItem(key="schema_adherence", operator="equals", value="required"))
+
         if re.search(r"\b(?:no\s+markdown|without\s+markdown|no\s+code\s+fences|without\s+backticks)\b", lower):
             items.append(ConstraintItem(key="markup", operator="equals", value="no_markdown"))
         if re.search(r"\b(?:code\s+only|only\s+code|just\s+the\s+code|no\s+prose|without\s+(?:any\s+)?explanation)\b", lower):
             items.append(ConstraintItem(key="code_only", operator="equals", value="true"))
+
+        word_match = re.search(r"\b(?:at\s+most|max(?:imum)?|under|no\s+more\s+than|within)\s+(\d+)\s+words?\b", lower)
+        if word_match:
+            items.append(ConstraintItem(key="max_words", operator="equals", value=word_match.group(1)))
+
+        char_match = re.search(r"\b(?:at\s+most|max(?:imum)?|under|no\s+more\s+than|within)\s+(\d+)\s+(?:chars?|characters?)\b", lower)
+        if char_match:
+            items.append(ConstraintItem(key="max_chars", operator="equals", value=char_match.group(1)))
+
+        keys_match = re.search(
+            r"\b(?:with\s+)?(?:required\s+(?:json\s+)?keys?|must\s+(?:include|contain)\s+keys?|include\s+keys?)\s*:\s*([a-zA-Z0-9_]+(?:\s*,\s*[a-zA-Z0-9_]+)*)",
+            lower,
+        )
+        if keys_match:
+            raw_keys = [k.strip(" `'\"") for k in keys_match.group(1).split(",") if k.strip(" `'\"")]
+            if raw_keys:
+                items.append(ConstraintItem(key="required_keys", operator="equals", value=",".join(sorted(set(raw_keys)))))
+
+        if re.search(r"\b(?:conform(?:ing)?\s+to\s+(?:the\s+|this\s+)?xsd|validate\s+against\s+(?:the\s+|this\s+)?xsd|must\s+pass\s+(?:all\s+)?unit\s+tests)\b", lower):
+            items.append(ConstraintItem(key="unverified_execution_constraint", operator="equals", value="required"))
 
         if items:
             return DimensionValue(status=MetadataStatus.KNOWN, value=items)
@@ -1777,18 +1821,53 @@ class CompatibilityValidator:
                     evidence={"requested_output_format": "json", "verified_json_valid": False},
                 )
 
-            # Schema-adherence verification belongs to Stage 3.5.3 unless explicitly verified
+            # Verify schema adherence and concrete output constraints against trusted evidence
             if r_out_c and r_out_c.status == MetadataStatus.KNOWN and isinstance(r_out_c.value, list):
+                verified_set = set(trusted_cand_ev.verified_constraints or ())
                 for item in r_out_c.value:
                     c_item = item if isinstance(item, ConstraintItem) else ConstraintItem.from_dict(item)
-                    if c_item.key == "schema_adherence" and trusted_cand_ev.artifact_schema_version is None:
+                    if c_item.key == "schema_adherence":
+                        expected_digest = (
+                            c_item.value.split("sha256:", 1)[1].strip().lower()
+                            if str(c_item.value).startswith("sha256:")
+                            else None
+                        )
+                        if (
+                            trusted_cand_ev.artifact_schema_version is None
+                            or not trusted_cand_ev.verified_schema_digest
+                            or (expected_digest is not None and trusted_cand_ev.verified_schema_digest != expected_digest)
+                        ):
+                            code = CompatibilityReasonCode.UNVERIFIED_OUTPUT_ARTIFACT
+                            return CompatibilityDecision(
+                                status=CompatibilityStatus.UNCERTAIN,
+                                reason_code=code,
+                                message=f"{code}: Requested schema adherence lacks matching verified schema proof.",
+                                dimension="output_constraints",
+                                evidence={
+                                    "constraint": "schema_adherence",
+                                    "artifact_schema_version": trusted_cand_ev.artifact_schema_version,
+                                    "has_verified_schema_digest": bool(trusted_cand_ev.verified_schema_digest),
+                                },
+                            )
+                    elif c_item.key in ("required_keys", "max_words", "max_chars"):
+                        expected_tag = f"{c_item.key}={c_item.value}".lower()
+                        if expected_tag not in verified_set:
+                            code = CompatibilityReasonCode.UNVERIFIED_OUTPUT_ARTIFACT
+                            return CompatibilityDecision(
+                                status=CompatibilityStatus.UNCERTAIN,
+                                reason_code=code,
+                                message=f"{code}: Output constraint '{c_item.key}' lacks verified response proof.",
+                                dimension="output_constraints",
+                                evidence={"constraint": c_item.key},
+                            )
+                    elif c_item.key not in ("strict_format", "markup", "code_only"):
                         code = CompatibilityReasonCode.UNVERIFIED_OUTPUT_ARTIFACT
                         return CompatibilityDecision(
                             status=CompatibilityStatus.UNCERTAIN,
                             reason_code=code,
-                            message=f"{code}: Explicit schema adherence requires Stage 3.5.3 response schema verification.",
+                            message=f"{code}: Output constraint '{c_item.key}' has no verified artifact proof.",
                             dimension="output_constraints",
-                            evidence={"constraint": "schema_adherence", "artifact_schema_version": None},
+                            evidence={"constraint": c_item.key},
                         )
 
         return None

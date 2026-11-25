@@ -67,6 +67,7 @@ class GenerationResult:
     )
     metadata: Dict[str, Any] = field(default_factory=dict)
     cache_type: str = "none"
+    finish_reason: Optional[str] = None
 
 
 @dataclass
@@ -84,6 +85,7 @@ class StreamChunk:
     status_code: Optional[int] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
     cache_type: str = "none"
+    finish_reason: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         data: Dict[str, Any] = {

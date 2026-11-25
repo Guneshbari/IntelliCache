@@ -13,15 +13,24 @@ from typing import Any, Callable, Dict, Optional
 
 from .compatibility import extract_effective_user_query
 from .contracts import (
+    AdmissionDecision,
+    AdmissionStatus,
     CompatibilityReasonCode,
+    CompatibilityStatus,
     EligibilityResult,
     SemanticCacheStats,
+    SemanticCompatibilityMetadata,
     SemanticHit,
+    VerificationStatus,
+    compute_variant_key,
 )
+from .evidence import EvidenceAuthority, get_default_evidence_authority
 from .interfaces import BaseSemanticCache
 from .policy import SemanticCachePolicy
+from .verification import ResponseArtifactVerifier
 from ..core.contracts import GenerationRequest, GenerationResult
 from ..core.errors import sanitize_error_message
+from ..core.fingerprinting import generate_fingerprint
 from ..embeddings.contracts import EmbeddingTask
 from ..embeddings.interfaces import EmbeddingProvider
 from ..metrics import RuntimeMetricsCollector, get_metrics_collector
@@ -45,6 +54,8 @@ class SemanticCacheService(BaseSemanticCache):
         default_namespace: str = "default",
         metrics_collector: Optional[RuntimeMetricsCollector] = None,
         diagnostics_hook: Optional[Callable[[Dict[str, Any]], None]] = None,
+        verifier: Optional[ResponseArtifactVerifier] = None,
+        evidence_authority: Optional[EvidenceAuthority] = None,
     ):
         self.embedding_provider = embedding_provider
         self.vector_store = vector_store
@@ -53,6 +64,13 @@ class SemanticCacheService(BaseSemanticCache):
         self.stats = SemanticCacheStats()
         self.metrics_collector = metrics_collector
         self.diagnostics_hook = diagnostics_hook
+        self.verifier = verifier or ResponseArtifactVerifier()
+        self.evidence_authority = (
+            evidence_authority
+            or getattr(policy, "evidence_authority", None)
+            or get_default_evidence_authority()
+        )
+        self.last_admission_decision: Optional[AdmissionDecision] = None
 
     def _get_collector(self) -> RuntimeMetricsCollector:
         return self.metrics_collector or get_metrics_collector()
@@ -185,12 +203,16 @@ class SemanticCacheService(BaseSemanticCache):
             )
             return None
 
-        # 2. Search nearest neighbours in vector store
+        # 2. Search nearest neighbours in vector store with bounded retrieval budget
         search_start = time.perf_counter()
+        retrieval_limit = max(
+            int(getattr(self.policy, "top_k", 5)),
+            int(getattr(self.policy, "retrieval_budget", getattr(self.policy, "top_k", 5))),
+        )
         try:
             candidates = await self.vector_store.search(
                 query_vector=embed_res.vector,
-                top_k=self.policy.top_k,
+                top_k=retrieval_limit,
                 namespace=ns,
                 model=self.policy.configured_model,
             )
@@ -281,16 +303,23 @@ class SemanticCacheService(BaseSemanticCache):
             self.stats.misses += 1
             collector.record_semantic_miss(ns)
             eval_outcome = eval_diag.get("outcome") if isinstance(eval_diag, dict) else None
-            if eval_outcome == "ambiguous" or (
-                eval_outcome is None and rejection_reason and "ambiguous" in rejection_reason.lower()
-            ):
+            decision_status = eval_diag.get("decision_status") if isinstance(eval_diag, dict) else None
+            if eval_outcome == "empty_candidates":
+                self.stats.no_candidate_misses += 1
+                collector.record_no_candidate_miss(ns)
+            elif eval_outcome == "below_threshold":
+                self.stats.threshold_rejections += 1
+                collector.record_threshold_rejection(ns)
+            elif eval_outcome == "ambiguous":
                 self.stats.ambiguous_candidates += 1
                 collector.record_ambiguous_candidate(ns)
-            elif eval_outcome == "compatibility_rejected" or (
-                eval_outcome is None and rejection_reason and "compatible" in rejection_reason.lower()
-            ):
+            elif eval_outcome == "compatibility_rejected":
                 self.stats.rejected_candidates += 1
-                collector.record_incompatible_candidate(ns)
+                if decision_status == CompatibilityStatus.UNCERTAIN.value:
+                    self.stats.uncertain_candidates += 1
+                    collector.record_uncertain_candidate(ns)
+                else:
+                    collector.record_incompatible_candidate(ns)
 
             logger.debug("Semantic lookup miss: %s", rejection_reason)
             diag_payload: Dict[str, Any] = {
@@ -312,6 +341,12 @@ class SemanticCacheService(BaseSemanticCache):
                 diag_payload["dimension"] = eval_diag.get("dimension")
                 diag_payload["decision_evidence"] = eval_diag.get("decision_evidence")
                 diag_payload["candidate_decisions"] = eval_diag.get("candidate_decisions")
+                diag_payload["candidates_retrieved"] = eval_diag.get("candidates_retrieved")
+                diag_payload["candidates_compatible"] = eval_diag.get("candidates_compatible")
+                diag_payload["candidates_rejected"] = eval_diag.get("candidates_rejected")
+                diag_payload["candidates_incompatible"] = eval_diag.get("candidates_incompatible")
+                diag_payload["candidates_uncertain"] = eval_diag.get("candidates_uncertain")
+                diag_payload["candidates_legacy"] = eval_diag.get("candidates_legacy")
             self._emit_diagnostics(diag_payload, hook=diagnostics_hook)
             return None
 
@@ -325,22 +360,27 @@ class SemanticCacheService(BaseSemanticCache):
             winning_candidate.similarity,
         )
 
-        self._emit_diagnostics(
-            {
-                "query_hash": query_hash,
-                "eligible": True,
-                "reason": eligibility.reason,
-                "metadata": eligibility.metadata,
-                "embed_latency_ms": embed_lat_ms,
-                "search_latency_ms": search_lat_ms,
-                "eval_latency_ms": eval_lat_ms,
-                "lookup_latency_ms": sem_lat_ms,
-                "candidates": candidates,
-                "winning_candidate": winning_candidate,
-                "rejection_reason": None,
-            },
-            hook=diagnostics_hook,
-        )
+        hit_diag: Dict[str, Any] = {
+            "query_hash": query_hash,
+            "eligible": True,
+            "reason": eligibility.reason,
+            "metadata": eligibility.metadata,
+            "embed_latency_ms": embed_lat_ms,
+            "search_latency_ms": search_lat_ms,
+            "eval_latency_ms": eval_lat_ms,
+            "lookup_latency_ms": sem_lat_ms,
+            "candidates": candidates,
+            "winning_candidate": winning_candidate,
+            "rejection_reason": None,
+        }
+        if isinstance(eval_diag, dict):
+            hit_diag["candidates_retrieved"] = eval_diag.get("candidates_retrieved")
+            hit_diag["candidates_compatible"] = eval_diag.get("candidates_compatible")
+            hit_diag["candidates_rejected"] = eval_diag.get("candidates_rejected")
+            hit_diag["candidates_incompatible"] = eval_diag.get("candidates_incompatible")
+            hit_diag["candidates_uncertain"] = eval_diag.get("candidates_uncertain")
+            hit_diag["candidates_legacy"] = eval_diag.get("candidates_legacy")
+        self._emit_diagnostics(hit_diag, hook=diagnostics_hook)
 
         return SemanticHit(
             cached_response=winning_candidate.cached_response or "",
@@ -358,25 +398,199 @@ class SemanticCacheService(BaseSemanticCache):
 
     async def index(self, request: GenerationRequest, result: GenerationResult) -> bool:
         """
-        Indexes an eligible, successful generation result into the vector store.
-        Does not index semantic hits (avoids recursive indexing).
+        Verifies generated response artifacts, mints cryptographically bound compatibility evidence,
+        enforces variant coexistence rules, and indexes verified candidates into the vector store.
+        Does not admit FAILED, UNCERTAIN, truncated, or colliding variant responses.
         Fails safely without raising exceptions or invalidating the generation result.
         """
         # Rule 8: Do not index responses from semantic hits or exact hits
         if result.cached or result.cache_type in ("exact", "semantic"):
             return False
 
+        self.last_admission_decision = None
+
         # Only index eligible queries - evaluate policy directly to avoid duplicate request eligibility metrics
         eligibility = self.policy.check_eligibility(request)
         if not eligibility.eligible:
+            self.last_admission_decision = AdmissionDecision(
+                status=AdmissionStatus.REJECT,
+                reason_code=CompatibilityReasonCode.ADMISSION_REJECTED_INELIGIBLE,
+                message=eligibility.reason,
+            )
             return False
 
         query_text = extract_effective_user_query(request)
         ns = request.namespace or self.default_namespace
-
         collector = self._get_collector()
+        idx_start = time.perf_counter()
 
-        # 1. Generate document embedding
+        # 1. Build request-derived v3 metadata and verify actual generated response BEFORE embedding/upsert
+        try:
+            base_meta = eligibility.metadata or self.policy.extractor.extract(request, self.policy.configured_model)
+            base_meta.validate()
+        except Exception as exc:
+            self.stats.indexing_failures += 1
+            collector.record_indexing_failure(ns)
+            idx_lat_ms = (time.perf_counter() - idx_start) * 1000.0
+            collector.record_latency(ns, "vector_indexing_latency_ms", idx_lat_ms)
+            self.last_admission_decision = AdmissionDecision(
+                status=AdmissionStatus.REJECT,
+                reason_code=CompatibilityReasonCode.INVALID_METADATA_FORMAT,
+                message=f"Metadata validation failed before verification: {exc}",
+            )
+            logger.warning(
+                "Vector indexing aborted due to metadata validation failure (%s): %s",
+                type(exc).__name__,
+                sanitize_error_message(str(exc)),
+            )
+            return False
+
+        req_extra = getattr(request, "metadata", None)
+        completion_toks = getattr(getattr(result, "usage", None), "completion_tokens", 0) or 0
+        verify_start = time.perf_counter()
+        try:
+            verification = self.verifier.verify(
+                response_text=result.text,
+                request_metadata=base_meta,
+                query_text=query_text,
+                finish_reason=getattr(result, "finish_reason", None),
+                completion_tokens=int(completion_toks),
+                request_max_tokens=request.max_tokens,
+                request_extra_metadata=req_extra if isinstance(req_extra, dict) else None,
+            )
+        except Exception as exc:
+            self.stats.admission_uncertain += 1
+            collector.record_admission_outcome(ns, AdmissionStatus.UNCERTAIN.value)
+            self.stats.indexing_failures += 1
+            collector.record_indexing_failure(ns)
+            self.last_admission_decision = AdmissionDecision(
+                status=AdmissionStatus.UNCERTAIN,
+                reason_code=CompatibilityReasonCode.VALIDATOR_EXCEPTION,
+                message=f"Response verifier error: {exc}",
+            )
+            logger.warning(
+                "Response verifier raised unexpected error (%s): %s",
+                type(exc).__name__,
+                sanitize_error_message(str(exc)),
+            )
+            return False
+        verify_lat_ms = (time.perf_counter() - verify_start) * 1000.0
+
+        if verification.status != VerificationStatus.VERIFIED:
+            if verification.status == VerificationStatus.FAILED:
+                self.stats.admission_rejected += 1
+                adm_status = AdmissionStatus.REJECT
+                adm_code = CompatibilityReasonCode.ADMISSION_REJECTED_VERIFICATION
+            else:
+                self.stats.admission_uncertain += 1
+                adm_status = AdmissionStatus.UNCERTAIN
+                adm_code = CompatibilityReasonCode.ADMISSION_UNCERTAIN_VERIFICATION
+            collector.record_admission_outcome(ns, adm_status.value)
+            self.last_admission_decision = AdmissionDecision(
+                status=adm_status,
+                reason_code=adm_code,
+                message=verification.message,
+                verification=verification,
+                diagnostics={"verification_latency_ms": round(verify_lat_ms, 3)},
+            )
+            logger.info(
+                "Semantic cache admission blocked (%s / %s): %s",
+                adm_status.value,
+                verification.reason_code.value,
+                verification.message,
+            )
+            return False
+
+        variant_key = compute_variant_key(base_meta, schema_digest=verification.verified_schema_digest)
+        effective_fp = (getattr(result, "fingerprint", None) or "").strip()
+        if not effective_fp:
+            effective_fp = generate_fingerprint(
+                messages=request.messages,
+                model=request.model,
+                temperature=request.temperature,
+                max_tokens=request.max_tokens,
+                provider=request.provider,
+            )
+
+        # Prevent distinct v3 variant records from silently overwriting each other on the same key
+        if callable(getattr(type(self.vector_store), "get_by_fingerprint", None)):
+            try:
+                existing = await self.vector_store.get_by_fingerprint(
+                    effective_fp,
+                    namespace=ns,
+                    model=self.policy.configured_model,
+                )
+                if isinstance(existing, VectorRecord) and isinstance(existing.metadata, dict):
+                    ex_meta = existing.metadata
+                    ex_vk = ex_meta.get("variant_key")
+                    ex_sv = ex_meta.get("schema_version")
+                    if ex_sv == 3 and ex_vk and ex_vk != variant_key:
+                        self.stats.admission_rejected += 1
+                        collector.record_admission_outcome(ns, AdmissionStatus.REJECT.value)
+                        self.last_admission_decision = AdmissionDecision(
+                            status=AdmissionStatus.REJECT,
+                            reason_code=CompatibilityReasonCode.ADMISSION_REJECTED_VARIANT_COLLISION,
+                            message=(
+                                f"{CompatibilityReasonCode.ADMISSION_REJECTED_VARIANT_COLLISION}: "
+                                f"Refusing overwrite of existing variant '{ex_vk}' with distinct '{variant_key}'."
+                            ),
+                            variant_key=variant_key,
+                            verification=verification,
+                        )
+                        return False
+            except Exception as exc:
+                self.stats.indexing_failures += 1
+                collector.record_indexing_failure(ns)
+                self.last_admission_decision = AdmissionDecision(
+                    status=AdmissionStatus.UNCERTAIN,
+                    reason_code=CompatibilityReasonCode.ADMISSION_UNCERTAIN_VERIFICATION,
+                    message=f"Variant collision check failed cleanly: {exc}",
+                    variant_key=variant_key,
+                    verification=verification,
+                )
+                logger.warning(
+                    "Variant collision check failed during indexing (%s): %s",
+                    type(exc).__name__,
+                    sanitize_error_message(str(exc)),
+                )
+                return False
+
+        # 2. Mint cryptographically bound response_verified CompatibilityEvidence
+        try:
+            bound_evidence = self.evidence_authority.mint_response_verified_evidence(
+                cache_namespace=ns,
+                fingerprint=effective_fp,
+                response_text=result.text,
+                metadata=base_meta,
+                verification=verification,
+            )
+            verified_meta_obj = SemanticCompatibilityMetadata(
+                schema_version=base_meta.schema_version,
+                extractor_version=base_meta.extractor_version,
+                task_kind=base_meta.task_kind,
+                dimensions=base_meta.dimensions,
+                generation_contract=base_meta.generation_contract,
+                embedding_contract=base_meta.embedding_contract,
+                indexed_at=base_meta.indexed_at,
+                compatibility_evidence=bound_evidence,
+            )
+            meta = verified_meta_obj.to_dict()
+            meta["variant_key"] = variant_key
+            meta["truncation_status"] = verification.truncation_status.value
+            meta["admission_status"] = AdmissionStatus.ADMIT.value
+        except Exception as exc:
+            self.stats.indexing_failures += 1
+            collector.record_indexing_failure(ns)
+            idx_lat_ms = (time.perf_counter() - idx_start) * 1000.0
+            collector.record_latency(ns, "vector_indexing_latency_ms", idx_lat_ms)
+            logger.warning(
+                "Vector indexing aborted during evidence minting (%s): %s",
+                type(exc).__name__,
+                sanitize_error_message(str(exc)),
+            )
+            return False
+
+        # 3. Generate document embedding (only after verification and admission checks pass)
         embed_start = time.perf_counter()
         try:
             embed_res = await self.embedding_provider.embed(query_text, task=EmbeddingTask.DOCUMENT)
@@ -384,10 +598,11 @@ class SemanticCacheService(BaseSemanticCache):
             collector.record_latency(ns, "embedding_latency_ms", embed_lat_ms)
         except Exception as exc:
             embed_lat_ms = (time.perf_counter() - embed_start) * 1000.0
+            idx_lat_ms = (time.perf_counter() - idx_start) * 1000.0
             collector.record_latency(ns, "embedding_latency_ms", embed_lat_ms)
             self.stats.indexing_failures += 1
             collector.record_indexing_failure(ns)
-            collector.record_latency(ns, "vector_indexing_latency_ms", embed_lat_ms)
+            collector.record_latency(ns, "vector_indexing_latency_ms", idx_lat_ms)
             logger.warning(
                 "Vector indexing failed during embedding (%s): %s",
                 type(exc).__name__,
@@ -399,7 +614,7 @@ class SemanticCacheService(BaseSemanticCache):
         if embed_res.model != self.policy.configured_model:
             self.stats.indexing_failures += 1
             collector.record_indexing_failure(ns)
-            idx_lat_ms = (time.perf_counter() - embed_start) * 1000.0
+            idx_lat_ms = (time.perf_counter() - idx_start) * 1000.0
             collector.record_latency(ns, "vector_indexing_latency_ms", idx_lat_ms)
             logger.warning(
                 "Vector indexing model mismatch: expected '%s', got '%s'",
@@ -408,48 +623,45 @@ class SemanticCacheService(BaseSemanticCache):
             )
             return False
 
-        # 2. Prepare validated versioned compatibility metadata
-        try:
-            meta_obj = eligibility.metadata or self.policy.extractor.extract(request, self.policy.configured_model)
-            meta_obj.validate()
-            meta = meta_obj.to_dict()
-        except Exception as exc:
-            self.stats.indexing_failures += 1
-            collector.record_indexing_failure(ns)
-            idx_lat_ms = (time.perf_counter() - embed_start) * 1000.0
-            collector.record_latency(ns, "vector_indexing_latency_ms", idx_lat_ms)
-            logger.warning(
-                "Vector indexing aborted due to metadata validation failure (%s): %s",
-                type(exc).__name__,
-                sanitize_error_message(str(exc)),
-            )
-            return False
-
         record = VectorRecord(
             cache_namespace=ns,
-            fingerprint=result.fingerprint,
+            fingerprint=effective_fp,
             query_text=query_text,
             vector=embed_res.vector,
             model=self.policy.configured_model,
             metadata=meta,
         )
 
-        # 3. Upsert into vector store
+        # 4. Upsert verified record into vector store
         try:
             await self.vector_store.upsert(record)
+            self.stats.admission_verified += 1
+            collector.record_admission_outcome(ns, AdmissionStatus.ADMIT.value)
             self.stats.indexing_successes += 1
-            idx_lat_ms = (time.perf_counter() - embed_start) * 1000.0
+            idx_lat_ms = (time.perf_counter() - idx_start) * 1000.0
             collector.record_indexing_success(ns, latency_ms=idx_lat_ms)
+            self.last_admission_decision = AdmissionDecision(
+                status=AdmissionStatus.ADMIT,
+                reason_code=CompatibilityReasonCode.ADMISSION_ADMITTED,
+                message="Verified response artifact admitted into semantic cache.",
+                variant_key=variant_key,
+                verification=verification,
+                diagnostics={
+                    "verification_latency_ms": round(verify_lat_ms, 3),
+                    "total_admission_indexing_latency_ms": round(idx_lat_ms, 3),
+                },
+            )
             logger.debug(
-                "Indexed vector record for fingerprint='%s...' in namespace='%s'",
-                result.fingerprint[:12],
+                "Indexed verified vector record: fingerprint='%s...', variant_key='%s...', namespace='%s'",
+                effective_fp[:12],
+                variant_key[:20],
                 ns,
             )
             return True
         except Exception as exc:
             self.stats.indexing_failures += 1
             collector.record_indexing_failure(ns)
-            idx_lat_ms = (time.perf_counter() - embed_start) * 1000.0
+            idx_lat_ms = (time.perf_counter() - idx_start) * 1000.0
             collector.record_latency(ns, "vector_indexing_latency_ms", idx_lat_ms)
             logger.warning(
                 "Vector indexing failed during upsert (%s): %s",
@@ -470,13 +682,19 @@ class SemanticCacheService(BaseSemanticCache):
             "lookups": snap.request_and_cache.semantic_lookups,
             "hits": s.semantic_hits,
             "misses": s.semantic_misses,
-            "rejected_candidates": s.incompatible_candidate_rejections,
+            "rejected_candidates": s.incompatible_candidate_rejections + s.uncertain_candidate_rejections,
+            "uncertain_candidates": s.uncertain_candidate_rejections,
             "ambiguous_candidates": s.ambiguous_candidate_rejections,
+            "no_candidate_misses": s.no_candidate_misses,
+            "threshold_rejections": s.threshold_rejections,
             "eligibility_rejections": s.semantic_eligibility_rejections,
             "embedding_failures": s.embedding_failures,
             "vector_store_failures": s.vector_store_failures,
             "indexing_successes": s.indexing_successes,
             "indexing_failures": s.indexing_failures,
+            "admission_verified": s.admission_verified,
+            "admission_rejected": s.admission_rejected,
+            "admission_uncertain": s.admission_uncertain,
         }
 
     async def close(self) -> None:

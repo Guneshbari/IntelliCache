@@ -53,11 +53,17 @@ class SemanticMetrics(BaseModel):
     semantic_misses: int = 0
     ambiguous_candidate_rejections: int = 0
     incompatible_candidate_rejections: int = 0
+    uncertain_candidate_rejections: int = 0
+    no_candidate_misses: int = 0
+    threshold_rejections: int = 0
     embedding_failures: int = 0
     vector_store_failures: int = 0
     indexing_successes: int = 0
     indexing_failures: int = 0
     validator_failures: int = 0
+    admission_verified: int = 0
+    admission_rejected: int = 0
+    admission_uncertain: int = 0
 
 
 class ShadowMetrics(BaseModel):

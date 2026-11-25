@@ -77,6 +77,7 @@ class MockProvider(LLMProvider):
             cached=False,
             cache_type="none",
             created_at=datetime.now(timezone.utc).isoformat(),
+            finish_reason="stop",
         )
 
     async def stream(self, request: GenerationRequest) -> AsyncGenerator[StreamChunk, None]:

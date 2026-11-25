@@ -111,11 +111,17 @@ class _NamespaceData:
         # Semantic Diagnostics
         self.ambiguous_candidate_rejections = 0
         self.incompatible_candidate_rejections = 0
+        self.uncertain_candidate_rejections = 0
+        self.no_candidate_misses = 0
+        self.threshold_rejections = 0
         self.embedding_failures = 0
         self.vector_store_failures = 0
         self.indexing_successes = 0
         self.indexing_failures = 0
         self.validator_failures = 0
+        self.admission_verified = 0
+        self.admission_rejected = 0
+        self.admission_uncertain = 0
 
         # Shadow Evaluation Diagnostics (Stage 3.3)
         self.shadow_requests_total = 0
@@ -254,6 +260,28 @@ class _NamespaceData:
     def record_incompatible_candidate(self) -> None:
         with self.lock:
             self.incompatible_candidate_rejections += 1
+
+    def record_uncertain_candidate(self) -> None:
+        with self.lock:
+            self.uncertain_candidate_rejections += 1
+
+    def record_no_candidate_miss(self) -> None:
+        with self.lock:
+            self.no_candidate_misses += 1
+
+    def record_threshold_rejection(self) -> None:
+        with self.lock:
+            self.threshold_rejections += 1
+
+    def record_admission_outcome(self, status: str) -> None:
+        with self.lock:
+            norm = (status or "").strip().upper()
+            if norm in ("ADMIT", "VERIFIED"):
+                self.admission_verified += 1
+            elif norm in ("REJECT", "FAILED"):
+                self.admission_rejected += 1
+            else:
+                self.admission_uncertain += 1
 
     def record_embedding_failure(self) -> None:
         with self.lock:
@@ -415,11 +443,17 @@ class _NamespaceData:
                 semantic_misses=self.semantic_misses,
                 ambiguous_candidate_rejections=self.ambiguous_candidate_rejections,
                 incompatible_candidate_rejections=self.incompatible_candidate_rejections,
+                uncertain_candidate_rejections=self.uncertain_candidate_rejections,
+                no_candidate_misses=self.no_candidate_misses,
+                threshold_rejections=self.threshold_rejections,
                 embedding_failures=self.embedding_failures,
                 vector_store_failures=self.vector_store_failures,
                 indexing_successes=self.indexing_successes,
                 indexing_failures=self.indexing_failures,
                 validator_failures=self.validator_failures,
+                admission_verified=self.admission_verified,
+                admission_rejected=self.admission_rejected,
+                admission_uncertain=self.admission_uncertain,
             )
 
             shadow = ShadowMetrics(
@@ -672,6 +706,34 @@ class RuntimeMetricsCollector:
         except Exception as e:
             logger.debug("Metrics record_incompatible_candidate failed: %s", e)
 
+    def record_uncertain_candidate(self, namespace: str) -> None:
+        try:
+            ns_data = self.get_or_create_namespace(namespace)
+            ns_data.record_uncertain_candidate()
+        except Exception as e:
+            logger.debug("Metrics record_uncertain_candidate failed: %s", e)
+
+    def record_no_candidate_miss(self, namespace: str) -> None:
+        try:
+            ns_data = self.get_or_create_namespace(namespace)
+            ns_data.record_no_candidate_miss()
+        except Exception as e:
+            logger.debug("Metrics record_no_candidate_miss failed: %s", e)
+
+    def record_threshold_rejection(self, namespace: str) -> None:
+        try:
+            ns_data = self.get_or_create_namespace(namespace)
+            ns_data.record_threshold_rejection()
+        except Exception as e:
+            logger.debug("Metrics record_threshold_rejection failed: %s", e)
+
+    def record_admission_outcome(self, namespace: str, status: str) -> None:
+        try:
+            ns_data = self.get_or_create_namespace(namespace)
+            ns_data.record_admission_outcome(status)
+        except Exception as e:
+            logger.debug("Metrics record_admission_outcome failed: %s", e)
+
     def record_embedding_failure(self, namespace: str) -> None:
         try:
             ns_data = self.get_or_create_namespace(namespace)
@@ -867,11 +929,17 @@ class RuntimeMetricsCollector:
             agg_sem.semantic_misses += s.semantic_misses
             agg_sem.ambiguous_candidate_rejections += s.ambiguous_candidate_rejections
             agg_sem.incompatible_candidate_rejections += s.incompatible_candidate_rejections
+            agg_sem.uncertain_candidate_rejections += s.uncertain_candidate_rejections
+            agg_sem.no_candidate_misses += s.no_candidate_misses
+            agg_sem.threshold_rejections += s.threshold_rejections
             agg_sem.embedding_failures += s.embedding_failures
             agg_sem.vector_store_failures += s.vector_store_failures
             agg_sem.indexing_successes += s.indexing_successes
             agg_sem.indexing_failures += s.indexing_failures
             agg_sem.validator_failures += s.validator_failures
+            agg_sem.admission_verified += s.admission_verified
+            agg_sem.admission_rejected += s.admission_rejected
+            agg_sem.admission_uncertain += s.admission_uncertain
 
             sh = snap.shadow
             agg_shadow.shadow_requests_total += sh.shadow_requests_total

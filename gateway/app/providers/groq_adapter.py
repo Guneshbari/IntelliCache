@@ -101,9 +101,11 @@ class GroqProvider:
             elapsed_ms = (time.perf_counter() - start_time) * 1000.0
 
             content = ""
+            finish_reason: Optional[str] = None
             if response.choices and len(response.choices) > 0:
                 msg = response.choices[0].message
                 content = msg.content or ""
+                finish_reason = getattr(response.choices[0], "finish_reason", None)
 
             usage = UsageMetrics()
             if hasattr(response, "usage") and response.usage:
@@ -119,6 +121,7 @@ class GroqProvider:
                 model=effective_model,
                 usage=usage,
                 latency_ms=round(elapsed_ms, 2),
+                finish_reason=finish_reason,
             )
         except groq.AuthenticationError as err:
             raise ProviderAuthenticationError(err.message) from err
@@ -159,10 +162,14 @@ class GroqProvider:
                 kwargs["max_tokens"] = request.max_tokens
 
             stream_resp = await client.chat.completions.create(**kwargs)
+            last_finish_reason: Optional[str] = None
             async for chunk in stream_resp:
                 delta_text = ""
                 if chunk.choices and len(chunk.choices) > 0:
                     choice = chunk.choices[0]
+                    fr = getattr(choice, "finish_reason", None)
+                    if fr is not None:
+                        last_finish_reason = fr
                     if hasattr(choice, "delta") and choice.delta and hasattr(choice.delta, "content"):
                         delta_text = choice.delta.content or ""
                 yield StreamChunk(delta=delta_text, done=False, model=effective_model)
@@ -174,6 +181,7 @@ class GroqProvider:
                 model=effective_model,
                 usage=UsageMetrics(),
                 latency_ms=round(elapsed_ms, 2),
+                finish_reason=last_finish_reason,
             )
         except groq.AuthenticationError as err:
             raise ProviderAuthenticationError(err.message) from err

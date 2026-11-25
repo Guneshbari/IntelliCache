@@ -11,6 +11,8 @@ from .compatibility import (
     extract_effective_user_query,
 )
 from .contracts import (
+    AdmissionDecision,
+    AdmissionStatus,
     CURRENT_SCHEMA_VERSION,
     CompatibilityDecision,
     CompatibilityEvidence,
@@ -25,6 +27,7 @@ from .contracts import (
     LEGACY_SCHEMA_VERSIONS,
     MetadataStatus,
     REQUIRED_DIMENSIONS,
+    ResponseVerificationResult,
     SUPPORTED_SCHEMA_VERSIONS,
     SemanticCacheStats,
     SemanticCompatibilityMetadata,
@@ -33,13 +36,33 @@ from .contracts import (
     TRUSTED_REQUEST_EXTRACTOR_ID,
     TRUSTED_RESPONSE_VERIFIER_ID,
     TaskKind,
+    TruncationStatus,
     V2_REQUIRED_DIMENSIONS,
+    VerificationStatus,
+    compute_variant_key,
+)
+from .evidence import (
+    EvidenceAuthority,
+    compute_canonical_schema_digest,
+    compute_evidence_binding_digest,
+    compute_response_digest,
+    get_default_evidence_authority,
 )
 from .interfaces import BaseSemanticCache
+from .legacy import (
+    LegacyInspectionReport,
+    LegacyMigrationReport,
+    PostgresLegacyLifecycleManager,
+    build_migrated_record_metadata,
+    classify_legacy_record_metadata,
+)
 from .policy import SemanticCachePolicy
 from .service import SemanticCacheService
+from .verification import ResponseArtifactVerifier
 
 __all__ = [
+    "AdmissionDecision",
+    "AdmissionStatus",
     "BaseSemanticCache",
     "CURRENT_SCHEMA_VERSION",
     "CompatibilityDecision",
@@ -53,10 +76,16 @@ __all__ = [
     "DimensionValue",
     "EligibilityResult",
     "EmbeddingContract",
+    "EvidenceAuthority",
     "GenerationContract",
     "LEGACY_SCHEMA_VERSIONS",
+    "LegacyInspectionReport",
+    "LegacyMigrationReport",
     "MetadataStatus",
+    "PostgresLegacyLifecycleManager",
     "REQUIRED_DIMENSIONS",
+    "ResponseArtifactVerifier",
+    "ResponseVerificationResult",
     "SUPPORTED_SCHEMA_VERSIONS",
     "SemanticCachePolicy",
     "SemanticCacheService",
@@ -67,8 +96,17 @@ __all__ = [
     "TRUSTED_REQUEST_EXTRACTOR_ID",
     "TRUSTED_RESPONSE_VERIFIER_ID",
     "TaskKind",
+    "TruncationStatus",
     "V2_REQUIRED_DIMENSIONS",
+    "VerificationStatus",
+    "build_migrated_record_metadata",
+    "classify_legacy_record_metadata",
     "compare_compatibility",
     "compare_compatibility_decision",
+    "compute_canonical_schema_digest",
+    "compute_evidence_binding_digest",
+    "compute_response_digest",
+    "compute_variant_key",
     "extract_effective_user_query",
+    "get_default_evidence_authority",
 ]

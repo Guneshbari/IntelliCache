@@ -61,6 +61,7 @@ class PostgresVectorStore(BaseVectorStore):
         owns_pool: bool = False,
         table_name: str = "vector_records",
         readonly_transaction: bool = False,
+        exclude_unmigrated_legacy: bool = False,
     ):
         if dimensions <= 0:
             raise VectorInvalidError(f"Vector dimensions must be positive, got {dimensions}.")
@@ -76,6 +77,7 @@ class PostgresVectorStore(BaseVectorStore):
         self._owns_pool = owns_pool
         self.table_name = table_name.strip()
         self.readonly_transaction = bool(readonly_transaction)
+        self.exclude_unmigrated_legacy = bool(exclude_unmigrated_legacy)
 
     def _validate_vector_dimensions(self, vector: Sequence[float], context: str = "vector") -> None:
         """Validates that a vector's dimension matches the configured store dimension."""
@@ -180,6 +182,12 @@ class PostgresVectorStore(BaseVectorStore):
 
         vec_str = _format_vector(query_vector)
         join_type = "JOIN" if self.table_name == "vector_records" else "LEFT JOIN"
+        legacy_filter = "AND COALESCE((v.metadata->>'legacy_excluded')::boolean, FALSE) = FALSE"
+        if self.exclude_unmigrated_legacy:
+            legacy_filter += (
+                "\n              AND (v.metadata->>'schema_version') ~ '^[0-9]+$'"
+                "\n              AND (v.metadata->>'schema_version')::integer >= 3"
+            )
 
         query = f"""
             SELECT
@@ -203,6 +211,7 @@ class PostgresVectorStore(BaseVectorStore):
                AND (c.expires_at IS NULL OR c.expires_at > NOW())
             WHERE v.cache_namespace = $2
               AND v.model = $3
+              {legacy_filter}
             ORDER BY distance ASC
             LIMIT $4;
         """
@@ -308,6 +317,46 @@ class PostgresVectorStore(BaseVectorStore):
             raise VectorStoreError(f"Database error during vector retrieval: {e}") from e
         except Exception as e:
             raise VectorStoreConnectionError(f"Connection failure during vector retrieval: {e}") from e
+
+    async def get_by_fingerprint(
+        self,
+        fingerprint: str,
+        namespace: Optional[str] = None,
+        model: Optional[str] = None,
+    ) -> Optional[VectorRecord]:
+        """Retrieves an existing vector record for (namespace, fingerprint, model), if any."""
+        ns = (namespace or self.default_namespace).strip()
+        target_model = (model or self.default_model).strip()
+        fp = (fingerprint or "").strip()
+        if not ns or not fp or not target_model:
+            return None
+
+        query = f"""
+            SELECT cache_namespace, fingerprint, query_text, model, vector, metadata, created_at
+            FROM {self.table_name}
+            WHERE cache_namespace = $1 AND fingerprint = $2 AND model = $3
+            LIMIT 1;
+        """
+        try:
+            async with self.pool.acquire() as conn:
+                row = await conn.fetchrow(query, ns, fp, target_model)
+            if not row:
+                return None
+            raw_meta = row["metadata"]
+            meta = json.loads(raw_meta) if isinstance(raw_meta, str) else dict(raw_meta or {})
+            return VectorRecord(
+                cache_namespace=row["cache_namespace"],
+                fingerprint=row["fingerprint"],
+                query_text=row["query_text"],
+                model=row["model"],
+                vector=_parse_vector(row["vector"]),
+                metadata=meta,
+                created_at=row["created_at"],
+            )
+        except asyncpg.PostgresError as e:
+            raise VectorStoreError(f"Database error during vector lookup: {e}") from e
+        except Exception as e:
+            raise VectorStoreConnectionError(f"Connection failure during vector lookup: {e}") from e
 
     async def delete(self, fingerprint: str, namespace: Optional[str] = None) -> bool:
         """Deletes vector records matching fingerprint and namespace."""

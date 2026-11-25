@@ -1,0 +1,1356 @@
+"""
+Stage 3.5.3 Comprehensive Test Suite:
+- ResponseArtifactVerifier (formats, JSON/YAML/XML/CSV syntax, JSON Schema subset, constraints, truncation)
+- EvidenceAuthority (cryptographic HMAC-SHA256 provenance binding, tamper/copy/forgery rejection)
+- Response-Aware Cache Admission (ADMIT / REJECT / UNCERTAIN)
+- Variant Coexistence & Collision Protection (compute_variant_key)
+- Retrieval Starvation Prevention (bounded retrieval_budget=25, top_k=5 preserved)
+- Legacy Schema v2 Inspection, Migration, Reversible Exclusion & Rollback
+- Full End-to-End Scenarios 1..14 + HTTP /query guardrails
+- PostgreSQL + pgvector (+ FastEmbed) Lifecycle, Latency Measurement & EXPLAIN ANALYZE
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import math
+import os
+import statistics
+import time
+import unittest
+from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import urlsplit
+
+import asyncpg
+from fastapi.testclient import TestClient
+
+from app.cache.exact_cache import ExactCache
+from app.cache.migration import run_migrations
+from app.cache.postgres_cache import PostgresCache
+from app.config import Settings, reload_settings
+from app.core.contracts import ChatMessage, GenerationRequest, GenerationResult, UsageMetrics
+from app.core.fingerprinting import generate_fingerprint
+from app.core.service import IntelliCacheCore
+from app.embeddings.contracts import EmbeddingResult, EmbeddingTask
+from app.main import app
+from app.metrics import get_metrics_collector
+from app.semantic_cache.compatibility import CompatibilityExtractor, CompatibilityValidator
+from app.semantic_cache.contracts import (
+    AdmissionStatus,
+    CompatibilityEvidence,
+    CompatibilityReasonCode,
+    CompatibilityStatus,
+    ConstraintItem,
+    EVIDENCE_TIER_RESPONSE_VERIFIED,
+    MetadataStatus,
+    SemanticCompatibilityMetadata,
+    TRUSTED_RESPONSE_VERIFIER_ID,
+    TruncationStatus,
+    VerificationStatus,
+    compute_variant_key,
+)
+from app.semantic_cache.evidence import (
+    EvidenceAuthority,
+    compute_canonical_schema_digest,
+    get_default_evidence_authority,
+)
+from app.semantic_cache.legacy import (
+    PostgresLegacyLifecycleManager,
+    build_migrated_record_metadata,
+    classify_legacy_record_metadata,
+)
+from app.semantic_cache.policy import SemanticCachePolicy
+from app.semantic_cache.service import SemanticCacheService
+from app.semantic_cache.verification import ResponseArtifactVerifier
+from app.vector_store.contracts import VectorRecord, VectorSearchResult
+from app.vector_store.in_memory_store import InMemoryVectorStore
+from app.vector_store.migration import run_vector_migrations
+from app.vector_store.postgres_store import PostgresVectorStore
+
+
+def _req(
+    prompt: str,
+    *,
+    namespace: str = "default",
+    model: str = "llama-3.3-70b-versatile",
+    provider: str = "groq",
+    temperature: float = 0.7,
+    max_tokens: int | None = 1000,
+    metadata: dict | None = None,
+) -> GenerationRequest:
+    return GenerationRequest(
+        messages=[ChatMessage(role="user", content=prompt)],
+        model=model,
+        provider=provider,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        namespace=namespace,
+        metadata=metadata or {},
+    )
+
+
+def _topic_vec(dim: int, angle_deg: float) -> list[float]:
+    rad = math.radians(angle_deg)
+    vec = [0.0] * dim
+    vec[0] = math.cos(rad)
+    vec[1] = math.sin(rad)
+    return vec
+
+
+class TopicRoutingEmbedder:
+    """Deterministic local embedder assigning controlled cosine similarities by substring topic."""
+
+    def __init__(self, rules: list[tuple[str, float]], dim: int = 768, model: str = "nomic-embed-text"):
+        self.rules = rules
+        self.dim = dim
+        self.model = model
+        self.calls: list[tuple[str, EmbeddingTask]] = []
+
+    async def embed(self, text: str, task: EmbeddingTask = EmbeddingTask.QUERY) -> EmbeddingResult:
+        self.calls.append((text, task))
+        lower = text.lower()
+        angle = 45.0
+        for substr, deg in self.rules:
+            if substr.lower() in lower:
+                angle = deg
+                break
+        vec = _topic_vec(self.dim, angle)
+        return EmbeddingResult(vector=vec, model=self.model, dimensions=self.dim)
+
+    async def close(self) -> None:
+        return None
+
+
+class MockUpstream:
+    """Controllable async LLM provider returning per-prompt or queued GenerationResult."""
+
+    def __init__(self, responder):
+        self.name = "groq"
+        self._responder = responder
+        self.calls: list[GenerationRequest] = []
+
+    async def generate(self, request: GenerationRequest) -> GenerationResult:
+        self.calls.append(request)
+        return self._responder(request)
+
+
+class TestStage353VerifierAndEvidence(unittest.TestCase):
+    """Unit tests covering ResponseArtifactVerifier, EvidenceAuthority, and variant_key."""
+
+    def setUp(self):
+        self.extractor = CompatibilityExtractor()
+        self.verifier = ResponseArtifactVerifier()
+        self.authority = EvidenceAuthority(secret_key="unit-test-evidence-secret")
+
+    def test_json_yaml_xml_csv_plain_text_verification(self):
+        # JSON valid vs broken vs markdown-wrapped
+        req_json = self.extractor.extract_from_text("Parse log entry in Python and output strict JSON")
+        v_ok = self.verifier.verify(
+            response_text='{"status":"ok","count":3}',
+            request_metadata=req_json,
+            finish_reason="stop",
+        )
+        self.assertEqual(v_ok.status, VerificationStatus.VERIFIED)
+        self.assertEqual(v_ok.verified_output_format, "json")
+        self.assertTrue(v_ok.verified_json_valid)
+
+        v_bad = self.verifier.verify(response_text='{"status": "ok",', request_metadata=req_json, finish_reason="stop")
+        self.assertEqual(v_bad.status, VerificationStatus.FAILED)
+
+        v_md = self.verifier.verify(
+            response_text='Here is JSON:\n```json\n{"status":"ok"}\n```',
+            request_metadata=req_json,
+            finish_reason="stop",
+        )
+        self.assertEqual(v_md.status, VerificationStatus.FAILED)
+        self.assertEqual(v_md.reason_code, CompatibilityReasonCode.VERIFICATION_FAILED_FORMAT)
+
+        # YAML valid vs plain prose sentence
+        req_yaml = self.extractor.extract_from_text("Serialize config in Python and output as YAML")
+        self.assertEqual(
+            self.verifier.verify(
+                response_text="host: localhost\nport: 5432\n",
+                request_metadata=req_yaml,
+                finish_reason="stop",
+            ).status,
+            VerificationStatus.VERIFIED,
+        )
+        self.assertEqual(
+            self.verifier.verify(
+                response_text="Here is a YAML explanation in plain prose.",
+                request_metadata=req_yaml,
+                finish_reason="stop",
+            ).status,
+            VerificationStatus.FAILED,
+        )
+
+        # XML valid vs XXE doctype vs malformed
+        req_xml = self.extractor.extract_from_text("Export records in Python and output as XML")
+        self.assertEqual(
+            self.verifier.verify(
+                response_text="<root><item id='1'>ok</item></root>",
+                request_metadata=req_xml,
+                finish_reason="stop",
+            ).status,
+            VerificationStatus.VERIFIED,
+        )
+        self.assertEqual(
+            self.verifier.verify(
+                response_text="<!DOCTYPE foo><root/>",
+                request_metadata=req_xml,
+                finish_reason="stop",
+            ).status,
+            VerificationStatus.FAILED,
+        )
+
+        # CSV valid vs ragged rows
+        req_csv = self.extractor.extract_from_text("Export records in Python and output as CSV")
+        self.assertEqual(
+            self.verifier.verify(
+                response_text="id,name\n1,alice\n2,bob\n",
+                request_metadata=req_csv,
+                finish_reason="stop",
+            ).status,
+            VerificationStatus.VERIFIED,
+        )
+        self.assertEqual(
+            self.verifier.verify(
+                response_text="id,name\n1,alice,extra\n",
+                request_metadata=req_csv,
+                finish_reason="stop",
+            ).status,
+            VerificationStatus.FAILED,
+        )
+
+    def test_json_schema_subset_and_fail_closed_unsupported(self):
+        schema = {
+            "type": "object",
+            "properties": {
+                "user_id": {"type": "integer", "minimum": 1},
+                "role": {"type": "string", "enum": ["admin", "user"]},
+            },
+            "required": ["user_id", "role"],
+            "additionalProperties": False,
+        }
+        req = _req(
+            "Parse input in Python and return JSON conforming to schema",
+            metadata={"json_schema": schema},
+        )
+        req_meta = self.extractor.extract(req, "nomic-embed-text")
+
+        v_pass = self.verifier.verify(
+            response_text='{"user_id": 7, "role": "admin"}',
+            request_metadata=req_meta,
+            query_text=req.messages[0].content,
+            finish_reason="stop",
+            request_extra_metadata=req.metadata,
+        )
+        self.assertEqual(v_pass.status, VerificationStatus.VERIFIED)
+        self.assertEqual(v_pass.verified_schema_version, 1)
+        self.assertEqual(v_pass.verified_schema_digest, compute_canonical_schema_digest(schema))
+
+        v_fail = self.verifier.verify(
+            response_text='{"user_id": 0, "role": "guest", "extra": true}',
+            request_metadata=req_meta,
+            query_text=req.messages[0].content,
+            finish_reason="stop",
+            request_extra_metadata=req.metadata,
+        )
+        self.assertEqual(v_fail.status, VerificationStatus.FAILED)
+        self.assertEqual(v_fail.reason_code, CompatibilityReasonCode.VERIFICATION_FAILED_SCHEMA)
+
+        # Unsupported JSON Schema keyword ($ref / oneOf) MUST return UNCERTAIN (never approximate)
+        unsupported_schema = {"type": "object", "oneOf": [{"required": ["a"]}, {"required": ["b"]}]}
+        req_unsup = _req(
+            "Return JSON in Python following schema",
+            metadata={"json_schema": unsupported_schema},
+        )
+        meta_unsup = self.extractor.extract(req_unsup, "nomic-embed-text")
+        v_unsup = self.verifier.verify(
+            response_text='{"a": 1}',
+            request_metadata=meta_unsup,
+            query_text=req_unsup.messages[0].content,
+            finish_reason="stop",
+            request_extra_metadata=req_unsup.metadata,
+        )
+        self.assertEqual(v_unsup.status, VerificationStatus.UNCERTAIN)
+        self.assertEqual(v_unsup.reason_code, CompatibilityReasonCode.VERIFICATION_UNSUPPORTED_CONSTRAINT)
+        self.assertIn("schema_adherence", v_unsup.unverified_constraints)
+
+        # Schema hint without any concrete schema fails closed UNCERTAIN
+        meta_no_schema = self.extractor.extract_from_text("Return JSON in Python conforming to this schema")
+        v_missing_schema = self.verifier.verify(
+            response_text='{"a": 1}',
+            request_metadata=meta_no_schema,
+            query_text="Return JSON in Python conforming to this schema",
+            finish_reason="stop",
+        )
+        self.assertEqual(v_missing_schema.status, VerificationStatus.UNCERTAIN)
+        self.assertEqual(v_missing_schema.reason_code, CompatibilityReasonCode.VERIFICATION_UNSUPPORTED_CONSTRAINT)
+
+    def test_truncation_and_max_words_required_keys_verification(self):
+        meta = self.extractor.extract_from_text(
+            "Summarize auth in Python with required keys: token, expires_in and at most 12 words as strict JSON"
+        )
+        # Valid response satisfying required_keys and max_words
+        v_ok = self.verifier.verify(
+            response_text='{"token": "abc", "expires_in": 300}',
+            request_metadata=meta,
+            finish_reason="stop",
+            completion_tokens=15,
+            request_max_tokens=1000,
+        )
+        self.assertEqual(v_ok.status, VerificationStatus.VERIFIED)
+
+        # Missing required key -> FAILED
+        v_missing_key = self.verifier.verify(
+            response_text='{"token": "abc"}',
+            request_metadata=meta,
+            finish_reason="stop",
+        )
+        self.assertEqual(v_missing_key.status, VerificationStatus.FAILED)
+        self.assertEqual(v_missing_key.reason_code, CompatibilityReasonCode.VERIFICATION_FAILED_CONSTRAINT)
+
+        # Truncated finish_reason -> FAILED
+        v_trunc = self.verifier.verify(
+            response_text='{"token": "abc", "expires_in": 300}',
+            request_metadata=meta,
+            finish_reason="length",
+        )
+        self.assertEqual(v_trunc.status, VerificationStatus.FAILED)
+        self.assertEqual(v_trunc.truncation_status, TruncationStatus.TRUNCATED)
+
+        # Hit max_tokens boundary without stop finish_reason -> FAILED
+        v_ceiling = self.verifier.verify(
+            response_text='{"token": "abc", "expires_in": 300}',
+            request_metadata=meta,
+            finish_reason=None,
+            completion_tokens=100,
+            request_max_tokens=100,
+        )
+        self.assertEqual(v_ceiling.status, VerificationStatus.FAILED)
+        self.assertEqual(v_ceiling.truncation_status, TruncationStatus.TRUNCATED)
+
+        # Unrecognized finish_reason -> UNCERTAIN
+        v_unknown_fr = self.verifier.verify(
+            response_text='{"token": "abc", "expires_in": 300}',
+            request_metadata=meta,
+            finish_reason="unexpected_vendor_reason",
+        )
+        self.assertEqual(v_unknown_fr.status, VerificationStatus.UNCERTAIN)
+        self.assertEqual(v_unknown_fr.reason_code, CompatibilityReasonCode.VERIFICATION_UNCERTAIN_TRUNCATION)
+
+    def test_evidence_authority_binding_and_tamper_detection(self):
+        meta = self.extractor.extract_from_text("Serialize payload in Python and return strict JSON")
+        resp_text = '{"ok": true}'
+        ver = self.verifier.verify(response_text=resp_text, request_metadata=meta, finish_reason="stop")
+        ev = self.authority.mint_response_verified_evidence(
+            cache_namespace="tenant_a",
+            fingerprint="fp_original",
+            response_text=resp_text,
+            metadata=meta,
+            verification=ver,
+        )
+        self.assertTrue(ev.has_bound_signature())
+
+        # Authentic verification passes
+        ok, code, _ = self.authority.verify_evidence_binding(
+            ev,
+            cache_namespace="tenant_a",
+            fingerprint="fp_original",
+            response_text=resp_text,
+            metadata=meta,
+        )
+        self.assertTrue(ok)
+        self.assertEqual(code, CompatibilityReasonCode.COMPATIBLE)
+
+        # Copied to different fingerprint -> EVIDENCE_BINDING_MISMATCH
+        ok_fp, code_fp, _ = self.authority.verify_evidence_binding(
+            ev,
+            cache_namespace="tenant_a",
+            fingerprint="fp_other",
+            response_text=resp_text,
+            metadata=meta,
+        )
+        self.assertFalse(ok_fp)
+        self.assertEqual(code_fp, CompatibilityReasonCode.EVIDENCE_BINDING_MISMATCH)
+
+        # Copied to different namespace -> EVIDENCE_BINDING_MISMATCH
+        ok_ns, code_ns, _ = self.authority.verify_evidence_binding(
+            ev,
+            cache_namespace="tenant_b",
+            fingerprint="fp_original",
+            response_text=resp_text,
+            metadata=meta,
+        )
+        self.assertFalse(ok_ns)
+        self.assertEqual(code_ns, CompatibilityReasonCode.EVIDENCE_BINDING_MISMATCH)
+
+        # Tampered cached response text -> EVIDENCE_BINDING_MISMATCH
+        ok_resp, code_resp, _ = self.authority.verify_evidence_binding(
+            ev,
+            cache_namespace="tenant_a",
+            fingerprint="fp_original",
+            response_text='{"ok": false}',
+            metadata=meta,
+        )
+        self.assertFalse(ok_resp)
+        self.assertEqual(code_resp, CompatibilityReasonCode.EVIDENCE_BINDING_MISMATCH)
+
+        # Forged signature -> EVIDENCE_SIGNATURE_INVALID
+        forged = CompatibilityEvidence(
+            source=ev.source,
+            evidence_tier=ev.evidence_tier,
+            verified_output_format=ev.verified_output_format,
+            verified_json_valid=ev.verified_json_valid,
+            artifact_schema_version=ev.artifact_schema_version,
+            verifier_version=ev.verifier_version,
+            response_digest=ev.response_digest,
+            binding_digest=ev.binding_digest,
+            evidence_signature="0" * 64,
+            verified_constraints=ev.verified_constraints,
+            verified_schema_digest=ev.verified_schema_digest,
+        )
+        ok_sig, code_sig, _ = self.authority.verify_evidence_binding(
+            forged,
+            cache_namespace="tenant_a",
+            fingerprint="fp_original",
+            response_text=resp_text,
+            metadata=meta,
+        )
+        self.assertFalse(ok_sig)
+        self.assertEqual(code_sig, CompatibilityReasonCode.EVIDENCE_SIGNATURE_INVALID)
+
+        # Cannot mint from FAILED or UNCERTAIN
+        failed_ver = self.verifier.verify(response_text="not json", request_metadata=meta, finish_reason="stop")
+        with self.assertRaises(ValueError):
+            self.authority.mint_response_verified_evidence(
+                cache_namespace="tenant_a",
+                fingerprint="fp_x",
+                response_text="not json",
+                metadata=meta,
+                verification=failed_ver,
+            )
+
+    def test_variant_key_isolation_and_config_defaults(self):
+        m_go21 = self.extractor.extract_from_text("Write an HTTP handler in Go 1.21")
+        m_go22 = self.extractor.extract_from_text("Write an HTTP handler in Go 1.22")
+        m_pyd1 = self.extractor.extract_from_text("Define model in Python using pydantic v1")
+        m_pyd2 = self.extractor.extract_from_text("Define model in Python using pydantic v2")
+        m_pyd1_dup = self.extractor.extract_from_text("Define model in Python using pydantic v1")
+
+        self.assertNotEqual(compute_variant_key(m_go21), compute_variant_key(m_go22))
+        self.assertNotEqual(compute_variant_key(m_pyd1), compute_variant_key(m_pyd2))
+        self.assertEqual(compute_variant_key(m_pyd1), compute_variant_key(m_pyd1_dup))
+
+        # Safe default preservation check
+        s = Settings(_env_file=None)
+        self.assertFalse(s.semantic_cache_enabled)
+        self.assertFalse(s.shadow_evaluation_enabled)
+        self.assertEqual(s.semantic_cache_min_similarity, 0.92)
+        self.assertEqual(s.semantic_cache_min_margin, 0.03)
+        self.assertEqual(s.semantic_cache_top_k, 5)
+        self.assertEqual(s.semantic_cache_max_retrieval_candidates, 25)
+
+
+class TestStage353EndToEndInMemory(unittest.IsolatedAsyncioTestCase):
+    """End-to-end IntelliCacheCore + InMemoryVectorStore lifecycle scenarios (Scenarios 1..14)."""
+
+    async def asyncSetUp(self):
+        get_metrics_collector().reset()
+        self.authority = EvidenceAuthority(secret_key="e2e-inmemory-secret")
+        self.exact_cache = ExactCache(max_entries=200, ttl_seconds=3600)
+        self.vector_store = InMemoryVectorStore(
+            dimensions=768,
+            default_namespace="default",
+            default_model="nomic-embed-text",
+            exact_cache=self.exact_cache,
+        )
+        self.policy = SemanticCachePolicy(
+            min_similarity=0.92,
+            min_margin=0.03,
+            top_k=5,
+            configured_model="nomic-embed-text",
+            retrieval_budget=25,
+            evidence_authority=self.authority,
+        )
+
+    def _build_core(self, embedder, responder):
+        svc = SemanticCacheService(
+            embedding_provider=embedder,
+            vector_store=self.vector_store,
+            policy=self.policy,
+            evidence_authority=self.authority,
+        )
+        upstream = MockUpstream(responder)
+        core = IntelliCacheCore(
+            cache=self.exact_cache,
+            cache_enabled=True,
+            semantic_cache=svc,
+        )
+        return svc, upstream, core
+
+    async def test_scenarios_1_to_3_and_11_variant_coexistence(self):
+        # All prompts share high semantic vector angle (sim ~0.996 between 0 deg and 5 deg)
+        embedder = TopicRoutingEmbedder(
+            [
+                ("go 1.21", 0.0),
+                ("go 1.22", 2.0),
+                ("pydantic v1", 3.0),
+                ("pydantic v2", 4.0),
+                ("python", 1.0),
+                ("java", 1.5),
+            ]
+        )
+
+        def responder(req: GenerationRequest) -> GenerationResult:
+            p = req.messages[0].content.lower()
+            if "java" in p:
+                txt = "public class Sort {}"
+            elif "go 1.21" in p:
+                txt = "func main() { /* go1.21 */ }"
+            elif "go 1.22" in p:
+                txt = "func main() { /* go1.22 ServeMux */ }"
+            elif "pydantic v1" in p:
+                txt = "class User(BaseModel): class Config: orm_mode = True"
+            elif "pydantic v2" in p:
+                txt = "class User(BaseModel): model_config = ConfigDict(from_attributes=True)"
+            else:
+                txt = "def sort_list(x): return sorted(x)"
+            return GenerationResult(
+                text=txt,
+                model=req.model,
+                usage=UsageMetrics(prompt_tokens=10, completion_tokens=10, total_tokens=20),
+                latency_ms=10.0,
+                finish_reason="stop",
+            )
+
+        svc, upstream, core = self._build_core(embedder, responder)
+
+        # Scenario 1: Python vs Java
+        r_py = await core.execute_query(_req("Write a sort helper function in Python"), upstream)
+        self.assertFalse(r_py.cached)
+        r_java = await core.execute_query(_req("Write a sort helper function in Java"), upstream)
+        self.assertFalse(r_java.cached)
+        self.assertEqual(r_java.text, "public class Sort {}")
+
+        # Scenario 2: Go 1.21 vs Go 1.22
+        r_go21 = await core.execute_query(_req("Write HTTP handler code in Go 1.21"), upstream)
+        r_go22 = await core.execute_query(_req("Write HTTP handler code in Go 1.22"), upstream)
+        self.assertFalse(r_go21.cached)
+        self.assertFalse(r_go22.cached)
+        self.assertIn("go1.22", r_go22.text)
+
+        # Scenario 3: Pydantic v1 vs Pydantic v2
+        r_p1 = await core.execute_query(_req("Write model config in Python using pydantic v1"), upstream)
+        r_p2 = await core.execute_query(_req("Write model config in Python using pydantic v2"), upstream)
+        self.assertFalse(r_p1.cached)
+        self.assertFalse(r_p2.cached)
+        self.assertIn("ConfigDict", r_p2.text)
+
+        # Confirm all 6 variants coexist in vector store and subsequent paraphrased Go 1.22 query hits ONLY Go 1.22
+        self.assertEqual(await self.vector_store.get_record_count("default"), 6)
+        r_go22_hit = await core.execute_query(_req("Implement HTTP handler example in Go 1.22"), upstream)
+        self.assertTrue(r_go22_hit.cached)
+        self.assertEqual(r_go22_hit.cache_type, "semantic")
+        self.assertEqual(r_go22_hit.text, "func main() { /* go1.22 ServeMux */ }")
+
+        # Paraphrased Pydantic v1 query hits ONLY Pydantic v1
+        r_p1_hit = await core.execute_query(_req("Show model config in Python with pydantic v1"), upstream)
+        self.assertTrue(r_p1_hit.cached)
+        self.assertEqual(r_p1_hit.cache_type, "semantic")
+        self.assertIn("orm_mode", r_p1_hit.text)
+
+    async def test_scenarios_4_5_6_7_8_response_aware_admission_gates(self):
+        embedder = TopicRoutingEmbedder(
+            [
+                ("event payload", 0.0),
+                ("config payload", 35.0),
+                ("metrics json", 65.0),
+                ("summary json", 95.0),
+                ("user entity", 125.0),
+                ("xsd", 155.0),
+            ]
+        )
+        responses = {}
+
+        def responder(req: GenerationRequest) -> GenerationResult:
+            p = req.messages[0].content
+            val = responses[p]
+            return GenerationResult(
+                text=val["text"],
+                model=req.model,
+                usage=UsageMetrics(
+                    prompt_tokens=10,
+                    completion_tokens=val.get("completion_tokens", 12),
+                    total_tokens=22,
+                ),
+                latency_ms=8.0,
+                finish_reason=val.get("finish_reason", "stop"),
+            )
+
+        svc, upstream, core = self._build_core(embedder, responder)
+
+        # Scenario 4a: Broken JSON blocked from admission; exact cache & response preserved
+        p_bad_json = "Serialize event payload in Python and output strict JSON"
+        responses[p_bad_json] = {"text": "{bad json", "finish_reason": "stop"}
+        res_bad = await core.execute_query(_req(p_bad_json), upstream)
+        self.assertEqual(res_bad.text, "{bad json")
+        self.assertFalse(res_bad.cached)
+        self.assertEqual(svc.last_admission_decision.status, AdmissionStatus.REJECT)
+        self.assertEqual(await self.vector_store.get_record_count("default"), 0)
+        # Paraphrase misses semantic cache because invalid JSON was never admitted
+        p_valid_json = "Format event payload in Python and output strict JSON"
+        responses[p_valid_json] = {"text": '{"event":"login","ok":true}', "finish_reason": "stop"}
+        res_valid = await core.execute_query(_req(p_valid_json), upstream)
+        self.assertFalse(res_valid.cached)
+        self.assertEqual(svc.last_admission_decision.status, AdmissionStatus.ADMIT)
+        self.assertEqual(await self.vector_store.get_record_count("default"), 1)
+
+        # Paraphrase NOW hits the admitted valid JSON
+        res_hit = await core.execute_query(_req("Return event payload in Python and output strict JSON"), upstream)
+        self.assertTrue(res_hit.cached)
+        self.assertEqual(res_hit.cache_type, "semantic")
+        self.assertEqual(res_hit.text, '{"event":"login","ok":true}')
+
+        # Scenario 6: Markdown returned when strict JSON expected -> REJECT
+        p_md_for_json = "Build config payload in Python and return JSON only"
+        responses[p_md_for_json] = {"text": "```json\n{\"k\":1}\n```", "finish_reason": "stop"}
+        await core.execute_query(_req(p_md_for_json), upstream)
+        self.assertEqual(svc.last_admission_decision.status, AdmissionStatus.REJECT)
+
+        # Scenario 7: Truncated JSON response (finish_reason="length" & max_tokens hit) -> REJECT
+        p_trunc = "Produce metrics JSON object in Python as strict JSON"
+        responses[p_trunc] = {"text": '{"ok": true}', "finish_reason": "length"}
+        await core.execute_query(_req(p_trunc), upstream)
+        self.assertEqual(svc.last_admission_decision.status, AdmissionStatus.REJECT)
+        self.assertEqual(
+            svc.last_admission_decision.verification.reason_code,
+            CompatibilityReasonCode.VERIFICATION_FAILED_TRUNCATED,
+        )
+
+        p_trunc_max = "Produce summary JSON object in Python as strict JSON"
+        responses[p_trunc_max] = {"text": '{"ok": true}', "finish_reason": None, "completion_tokens": 50}
+        await core.execute_query(_req(p_trunc_max, max_tokens=50), upstream)
+        self.assertEqual(svc.last_admission_decision.status, AdmissionStatus.REJECT)
+
+        # Scenario 5: Schema-constrained JSON failing concrete schema -> REJECT; conforming -> ADMIT & HIT
+        schema = {
+            "type": "object",
+            "properties": {"id": {"type": "integer"}, "active": {"type": "boolean"}},
+            "required": ["id", "active"],
+            "additionalProperties": False,
+        }
+        p_schema_bad = "Parse user entity in Python as JSON conforming to schema"
+        responses[p_schema_bad] = {"text": '{"id": "wrong_type", "active": true}', "finish_reason": "stop"}
+        await core.execute_query(_req(p_schema_bad, metadata={"json_schema": schema}), upstream)
+        self.assertEqual(svc.last_admission_decision.status, AdmissionStatus.REJECT)
+        self.assertEqual(
+            svc.last_admission_decision.verification.reason_code,
+            CompatibilityReasonCode.VERIFICATION_FAILED_SCHEMA,
+        )
+
+        p_schema_ok = "Build user entity in Python as JSON conforming to schema"
+        responses[p_schema_ok] = {"text": '{"id": 99, "active": true}', "finish_reason": "stop"}
+        await core.execute_query(_req(p_schema_ok, metadata={"json_schema": schema}), upstream)
+        self.assertEqual(svc.last_admission_decision.status, AdmissionStatus.ADMIT)
+
+        # Semantic query with same schema hits, query with DIFFERENT schema misses
+        res_schema_hit = await core.execute_query(
+            _req("Serialize user entity in Python as JSON conforming to schema", metadata={"json_schema": schema}),
+            upstream,
+        )
+        self.assertTrue(res_schema_hit.cached)
+        self.assertEqual(res_schema_hit.text, '{"id": 99, "active": true}')
+
+        other_schema = {"type": "object", "properties": {"uuid": {"type": "string"}}, "required": ["uuid"]}
+        p_other = "Serialize user entity in Python as JSON conforming to schema"
+        responses[p_other] = {"text": '{"uuid": "abc"}', "finish_reason": "stop"}
+        res_other = await core.execute_query(_req(p_other, metadata={"json_schema": other_schema}), upstream)
+        self.assertFalse(res_other.cached)
+
+        # Scenario 8: Unsupported/unverifiable constraint -> UNCERTAIN, not admitted
+        p_unsup = "Export report in Python conforming to XSD"
+        responses[p_unsup] = {"text": "<report/>", "finish_reason": "stop"}
+        res_unsup = await core.execute_query(_req(p_unsup), upstream)
+        self.assertFalse(res_unsup.cached)
+        self.assertEqual(svc.last_admission_decision.status, AdmissionStatus.UNCERTAIN)
+        self.assertIn(
+            "unverified_execution_constraint",
+            svc.last_admission_decision.verification.unverified_constraints,
+        )
+
+    async def test_scenario_11_variant_collision_protection_and_same_variant_update(self):
+        schema_a = {"type": "object", "properties": {"x": {"type": "integer"}}, "required": ["x"]}
+        schema_b = {"type": "object", "properties": {"y": {"type": "string"}}, "required": ["y"]}
+        embedder = TopicRoutingEmbedder([("encode", 0.0)])
+        svc = SemanticCacheService(
+            embedding_provider=embedder,
+            vector_store=self.vector_store,
+            policy=self.policy,
+            evidence_authority=self.authority,
+        )
+
+        # Force same fingerprint to simulate hash collision across two distinct schema variants
+        fp = "forced_collision_fp"
+        req_a = _req("Encode item in Python conforming to schema", metadata={"json_schema": schema_a})
+        res_a = GenerationResult(
+            text='{"x": 1}',
+            model=req_a.model,
+            usage=UsageMetrics(prompt_tokens=5, completion_tokens=5, total_tokens=10),
+            latency_ms=4.0,
+            fingerprint=fp,
+            finish_reason="stop",
+        )
+        ok_a = await svc.index(req_a, res_a)
+        self.assertTrue(ok_a)
+
+        req_b = _req("Encode item in Python conforming to schema", metadata={"json_schema": schema_b})
+        res_b = GenerationResult(
+            text='{"y": "hi"}',
+            model=req_b.model,
+            usage=UsageMetrics(prompt_tokens=5, completion_tokens=5, total_tokens=10),
+            latency_ms=4.0,
+            fingerprint=fp,
+            finish_reason="stop",
+        )
+        ok_b = await svc.index(req_b, res_b)
+        self.assertFalse(ok_b)
+        self.assertEqual(svc.last_admission_decision.reason_code, CompatibilityReasonCode.ADMISSION_REJECTED_VARIANT_COLLISION)
+
+        # Updating SAME variant key with newer verified response succeeds cleanly
+        res_a_new = GenerationResult(
+            text='{"x": 2}',
+            model=req_a.model,
+            usage=UsageMetrics(prompt_tokens=5, completion_tokens=5, total_tokens=10),
+            latency_ms=4.0,
+            fingerprint=fp,
+            finish_reason="stop",
+        )
+        self.assertTrue(await svc.index(req_a, res_a_new))
+
+    async def test_scenarios_12_and_13_and_14_security_fail_open_and_namespaces(self):
+        # Scenario 13: Vector store upsert failure during index() fails open without breaking request
+        embedder = TopicRoutingEmbedder([("python", 0.0)])
+        svc, upstream, core = self._build_core(
+            embedder,
+            lambda req: GenerationResult(
+                text="def f(): return 1",
+                model=req.model,
+                usage=UsageMetrics(prompt_tokens=5, completion_tokens=5, total_tokens=10),
+                latency_ms=4.0,
+                finish_reason="stop",
+            ),
+        )
+        with patch.object(self.vector_store, "upsert", side_effect=RuntimeError("DB write timeout")):
+            res = await core.execute_query(_req("Write helper in Python"), upstream)
+        self.assertEqual(res.text, "def f(): return 1")
+        self.assertFalse(res.cached)
+        # Exact cache STILL serves immediately even though vector upsert failed!
+        res_exact = await core.execute_query(_req("Write helper in Python"), upstream)
+        self.assertTrue(res_exact.cached)
+        self.assertEqual(res_exact.cache_type, "exact")
+
+        # Scenario 14: Namespace isolation
+        req_ns_a = _req("Write helper in Python to sum numbers", namespace="tenant_a")
+        await self.exact_cache.set(
+            "fp_ns_a",
+            await self.exact_cache.get(
+                generate_fingerprint(
+                    messages=_req("Write helper in Python").messages,
+                    model=req_ns_a.model,
+                    temperature=req_ns_a.temperature,
+                    max_tokens=req_ns_a.max_tokens,
+                    provider=req_ns_a.provider,
+                ),
+                namespace="default",
+            ),
+            namespace="tenant_a",
+        )
+        res_a = GenerationResult(
+            text="def sum_nums(a,b): return a+b",
+            model=req_ns_a.model,
+            usage=UsageMetrics(prompt_tokens=5, completion_tokens=5, total_tokens=10),
+            latency_ms=4.0,
+            fingerprint="fp_ns_a",
+            finish_reason="stop",
+        )
+        await self.exact_cache.set(
+            "fp_ns_a",
+            type(await self.exact_cache.get(generate_fingerprint(
+                messages=_req("Write helper in Python").messages,
+                model=req_ns_a.model,
+                temperature=req_ns_a.temperature,
+                max_tokens=req_ns_a.max_tokens,
+                provider=req_ns_a.provider,
+            ), namespace="default"))(
+                response="def sum_nums(a,b): return a+b",
+                model=req_ns_a.model,
+                usage=UsageMetrics(prompt_tokens=5, completion_tokens=5, total_tokens=10),
+                latency_ms=4.0,
+                provider="groq",
+            ),
+            namespace="tenant_a",
+        )
+        await svc.index(req_ns_a, res_a)
+        hit_b = await svc.lookup(_req("Python function to sum numbers", namespace="tenant_b"))
+        self.assertIsNone(hit_b)
+
+    async def test_granular_semantic_and_admission_metrics_without_substring_fallback(self):
+        embedder = TopicRoutingEmbedder([("alpha", 0.0), ("beta", 45.0)])
+        svc, upstream, core = self._build_core(
+            embedder,
+            lambda req: GenerationResult(
+                text="{broken" if "bad" in req.messages[0].content.lower() else '{"ok":true}',
+                model=req.model,
+                usage=UsageMetrics(prompt_tokens=5, completion_tokens=5, total_tokens=10),
+                latency_ms=4.0,
+                finish_reason="stop",
+            ),
+        )
+        # Empty vector store -> no_candidate_misses += 1
+        await core.execute_query(_req("Write alpha json parser in Python and output strict JSON"), upstream)
+        # Bad JSON -> admission_rejected += 1
+        await core.execute_query(_req("Write bad beta json parser in Python and output strict JSON"), upstream)
+        # Threshold rejection (alpha vector vs beta query -> cos(45 deg) ~0.707 < 0.92)
+        await svc.lookup(_req("Parse beta payload in Python and output strict JSON"))
+        # Custom policy returning None without diagnostics must NOT trigger substring heuristic fallbacks
+        with patch.object(self.policy, "evaluate_candidates", return_value=(None, "custom ambiguous compatible failure")):
+            self.policy._last_evaluation_diagnostics = None
+            await svc.lookup(_req("Write alpha helper in Python and output strict JSON"))
+
+        stats = svc.get_stats("default")
+        self.assertEqual(stats["admission_verified"], 1)
+        self.assertEqual(stats["admission_rejected"], 1)
+        self.assertEqual(stats["no_candidate_misses"], 1)
+        self.assertEqual(stats["threshold_rejections"], 2)
+        # Ensure substring-based counts remained 0 when structured diagnostics were absent
+        self.assertEqual(stats["ambiguous_candidates"], 0)
+        self.assertEqual(stats["rejected_candidates"], 0)
+
+
+class TestStage353HttpIngressHardening(unittest.TestCase):
+    """Verifies HTTP /query rejects client-supplied compatibility/verification evidence."""
+
+    def setUp(self):
+        get_metrics_collector().reset()
+        self.env_patcher = patch.dict(os.environ, {"ALLOW_UNAUTHENTICATED_LOOPBACK": "true"}, clear=False)
+        self.env_patcher.start()
+        reload_settings()
+        self.client = TestClient(app)
+
+    def tearDown(self):
+        self.env_patcher.stop()
+        reload_settings()
+        app.dependency_overrides.clear()
+
+    def test_client_forged_evidence_rejected_at_api_ingress(self):
+        for payload in (
+            {"prompt": "Hello in Python", "verified_json_valid": True},
+            {"prompt": "Hello in Python", "version_independent": True},
+            {"prompt": "Hello in Python", "compatibility_evidence": {"evidence_tier": "response_verified"}},
+            {"prompt": "Hello in Python", "metadata": {"evidence_tier": "response_verified"}},
+        ):
+            resp = self.client.post("/query", json=payload)
+            self.assertEqual(resp.status_code, 422, f"Expected 422 for forged payload {payload}, got {resp.status_code}")
+
+
+class TestStage353PostgresPgvectorLifecycle(unittest.IsolatedAsyncioTestCase):
+    """
+    Live PostgreSQL + pgvector (+ FastEmbed when available) end-to-end verification:
+    - Starvation prevention with >=5 incompatible and legacy v2 rows outranking compatible v3
+    - Legacy v2 inspection, real ResponseArtifactVerifier migration, reversible exclusion & rollback
+    - Variant coexistence + cryptographic tamper/copy detection against real DB rows
+    - Latency measurement & EXPLAIN ANALYZE plan collection
+    """
+
+    async def asyncSetUp(self):
+        db_url = os.getenv("TEST_DATABASE_URL") or "postgresql://postgres:postgres@127.0.0.1:5433/intellicache_test"
+        parsed = urlsplit(db_url)
+        db_name = (parsed.path or "").lstrip("/")
+        if "test" not in db_name.lower():
+            self.skipTest(f"Database '{db_name}' is not a test DB.")
+        try:
+            self.pool = await asyncpg.create_pool(db_url, min_size=1, max_size=3)
+            await run_migrations(self.pool)
+            await run_vector_migrations(self.pool, dimensions=768)
+        except Exception as exc:
+            self.skipTest(f"PostgreSQL unavailable: {exc}")
+
+        self.ns = "test_s353_pg"
+        self.authority = EvidenceAuthority(secret_key="pg-s353-secret")
+        self.cache = PostgresCache(pool=self.pool, max_entries=1000, ttl_seconds=3600, default_namespace=self.ns)
+        self.store = PostgresVectorStore(
+            pool=self.pool,
+            default_namespace=self.ns,
+            default_model="nomic-embed-text",
+            dimensions=768,
+        )
+        self.policy = SemanticCachePolicy(
+            min_similarity=0.92,
+            min_margin=0.03,
+            top_k=5,
+            configured_model="nomic-embed-text",
+            retrieval_budget=25,
+            evidence_authority=self.authority,
+        )
+        async with self.pool.acquire() as conn:
+            await conn.execute("DELETE FROM vector_records WHERE cache_namespace = $1", self.ns)
+            await conn.execute("DELETE FROM cache_entries WHERE cache_namespace = $1", self.ns)
+
+    async def asyncTearDown(self):
+        if hasattr(self, "pool"):
+            try:
+                async with self.pool.acquire() as conn:
+                    await conn.execute("DELETE FROM vector_records WHERE cache_namespace = $1", self.ns)
+                    await conn.execute("DELETE FROM cache_entries WHERE cache_namespace = $1", self.ns)
+            except Exception:
+                pass
+            await self.pool.close()
+
+    async def _seed_raw_row(self, *, fp: str, query_text: str, resp: str | None, meta: dict, angle_deg: float):
+        vec = _topic_vec(768, angle_deg)
+        v_str = "[" + ",".join(f"{x:.6f}" for x in vec) + "]"
+        async with self.pool.acquire() as conn:
+            if resp is not None:
+                await conn.execute(
+                    """
+                    INSERT INTO cache_entries (
+                        cache_namespace, fingerprint, response, model, provider,
+                        prompt_tokens, completion_tokens, total_tokens, latency_ms, hit_count, metadata
+                    )
+                    VALUES ($1, $2, $3, 'llama-3.3-70b-versatile', 'groq', 8, 12, 20, 12.0, 0, $4::jsonb)
+                    ON CONFLICT (cache_namespace, fingerprint) DO UPDATE SET response = EXCLUDED.response, metadata = EXCLUDED.metadata
+                    """,
+                    self.ns, fp, resp, json.dumps(meta),
+                )
+            await conn.execute(
+                """
+                INSERT INTO vector_records (cache_namespace, fingerprint, query_text, model, vector, metadata)
+                VALUES ($1, $2, $3, 'nomic-embed-text', $4::vector, $5::jsonb)
+                ON CONFLICT (cache_namespace, fingerprint, model) DO UPDATE SET metadata = EXCLUDED.metadata, vector = EXCLUDED.vector
+                """,
+                self.ns, fp, query_text, v_str, json.dumps(meta),
+            )
+
+    async def test_scenario_9_starvation_prevention_and_legacy_lifecycle(self):
+        ext = CompatibilityExtractor()
+        v2_base = {
+            "schema_version": 2,
+            "extractor_version": "compat-extractor-v2",
+            "task_kind": {"status": "KNOWN", "value": "code_generation"},
+            "dimensions": {
+                "language": {"status": "KNOWN", "value": "python"},
+                "language_version": {"status": "NOT_APPLICABLE", "value": None},
+                "framework": {"status": "NOT_APPLICABLE", "value": None},
+                "framework_version": {"status": "NOT_APPLICABLE", "value": None},
+                "runtime": {"status": "NOT_APPLICABLE", "value": None},
+                "runtime_version": {"status": "NOT_APPLICABLE", "value": None},
+                "execution_model": {"status": "NOT_APPLICABLE", "value": None},
+                "output_format": {"status": "NOT_APPLICABLE", "value": None},
+                "constraints": {"status": "NOT_APPLICABLE", "value": None},
+            },
+            "generation_contract": {"provider": "groq", "model": "llama-3.3-70b-versatile", "temperature": 0.7, "max_tokens": 1000},
+            "embedding_contract": {"model": "nomic-embed-text"},
+        }
+
+        # Seed 7 higher-similarity decoys (angles 0..6 deg => cos > 0.994):
+        # 4 incompatible language variants + 3 legacy v2 rows
+        for idx, lang_prompt in enumerate([
+            "Parse JSON in Java",
+            "Parse JSON in Rust",
+            "Parse JSON in Go",
+            "Parse JSON in Ruby",
+        ]):
+            m = ext.extract_from_text(lang_prompt, configured_model="nomic-embed-text").to_dict()
+            await self._seed_raw_row(
+                fp=f"fp_incompat_{idx}",
+                query_text=lang_prompt,
+                resp=f"code_{idx}",
+                meta=m,
+                angle_deg=float(idx),
+            )
+
+        # 2 legacy v2 rows WITH valid plain Python response, and 1 legacy v2 row requiring JSON with broken response
+        v2_json_broken = json.loads(json.dumps(v2_base))
+        v2_json_broken["dimensions"]["output_format"] = {"status": "KNOWN", "value": "json"}
+        for idx, (qp, resp, meta) in enumerate([
+            ("Reverse Python string v2 a", "s[::-1]", v2_base),
+            ("Reverse Python string v2 b", "''.join(reversed(s))", v2_base),
+            ("Parse log in Python and output strict JSON", "{not_valid_json", v2_json_broken),
+        ]):
+            await self._seed_raw_row(
+                fp=f"fp_v2_{idx}",
+                query_text=qp,
+                resp=resp,
+                meta=meta,
+                angle_deg=4.0 + idx * 0.5,
+            )
+
+        # Seed rank-8 compatible v3 target at 15 degrees (cos(15 deg) = 0.9659 >= 0.92)
+        embedder = TopicRoutingEmbedder([("reverse", 0.0)], dim=768)
+        svc = SemanticCacheService(
+            embedding_provider=embedder,
+            vector_store=self.store,
+            policy=self.policy,
+            default_namespace=self.ns,
+            evidence_authority=self.authority,
+        )
+        req_target = _req("Write Python code to reverse a string", namespace=self.ns)
+        # Index genuine verified target via IntelliCacheCore/service flow
+        from app.cache.exact_cache import CacheEntry
+        await self.cache.set(
+            "fp_v3_target",
+            CacheEntry(
+                response="def rev(s): return s[::-1]",
+                model="llama-3.3-70b-versatile",
+                usage=UsageMetrics(prompt_tokens=6, completion_tokens=8, total_tokens=14),
+                latency_ms=11.0,
+                provider="groq",
+            ),
+            namespace=self.ns,
+        )
+        # Seed compatible v3 at rank 8 (angle 15 deg so similarity ~0.9659)
+        m_v3 = ext.extract(req_target, "nomic-embed-text")
+        ver_target = svc.verifier.verify(response_text="def rev(s): return s[::-1]", request_metadata=m_v3, finish_reason="stop")
+        ev_target = self.authority.mint_response_verified_evidence(
+            cache_namespace=self.ns,
+            fingerprint="fp_v3_target",
+            response_text="def rev(s): return s[::-1]",
+            metadata=m_v3,
+            verification=ver_target,
+        )
+        m_v3_dict = SemanticCompatibilityMetadata(
+            schema_version=m_v3.schema_version,
+            extractor_version=m_v3.extractor_version,
+            task_kind=m_v3.task_kind,
+            dimensions=m_v3.dimensions,
+            generation_contract=m_v3.generation_contract,
+            embedding_contract=m_v3.embedding_contract,
+            compatibility_evidence=ev_target,
+        ).to_dict()
+        m_v3_dict["variant_key"] = compute_variant_key(m_v3)
+        await self._seed_raw_row(
+            fp="fp_v3_target",
+            query_text="Write Python code to reverse a string",
+            resp="def rev(s): return s[::-1]",
+            meta=m_v3_dict,
+            angle_deg=15.0,
+        )
+
+        # With old top_k=5 only, rank-8 v3 target would NOT be retrieved!
+        narrow = await self.store.search(_topic_vec(768, 0.0), top_k=5, namespace=self.ns, model="nomic-embed-text")
+        self.assertNotIn("fp_v3_target", [c.fingerprint for c in narrow])
+
+        # With Stage 3.5.3 bounded retrieval_budget=25, SemanticCacheService retrieves all 8,
+        # filters incompatible & legacy v2, and serves rank-8 compatible v3 hit!
+        diag_captured = []
+        hit = await svc.lookup(
+            _req("How do I reverse a string in Python?", namespace=self.ns),
+            diagnostics_hook=diag_captured.append,
+        )
+        self.assertIsNotNone(hit)
+        self.assertEqual(hit.fingerprint, "fp_v3_target")
+        self.assertEqual(hit.cached_response, "def rev(s): return s[::-1]")
+        self.assertEqual(diag_captured[-1]["candidates_retrieved"], 8)
+        self.assertEqual(diag_captured[-1]["candidates_legacy"], 3)
+
+        # Scenario 10: Legacy inspection -> dry_run -> migrate -> lookup -> rollback
+        mgr = PostgresLegacyLifecycleManager(pool=self.pool, authority=self.authority)
+        insp = await mgr.inspect(namespace=self.ns)
+        self.assertEqual(insp.v2_records, 3)
+        self.assertEqual(insp.v3_records, 5)
+        self.assertEqual(insp.verifiable_candidates, 3)
+
+        dry = await mgr.migrate(namespace=self.ns, dry_run=True)
+        self.assertEqual(dry.upgraded_to_v3, 2)
+        self.assertEqual(dry.excluded_legacy, 1)
+        # DB unchanged after dry_run
+        self.assertEqual((await mgr.inspect(namespace=self.ns)).v2_records, 3)
+
+        mig = await mgr.migrate(namespace=self.ns, dry_run=False)
+        self.assertEqual(mig.upgraded_to_v3, 2)
+        self.assertEqual(mig.excluded_legacy, 1)
+
+        insp_after = await mgr.inspect(namespace=self.ns)
+        self.assertEqual(insp_after.v2_records, 0)
+        self.assertEqual(insp_after.excluded_records, 1)
+        self.assertEqual(insp_after.v3_records, 7)
+
+        # Exact cache entry for excluded row (fp_v2_2) MUST still be intact!
+        exact_broken = await self.cache.get("fp_v2_2", namespace=self.ns)
+        self.assertIsNotNone(exact_broken)
+        self.assertEqual(exact_broken.response, "{not_valid_json")
+
+        # Excluded legacy row does not appear in search results
+        after_search = await self.store.search(_topic_vec(768, 0.0), top_k=25, namespace=self.ns, model="nomic-embed-text")
+        self.assertNotIn("fp_v2_2", [c.fingerprint for c in after_search])
+
+        # Reversible rollback restores legacy_excluded row cleanly
+        rb = await mgr.restore_excluded(namespace=self.ns, dry_run=False)
+        self.assertEqual(rb.restored, 1)
+        after_rb = await self.store.search(_topic_vec(768, 0.0), top_k=25, namespace=self.ns, model="nomic-embed-text")
+        self.assertIn("fp_v2_2", [c.fingerprint for c in after_rb])
+
+    async def test_scenario_12_postgres_tamper_and_copied_evidence_rejected(self):
+        embedder = TopicRoutingEmbedder([("json", 0.0)], dim=768)
+        svc = SemanticCacheService(
+            embedding_provider=embedder,
+            vector_store=self.store,
+            policy=self.policy,
+            default_namespace=self.ns,
+            evidence_authority=self.authority,
+        )
+        upstream = MockUpstream(
+            lambda req: GenerationResult(
+                text='{"status":"ok"}',
+                model=req.model,
+                usage=UsageMetrics(prompt_tokens=6, completion_tokens=6, total_tokens=12),
+                latency_ms=5.0,
+                finish_reason="stop",
+            )
+        )
+        core = IntelliCacheCore(cache=self.cache, cache_enabled=True, semantic_cache=svc)
+        req1 = _req("Format record in Python and output strict JSON", namespace=self.ns)
+        r1 = await core.execute_query(req1, upstream)
+        self.assertFalse(r1.cached)
+        fp1 = r1.fingerprint
+
+        # Baseline verified hit works
+        diag = []
+        hit_ok = await svc.lookup(_req("Serialize record in Python and output strict JSON", namespace=self.ns), diagnostics_hook=diag.append)
+        self.assertIsNotNone(hit_ok)
+
+        # Attack 1: Tamper exact cached response in Postgres without updating digest/signature -> rejected UNCERTAIN
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE cache_entries SET response = $3 WHERE cache_namespace = $1 AND fingerprint = $2",
+                self.ns, fp1, '{"status":"tampered"}',
+            )
+        diag.clear()
+        hit_tampered = await svc.lookup(_req("Serialize record in Python and output strict JSON", namespace=self.ns), diagnostics_hook=diag.append)
+        self.assertIsNone(hit_tampered)
+        self.assertEqual(diag[-1]["reason_code"], CompatibilityReasonCode.EVIDENCE_BINDING_MISMATCH.value)
+
+        # Restore response, then Attack 2: Copy row 1's signed metadata into a different fingerprint fp_copied
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE cache_entries SET response = $3 WHERE cache_namespace = $1 AND fingerprint = $2",
+                self.ns, fp1, '{"status":"ok"}',
+            )
+            row1_meta = await conn.fetchval(
+                "SELECT metadata FROM vector_records WHERE cache_namespace = $1 AND fingerprint = $2",
+                self.ns, fp1,
+            )
+            await conn.execute(
+                "DELETE FROM vector_records WHERE cache_namespace = $1 AND fingerprint = $2",
+                self.ns, fp1,
+            )
+            await conn.execute(
+                """
+                INSERT INTO cache_entries (cache_namespace, fingerprint, response, model, provider, prompt_tokens, completion_tokens, total_tokens, latency_ms, hit_count, metadata)
+                VALUES ($1, 'fp_copied', '{"status":"ok"}', 'llama-3.3-70b-versatile', 'groq', 6, 6, 12, 5.0, 0, '{}'::jsonb)
+                """,
+                self.ns,
+            )
+            v_str = "[" + ",".join(f"{x:.6f}" for x in _topic_vec(768, 0.0)) + "]"
+            await conn.execute(
+                """
+                INSERT INTO vector_records (cache_namespace, fingerprint, query_text, model, vector, metadata)
+                VALUES ($1, 'fp_copied', 'Copied evidence query', 'nomic-embed-text', $2::vector, $3::jsonb)
+                """,
+                self.ns, v_str, row1_meta,
+            )
+
+        diag.clear()
+        hit_copied = await svc.lookup(_req("Serialize record in Python and output strict JSON", namespace=self.ns), diagnostics_hook=diag.append)
+        self.assertIsNone(hit_copied)
+        self.assertEqual(diag[-1]["reason_code"], CompatibilityReasonCode.EVIDENCE_BINDING_MISMATCH.value)
+
+    async def test_performance_measurements_and_pgvector_explain_analyze(self):
+        # Populate 40 realistic records (10 incompatible/legacy + 30 v3 records) and measure latency + EXPLAIN ANALYZE
+        ext = CompatibilityExtractor()
+        for i in range(40):
+            lang = "java" if i < 6 else "python"
+            qp = f"Sort items {i} in {lang}"
+            m = ext.extract_from_text(qp, configured_model="nomic-embed-text").to_dict()
+            m["variant_key"] = compute_variant_key(SemanticCompatibilityMetadata.from_dict(m))
+            await self._seed_raw_row(fp=f"fp_bench_{i}", query_text=qp, resp=f"resp_{i}", meta=m, angle_deg=float(i) * 0.5)
+
+        verifier = ResponseArtifactVerifier()
+        req_meta = ext.extract_from_text("Serialize in Python and output strict JSON")
+        ver_lat_ms = []
+        for _ in range(20):
+            t0 = time.perf_counter()
+            verifier.verify(response_text='{"a":1,"b":"ok"}', request_metadata=req_meta, finish_reason="stop")
+            ver_lat_ms.append((time.perf_counter() - t0) * 1000.0)
+
+        q_vec = _topic_vec(768, 3.0)
+        t5_ms, t25_ms = [], []
+        for _ in range(15):
+            t0 = time.perf_counter()
+            await self.store.search(q_vec, top_k=5, namespace=self.ns, model="nomic-embed-text")
+            t5_ms.append((time.perf_counter() - t0) * 1000.0)
+            t1 = time.perf_counter()
+            await self.store.search(q_vec, top_k=25, namespace=self.ns, model="nomic-embed-text")
+            t25_ms.append((time.perf_counter() - t1) * 1000.0)
+
+        v_str = "[" + ",".join(f"{x:.6f}" for x in q_vec) + "]"
+        async with self.pool.acquire() as conn:
+            plan_rows = await conn.fetch(
+                """
+                EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)
+                SELECT v.id, v.fingerprint, (v.vector <=> $1::vector) AS distance
+                FROM vector_records v
+                JOIN cache_entries c
+                    ON v.cache_namespace = c.cache_namespace
+                   AND v.fingerprint = c.fingerprint
+                   AND (c.expires_at IS NULL OR c.expires_at > NOW())
+                WHERE v.cache_namespace = $2
+                  AND v.model = $3
+                  AND COALESCE((v.metadata->>'legacy_excluded')::boolean, FALSE) = FALSE
+                ORDER BY distance ASC
+                LIMIT 25
+                """,
+                v_str, self.ns, "nomic-embed-text",
+            )
+        plan_text = "\n".join(r["QUERY PLAN"] for r in plan_rows)
+        self.assertIn("Execution Time", plan_text)
+        print(
+            f"\n[STAGE_3_5_3_BENCHMARK] verifier_median_ms={statistics.median(ver_lat_ms):.3f} "
+            f"search_top5_median_ms={statistics.median(t5_ms):.3f} "
+            f"search_top25_median_ms={statistics.median(t25_ms):.3f}\n"
+            f"[EXPLAIN_ANALYZE]\n{plan_text}"
+        )
+
+
+class TestStage353FastEmbedRealPostgresE2E(unittest.IsolatedAsyncioTestCase):
+    """Real FastEmbed 384-dim + PostgreSQL pgvector end-to-end test when test DB is available."""
+
+    async def asyncSetUp(self):
+        db_url = os.getenv("FASTEMBED_TEST_DATABASE_URL") or "postgresql://postgres:postgres@127.0.0.1:5433/intellicache_fastembed_test"
+        parsed = urlsplit(db_url)
+        db_name = (parsed.path or "").lstrip("/")
+        if "test" not in db_name.lower():
+            self.skipTest(f"Database '{db_name}' is not a test DB.")
+        try:
+            from app.embeddings.fastembed_adapter import FastEmbedProvider
+            self.embedder = FastEmbedProvider(model="BAAI/bge-small-en-v1.5")
+            probe = await self.embedder.embed("probe query", task=EmbeddingTask.QUERY)
+            if len(probe.vector) != 384:
+                self.skipTest("Unexpected FastEmbed dimension")
+            self.pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
+            await run_migrations(self.pool)
+            await run_vector_migrations(self.pool, dimensions=384)
+        except Exception as exc:
+            self.skipTest(f"FastEmbed/Postgres integration unavailable: {exc}")
+
+        self.ns = "test_s353_fe"
+        self.authority = EvidenceAuthority(secret_key="fe-s353-secret")
+        self.cache = PostgresCache(pool=self.pool, max_entries=500, ttl_seconds=3600, default_namespace=self.ns)
+        self.store = PostgresVectorStore(
+            pool=self.pool,
+            default_namespace=self.ns,
+            default_model="BAAI/bge-small-en-v1.5",
+            dimensions=384,
+        )
+        self.policy = SemanticCachePolicy(
+            min_similarity=0.80,
+            min_margin=0.02,
+            top_k=5,
+            configured_model="BAAI/bge-small-en-v1.5",
+            retrieval_budget=25,
+            evidence_authority=self.authority,
+        )
+        self.svc = SemanticCacheService(
+            embedding_provider=self.embedder,
+            vector_store=self.store,
+            policy=self.policy,
+            default_namespace=self.ns,
+            evidence_authority=self.authority,
+        )
+        async with self.pool.acquire() as conn:
+            await conn.execute("DELETE FROM vector_records WHERE cache_namespace = $1", self.ns)
+            await conn.execute("DELETE FROM cache_entries WHERE cache_namespace = $1", self.ns)
+
+    async def asyncTearDown(self):
+        if hasattr(self, "embedder"):
+            await self.embedder.close()
+        if hasattr(self, "pool"):
+            try:
+                async with self.pool.acquire() as conn:
+                    await conn.execute("DELETE FROM vector_records WHERE cache_namespace = $1", self.ns)
+                    await conn.execute("DELETE FROM cache_entries WHERE cache_namespace = $1", self.ns)
+            except Exception:
+                pass
+            await self.pool.close()
+
+    async def test_real_fastembed_postgres_admission_and_variant_coexistence(self):
+        def responder(req: GenerationRequest) -> GenerationResult:
+            p = req.messages[0].content.lower()
+            if "broken" in p:
+                return GenerationResult(
+                    text="{invalid",
+                    model=req.model,
+                    usage=UsageMetrics(prompt_tokens=8, completion_tokens=4, total_tokens=12),
+                    latency_ms=4.0,
+                    finish_reason="stop",
+                )
+            if "java" in p:
+                return GenerationResult(
+                    text="public String reverse(String s) { return new StringBuilder(s).reverse().toString(); }",
+                    model=req.model,
+                    usage=UsageMetrics(prompt_tokens=8, completion_tokens=10, total_tokens=18),
+                    latency_ms=4.0,
+                    finish_reason="stop",
+                )
+            return GenerationResult(
+                text='{"reversed": "cba"}',
+                model=req.model,
+                usage=UsageMetrics(prompt_tokens=8, completion_tokens=8, total_tokens=16),
+                latency_ms=4.0,
+                finish_reason="stop",
+            )
+
+        upstream = MockUpstream(responder)
+        core = IntelliCacheCore(cache=self.cache, cache_enabled=True, semantic_cache=self.svc)
+
+        async def _count_rows() -> int:
+            async with self.pool.acquire() as conn:
+                return int(await conn.fetchval("SELECT COUNT(*) FROM vector_records WHERE cache_namespace = $1", self.ns))
+
+        # Admits valid JSON in Python
+        await core.execute_query(
+            _req("Reverse a string in Python and output strict JSON", namespace=self.ns),
+            upstream,
+        )
+        self.assertEqual(self.svc.last_admission_decision.status, AdmissionStatus.ADMIT)
+
+        # Admits Java variant too
+        await core.execute_query(
+            _req("Write a string reversal helper in Java", namespace=self.ns),
+            upstream,
+        )
+        self.assertEqual(await _count_rows(), 2)
+
+        # Blocks broken JSON response from admission even though exact cache stores response
+        await core.execute_query(
+            _req("Generate broken cron scheduler matrix in Go and output strict JSON", namespace=self.ns),
+            upstream,
+        )
+        self.assertEqual(self.svc.last_admission_decision.status, AdmissionStatus.REJECT)
+        self.assertEqual(await _count_rows(), 2)
+
+        # Paraphrased Python JSON query hits ONLY valid JSON variant
+        r_hit = await core.execute_query(
+            _req("How to reverse a string in Python and output strict JSON", namespace=self.ns),
+            upstream,
+        )
+        self.assertTrue(r_hit.cached)
+        self.assertEqual(r_hit.cache_type, "semantic")
+        self.assertEqual(r_hit.text, '{"reversed": "cba"}')
+
+
+if __name__ == "__main__":
+    unittest.main()
