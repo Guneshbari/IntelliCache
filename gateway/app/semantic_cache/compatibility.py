@@ -246,7 +246,7 @@ class CompatibilityExtractor:
         )
 
         exec_dim = self._detect_execution_model(clean_text)
-        fmt_dim = self._detect_output_format(clean_text)
+        fmt_dim = self._detect_output_format(clean_text, request_metadata=request_metadata)
         out_constraints_dim = self._detect_output_constraints(clean_text, request_metadata=request_metadata)
         constraints_dim = self._detect_constraints(clean_text)
         freshness_dim = self._detect_freshness(clean_text)
@@ -845,7 +845,11 @@ class CompatibilityExtractor:
 
         return DimensionValue(status=MetadataStatus.NOT_APPLICABLE, value=None)
 
-    def _detect_output_format(self, text: str) -> DimensionValue:
+    def _detect_output_format(
+        self,
+        text: str,
+        request_metadata: Optional[Dict[str, Any]] = None,
+    ) -> DimensionValue:
         lower = text.lower()
         has_json = bool(
             re.search(
@@ -885,6 +889,15 @@ class CompatibilityExtractor:
             matches.append("xml")
         if has_csv:
             matches.append("csv")
+
+        explicit_fmt_raw = request_metadata.get("output_format") if isinstance(request_metadata, dict) else None
+        if explicit_fmt_raw is not None:
+            explicit_fmt = str(explicit_fmt_raw).strip().lower()
+            if explicit_fmt not in ("json", "plain_text", "markdown", "yaml", "xml", "csv"):
+                return DimensionValue(status=MetadataStatus.UNKNOWN, value=None)
+            if matches and (len(matches) > 1 or matches[0] != explicit_fmt):
+                return DimensionValue(status=MetadataStatus.UNKNOWN, value=None)
+            return DimensionValue(status=MetadataStatus.KNOWN, value=explicit_fmt)
 
         if len(matches) > 1:
             return DimensionValue(status=MetadataStatus.UNKNOWN, value=None)
@@ -946,6 +959,45 @@ class CompatibilityExtractor:
 
         if re.search(r"\b(?:conform(?:ing)?\s+to\s+(?:the\s+|this\s+)?xsd|validate\s+against\s+(?:the\s+|this\s+)?xsd|must\s+pass\s+(?:all\s+)?unit\s+tests)\b", lower):
             items.append(ConstraintItem(key="unverified_execution_constraint", operator="equals", value="required"))
+
+        if isinstance(request_metadata, dict):
+            override_items: Dict[str, ConstraintItem] = {}
+            if request_metadata.get("strict_format") is not None:
+                sf_val = str(request_metadata["strict_format"]).strip().lower()
+                if sf_val:
+                    override_items["strict_format"] = ConstraintItem(key="strict_format", operator="equals", value=sf_val)
+            if request_metadata.get("markup") is not None:
+                mk_val = str(request_metadata["markup"]).strip().lower()
+                if mk_val:
+                    override_items["markup"] = ConstraintItem(key="markup", operator="equals", value=mk_val)
+            if request_metadata.get("code_only") is not None:
+                co_raw = request_metadata["code_only"]
+                co_flag = co_raw is True or (isinstance(co_raw, str) and co_raw.strip().lower() == "true")
+                if co_flag:
+                    override_items["code_only"] = ConstraintItem(key="code_only", operator="equals", value="true")
+            if request_metadata.get("max_words") is not None:
+                override_items["max_words"] = ConstraintItem(
+                    key="max_words", operator="equals", value=str(request_metadata["max_words"]).strip()
+                )
+            if request_metadata.get("max_chars") is not None:
+                override_items["max_chars"] = ConstraintItem(
+                    key="max_chars", operator="equals", value=str(request_metadata["max_chars"]).strip()
+                )
+            if request_metadata.get("required_keys") is not None:
+                rk_raw = request_metadata["required_keys"]
+                if isinstance(rk_raw, str):
+                    rk_list = [k.strip() for k in rk_raw.split(",") if k.strip()]
+                elif isinstance(rk_raw, (list, tuple, set)):
+                    rk_list = [str(k).strip() for k in rk_raw if str(k).strip()]
+                else:
+                    rk_list = []
+                override_items["required_keys"] = ConstraintItem(
+                    key="required_keys", operator="equals", value=",".join(sorted(set(rk_list)))
+                )
+            if override_items:
+                items = [c for c in items if c.key not in override_items]
+                for key in sorted(override_items.keys()):
+                    items.append(override_items[key])
 
         if items:
             return DimensionValue(status=MetadataStatus.KNOWN, value=items)

@@ -197,20 +197,8 @@ class PostgresVectorStore(BaseVectorStore):
         Searches for top-k nearest records by cosine distance.
         Enforces namespace and model isolation.
         """
-        if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k <= 0:
-            raise VectorInvalidError(f"top_k must be a positive integer >= 1, got {top_k}.")
-
-        ns = (namespace or self.default_namespace).strip()
-        if not ns:
-            raise VectorInvalidError("Search namespace cannot be empty.")
-
-        target_model = (model or self.default_model).strip()
-        if not target_model:
-            raise VectorInvalidError("Search model cannot be empty.")
-
-        self._validate_vector_dimensions(query_vector, context="Query vector")
-
-        vec_str = _format_vector(query_vector)
+    def _build_search_queries(self) -> tuple[str, Optional[str]]:
+        """Builds the parameterized single-table fallback SQL and combined UNION ALL production SQL."""
         join_type = "JOIN" if self.table_name == "vector_records" else "LEFT JOIN"
         legacy_filter = "AND COALESCE((v.metadata->>'legacy_excluded')::boolean, FALSE) = FALSE"
         if self.exclude_unmigrated_legacy:
@@ -219,7 +207,7 @@ class PostgresVectorStore(BaseVectorStore):
                 "\n              AND (v.metadata->>'schema_version')::integer >= 3"
             )
 
-        query = f"""
+        single_query = f"""
             SELECT
                 v.id,
                 v.cache_namespace,
@@ -245,6 +233,9 @@ class PostgresVectorStore(BaseVectorStore):
             ORDER BY distance ASC
             LIMIT $4;
         """
+
+        if self.table_name != "vector_records":
+            return single_query, None
 
         sv_legacy_filter = legacy_filter.replace("v.metadata", "sv.metadata")
         combined_query = f"""
@@ -301,10 +292,35 @@ class PostgresVectorStore(BaseVectorStore):
             )
             SELECT * FROM combined ORDER BY distance ASC LIMIT $4;
         """
+        return single_query, combined_query
+
+    async def search(
+        self,
+        query_vector: Sequence[float],
+        top_k: int = 5,
+        namespace: Optional[str] = None,
+        model: Optional[str] = None,
+    ) -> List[VectorSearchResult]:
+        """Searches nearest neighbors within namespace and model scope, filtering out expired entries."""
+        if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k <= 0:
+            raise VectorInvalidError(f"top_k must be a positive integer >= 1, got {top_k}.")
+
+        ns = (namespace or self.default_namespace).strip()
+        if not ns:
+            raise VectorInvalidError("Search namespace cannot be empty.")
+
+        target_model = (model or self.default_model).strip()
+        if not target_model:
+            raise VectorInvalidError("Search model cannot be empty.")
+
+        self._validate_vector_dimensions(query_vector, context="Query vector")
+
+        vec_str = _format_vector(query_vector)
+        query, combined_query = self._build_search_queries()
 
         try:
             async with self.pool.acquire() as conn:
-                if self.table_name == "vector_records":
+                if combined_query is not None:
                     try:
                         if self.readonly_transaction:
                             async with conn.transaction(readonly=True):
@@ -602,8 +618,10 @@ class PostgresVectorStore(BaseVectorStore):
         analyze: bool = False,
     ) -> Dict[str, Any]:
         """
-        Executes EXPLAIN (or EXPLAIN ANALYZE) on the nearest-neighbour search query.
-        Returns whether the HNSW index was actually selected by the query planner,
+        Executes EXPLAIN (or EXPLAIN ANALYZE) on the exact production nearest-neighbour
+        search query (combined UNION ALL across vector_records and semantic_variant_records
+        when table_name == 'vector_records', with single-table fallback).
+        Returns whether HNSW indexes were selected by the query planner,
         the retrieval method classification, and sanitized execution plan lines.
         """
         self._validate_vector_dimensions(query_vector, context="Query vector")
@@ -612,40 +630,40 @@ class PostgresVectorStore(BaseVectorStore):
         vec_str = _format_vector(query_vector)
 
         explain_cmd = "EXPLAIN (ANALYZE, BUFFERS)" if analyze else "EXPLAIN (BUFFERS)"
-        join_type = "JOIN" if self.table_name == "vector_records" else "LEFT JOIN"
-        query = f"""
-            {explain_cmd}
-            SELECT
-                v.id,
-                v.cache_namespace,
-                v.fingerprint,
-                v.query_text,
-                v.model,
-                v.metadata,
-                v.created_at,
-                (v.vector <=> $1::vector) AS distance,
-                c.response AS cached_response,
-                c.prompt_tokens,
-                c.completion_tokens,
-                c.total_tokens,
-                c.latency_ms AS original_latency_ms
-            FROM {self.table_name} v
-            {join_type} cache_entries c
-                ON v.cache_namespace = c.cache_namespace
-               AND v.fingerprint = c.fingerprint
-               AND (c.expires_at IS NULL OR c.expires_at > NOW())
-            WHERE v.cache_namespace = $2
-              AND v.model = $3
-            ORDER BY distance ASC
-            LIMIT $4;
-        """
+        single_query, combined_query = self._build_search_queries()
         try:
             async with self.pool.acquire() as conn:
-                rows = await conn.fetch(query, vec_str, ns, target_model, top_k)
+                if combined_query is not None:
+                    try:
+                        rows = await conn.fetch(
+                            f"{explain_cmd}\n{combined_query}",
+                            vec_str,
+                            ns,
+                            target_model,
+                            top_k,
+                        )
+                    except asyncpg.UndefinedTableError:
+                        rows = await conn.fetch(
+                            f"{explain_cmd}\n{single_query}",
+                            vec_str,
+                            ns,
+                            target_model,
+                            top_k,
+                        )
+                else:
+                    rows = await conn.fetch(
+                        f"{explain_cmd}\n{single_query}",
+                        vec_str,
+                        ns,
+                        target_model,
+                        top_k,
+                    )
             plan_lines = [r[0] for r in rows]
             plan_text = " ".join(plan_lines).lower()
 
-            hnsw_used = "idx_vector_records_embedding_hnsw" in plan_text
+            vr_hnsw_used = "idx_vector_records_embedding_hnsw" in plan_text
+            sv_hnsw_used = "idx_semantic_variant_records_hnsw" in plan_text
+            hnsw_used = vr_hnsw_used or sv_hnsw_used
             retrieval_method = (
                 "HNSW approximate nearest-neighbour search"
                 if hnsw_used
@@ -658,13 +676,17 @@ class PostgresVectorStore(BaseVectorStore):
 
             return {
                 "vector_index_used": hnsw_used,
+                "vector_records_hnsw_used": vr_hnsw_used,
+                "semantic_variant_records_hnsw_used": sv_hnsw_used,
                 "retrieval_method": retrieval_method,
-                "execution_plan_summary": sanitized_lines[:40],
+                "execution_plan_summary": sanitized_lines[:80],
             }
         except Exception as e:
             logger.warning("Failed to run explain_search: %s", e)
             return {
                 "vector_index_used": False,
+                "vector_records_hnsw_used": False,
+                "semantic_variant_records_hnsw_used": False,
                 "retrieval_method": "Unknown",
                 "error": str(e),
                 "execution_plan_summary": [],

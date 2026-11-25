@@ -296,6 +296,12 @@ class Settings(BaseModel):
 
     @staticmethod
     def _validate_evidence_secret_strength(raw_secret: str, env_name: str) -> str:
+        """
+        Minimum-format sanity check for evidence signing secrets (not cryptographic proof of
+        256-bit entropy). Rejects known placeholders, short strings (<32 chars), low symbol
+        diversity (<10 unique chars), single-character dominance, and short repeating patterns.
+        Production deployments should generate keys with `openssl rand -hex 32`.
+        """
         cleaned = raw_secret.strip()
         insecure_placeholders = {
             "secret",
@@ -315,12 +321,28 @@ class Settings(BaseModel):
             )
         if len(cleaned) < 32:
             raise ValueError(
-                f"{env_name} must be at least 32 characters long for HMAC-SHA256 evidence security."
+                f"{env_name} fails minimum secret format check (must be at least 32 characters; "
+                "use `openssl rand -hex 32` for a 256-bit production secret)."
             )
-        if len(set(cleaned)) < 8:
+        if len(set(cleaned)) < 10:
             raise ValueError(
-                f"{env_name} lacks sufficient entropy (requires at least 8 distinct characters)."
+                f"{env_name} fails minimum secret format check (requires at least 10 distinct characters; "
+                "use `openssl rand -hex 32` for a 256-bit production secret)."
             )
+        max_freq = max(cleaned.count(ch) for ch in set(cleaned))
+        if max_freq > len(cleaned) // 3:
+            raise ValueError(
+                f"{env_name} fails minimum secret format check (single-character dominance exceeds threshold; "
+                "use `openssl rand -hex 32` for a 256-bit production secret)."
+            )
+        for period in range(1, min(17, (len(cleaned) // 2) + 1)):
+            pattern = cleaned[:period]
+            repeated = (pattern * ((len(cleaned) // period) + 1))[: len(cleaned)]
+            if cleaned == repeated:
+                raise ValueError(
+                    f"{env_name} fails minimum secret format check (repeating pattern detected; "
+                    "use `openssl rand -hex 32` for a 256-bit production secret)."
+                )
         return cleaned
 
     @model_validator(mode="after")

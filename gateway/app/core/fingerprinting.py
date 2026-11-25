@@ -93,30 +93,70 @@ def generate_fingerprint(
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
+RESPONSE_AFFECTING_METADATA_KEYS = (
+    "json_schema",
+    "output_schema",
+    "response_schema",
+    "output_format",
+    "output_constraints",
+    "constraints",
+    "strict_format",
+    "markup",
+    "code_only",
+    "required_keys",
+    "max_words",
+    "max_chars",
+    "schema_adherence",
+)
+
+
+def _normalize_exact_constraint_value(key: str, val: Any) -> Any:
+    """Canonicalizes allowlisted response-affecting metadata values for deterministic hashing."""
+    if key == "required_keys":
+        if isinstance(val, str):
+            return sorted({item.strip() for item in val.split(",") if item.strip()})
+        if isinstance(val, (list, tuple, set)):
+            return sorted({str(item).strip() for item in val if str(item).strip()})
+    if key in ("output_format", "strict_format", "markup") and isinstance(val, str):
+        return val.strip().lower()
+    if key in ("max_words", "max_chars") and not isinstance(val, bool):
+        try:
+            return int(str(val).strip())
+        except (ValueError, TypeError):
+            return str(val).strip()
+    if key == "code_only" and isinstance(val, str):
+        lowered = val.strip().lower()
+        if lowered in ("true", "false"):
+            return lowered == "true"
+        return lowered
+    return val
+
+
 def derive_variant_exact_fingerprint(
     base_fingerprint: str,
     metadata: Optional[Dict[str, Any]],
 ) -> str:
     """
-    Preserves base_fingerprint unchanged unless response-affecting metadata
-    (e.g., json_schema, output_schema, response_schema) is explicitly supplied,
-    in which case exact-cache lookup and persistence are isolated per schema variant.
+    Preserves base_fingerprint unchanged unless allowlisted response-affecting metadata
+    (schemas, output formats, or verifier output constraints) is explicitly supplied,
+    in which case exact-cache lookup and persistence are isolated per variant.
+    Operational metadata (e.g., turn_id, context_status) is excluded to avoid cache fragmentation.
     """
     if not isinstance(metadata, dict) or not metadata:
         return base_fingerprint
 
-    schema_scope: Dict[str, Any] = {}
-    for key in ("json_schema", "output_schema", "response_schema"):
+    constraint_scope: Dict[str, Any] = {}
+    for key in RESPONSE_AFFECTING_METADATA_KEYS:
         val = metadata.get(key)
         if val is not None:
-            schema_scope[key] = val
+            constraint_scope[key] = _normalize_exact_constraint_value(key, val)
 
-    if not schema_scope:
+    if not constraint_scope:
         return base_fingerprint
 
     payload = {
         "base_fingerprint": base_fingerprint,
-        "response_constraints": schema_scope,
+        "response_constraints": constraint_scope,
     }
     serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()

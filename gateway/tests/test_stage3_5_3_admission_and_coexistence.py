@@ -30,7 +30,11 @@ from app.cache.migration import run_migrations
 from app.cache.postgres_cache import PostgresCache
 from app.config import Settings, reload_settings
 from app.core.contracts import ChatMessage, GenerationRequest, GenerationResult, UsageMetrics
-from app.core.fingerprinting import generate_fingerprint
+from app.core.fingerprinting import (
+    RESPONSE_AFFECTING_METADATA_KEYS,
+    derive_variant_exact_fingerprint,
+    generate_fingerprint,
+)
 from app.core.service import IntelliCacheCore
 from app.embeddings.contracts import EmbeddingResult, EmbeddingTask
 from app.main import app
@@ -466,8 +470,15 @@ class TestStage353VerifierAndEvidence(unittest.TestCase):
             )
         self.assertIn("SEMANTIC_CACHE_EVIDENCE_SECRET is required", str(ctx_missing.exception))
 
-        # 2. Rejects weak/placeholder/short/low-entropy secrets
-        for weak in ("changeme", "short-secret-123", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"):
+        # 2. Rejects weak/placeholder/short/repeating/low-diversity secrets (minimum-format sanity checks)
+        for weak in (
+            "changeme",
+            "short-secret-123",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "abcd1234abcd1234abcd1234abcd1234",
+            "01234567890123456789012345678901",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaa1234",
+        ):
             with self.assertRaises(ValueError):
                 Settings(
                     _env_file=None,
@@ -478,6 +489,19 @@ class TestStage353VerifierAndEvidence(unittest.TestCase):
                     semantic_cache_enabled=True,
                     semantic_cache_evidence_secret=weak,
                 )
+
+        # Valid 256-bit hex secret format (equivalent to `openssl rand -hex 32`) passes
+        hex_secret = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+        valid_cfg = Settings(
+            _env_file=None,
+            groq_api_key="gsk_test",
+            cache_backend="postgres",
+            vector_store_backend="postgres",
+            database_url="postgresql://user:pass@localhost:5432/intellicache_test",
+            semantic_cache_enabled=True,
+            semantic_cache_evidence_secret=hex_secret,
+        )
+        self.assertEqual(valid_cfg.semantic_cache_evidence_secret, hex_secret)
 
         # 3. Persistent EvidenceAuthority refuses ephemeral runtime fallback
         with patch.dict(os.environ, {"SEMANTIC_CACHE_EVIDENCE_SECRET": ""}, clear=False):
@@ -893,6 +917,106 @@ class TestStage353EndToEndInMemory(unittest.IsolatedAsyncioTestCase):
         out_b_exact = await core.execute_query(_req("Serialize node in Python conforming to schema", metadata={"json_schema": schema_b}), MockUpstream(core_responder))
         self.assertTrue(out_b_exact.cached)
         self.assertEqual(out_b_exact.text, '{"y": "core_b"}')
+
+    async def test_exact_fingerprint_allowlist_and_constraint_isolation(self):
+        prompt = "Summarize sorting algorithms in Python"
+        msgs = [ChatMessage(role="user", content=prompt)]
+        base_fp = generate_fingerprint(msgs, "llama-3.3-70b-versatile", 0.0, 512, "groq")
+
+        # 1. Operational metadata MUST NOT fragment exact-cache fingerprint
+        op_fp = derive_variant_exact_fingerprint(
+            base_fp,
+            {"turn_id": "turn_123", "context_status": "fresh", "request_id": "req_9", "trace_id": "abc"},
+        )
+        self.assertEqual(op_fp, base_fp)
+
+        # 2. Every allowlisted response-affecting key MUST isolate exact fingerprints when differing
+        sample_values = {
+            "json_schema": {"type": "object", "properties": {"a": {"type": "integer"}}},
+            "output_schema": {"type": "object", "properties": {"b": {"type": "string"}}},
+            "response_schema": {"type": "object", "properties": {"c": {"type": "boolean"}}},
+            "output_format": "json",
+            "output_constraints": {"mode": "strict"},
+            "constraints": ["no_prose"],
+            "strict_format": "json_only",
+            "markup": "no_markdown",
+            "code_only": True,
+            "required_keys": ["id", "name"],
+            "max_words": 20,
+            "max_chars": 120,
+            "schema_adherence": "sha256:abc",
+        }
+        self.assertEqual(set(sample_values.keys()), set(RESPONSE_AFFECTING_METADATA_KEYS))
+        for key, val in sample_values.items():
+            derived = derive_variant_exact_fingerprint(base_fp, {key: val, "turn_id": "ignored"})
+            self.assertNotEqual(derived, base_fp, f"Expected allowlist key '{key}' to isolate exact fingerprint")
+
+        # 3. Canonical equivalence across ordering/casing/type differences
+        self.assertEqual(
+            derive_variant_exact_fingerprint(base_fp, {"required_keys": ["name", "id"], "max_words": "20"}),
+            derive_variant_exact_fingerprint(base_fp, {"required_keys": " id , name ", "max_words": 20}),
+        )
+        self.assertEqual(
+            derive_variant_exact_fingerprint(base_fp, {"output_format": "JSON", "strict_format": " JSON_ONLY "}),
+            derive_variant_exact_fingerprint(base_fp, {"output_format": "json", "strict_format": "json_only"}),
+        )
+
+        # 4. End-to-end IntelliCacheCore exact + semantic isolation across non-schema verifier constraints
+        calls = []
+
+        def constraint_responder(req: GenerationRequest) -> GenerationResult:
+            calls.append(req.metadata)
+            if req.metadata.get("max_words") == 3:
+                txt = "Two words"
+            elif req.metadata.get("markup") == "no_markdown":
+                txt = "Quicksort partitions arrays in place without markdown."
+            else:
+                txt = '{"id": 1, "name": "ok"}'
+            return GenerationResult(
+                text=txt,
+                model=req.model,
+                usage=UsageMetrics(prompt_tokens=6, completion_tokens=6, total_tokens=12),
+                latency_ms=4.0,
+                finish_reason="stop",
+            )
+
+        embedder = TopicRoutingEmbedder([("sorting", 0.0)])
+        svc = SemanticCacheService(
+            embedding_provider=embedder,
+            vector_store=self.vector_store,
+            policy=self.policy,
+            evidence_authority=self.authority,
+        )
+        core = IntelliCacheCore(cache=self.exact_cache, cache_enabled=True, semantic_cache=svc)
+
+        r1 = await core.execute_query(
+            _req(prompt, metadata={"max_words": 3}),
+            MockUpstream(constraint_responder),
+        )
+        r2 = await core.execute_query(
+            _req(prompt, metadata={"max_words": 50, "markup": "no_markdown"}),
+            MockUpstream(constraint_responder),
+        )
+        r3 = await core.execute_query(
+            _req(prompt, metadata={"output_format": "json", "strict_format": "json_only", "required_keys": ["id", "name"]}),
+            MockUpstream(constraint_responder),
+        )
+        self.assertFalse(r1.cached)
+        self.assertFalse(r2.cached)
+        self.assertFalse(r3.cached)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(r1.text, "Two words")
+        self.assertEqual(r2.text, "Quicksort partitions arrays in place without markdown.")
+        self.assertEqual(r3.text, '{"id": 1, "name": "ok"}')
+
+        # Repeated call for each constraint profile hits exact cache cleanly with its own variant
+        r2_hit = await core.execute_query(
+            _req(prompt, metadata={"max_words": 50, "markup": "no_markdown"}),
+            MockUpstream(constraint_responder),
+        )
+        self.assertTrue(r2_hit.cached)
+        self.assertEqual(r2_hit.cache_type, "exact")
+        self.assertEqual(r2_hit.text, r2.text)
 
     async def test_bounded_retrieval_budget_exhaustion_telemetry(self):
         ext = CompatibilityExtractor()
@@ -1575,14 +1699,47 @@ class TestStage353PostgresPgvectorLifecycle(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("fp_mig_bad", [r.fingerprint for r in search_res])
 
     async def test_performance_measurements_and_pgvector_explain_analyze(self):
-        # Populate 40 realistic records (10 incompatible/legacy + 30 v3 records) and measure latency + EXPLAIN ANALYZE
+        # Populate 40 realistic records split across BOTH vector_records (20) and semantic_variant_records (20,
+        # including multi-variant same-fingerprint rows) and measure latency + production combined UNION ALL EXPLAIN ANALYZE
         ext = CompatibilityExtractor()
-        for i in range(40):
+        for i in range(20):
             lang = "java" if i < 6 else "python"
             qp = f"Sort items {i} in {lang}"
             m = ext.extract_from_text(qp, configured_model="nomic-embed-text").to_dict()
             m["variant_key"] = compute_variant_key(SemanticCompatibilityMetadata.from_dict(m))
-            await self._seed_raw_row(fp=f"fp_bench_{i}", query_text=qp, resp=f"resp_{i}", meta=m, angle_deg=float(i) * 0.5)
+            await self._seed_raw_row(fp=f"fp_bench_vr_{i}", query_text=qp, resp=f"vr_resp_{i}", meta=m, angle_deg=float(i) * 0.5)
+
+        for j in range(20):
+            schema_j = {"type": "object", "properties": {f"k{j}": {"type": "integer"}}, "required": [f"k{j}"]}
+            shared_fp = f"fp_bench_sv_{j // 2}"
+            qp = f"Encode variant payload {j // 2} in Python"
+            m_obj = ext.extract_from_text(qp, configured_model="nomic-embed-text", request_metadata={"json_schema": schema_j})
+            m = m_obj.to_dict()
+            vk = compute_variant_key(m_obj, schema_digest=compute_canonical_schema_digest(schema_j))
+            m["variant_key"] = vk
+            await self.cache.set(
+                shared_fp,
+                CacheEntry(
+                    response=f'{{"k{j}": {j}}}',
+                    model="llama-3.3-70b-versatile",
+                    usage=UsageMetrics(prompt_tokens=8, completion_tokens=6, total_tokens=14),
+                    latency_ms=3.0,
+                    provider="groq",
+                ),
+                namespace=self.ns,
+            )
+            await self.store.upsert(
+                VectorRecord(
+                    cache_namespace=self.ns,
+                    fingerprint=shared_fp,
+                    query_text=qp,
+                    vector=_topic_vec(768, 10.0 + float(j) * 0.5),
+                    model="nomic-embed-text",
+                    metadata=m,
+                    variant_key=vk,
+                    response_text=f'{{"k{j}": {j}}}',
+                )
+            )
 
         verifier = ResponseArtifactVerifier()
         req_meta = ext.extract_from_text("Serialize in Python and output strict JSON")
@@ -1602,33 +1759,86 @@ class TestStage353PostgresPgvectorLifecycle(unittest.IsolatedAsyncioTestCase):
             await self.store.search(q_vec, top_k=25, namespace=self.ns, model="nomic-embed-text")
             t25_ms.append((time.perf_counter() - t1) * 1000.0)
 
-        v_str = "[" + ",".join(f"{x:.6f}" for x in q_vec) + "]"
-        async with self.pool.acquire() as conn:
-            plan_rows = await conn.fetch(
-                """
-                EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)
-                SELECT v.id, v.fingerprint, (v.vector <=> $1::vector) AS distance
-                FROM vector_records v
-                JOIN cache_entries c
-                    ON v.cache_namespace = c.cache_namespace
-                   AND v.fingerprint = c.fingerprint
-                   AND (c.expires_at IS NULL OR c.expires_at > NOW())
-                WHERE v.cache_namespace = $2
-                  AND v.model = $3
-                  AND COALESCE((v.metadata->>'legacy_excluded')::boolean, FALSE) = FALSE
-                ORDER BY distance ASC
-                LIMIT 25
-                """,
-                v_str, self.ns, "nomic-embed-text",
-            )
-        plan_text = "\n".join(r["QUERY PLAN"] for r in plan_rows)
+        plan = await self.store.explain_search(
+            q_vec,
+            top_k=25,
+            namespace=self.ns,
+            model="nomic-embed-text",
+            analyze=True,
+        )
+        plan_text = "\n".join(plan["execution_plan_summary"])
         self.assertIn("Execution Time", plan_text)
+        self.assertIn("vector_records", plan_text)
+        self.assertIn("semantic_variant_records", plan_text)
         print(
             f"\n[STAGE_3_5_3_BENCHMARK] verifier_median_ms={statistics.median(ver_lat_ms):.3f} "
             f"search_top5_median_ms={statistics.median(t5_ms):.3f} "
             f"search_top25_median_ms={statistics.median(t25_ms):.3f}\n"
-            f"[EXPLAIN_ANALYZE]\n{plan_text}"
+            f"[EXPLAIN_ANALYZE_COMBINED]\n{plan_text}"
         )
+
+    async def test_combined_union_all_hnsw_explain_analyze(self):
+        # Seed HNSW-scale datasets in BOTH vector_records and semantic_variant_records (3,000 rows each)
+        # to inspect and verify the actual production UNION ALL plan under HNSW cost selection.
+        hnsw_ns = "test_s353_hnsw_union"
+        import random
+        rng = random.Random(353)
+
+        def _rand_vec_str() -> str:
+            raw = [rng.gauss(0.0, 1.0) for _ in range(768)]
+            norm = math.sqrt(sum(v * v for v in raw)) or 1.0
+            return "[" + ",".join(f"{(v / norm):.6f}" for v in raw) + "]"
+
+        n_rows = 3000
+        try:
+            async with self.pool.acquire() as conn:
+                ce_rows = [(hnsw_ns, f"fp_hu_{i}", f"resp_{i}", "llama-3.3-70b-versatile", "groq") for i in range(n_rows)]
+                vr_rows = [(hnsw_ns, f"fp_hu_{i}", f"query {i}", "nomic-embed-text", _rand_vec_str()) for i in range(n_rows)]
+                sv_rows = [
+                    (hnsw_ns, f"fp_hu_{i}", f"v3:variant_{i}", f"variant query {i}", "nomic-embed-text", _rand_vec_str(), f"var_resp_{i}")
+                    for i in range(n_rows)
+                ]
+                for start in range(0, n_rows, 500):
+                    await conn.executemany(
+                        "INSERT INTO cache_entries (cache_namespace, fingerprint, response, model, provider) VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
+                        ce_rows[start : start + 500],
+                    )
+                    await conn.executemany(
+                        "INSERT INTO vector_records (cache_namespace, fingerprint, query_text, model, vector) VALUES ($1, $2, $3, $4, $5::vector) ON CONFLICT DO NOTHING",
+                        vr_rows[start : start + 500],
+                    )
+                    await conn.executemany(
+                        "INSERT INTO semantic_variant_records (cache_namespace, fingerprint, variant_key, query_text, model, vector, cached_response) VALUES ($1, $2, $3, $4, $5, $6::vector, $7) ON CONFLICT DO NOTHING",
+                        sv_rows[start : start + 500],
+                    )
+                await conn.execute("VACUUM ANALYZE cache_entries;")
+                await conn.execute("VACUUM ANALYZE vector_records;")
+                await conn.execute("VACUUM ANALYZE semantic_variant_records;")
+
+            q_vec = _topic_vec(768, 7.0)
+            plan = await self.store.explain_search(
+                q_vec,
+                top_k=25,
+                namespace=hnsw_ns,
+                model="nomic-embed-text",
+                analyze=True,
+            )
+            plan_text = "\n".join(plan["execution_plan_summary"])
+            self.assertIn("Execution Time", plan_text)
+            self.assertIn("vector_records", plan_text)
+            self.assertIn("semantic_variant_records", plan_text)
+            print(
+                f"\n[EXPLAIN_ANALYZE_COMBINED_HNSW] vr_hnsw={plan['vector_records_hnsw_used']} "
+                f"sv_hnsw={plan['semantic_variant_records_hnsw_used']}\n{plan_text}"
+            )
+        finally:
+            async with self.pool.acquire() as conn:
+                await conn.execute("DELETE FROM semantic_variant_records WHERE cache_namespace = $1", hnsw_ns)
+                await conn.execute("DELETE FROM vector_records WHERE cache_namespace = $1", hnsw_ns)
+                await conn.execute("DELETE FROM cache_entries WHERE cache_namespace = $1", hnsw_ns)
+                await conn.execute("VACUUM ANALYZE semantic_variant_records;")
+                await conn.execute("VACUUM ANALYZE vector_records;")
+                await conn.execute("VACUUM ANALYZE cache_entries;")
 
 
 class TestStage353FastEmbedRealPostgresE2E(unittest.IsolatedAsyncioTestCase):
