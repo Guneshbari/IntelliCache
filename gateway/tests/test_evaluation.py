@@ -429,6 +429,7 @@ class TestSemanticEvaluation(unittest.IsolatedAsyncioTestCase):
             messages=[ChatMessage(role="user", content="How do I reverse a string in Python?")],
             provider="groq",
             model="llama-3.3-70b-versatile",
+            visibility="tenant_shared",
         )
 
         hit = await service.lookup(request)
@@ -458,6 +459,7 @@ class TestSemanticEvaluation(unittest.IsolatedAsyncioTestCase):
             messages=[ChatMessage(role="user", content="How do I reverse a string in Python?")],
             provider="groq",
             model="llama-3.3-70b-versatile",
+            visibility="tenant_shared",
         )
         result = GenerationResult(
             text="Use s[::-1]",
@@ -489,6 +491,7 @@ class TestSemanticEvaluation(unittest.IsolatedAsyncioTestCase):
             messages=[ChatMessage(role="user", content="How do I reverse a string in Python?")],
             provider="groq",
             model="llama-3.3-70b-versatile",
+            visibility="tenant_shared",
         )
 
         hit = await service.lookup(request)
@@ -558,6 +561,7 @@ class TestSemanticEvaluation(unittest.IsolatedAsyncioTestCase):
         mock_provider = AsyncMock()
         mock_provider.name = "mock_provider"
         mock_semantic = AsyncMock()
+        mock_semantic.record_served_hit = MagicMock()
         mock_semantic.lookup.return_value = None
 
         # Semantic hit returning original generation token usage and latency
@@ -574,16 +578,19 @@ class TestSemanticEvaluation(unittest.IsolatedAsyncioTestCase):
             original_latency_ms=1500.0,
         )
 
+        from app.semantic_cache.control import SemanticServingController
         core = IntelliCacheCore(
             cache=cache,
             semantic_cache=mock_semantic,
             cache_enabled=True,
+            semantic_serving_controller=SemanticServingController(initial_enabled=True),
         )
 
         request = GenerationRequest(
             messages=[ChatMessage(role="user", content="How do I reverse a string in Python?")],
             provider="groq",
             model="llama-3.3-70b-versatile",
+            visibility="tenant_shared",
         )
 
         result = await core.execute_query(request, mock_provider)
@@ -612,18 +619,22 @@ class TestSemanticEvaluation(unittest.IsolatedAsyncioTestCase):
         mock_provider = AsyncMock()
         mock_provider.name = "groq"
         mock_semantic = AsyncMock()
+        mock_semantic.record_served_hit = MagicMock()
         mock_semantic.lookup.return_value = None
 
+        from app.semantic_cache.control import SemanticServingController
         core = IntelliCacheCore(
             cache=cache,
             semantic_cache=mock_semantic,
             cache_enabled=True,
+            semantic_serving_controller=SemanticServingController(initial_enabled=True),
         )
 
         request = GenerationRequest(
             messages=[ChatMessage(role="user", content="Exact query text")],
             provider="groq",
             model="llama-3.3-70b-versatile",
+            visibility="tenant_shared",
         )
 
         # 1. Miss -> provider called
@@ -1758,6 +1769,7 @@ class TestRealFastEmbedPgvectorIntegration(unittest.IsolatedAsyncioTestCase):
             model="llama-3",
             namespace="test_fastembed_eval_ns",
             temperature=0.0,
+            visibility="tenant_shared",
         )
         res_rust = GenerationResult(
             text=resp_rust,
@@ -1776,6 +1788,7 @@ class TestRealFastEmbedPgvectorIntegration(unittest.IsolatedAsyncioTestCase):
                 model=res_rust.model,
                 usage=res_rust.usage,
                 latency_ms=res_rust.latency_ms,
+                visibility="tenant_shared",
             ),
             namespace="test_fastembed_eval_ns",
         )
@@ -1789,6 +1802,7 @@ class TestRealFastEmbedPgvectorIntegration(unittest.IsolatedAsyncioTestCase):
             model="llama-3",
             namespace="test_fastembed_eval_ns",
             temperature=0.0,
+            visibility="tenant_shared",
         )
         lookup_hit = await service.lookup(req_search)
 
@@ -1804,6 +1818,7 @@ class TestRealFastEmbedPgvectorIntegration(unittest.IsolatedAsyncioTestCase):
             model="llama-3",
             namespace="test_fastembed_eval_ns",
             temperature=0.0,
+            visibility="tenant_shared",
         )
         lookup_miss = await service.lookup(req_incompat)
         self.assertIsNone(lookup_miss, "Cross-language query must be rejected by candidate compatibility validator despite high textual similarity")

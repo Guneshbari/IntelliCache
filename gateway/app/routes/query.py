@@ -29,6 +29,10 @@ from ..api.routes import (
     verify_client_token,
     verify_metrics_auth,
 )
+from ..conversations.identity import (
+    AuthenticatedCallerScope,
+    resolve_authenticated_caller,
+)
 from ..cache.exact_cache import ExactCache, QueryCache
 from ..cache.postgres_cache import PostgresCache
 from ..cache.interfaces import BaseCache, CacheEntry, CacheStats
@@ -61,6 +65,7 @@ from ..providers.groq_adapter import GroqProvider
 from ..providers.interfaces import LLMProvider
 
 __all__ = [
+    "AuthenticatedCallerScope",
     "BaseCache",
     "CacheEntry",
     "CacheStats",
@@ -101,6 +106,7 @@ __all__ = [
     "get_single_flight_coordinator",
     "get_vector_store",
     "normalize_text",
+    "resolve_authenticated_caller",
     "router",
     "sanitize_error_message",
     "set_query_cache",

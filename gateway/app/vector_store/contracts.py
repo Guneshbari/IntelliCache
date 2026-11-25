@@ -8,6 +8,13 @@ from datetime import datetime, timezone
 import math
 from typing import Any, Dict, Optional, Sequence, Tuple
 
+from ..privacy import (
+    CACHE_VISIBILITY_PRIVATE,
+    CACHE_VISIBILITY_TENANT_SHARED,
+    CACHE_VISIBILITY_UNKNOWN,
+    normalize_cache_visibility,
+    normalize_principal_id,
+)
 from .errors import VectorInvalidError
 
 
@@ -51,6 +58,8 @@ class VectorRecord:
     created_at: Optional[datetime] = None
     variant_key: str = ""
     response_text: Optional[str] = None
+    visibility: str = CACHE_VISIBILITY_UNKNOWN
+    owner_principal_id: Optional[str] = None
 
     def __post_init__(self) -> None:
         if not self.cache_namespace or not self.cache_namespace.strip():
@@ -88,6 +97,14 @@ class VectorRecord:
             if isinstance(raw_vk, str) and raw_vk.strip():
                 vk = raw_vk.strip()
         object.__setattr__(self, "variant_key", vk)
+        vis = normalize_cache_visibility(self.visibility)
+        owner = normalize_principal_id(self.owner_principal_id)
+        if vis == CACHE_VISIBILITY_PRIVATE and owner is None:
+            raise VectorInvalidError("Private VectorRecord requires a non-empty owner_principal_id.")
+        if vis == CACHE_VISIBILITY_TENANT_SHARED and owner is not None:
+            raise VectorInvalidError("tenant_shared VectorRecord cannot define an owner_principal_id.")
+        object.__setattr__(self, "visibility", vis)
+        object.__setattr__(self, "owner_principal_id", owner if vis == CACHE_VISIBILITY_PRIVATE else None)
         if self.created_at is None:
             object.__setattr__(self, "created_at", datetime.now(timezone.utc))
 
@@ -134,6 +151,8 @@ class VectorSearchResult:
     original_latency_ms: float = 0.0
     metadata: Dict[str, Any] = field(default_factory=dict)
     created_at: Optional[datetime] = None
+    visibility: str = CACHE_VISIBILITY_UNKNOWN
+    owner_principal_id: Optional[str] = None
 
     @property
     def namespace(self) -> str:

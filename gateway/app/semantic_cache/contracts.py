@@ -106,6 +106,14 @@ class CompatibilityReasonCode(str, Enum):
     ADMISSION_UNCERTAIN_VERIFICATION = "ADMISSION_UNCERTAIN_VERIFICATION"
     EVIDENCE_BINDING_MISMATCH = "EVIDENCE_BINDING_MISMATCH"
     EVIDENCE_SIGNATURE_INVALID = "EVIDENCE_SIGNATURE_INVALID"
+    # Stage 3.5.4: Runtime serving control & privacy isolation codes
+    RUNTIME_SERVING_DISABLED = "RUNTIME_SERVING_DISABLED"
+    VISIBILITY_MISSING_OR_UNKNOWN = "VISIBILITY_MISSING_OR_UNKNOWN"
+    VISIBILITY_MISMATCH = "VISIBILITY_MISMATCH"
+    PRINCIPAL_IDENTITY_MISSING = "PRINCIPAL_IDENTITY_MISSING"
+    PRINCIPAL_ISOLATION_MISMATCH = "PRINCIPAL_ISOLATION_MISMATCH"
+    PRIVACY_POLICY_VIOLATION = "PRIVACY_POLICY_VIOLATION"
+    EVIDENCE_SCOPE_MISMATCH = "EVIDENCE_SCOPE_MISMATCH"
 
     def __str__(self) -> str:
         return self.value
@@ -181,6 +189,11 @@ _SENSITIVE_DIAGNOSTIC_KEYS = frozenset({
     "password",
     "authorization",
     "cookie",
+    "principal_id",
+    "owner_principal_id",
+    "evidence_signature",
+    "binding_digest",
+    "client_token",
 })
 
 V2_REQUIRED_DIMENSIONS = frozenset({
@@ -410,6 +423,8 @@ class CompatibilityEvidence:
     verified_constraints: Tuple[str, ...] = ()
     verified_schema_digest: Optional[str] = None
     signing_key_id: Optional[str] = None
+    visibility: Optional[str] = None
+    owner_principal_id: Optional[str] = None
     _authority_minted: bool = field(default=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -466,13 +481,15 @@ class CompatibilityEvidence:
             "evidence_signature",
             "verified_schema_digest",
             "signing_key_id",
+            "visibility",
+            "owner_principal_id",
         ):
             val = getattr(self, opt_field)
             if val is not None:
                 if not isinstance(val, str) or not val.strip():
                     raise ValueError(f"CompatibilityEvidence '{opt_field}' must be None or a non-empty string.")
                 norm_val = val.strip()
-                if opt_field != "verifier_version":
+                if opt_field not in ("verifier_version", "owner_principal_id"):
                     norm_val = norm_val.lower()
                 object.__setattr__(self, opt_field, norm_val)
 
@@ -581,6 +598,10 @@ class CompatibilityEvidence:
             payload["verified_schema_digest"] = self.verified_schema_digest
         if self.signing_key_id is not None:
             payload["signing_key_id"] = self.signing_key_id
+        if self.visibility is not None:
+            payload["visibility"] = self.visibility
+        if self.owner_principal_id is not None:
+            payload["owner_principal_id"] = self.owner_principal_id
         return payload
 
     @classmethod
@@ -613,6 +634,8 @@ class CompatibilityEvidence:
             verified_constraints=tuple(data.get("verified_constraints") or ()),
             verified_schema_digest=data.get("verified_schema_digest"),
             signing_key_id=data.get("signing_key_id"),
+            visibility=data.get("visibility"),
+            owner_principal_id=data.get("owner_principal_id"),
             _authority_minted=False,
         )
 
@@ -1014,6 +1037,8 @@ class AdmissionDecision:
 def compute_variant_key(
     metadata: SemanticCompatibilityMetadata,
     schema_digest: Optional[str] = None,
+    visibility: Optional[str] = None,
+    owner_principal_id: Optional[str] = None,
 ) -> str:
     """
     Computes a deterministic normalized compatibility-variant identity across all technical
@@ -1051,6 +1076,13 @@ def compute_variant_key(
     if ev_schema_digest is None and metadata.compatibility_evidence is not None:
         ev_schema_digest = metadata.compatibility_evidence.verified_schema_digest
 
+    ev_visibility = visibility
+    if ev_visibility is None and metadata.compatibility_evidence is not None:
+        ev_visibility = metadata.compatibility_evidence.visibility
+    ev_owner = owner_principal_id
+    if ev_owner is None and metadata.compatibility_evidence is not None:
+        ev_owner = metadata.compatibility_evidence.owner_principal_id
+
     canonical_obj = {
         "schema_version": metadata.schema_version,
         "task_kind": {
@@ -1071,6 +1103,10 @@ def compute_variant_key(
         },
         "schema_digest": ev_schema_digest.strip().lower() if isinstance(ev_schema_digest, str) and ev_schema_digest.strip() else None,
     }
+    if isinstance(ev_visibility, str) and ev_visibility.strip():
+        canonical_obj["visibility"] = ev_visibility.strip().lower()
+    if isinstance(ev_owner, str) and ev_owner.strip():
+        canonical_obj["owner_principal_id"] = ev_owner.strip()
     encoded = json.dumps(canonical_obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     digest = hashlib.sha256(encoded).hexdigest()
     return f"v{metadata.schema_version}:{digest}"
@@ -1128,6 +1164,12 @@ class SemanticCacheStats:
     admission_verified: int = 0
     admission_rejected: int = 0
     admission_uncertain: int = 0
+    runtime_disabled_skips: int = 0
+    candidates_retrieved: int = 0
+    visibility_rejections: int = 0
+    principal_isolation_rejections: int = 0
+    evidence_validation_rejections: int = 0
+    upstream_fallbacks_after_miss: int = 0
 
     def to_dict(self) -> Dict[str, int]:
         return {
@@ -1150,4 +1192,10 @@ class SemanticCacheStats:
             "admission_verified": self.admission_verified,
             "admission_rejected": self.admission_rejected,
             "admission_uncertain": self.admission_uncertain,
+            "runtime_disabled_skips": self.runtime_disabled_skips,
+            "candidates_retrieved": self.candidates_retrieved,
+            "visibility_rejections": self.visibility_rejections,
+            "principal_isolation_rejections": self.principal_isolation_rejections,
+            "evidence_validation_rejections": self.evidence_validation_rejections,
+            "upstream_fallbacks_after_miss": self.upstream_fallbacks_after_miss,
         }

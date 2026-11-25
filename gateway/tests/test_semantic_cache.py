@@ -115,6 +115,7 @@ class TestSemanticCachePolicy(unittest.TestCase):
         req = GenerationRequest(
             model="llama-3",
             messages=[ChatMessage(role="user", content="How do I implement binary search in Python?")],
+            visibility="tenant_shared",
         )
         res = self.policy.check_eligibility(req)
         self.assertTrue(res.eligible)
@@ -124,6 +125,7 @@ class TestSemanticCachePolicy(unittest.TestCase):
         req = GenerationRequest(
             model="llama-3",
             messages=[ChatMessage(role="user", content="def factorial(n):\n    return 1 if n <= 1 else n * factorial(n-1)")],
+            visibility="tenant_shared",
         )
         res = self.policy.check_eligibility(req)
         self.assertTrue(res.eligible)
@@ -137,6 +139,7 @@ class TestSemanticCachePolicy(unittest.TestCase):
                 ChatMessage(role="assistant", content="Use list.sort()"),
                 ChatMessage(role="user", content="Can you show an example?"),
             ],
+            visibility="tenant_shared",
         )
         res = self.policy.check_eligibility(req)
         self.assertFalse(res.eligible)
@@ -199,6 +202,7 @@ class TestSemanticCachePolicy(unittest.TestCase):
             req = GenerationRequest(
                 model="llama-3",
                 messages=[ChatMessage(role="user", content=s)],
+                visibility="tenant_shared",
             )
             res = self.policy.check_eligibility(req)
             self.assertFalse(res.eligible, f"Failed to reject sensitive pattern: {s}")
@@ -228,6 +232,7 @@ class TestSemanticCachePolicy(unittest.TestCase):
             max_tokens=500,
             provider="groq",
             namespace="default",
+            visibility="tenant_shared",
         )
 
         valid_cand = VectorSearchResult(
@@ -241,6 +246,7 @@ class TestSemanticCachePolicy(unittest.TestCase):
             metadata=self.policy.extractor.extract_from_text(
                 "How to sort in Python?", "groq", "llama-3", 0.7, 500, "nomic-embed-text"
             ).to_dict(),
+            visibility="tenant_shared",
         )
         compat, reason = self.policy.is_candidate_compatible(valid_cand, req)
         self.assertTrue(compat)
@@ -257,6 +263,7 @@ class TestSemanticCachePolicy(unittest.TestCase):
             metadata=self.policy.extractor.extract_from_text(
                 "How to sort in Python?", "openai", "llama-3", 0.7, 500, "nomic-embed-text"
             ).to_dict(),
+            visibility="tenant_shared",
         )
         self.assertFalse(self.policy.is_candidate_compatible(bad_prov, req)[0])
 
@@ -272,6 +279,7 @@ class TestSemanticCachePolicy(unittest.TestCase):
             metadata=self.policy.extractor.extract_from_text(
                 "How to sort in Python?", "groq", "mistral-7b", 0.7, 500, "nomic-embed-text"
             ).to_dict(),
+            visibility="tenant_shared",
         )
         self.assertFalse(self.policy.is_candidate_compatible(bad_model, req)[0])
 
@@ -287,6 +295,7 @@ class TestSemanticCachePolicy(unittest.TestCase):
             metadata=self.policy.extractor.extract_from_text(
                 "How to sort in Python?", "groq", "llama-3", 0.2, 500, "nomic-embed-text"
             ).to_dict(),
+            visibility="tenant_shared",
         )
         self.assertFalse(self.policy.is_candidate_compatible(bad_temp, req)[0])
 
@@ -300,6 +309,7 @@ class TestSemanticCachePolicy(unittest.TestCase):
             similarity=0.98,
             cached_response="resp",
             metadata={},
+            visibility="tenant_shared",
         )
         self.assertFalse(self.policy.is_candidate_compatible(no_meta, req)[0])
 
@@ -313,6 +323,7 @@ class TestSemanticCachePolicy(unittest.TestCase):
             similarity=0.98,
             cached_response="",
             metadata={"llm_provider": "groq", "llm_model": "llama-3", "temperature": 0.7, "max_tokens": 500},
+            visibility="tenant_shared",
         )
         self.assertFalse(self.policy.is_candidate_compatible(no_resp, req)[0])
 
@@ -324,6 +335,7 @@ class TestSemanticCachePolicy(unittest.TestCase):
             temperature=0.7,
             provider="groq",
             namespace="default",
+            visibility="tenant_shared",
         )
         meta = self.policy.extractor.extract_from_text(
             "How to sort in Python?", "groq", "llama-3", 0.7, None, "nomic-embed-text"
@@ -339,6 +351,7 @@ class TestSemanticCachePolicy(unittest.TestCase):
             similarity=0.89,
             cached_response="ans1",
             metadata=meta,
+            visibility="tenant_shared",
         )
         winner, reason = self.policy.evaluate_candidates([cand_low], req)
         self.assertIsNone(winner)
@@ -354,6 +367,7 @@ class TestSemanticCachePolicy(unittest.TestCase):
             similarity=0.96,
             cached_response="Good Answer",
             metadata=meta,
+            visibility="tenant_shared",
         )
         winner, reason = self.policy.evaluate_candidates([cand_good], req)
         self.assertEqual(winner, cand_good)
@@ -370,6 +384,7 @@ class TestSemanticCachePolicy(unittest.TestCase):
             similarity=0.94,
             cached_response="Contradictory Answer",
             metadata=meta,
+            visibility="tenant_shared",
         )
         winner, reason = self.policy.evaluate_candidates([cand_good, cand_alt_diff], req)
         self.assertIsNone(winner)
@@ -385,6 +400,7 @@ class TestSemanticCachePolicy(unittest.TestCase):
             similarity=0.95,
             cached_response="Good Answer",
             metadata=meta,
+            visibility="tenant_shared",
         )
         winner, reason = self.policy.evaluate_candidates([cand_good, cand_alt_same], req)
         self.assertEqual(winner, cand_good)
@@ -423,10 +439,12 @@ class TestCoreSemanticCachePipeline(unittest.IsolatedAsyncioTestCase):
             policy=self.policy,
             default_namespace="default",
         )
+        from app.semantic_cache.control import SemanticServingController
         self.core = IntelliCacheCore(
             cache=self.cache,
             cache_enabled=True,
             semantic_cache=self.semantic_service,
+            semantic_serving_controller=SemanticServingController(initial_enabled=True),
         )
 
         self.eligible_request = GenerationRequest(
@@ -436,6 +454,7 @@ class TestCoreSemanticCachePipeline(unittest.IsolatedAsyncioTestCase):
             max_tokens=None,
             provider="groq",
             namespace="default",
+            visibility="tenant_shared",
         )
 
     async def test_exact_hit_bypasses_semantic_lookup(self):
@@ -449,7 +468,7 @@ class TestCoreSemanticCachePipeline(unittest.IsolatedAsyncioTestCase):
             max_tokens=self.eligible_request.max_tokens,
             provider=self.eligible_request.provider,
         )
-        await self.cache.set(fp, CacheEntry(response="Exact Cached Text", model="llama-3", usage=UsageMetrics(), latency_ms=5.0))
+        await self.cache.set(fp, CacheEntry(response="Exact Cached Text", model="llama-3", usage=UsageMetrics(), latency_ms=5.0, visibility="tenant_shared"))
 
         result = await self.core.execute_query(self.eligible_request, self.mock_provider)
         self.assertTrue(result.cached)
@@ -472,6 +491,7 @@ class TestCoreSemanticCachePipeline(unittest.IsolatedAsyncioTestCase):
             similarity=0.97,
             cached_response="Semantic Cached Answer",
             metadata=meta,
+            visibility="tenant_shared",
         )
         self.mock_vector_store.search.return_value = [cand]
 
@@ -571,6 +591,7 @@ class TestCoreSemanticCachePipeline(unittest.IsolatedAsyncioTestCase):
             distance=0.01,
             similarity=0.99,
             cached_response="Shared Semantic Hit",
+            visibility="tenant_shared",
             metadata=meta,
         )
         self.mock_vector_store.search.return_value = [cand]
@@ -700,10 +721,12 @@ class TestPostgresSemanticCacheIntegration(unittest.IsolatedAsyncioTestCase):
                 policy=self.policy,
                 default_namespace="test_sem_ns",
             )
+            from app.semantic_cache.control import SemanticServingController
             self.core = IntelliCacheCore(
                 cache=self.exact_cache,
                 cache_enabled=True,
                 semantic_cache=self.semantic_service,
+                semantic_serving_controller=SemanticServingController(initial_enabled=True),
             )
             self.mock_provider = MockLLMProvider("def quicksort(arr): ...")
         except Exception as e:
@@ -734,6 +757,7 @@ class TestPostgresSemanticCacheIntegration(unittest.IsolatedAsyncioTestCase):
             temperature=0.7,
             provider="groq",
             namespace="test_sem_ns",
+            visibility="tenant_shared",
         )
         req_b = GenerationRequest(
             model="llama-3",
@@ -741,6 +765,7 @@ class TestPostgresSemanticCacheIntegration(unittest.IsolatedAsyncioTestCase):
             temperature=0.7,
             provider="groq",
             namespace="test_sem_ns",
+            visibility="tenant_shared",
         )
 
         # 1. First execution of Query A: miss -> provider generation + indexing

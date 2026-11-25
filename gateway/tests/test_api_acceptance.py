@@ -40,6 +40,10 @@ from app.embeddings.contracts import EmbeddingResult, EmbeddingTask
 from app.embeddings.errors import EmbeddingTimeoutError
 from app.embeddings.interfaces import EmbeddingProvider
 from app.main import app
+from app.semantic_cache.control import (
+    reset_semantic_serving_controller,
+    sync_semantic_serving_controller_from_settings,
+)
 from app.metrics import get_metrics_collector
 from app.providers.interfaces import LLMProvider
 from app.routes.query import (
@@ -216,6 +220,8 @@ class TestApiAcceptance(unittest.TestCase):
             "CACHE_ENABLED": "true",
             "CACHE_TTL_SECONDS": "3600",
             "SEMANTIC_CACHE_ENABLED": "true",
+            "SEMANTIC_CACHE_SERVING_ENABLED": "true",
+            "SEMANTIC_CACHE_DEFAULT_VISIBILITY": "tenant_shared",
             "VECTOR_STORE_BACKEND": "memory",
             "VECTOR_DIMENSIONS": "384",
             "EMBEDDING_PROVIDER": "fastembed",
@@ -225,6 +231,7 @@ class TestApiAcceptance(unittest.TestCase):
         }, clear=False)
         self.env_patcher.start()
         reload_settings()
+        sync_semantic_serving_controller_from_settings(get_settings())
 
         self.client = TestClient(app)
 
@@ -270,6 +277,7 @@ class TestApiAcceptance(unittest.TestCase):
         routes_mod._core_singleton = None
 
     def tearDown(self):
+        reset_semantic_serving_controller(False)
         self.env_patcher.stop()
         reload_settings()
         app.dependency_overrides.clear()

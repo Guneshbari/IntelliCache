@@ -73,6 +73,7 @@ def _make_req(
     messages=None,
     conversation_id: str | None = None,
     metadata: dict | None = None,
+    visibility: str = "tenant_shared",
 ) -> GenerationRequest:
     return GenerationRequest(
         messages=messages if messages is not None else [ChatMessage(role="user", content=text)],
@@ -83,6 +84,7 @@ def _make_req(
         namespace=namespace,
         conversation_id=conversation_id,
         metadata=metadata or {},
+        visibility=visibility,
     )
 
 
@@ -290,6 +292,7 @@ class TestStage352TriStateValidatorAndEvidencePolicy(unittest.TestCase):
             distance=0.01,
             similarity=0.99,
             cached_response="sorted(x)",
+            visibility="tenant_shared",
             metadata={},
         )
         d_miss = self.policy.validate_candidate(cand_no_meta, req)
@@ -551,6 +554,7 @@ class TestStage352TriStateValidatorAndEvidencePolicy(unittest.TestCase):
             similarity=0.99,
             cached_response="sorted(x)",
             metadata=v2_py_dict,
+            visibility="tenant_shared",
         )
         d_v2 = self.policy.validate_candidate(cand_v2_py, req_py)
         self.assertEqual(d_v2.status, CompatibilityStatus.UNCERTAIN)
@@ -570,6 +574,7 @@ class TestStage352TriStateValidatorAndEvidencePolicy(unittest.TestCase):
             similarity=0.99,
             cached_response="Collections.sort(x);",
             metadata=v2_java_dict,
+            visibility="tenant_shared",
         )
         d_v2_java = self.policy.validate_candidate(cand_v2_java, req_py)
         self.assertEqual(d_v2_java.status, CompatibilityStatus.INCOMPATIBLE)
@@ -615,6 +620,7 @@ class TestStage352ServiceLookupAndInvariants(unittest.IsolatedAsyncioTestCase):
             metadata=policy.extractor.extract_from_text(
                 "Reverse a string in Java", "groq", "llama-3.3-70b-versatile", 0.7, 1000, "nomic-embed-text"
             ).to_dict(),
+            visibility="tenant_shared",
         )
         cand_uncertain_v2 = VectorSearchResult(
             cache_namespace="default",
@@ -625,6 +631,7 @@ class TestStage352ServiceLookupAndInvariants(unittest.IsolatedAsyncioTestCase):
             similarity=0.97,
             cached_response="legacy[::-1]",
             metadata=m_v2_legacy,
+            visibility="tenant_shared",
         )
         cand_lower_compat = VectorSearchResult(
             cache_namespace="default",
@@ -634,6 +641,7 @@ class TestStage352ServiceLookupAndInvariants(unittest.IsolatedAsyncioTestCase):
             distance=0.05,
             similarity=0.95,
             cached_response="s[::-1]",
+            visibility="tenant_shared",
             metadata=policy.extractor.extract_from_text(
                 "What is the syntax to reverse a string in Python with slicing?",
                 "groq",
@@ -687,13 +695,16 @@ class TestStage352ServiceLookupAndInvariants(unittest.IsolatedAsyncioTestCase):
                 similarity=0.99,
                 cached_response="s[::-1]",
                 metadata=policy.extractor.extract_from_text("Reverse a string in Python").to_dict(),
+                visibility="tenant_shared",
             )
         ]
         service = SemanticCacheService(embedding_provider=mock_embedder, vector_store=mock_vs, policy=policy)
+        from app.semantic_cache.control import SemanticServingController
         core = IntelliCacheCore(
             cache=ExactCache(max_entries=100, ttl_seconds=3600),
             cache_enabled=True,
             semantic_cache=service,
+            semantic_serving_controller=SemanticServingController(initial_enabled=True),
         )
         upstream = AsyncMock()
         upstream.name = "mock"
@@ -720,7 +731,13 @@ class TestStage352ServiceLookupAndInvariants(unittest.IsolatedAsyncioTestCase):
         mock_embedder = AsyncMock()
         mock_vs = AsyncMock()
         service = SemanticCacheService(embedding_provider=mock_embedder, vector_store=mock_vs, policy=policy)
-        core = IntelliCacheCore(cache=exact_cache, cache_enabled=True, semantic_cache=service)
+        from app.semantic_cache.control import SemanticServingController
+        core = IntelliCacheCore(
+            cache=exact_cache,
+            cache_enabled=True,
+            semantic_cache=service,
+            semantic_serving_controller=SemanticServingController(initial_enabled=True),
+        )
         upstream = AsyncMock()
 
         req_exact = _make_req("How to sort a list in Python?")
@@ -739,6 +756,7 @@ class TestStage352ServiceLookupAndInvariants(unittest.IsolatedAsyncioTestCase):
                 usage=UsageMetrics(prompt_tokens=1, completion_tokens=1, total_tokens=2),
                 latency_ms=1.0,
                 provider="groq",
+                visibility="tenant_shared",
             ),
             namespace="default",
         )
@@ -841,16 +859,16 @@ class TestStage352PostgresIntegration(unittest.IsolatedAsyncioTestCase):
             ]:
                 await conn.execute(
                     """
-                    INSERT INTO cache_entries (cache_namespace, fingerprint, response, model, provider, prompt_tokens, completion_tokens, total_tokens, latency_ms, hit_count, metadata)
-                    VALUES ($1, $2, $3, 'llama-3.3-70b-versatile', 'groq', 5, 5, 10, 10.0, 0, $4)
+                    INSERT INTO cache_entries (cache_namespace, fingerprint, response, model, provider, prompt_tokens, completion_tokens, total_tokens, latency_ms, hit_count, metadata, visibility, owner_principal_id)
+                    VALUES ($1, $2, $3, 'llama-3.3-70b-versatile', 'groq', 5, 5, 10, 10.0, 0, $4, 'tenant_shared', NULL)
                     """,
                     self.ns, fp, resp, json.dumps(m_dict),
                 )
                 v_str = "[" + ",".join(f"{x:.6f}" for x in q_vec) + "]"
                 await conn.execute(
                     """
-                    INSERT INTO vector_records (cache_namespace, fingerprint, query_text, model, vector, metadata)
-                    VALUES ($1, $2, 'Reverse string in Python', 'nomic-embed-text', $3::vector, $4)
+                    INSERT INTO vector_records (cache_namespace, fingerprint, query_text, model, vector, metadata, visibility, owner_principal_id)
+                    VALUES ($1, $2, 'Reverse string in Python', 'nomic-embed-text', $3::vector, $4, 'tenant_shared', NULL)
                     """,
                     self.ns, fp, v_str, json.dumps(m_dict),
                 )

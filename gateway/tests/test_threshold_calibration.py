@@ -334,6 +334,7 @@ class TestCompatibilityGuardrailsHighSimilarity(unittest.TestCase):
                 max_tokens=1000,
                 provider="groq",
                 namespace="default",
+                visibility="tenant_shared",
             )
 
             cand = VectorSearchResult(
@@ -345,6 +346,7 @@ class TestCompatibilityGuardrailsHighSimilarity(unittest.TestCase):
                 similarity=1.0,  # Deliberately perfect similarity (1.0000)
                 cached_response=p.get("cached_response_b") or "dummy",
                 metadata=p.get("compatibility_metadata") or {},
+                visibility="tenant_shared",
             )
 
             is_compat, reason = self.policy.is_candidate_compatible(cand, req)

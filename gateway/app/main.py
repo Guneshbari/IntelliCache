@@ -12,12 +12,14 @@ import time
 from typing import Any, AsyncGenerator, Dict, Optional
 
 import asyncpg
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, ConfigDict, StrictBool
 import uvicorn
 
 from app.cache.migration import run_migrations
 from app.config import Settings, get_settings
+from app.core.contracts import CACHE_VISIBILITY_UNKNOWN, normalize_cache_visibility, normalize_principal_id
 from app.embeddings.factory import EmbeddingProviderFactory
 from app.metrics import (
     AdminMetricsSnapshot,
@@ -29,6 +31,10 @@ from app.semantic_cache import (
     SemanticCachePolicy,
     SemanticCacheService,
     get_default_evidence_authority,
+)
+from app.semantic_cache.control import (
+    get_semantic_serving_controller,
+    sync_semantic_serving_controller_from_settings,
 )
 from app.semantic_cache.shadow import (
     ReadOnlySemanticCacheService,
@@ -359,6 +365,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         app.state.vector_store = vector_store
         app.state.semantic_cache = semantic_cache
         app.state.shadow_service = shadow_service
+        app.state.semantic_serving_controller = sync_semantic_serving_controller_from_settings(settings)
 
         set_query_cache(cache)
         set_vector_store(vector_store)
@@ -377,6 +384,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 shadow_service=shadow_service,
             )
         finally:
+            sync_semantic_serving_controller_from_settings(settings)
             set_shadow_service(None)
             set_semantic_cache(None)
             set_vector_store(None)
@@ -403,6 +411,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 shadow_service=shadow_service,
             )
         finally:
+            sync_semantic_serving_controller_from_settings(settings)
             set_shadow_service(None)
             set_semantic_cache(None)
             set_vector_store(None)
@@ -415,6 +424,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
         if shutdown_errors:
             raise shutdown_errors[0]
+
+
+class SemanticServingControlUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enabled: StrictBool
+    namespace: Optional[str] = None
+    clear_namespace_override: StrictBool = False
+    reason: Optional[str] = None
 
 
 def create_app() -> FastAPI:
@@ -562,17 +579,24 @@ def create_app() -> FastAPI:
     @app.get("/cache/semantic/stats", tags=["Cache"], summary="Semantic Cache Statistics")
     async def semantic_cache_stats(
         request: Request,
+        current_settings: Settings = Depends(get_settings),
         auth_info: tuple[bool, Optional[str]] = Depends(verify_metrics_auth),
     ) -> Dict[str, Any]:
         """Observability counters for semantic cache operations. Scoped to authenticated client namespace or global for admin."""
         is_admin, client_ns = auth_info
         target_ns = None if is_admin else client_ns
+        controller = get_semantic_serving_controller()
+        runtime_enabled = controller.is_serving_enabled(target_ns)
         if hasattr(request.app.state, "semantic_cache") and request.app.state.semantic_cache is not None:
             stats_dict = request.app.state.semantic_cache.get_stats(namespace=target_ns)
-            stats_dict["enabled"] = True
+            stats_dict["enabled"] = bool(current_settings.semantic_cache_enabled)
+            stats_dict["runtime_serving_enabled"] = runtime_enabled
+            stats_dict["effective_enabled"] = bool(current_settings.semantic_cache_enabled and runtime_enabled)
             return stats_dict
         return {
             "enabled": False,
+            "runtime_serving_enabled": runtime_enabled,
+            "effective_enabled": False,
             "lookups": 0,
             "hits": 0,
             "misses": 0,
@@ -583,6 +607,69 @@ def create_app() -> FastAPI:
             "vector_store_failures": 0,
             "indexing_successes": 0,
             "indexing_failures": 0,
+            "runtime_disabled_skips": 0,
+            "candidates_retrieved": 0,
+            "visibility_rejections": 0,
+            "principal_isolation_rejections": 0,
+            "evidence_validation_rejections": 0,
+            "upstream_fallbacks_after_miss": 0,
+            "runtime_control_changes": 0,
+            "runtime_control_failures": 0,
+            "privacy_violation_attempts": 0,
+        }
+
+    @app.get(
+        "/admin/semantic-cache/serving",
+        dependencies=[Depends(verify_admin_token)],
+        tags=["Cache"],
+        summary="Get Runtime Semantic Cache Serving Status",
+    )
+    async def get_semantic_cache_serving_control(
+        namespace: Optional[str] = None,
+        current_settings: Settings = Depends(get_settings),
+    ) -> Dict[str, Any]:
+        """Inspects server-side runtime semantic serving control state. Requires administrative token."""
+        controller = get_semantic_serving_controller()
+        state = controller.get_state()
+        return {
+            "status": "ok",
+            **state.to_dict(
+                startup_enabled=current_settings.semantic_cache_enabled,
+                namespace=namespace,
+            ),
+        }
+
+    @app.post(
+        "/admin/semantic-cache/serving",
+        dependencies=[Depends(verify_admin_token)],
+        tags=["Cache"],
+        summary="Update Runtime Semantic Cache Serving Kill Switch",
+    )
+    async def set_semantic_cache_serving_control(
+        payload: SemanticServingControlUpdateRequest,
+        current_settings: Settings = Depends(get_settings),
+    ) -> Dict[str, Any]:
+        """Atomically enables or disables runtime semantic cache serving. Requires administrative token."""
+        controller = get_semantic_serving_controller()
+        try:
+            state = controller.set_serving_enabled(
+                payload.enabled,
+                namespace=payload.namespace,
+                clear_namespace_override=payload.clear_namespace_override,
+                updated_by="admin_api",
+                reason=payload.reason,
+            )
+        except ValueError as val_err:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(val_err),
+            )
+        return {
+            "status": "ok",
+            **state.to_dict(
+                startup_enabled=current_settings.semantic_cache_enabled,
+                namespace=payload.namespace,
+            ),
         }
 
     @app.post(
@@ -602,12 +689,32 @@ def create_app() -> FastAPI:
         current_settings: Settings = Depends(get_settings),
         cache: BaseCache = Depends(get_query_cache),
     ) -> Dict[str, Any]:
-        """Purge entries from the server-configured cache namespace. Requires administrative token."""
+        """Purge entries from the server-configured cache namespace (optionally scoped by visibility/principal). Requires administrative token."""
         target_ns = request.query_params.get("namespace", current_settings.cache_namespace)
-        if target_ns == "all":
-            await cache.clear(namespace=None)
-        else:
-            await cache.clear(namespace=target_ns)
+        raw_vis = request.query_params.get("visibility")
+        raw_principal = request.query_params.get("principal_id")
+        clear_vis: Optional[str] = None
+        if raw_vis is not None:
+            clear_vis = normalize_cache_visibility(raw_vis)
+            if clear_vis == CACHE_VISIBILITY_UNKNOWN:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Invalid visibility query parameter; expected 'private' or 'tenant_shared'.",
+                )
+        clear_principal = normalize_principal_id(raw_principal) if raw_principal is not None else None
+        ns_arg = None if target_ns == "all" else target_ns
+        await cache.clear(
+            namespace=ns_arg,
+            visibility=clear_vis,
+            principal_id=clear_principal,
+        )
+        vec_store = getattr(request.app.state, "vector_store", None)
+        if vec_store is not None and ns_arg is not None:
+            await vec_store.clear(
+                namespace=ns_arg,
+                visibility=clear_vis,
+                principal_id=clear_principal,
+            )
         return {
             "status": "ok",
             "message": f"Query cache namespace '{target_ns}' cleared successfully.",

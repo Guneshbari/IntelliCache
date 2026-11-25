@@ -5,6 +5,13 @@ Provides asynchronous access and namespace support matching BaseCache.
 
 import time
 from typing import Dict, Optional, Tuple
+from ..privacy import (
+    CACHE_VISIBILITY_PRIVATE,
+    CACHE_VISIBILITY_UNKNOWN,
+    matches_cache_scope,
+    normalize_cache_visibility,
+    normalize_principal_id,
+)
 from .interfaces import BaseCache, CacheEntry, CacheStats
 
 
@@ -33,11 +40,25 @@ class ExactCache(BaseCache):
         self._tokens_saved: int = 0
         self._latency_saved_ms: float = 0.0
 
-    async def get(self, key: str, namespace: Optional[str] = None) -> Optional[CacheEntry]:
+    async def get(
+        self,
+        key: str,
+        namespace: Optional[str] = None,
+        visibility: Optional[str] = None,
+        principal_id: Optional[str] = None,
+        allow_shared_reads: bool = False,
+    ) -> Optional[CacheEntry]:
         """
-        Retrieve an unexpired entry from cache and record hit metrics.
-        Returns None if missing or expired.
+        Retrieve an unexpired entry matching caller scope and record hit metrics.
+        Fails closed when requested visibility is invalid or private without principal_id.
         """
+        if visibility is not None:
+            req_vis = normalize_cache_visibility(visibility)
+            if req_vis == CACHE_VISIBILITY_UNKNOWN:
+                return None
+            if req_vis == CACHE_VISIBILITY_PRIVATE and normalize_principal_id(principal_id) is None:
+                return None
+
         ns = (namespace or self.default_namespace).strip()
         cache_key = (ns, key)
         entry = self._entries.get(cache_key)
@@ -46,6 +67,15 @@ class ExactCache(BaseCache):
 
         if entry.is_expired(self.ttl_seconds):
             del self._entries[cache_key]
+            return None
+
+        if not matches_cache_scope(
+            entry.visibility,
+            entry.owner_principal_id,
+            visibility,
+            principal_id,
+            allow_shared_reads=allow_shared_reads,
+        ):
             return None
 
         entry.hit_count += 1
@@ -55,12 +85,25 @@ class ExactCache(BaseCache):
         self._latency_saved_ms += entry.latency_ms
         return entry
 
-    async def peek(self, key: str, namespace: Optional[str] = None) -> Optional[CacheEntry]:
+    async def peek(
+        self,
+        key: str,
+        namespace: Optional[str] = None,
+        visibility: Optional[str] = None,
+        principal_id: Optional[str] = None,
+        allow_shared_reads: bool = False,
+    ) -> Optional[CacheEntry]:
         """
         Non-mutating read operation for candidate validation.
-        Honours TTL (returns None if expired and lazily evicts), but does NOT update
-        hit counters, access timestamps, tokens saved, or LRU recency.
+        Honours TTL and strict privacy scope without updating hit counters or LRU recency.
         """
+        if visibility is not None:
+            req_vis = normalize_cache_visibility(visibility)
+            if req_vis == CACHE_VISIBILITY_UNKNOWN:
+                return None
+            if req_vis == CACHE_VISIBILITY_PRIVATE and normalize_principal_id(principal_id) is None:
+                return None
+
         ns = (namespace or self.default_namespace).strip()
         cache_key = (ns, key)
         entry = self._entries.get(cache_key)
@@ -69,6 +112,15 @@ class ExactCache(BaseCache):
 
         if entry.is_expired(self.ttl_seconds):
             del self._entries[cache_key]
+            return None
+
+        if not matches_cache_scope(
+            entry.visibility,
+            entry.owner_principal_id,
+            visibility,
+            principal_id,
+            allow_shared_reads=allow_shared_reads,
+        ):
             return None
 
         return entry
@@ -119,8 +171,56 @@ class ExactCache(BaseCache):
         self._tokens_saved += max(0, tokens_saved)
         self._latency_saved_ms += max(0.0, latency_saved_ms)
 
-    async def clear(self, namespace: Optional[str] = None) -> None:
-        """Clears cached entries and resets statistics."""
+    async def delete(
+        self,
+        key: str,
+        namespace: Optional[str] = None,
+        visibility: Optional[str] = None,
+        principal_id: Optional[str] = None,
+    ) -> bool:
+        """Deletes a cache entry if present and matching optional scope filters."""
+        ns = (namespace or self.default_namespace).strip()
+        cache_key = (ns, key)
+        entry = self._entries.get(cache_key)
+        if entry is None:
+            return False
+        if visibility is not None or principal_id is not None:
+            req_vis = normalize_cache_visibility(visibility) if visibility is not None else entry.visibility
+            if visibility is not None and entry.visibility != req_vis:
+                return False
+            if principal_id is not None and entry.owner_principal_id != normalize_principal_id(principal_id):
+                return False
+        del self._entries[cache_key]
+        return True
+
+    async def clear(
+        self,
+        namespace: Optional[str] = None,
+        visibility: Optional[str] = None,
+        principal_id: Optional[str] = None,
+    ) -> None:
+        """Clears cached entries (optionally scoped by namespace, visibility, and principal)."""
+        if visibility is not None or principal_id is not None:
+            norm_vis = normalize_cache_visibility(visibility) if visibility is not None else None
+            norm_p = normalize_principal_id(principal_id)
+            if visibility is not None and norm_vis == CACHE_VISIBILITY_UNKNOWN:
+                return
+            if norm_vis == CACHE_VISIBILITY_PRIVATE and principal_id is not None and norm_p is None:
+                return
+            remaining: Dict[Tuple[str, str], CacheEntry] = {}
+            for k, v in self._entries.items():
+                if namespace is not None and k[0] != namespace:
+                    remaining[k] = v
+                    continue
+                if norm_vis is not None and v.visibility != norm_vis:
+                    remaining[k] = v
+                    continue
+                if principal_id is not None and v.owner_principal_id != norm_p:
+                    remaining[k] = v
+                    continue
+            self._entries = remaining
+            return
+
         if namespace is not None:
             self._entries = {k: v for k, v in self._entries.items() if k[0] != namespace}
         else:

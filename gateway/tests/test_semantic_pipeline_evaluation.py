@@ -263,6 +263,7 @@ class TestCandidateLevelAmbiguityAccounting(unittest.TestCase):
             similarity=0.96,
             cached_response="Incorrect Answer A",
             metadata=self.compat_meta,
+            visibility="tenant_shared",
         )
         runner_up = VectorSearchResult(
             cache_namespace="ns",
@@ -273,6 +274,7 @@ class TestCandidateLevelAmbiguityAccounting(unittest.TestCase):
             similarity=0.95,
             cached_response="Different Answer B",
             metadata=self.compat_meta,
+            visibility="tenant_shared",
         )
         req = GenerationRequest(
             model="qwen/qwen3.8-27b",
@@ -281,6 +283,7 @@ class TestCandidateLevelAmbiguityAccounting(unittest.TestCase):
             max_tokens=1000,
             provider="groq",
             namespace="ns",
+            visibility="tenant_shared",
         )
 
         winning, reason = self.policy.evaluate_candidates([top_cand, runner_up], req, request_metadata=self.req_meta)
@@ -305,6 +308,7 @@ class TestCandidateLevelAmbiguityAccounting(unittest.TestCase):
             similarity=0.96,
             cached_response="Correct Answer A",
             metadata=self.compat_meta,
+            visibility="tenant_shared",
         )
         runner_up = VectorSearchResult(
             cache_namespace="ns",
@@ -315,6 +319,7 @@ class TestCandidateLevelAmbiguityAccounting(unittest.TestCase):
             similarity=0.95,
             cached_response="Incorrect Answer B",
             metadata=self.compat_meta,
+            visibility="tenant_shared",
         )
         req = GenerationRequest(
             model="qwen/qwen3.8-27b",
@@ -323,6 +328,7 @@ class TestCandidateLevelAmbiguityAccounting(unittest.TestCase):
             max_tokens=1000,
             provider="groq",
             namespace="ns",
+            visibility="tenant_shared",
         )
 
         winning, reason = self.policy.evaluate_candidates([top_cand, runner_up], req, request_metadata=self.req_meta)
@@ -347,6 +353,7 @@ class TestCandidateLevelAmbiguityAccounting(unittest.TestCase):
             similarity=0.96,
             cached_response="Same Correct Answer",
             metadata=self.compat_meta,
+            visibility="tenant_shared",
         )
         runner_up = VectorSearchResult(
             cache_namespace="ns",
@@ -357,6 +364,7 @@ class TestCandidateLevelAmbiguityAccounting(unittest.TestCase):
             similarity=0.955,
             cached_response="Same Correct Answer",
             metadata=self.compat_meta,
+            visibility="tenant_shared",
         )
         req = GenerationRequest(
             model="qwen/qwen3.8-27b",
@@ -365,6 +373,7 @@ class TestCandidateLevelAmbiguityAccounting(unittest.TestCase):
             max_tokens=1000,
             provider="groq",
             namespace="ns",
+            visibility="tenant_shared",
         )
 
         winning, reason = self.policy.evaluate_candidates([top_cand, runner_up], req, request_metadata=self.req_meta)
@@ -435,11 +444,13 @@ class TestInfrastructureFailOpen(unittest.IsolatedAsyncioTestCase):
             policy=policy,
         )
 
+        from app.semantic_cache.control import SemanticServingController
         core = IntelliCacheCore(
             cache=mock_cache,
             semantic_cache=semantic_cache,
             single_flight=SingleFlightCoordinator(),
             cache_enabled=True,
+            semantic_serving_controller=SemanticServingController(initial_enabled=True),
         )
 
         stub_provider = DeterministicStubProvider()
@@ -449,6 +460,7 @@ class TestInfrastructureFailOpen(unittest.IsolatedAsyncioTestCase):
             temperature=0.7,
             max_tokens=1024,
             provider="groq",
+            visibility="tenant_shared",
         )
 
         elig = policy.check_eligibility(req)
@@ -477,11 +489,13 @@ class TestInfrastructureFailOpen(unittest.IsolatedAsyncioTestCase):
             policy=policy,
         )
 
+        from app.semantic_cache.control import SemanticServingController
         core = IntelliCacheCore(
             cache=mock_cache,
             semantic_cache=semantic_cache,
             single_flight=SingleFlightCoordinator(),
             cache_enabled=True,
+            semantic_serving_controller=SemanticServingController(initial_enabled=True),
         )
 
         stub_provider = DeterministicStubProvider()
@@ -491,6 +505,7 @@ class TestInfrastructureFailOpen(unittest.IsolatedAsyncioTestCase):
             temperature=0.7,
             max_tokens=1024,
             provider="groq",
+            visibility="tenant_shared",
         )
 
         elig = policy.check_eligibility(req)
@@ -522,11 +537,13 @@ class TestInfrastructureFailOpen(unittest.IsolatedAsyncioTestCase):
             policy=policy,
         )
 
+        from app.semantic_cache.control import SemanticServingController
         core = IntelliCacheCore(
             cache=mock_cache,
             semantic_cache=semantic_cache,
             single_flight=SingleFlightCoordinator(),
             cache_enabled=True,
+            semantic_serving_controller=SemanticServingController(initial_enabled=True),
         )
 
         stub_provider = DeterministicStubProvider()
@@ -536,6 +553,7 @@ class TestInfrastructureFailOpen(unittest.IsolatedAsyncioTestCase):
             temperature=0.7,
             max_tokens=1024,
             provider="groq",
+            visibility="tenant_shared",
         )
 
         elig = policy.check_eligibility(req)
@@ -706,9 +724,10 @@ class TestLiveFastEmbedPgvectorPipelineIntegration(unittest.IsolatedAsyncioTestC
                 INSERT INTO cache_entries (
                     cache_namespace, fingerprint, response, model, provider,
                     prompt_tokens, completion_tokens, total_tokens, latency_ms,
-                    hit_count, metadata, created_at, last_accessed, expires_at
-                ) VALUES ($1, $2, $3, $4, $5, 50, 150, 200, 450.0, 0, $6, NOW(), NOW(), NULL)
-                ON CONFLICT (cache_namespace, fingerprint) DO UPDATE SET response = EXCLUDED.response;
+                    hit_count, metadata, created_at, last_accessed, expires_at,
+                    visibility, owner_principal_id
+                ) VALUES ($1, $2, $3, $4, $5, 50, 150, 200, 450.0, 0, $6, NOW(), NOW(), NULL, 'tenant_shared', NULL)
+                ON CONFLICT (cache_namespace, fingerprint) DO UPDATE SET response = EXCLUDED.response, visibility = 'tenant_shared', owner_principal_id = NULL;
                 """,
                 self.test_ns, fp, cached_resp, "qwen/qwen3.8-27b", "groq", json.dumps(meta),
             )
@@ -716,18 +735,25 @@ class TestLiveFastEmbedPgvectorPipelineIntegration(unittest.IsolatedAsyncioTestC
             await conn.execute(
                 """
                 INSERT INTO vector_records (
-                    cache_namespace, fingerprint, query_text, model, vector, metadata, created_at, updated_at
-                ) VALUES ($1, $2, $3, $4, $5::vector, $6, NOW(), NOW())
-                ON CONFLICT (cache_namespace, fingerprint, model) DO UPDATE SET vector = EXCLUDED.vector;
+                    cache_namespace, fingerprint, query_text, model, vector, metadata, created_at, updated_at, visibility, owner_principal_id
+                ) VALUES ($1, $2, $3, $4, $5::vector, $6, NOW(), NOW(), 'tenant_shared', NULL)
+                ON CONFLICT (cache_namespace, fingerprint, model) DO UPDATE SET vector = EXCLUDED.vector, visibility = 'tenant_shared', owner_principal_id = NULL;
                 """,
                 self.test_ns, fp, canonical_query, "BAAI/bge-small-en-v1.5", vec_str, json.dumps(meta),
             )
 
         # 2. Test semantic cache hit at threshold 0.92
+        from app.semantic_cache.control import SemanticServingController
         policy_092 = SemanticCachePolicy(min_similarity=0.92, min_margin=0.03, configured_model="BAAI/bge-small-en-v1.5")
         sem_cache_092 = SemanticCacheService(embedding_provider=self.embedding_provider, vector_store=self.vector_store, policy=policy_092, default_namespace=self.test_ns)
         cache = PostgresCache(pool=self.pool, default_namespace=self.test_ns)
-        core_092 = IntelliCacheCore(cache=cache, semantic_cache=sem_cache_092, single_flight=SingleFlightCoordinator(), cache_enabled=True)
+        core_092 = IntelliCacheCore(
+            cache=cache,
+            semantic_cache=sem_cache_092,
+            single_flight=SingleFlightCoordinator(),
+            cache_enabled=True,
+            semantic_serving_controller=SemanticServingController(initial_enabled=True),
+        )
 
         stub_provider = DeterministicStubProvider()
         req = GenerationRequest(
@@ -737,6 +763,7 @@ class TestLiveFastEmbedPgvectorPipelineIntegration(unittest.IsolatedAsyncioTestC
             max_tokens=1000,
             provider="groq",
             namespace=self.test_ns,
+            visibility="tenant_shared",
         )
 
         res = await core_092.execute_query(req, stub_provider)
@@ -753,6 +780,7 @@ class TestLiveFastEmbedPgvectorPipelineIntegration(unittest.IsolatedAsyncioTestC
             max_tokens=1000,
             provider="groq",
             namespace=self.other_ns,
+            visibility="tenant_shared",
         )
         res_other = await core_092.execute_query(req_other_ns, stub_provider)
         self.assertEqual(res_other.cache_type, "none")

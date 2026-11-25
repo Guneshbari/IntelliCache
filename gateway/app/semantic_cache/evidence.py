@@ -28,6 +28,14 @@ from .contracts import (
     TruncationStatus,
     VerificationStatus,
 )
+from ..privacy import (
+    CACHE_VISIBILITY_PRIVATE,
+    CACHE_VISIBILITY_TENANT_SHARED,
+    CACHE_VISIBILITY_UNKNOWN,
+    matches_cache_scope,
+    normalize_cache_visibility,
+    normalize_principal_id,
+)
 
 # Ephemeral runtime secret used ONLY for isolated memory dev/tests when allow_ephemeral=True.
 _PROCESS_RUNTIME_SECRET: bytes = secrets.token_bytes(32)
@@ -70,10 +78,13 @@ def compute_evidence_binding_digest(
     language_independent: bool,
     context_independent: bool,
     freshness_verified: bool,
+    visibility: Optional[str] = None,
+    owner_principal_id: Optional[str] = None,
 ) -> str:
     """
     Computes canonical SHA-256 binding digest over ALL security-critical compatibility dimensions,
-    generation/embedding contracts, namespace, exact-cache fingerprint, response digest, and claims.
+    generation/embedding contracts, namespace, exact-cache fingerprint, response digest, claims,
+    and optional privacy scope (visibility, owner_principal_id).
     Modifying any bound field invalidates the evidence binding.
     """
     payload = {
@@ -101,6 +112,10 @@ def compute_evidence_binding_digest(
         "context_independent": bool(context_independent),
         "freshness_verified": bool(freshness_verified),
     }
+    if visibility is not None:
+        payload["visibility"] = visibility.strip().lower()
+    if owner_principal_id is not None:
+        payload["owner_principal_id"] = owner_principal_id.strip()
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
@@ -204,6 +219,8 @@ class EvidenceAuthority:
         language_independent: bool = False,
         context_independent: bool = False,
         freshness_verified: bool = False,
+        visibility: Optional[str] = None,
+        owner_principal_id: Optional[str] = None,
     ) -> CompatibilityEvidence:
         """
         Mints cryptographically bound response_verified CompatibilityEvidence ONLY from a VERIFIED,
@@ -219,6 +236,20 @@ class EvidenceAuthority:
             raise ValueError("Cannot mint response_verified evidence for a truncated response.")
         if verification.unverified_constraints:
             raise ValueError("Cannot mint response_verified evidence when unverified constraints remain.")
+
+        bound_vis: Optional[str] = None
+        bound_owner: Optional[str] = None
+        if visibility is not None or owner_principal_id is not None:
+            norm_vis = normalize_cache_visibility(visibility)
+            if norm_vis == CACHE_VISIBILITY_UNKNOWN:
+                raise ValueError(f"Invalid cache visibility for evidence minting: {visibility!r}")
+            norm_owner = normalize_principal_id(owner_principal_id)
+            if norm_vis == CACHE_VISIBILITY_PRIVATE and norm_owner is None:
+                raise ValueError("Private evidence requires a non-empty owner_principal_id.")
+            if norm_vis == CACHE_VISIBILITY_TENANT_SHARED and norm_owner is not None:
+                raise ValueError("tenant_shared evidence cannot specify an owner_principal_id.")
+            bound_vis = norm_vis
+            bound_owner = norm_owner if norm_vis == CACHE_VISIBILITY_PRIVATE else None
 
         response_digest = compute_response_digest(response_text)
         verifier_ver = verification.verifier_version or TRUSTED_RESPONSE_VERIFIER_ID
@@ -245,6 +276,8 @@ class EvidenceAuthority:
             language_independent=language_independent,
             context_independent=context_independent,
             freshness_verified=freshness_verified,
+            visibility=bound_vis,
+            owner_principal_id=bound_owner,
         )
         sig = self.sign_binding_digest(binding_digest)
 
@@ -268,6 +301,8 @@ class EvidenceAuthority:
             verified_constraints=verification.verified_constraints,
             verified_schema_digest=verification.verified_schema_digest,
             signing_key_id=self._primary_key_id,
+            visibility=bound_vis,
+            owner_principal_id=bound_owner,
             _authority_minted=True,
         )
 
@@ -290,8 +325,24 @@ class EvidenceAuthority:
         language_independent: bool = False,
         context_independent: bool = False,
         freshness_verified: bool = False,
+        visibility: Optional[str] = None,
+        owner_principal_id: Optional[str] = None,
     ) -> CompatibilityEvidence:
         """Mints cryptographically bound curated evidence for offline/operator evaluations."""
+        bound_vis: Optional[str] = None
+        bound_owner: Optional[str] = None
+        if visibility is not None or owner_principal_id is not None:
+            norm_vis = normalize_cache_visibility(visibility)
+            if norm_vis == CACHE_VISIBILITY_UNKNOWN:
+                raise ValueError(f"Invalid cache visibility for curated evidence: {visibility!r}")
+            norm_owner = normalize_principal_id(owner_principal_id)
+            if norm_vis == CACHE_VISIBILITY_PRIVATE and norm_owner is None:
+                raise ValueError("Private curated evidence requires a non-empty owner_principal_id.")
+            if norm_vis == CACHE_VISIBILITY_TENANT_SHARED and norm_owner is not None:
+                raise ValueError("tenant_shared curated evidence cannot specify an owner_principal_id.")
+            bound_vis = norm_vis
+            bound_owner = norm_owner if norm_vis == CACHE_VISIBILITY_PRIVATE else None
+
         response_digest = compute_response_digest(response_text)
         source = TRUSTED_CURATED_EVIDENCE_ID
         tier = EVIDENCE_TIER_RESPONSE_VERIFIED
@@ -317,6 +368,8 @@ class EvidenceAuthority:
             language_independent=language_independent,
             context_independent=context_independent,
             freshness_verified=freshness_verified,
+            visibility=bound_vis,
+            owner_principal_id=bound_owner,
         )
         sig = self.sign_binding_digest(binding_digest)
 
@@ -340,6 +393,8 @@ class EvidenceAuthority:
             verified_constraints=verified_constraints,
             verified_schema_digest=verified_schema_digest,
             signing_key_id=self._primary_key_id,
+            visibility=bound_vis,
+            owner_principal_id=bound_owner,
             _authority_minted=True,
         )
 
@@ -351,9 +406,12 @@ class EvidenceAuthority:
         fingerprint: str,
         response_text: str,
         metadata: SemanticCompatibilityMetadata,
+        expected_visibility: Optional[str] = None,
+        expected_principal_id: Optional[str] = None,
+        allow_shared_reads: bool = False,
     ) -> Tuple[bool, CompatibilityReasonCode, str]:
         """
-        Verifies cryptographic provenance and artifact binding of response_verified evidence.
+        Verifies cryptographic provenance, privacy scope, and artifact binding of response_verified evidence.
         Fails closed with structured CompatibilityReasonCode on missing, forged, copied, or stale bindings.
         Supports active key and configured `previous_secret_keys` during rotation transitions.
         """
@@ -364,6 +422,27 @@ class EvidenceAuthority:
         if not evidence.is_trusted_response_verified():
             code = CompatibilityReasonCode.UNVERIFIED_COMPATIBILITY_EVIDENCE
             return False, code, f"{code}: Evidence producer '{evidence.source}' is not trusted for tier '{evidence.evidence_tier}'."
+
+        if expected_visibility is not None:
+            exp_vis = normalize_cache_visibility(expected_visibility)
+            if exp_vis == CACHE_VISIBILITY_UNKNOWN:
+                code = CompatibilityReasonCode.VISIBILITY_MISSING_OR_UNKNOWN
+                return False, code, f"{code}: Expected candidate visibility is missing or unknown."
+            if exp_vis == CACHE_VISIBILITY_PRIVATE:
+                # Private candidates MUST carry cryptographically bound private owner scope
+                if evidence.visibility is None:
+                    code = CompatibilityReasonCode.EVIDENCE_SCOPE_MISMATCH
+                    return False, code, f"{code}: Private evidence lacks bound privacy scope metadata."
+            if evidence.visibility is not None or evidence.owner_principal_id is not None:
+                if not matches_cache_scope(
+                    evidence.visibility,
+                    evidence.owner_principal_id,
+                    exp_vis,
+                    expected_principal_id,
+                    allow_shared_reads=allow_shared_reads,
+                ):
+                    code = CompatibilityReasonCode.EVIDENCE_SCOPE_MISMATCH
+                    return False, code, f"{code}: Evidence privacy scope does not match candidate isolation boundary."
 
         if not evidence.response_digest or not evidence.binding_digest:
             code = CompatibilityReasonCode.EVIDENCE_BINDING_MISMATCH
@@ -394,6 +473,8 @@ class EvidenceAuthority:
             language_independent=evidence.language_independent,
             context_independent=evidence.context_independent,
             freshness_verified=evidence.freshness_verified,
+            visibility=evidence.visibility,
+            owner_principal_id=evidence.owner_principal_id,
         )
         if not hmac.compare_digest(expected_binding_digest, evidence.binding_digest):
             code = CompatibilityReasonCode.EVIDENCE_BINDING_MISMATCH

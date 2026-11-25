@@ -35,6 +35,9 @@ class BaseVectorStore(ABC):
         top_k: int = 5,
         namespace: Optional[str] = None,
         model: Optional[str] = None,
+        visibility: Optional[str] = None,
+        principal_id: Optional[str] = None,
+        allow_shared_reads: bool = False,
     ) -> List[VectorSearchResult]:
         """
         Searches for the top-k nearest records by cosine distance.
@@ -51,9 +54,15 @@ class BaseVectorStore(ABC):
         pass
 
     @abstractmethod
-    async def delete(self, fingerprint: str, namespace: Optional[str] = None) -> bool:
+    async def delete(
+        self,
+        fingerprint: str,
+        namespace: Optional[str] = None,
+        visibility: Optional[str] = None,
+        principal_id: Optional[str] = None,
+    ) -> bool:
         """
-        Deletes a vector record by namespace and exact-cache fingerprint.
+        Deletes a vector record by namespace and exact-cache fingerprint (optionally scoped).
 
         Args:
             fingerprint: The exact fingerprint of the record.
@@ -65,7 +74,12 @@ class BaseVectorStore(ABC):
         pass
 
     @abstractmethod
-    async def clear(self, namespace: Optional[str] = None) -> int:
+    async def clear(
+        self,
+        namespace: Optional[str] = None,
+        visibility: Optional[str] = None,
+        principal_id: Optional[str] = None,
+    ) -> int:
         """
         Deletes all vector records within the specified namespace.
 

@@ -22,12 +22,16 @@ from app.api.routes import (
     set_semantic_cache,
 )
 from app.cache.exact_cache import ExactCache
-from app.config import reload_settings
+from app.config import get_settings, reload_settings
 from app.core.contracts import GenerationResult, UsageMetrics
 from app.core.errors import ProviderUpstreamError
 from app.main import app
 from app.metrics import get_metrics_collector
 from app.semantic_cache.contracts import SemanticHit
+from app.semantic_cache.control import (
+    reset_semantic_serving_controller,
+    sync_semantic_serving_controller_from_settings,
+)
 
 
 class MockChatCompletion:
@@ -99,6 +103,7 @@ class TestMetricsIntegration(unittest.TestCase):
         set_query_cache(self._saved_query_cache)
         set_semantic_cache(self._saved_semantic_cache)
         self.collector.reset()
+        reset_semantic_serving_controller(False)
         reload_settings()
 
     # -----------------------------------------------------------------------
@@ -362,37 +367,50 @@ class TestMetricsIntegration(unittest.TestCase):
 
     def test_semantic_hit_metrics_accounting(self):
         """Semantic hit increments semantic counters and token savings exactly once."""
-        mock_semantic = AsyncMock()
-        mock_hit = SemanticHit(
-            cached_response="Semantically similar answer",
-            fingerprint="fp_semantic_match_123",
-            distance=0.05,
-            similarity=0.95,
-            model="llama-3.3-70b-versatile",
-            query_text="What is quantum computing?",
-            prompt_tokens=40,
-            completion_tokens=60,
-            total_tokens=100,
-            original_latency_ms=250.0,
-        )
-        mock_semantic.lookup = AsyncMock(return_value=mock_hit)
-        set_semantic_cache(mock_semantic)
+        with patch.dict(
+            os.environ,
+            {
+                "SEMANTIC_CACHE_ENABLED": "true",
+                "SEMANTIC_CACHE_SERVING_ENABLED": "true",
+                "SEMANTIC_CACHE_DEFAULT_VISIBILITY": "tenant_shared",
+            },
+            clear=False,
+        ):
+            settings = reload_settings()
+            sync_semantic_serving_controller_from_settings(settings)
 
-        headers = {"X-Client-Token": self.token_alpha_1}
-        resp = self.client.post("/query", json={"prompt": "Tell me about quantum computing"}, headers=headers)
-        self.assertEqual(resp.status_code, 200)
-        self.assertTrue(resp.json()["cached"])
-        self.assertEqual(resp.json()["cache_type"], "semantic")
+            mock_semantic = AsyncMock()
+            mock_semantic.record_served_hit = MagicMock()
+            mock_hit = SemanticHit(
+                cached_response="Semantically similar answer",
+                fingerprint="fp_semantic_match_123",
+                distance=0.05,
+                similarity=0.95,
+                model="llama-3.3-70b-versatile",
+                query_text="What is quantum computing?",
+                prompt_tokens=40,
+                completion_tokens=60,
+                total_tokens=100,
+                original_latency_ms=250.0,
+            )
+            mock_semantic.lookup = AsyncMock(return_value=mock_hit)
+            set_semantic_cache(mock_semantic)
 
-        snap = self.client.get("/metrics/me", headers=headers).json()
-        self.assertEqual(snap["request_and_cache"]["exact_cache_hits"], 0)
-        self.assertEqual(snap["request_and_cache"]["semantic_hits"], 1)
-        self.assertEqual(snap["provider_and_savings"]["provider_calls_avoided"], 1)
-        self.assertEqual(snap["provider_and_savings"]["total_tokens_saved"], 100)
-        self.assertEqual(snap["provider_and_savings"]["prompt_tokens_saved"], 40)
-        self.assertEqual(snap["provider_and_savings"]["completion_tokens_saved"], 60)
-        self.assertEqual(snap["latencies"]["estimated_latency_saved_ms"]["sample_count"], 1)
-        self.assertGreater(snap["latencies"]["estimated_latency_saved_ms"]["p50"], 200.0)
+            headers = {"X-Client-Token": self.token_alpha_1}
+            resp = self.client.post("/query", json={"prompt": "Tell me about quantum computing"}, headers=headers)
+            self.assertEqual(resp.status_code, 200)
+            self.assertTrue(resp.json()["cached"])
+            self.assertEqual(resp.json()["cache_type"], "semantic")
+
+            snap = self.client.get("/metrics/me", headers=headers).json()
+            self.assertEqual(snap["request_and_cache"]["exact_cache_hits"], 0)
+            self.assertEqual(snap["request_and_cache"]["semantic_hits"], 1)
+            self.assertEqual(snap["provider_and_savings"]["provider_calls_avoided"], 1)
+            self.assertEqual(snap["provider_and_savings"]["total_tokens_saved"], 100)
+            self.assertEqual(snap["provider_and_savings"]["prompt_tokens_saved"], 40)
+            self.assertEqual(snap["provider_and_savings"]["completion_tokens_saved"], 60)
+            self.assertEqual(snap["latencies"]["estimated_latency_saved_ms"]["sample_count"], 1)
+            self.assertGreater(snap["latencies"]["estimated_latency_saved_ms"]["p50"], 200.0)
 
     # -----------------------------------------------------------------------
     # Coalesced Followers SingleFlight Accounting
@@ -425,8 +443,8 @@ class TestMetricsIntegration(unittest.TestCase):
         provider.generate = AsyncMock(side_effect=slow_generate)
 
         msgs = [ChatMessage(role="user", content="Concurrency test")]
-        req1 = GenerationRequest(model="test-model", messages=msgs, namespace="team_alpha")
-        req2 = GenerationRequest(model="test-model", messages=msgs, namespace="team_alpha")
+        req1 = GenerationRequest(model="test-model", messages=msgs, namespace="team_alpha", visibility="tenant_shared")
+        req2 = GenerationRequest(model="test-model", messages=msgs, namespace="team_alpha", visibility="tenant_shared")
 
         async def run_pair():
             # Leader starts, follower joins
@@ -480,8 +498,8 @@ class TestMetricsIntegration(unittest.TestCase):
         provider.generate = AsyncMock(side_effect=logging_generate)
 
         msgs = [ChatMessage(role="user", content="Cross-namespace concurrency test")]
-        req_alpha = GenerationRequest(model="test-model", messages=msgs, namespace="team_alpha")
-        req_beta = GenerationRequest(model="test-model", messages=msgs, namespace="team_beta")
+        req_alpha = GenerationRequest(model="test-model", messages=msgs, namespace="team_alpha", visibility="tenant_shared")
+        req_beta = GenerationRequest(model="test-model", messages=msgs, namespace="team_beta", visibility="tenant_shared")
 
         async def run_isolated_concurrent():
             t1 = asyncio.create_task(core.execute_query(req_alpha, provider))
@@ -529,8 +547,8 @@ class TestMetricsIntegration(unittest.TestCase):
         provider.generate = AsyncMock(side_effect=slow_generate)
 
         msgs = [ChatMessage(role="user", content="Accounting invariant test")]
-        req1 = GenerationRequest(model="test-model", messages=msgs, namespace="team_alpha")
-        req2 = GenerationRequest(model="test-model", messages=msgs, namespace="team_alpha")
+        req1 = GenerationRequest(model="test-model", messages=msgs, namespace="team_alpha", visibility="tenant_shared")
+        req2 = GenerationRequest(model="test-model", messages=msgs, namespace="team_alpha", visibility="tenant_shared")
 
         async def run_pair():
             t1 = asyncio.create_task(core.execute_query(req1, provider))
@@ -573,11 +591,13 @@ class TestMetricsIntegration(unittest.TestCase):
             metrics_collector=self.collector,
         )
 
+        from app.semantic_cache.control import SemanticServingController
         core = IntelliCacheCore(
             cache=self.cache,
             semantic_cache=sem_service,
             cache_enabled=True,
             metrics_collector=self.collector,
+            semantic_serving_controller=SemanticServingController(initial_enabled=True),
         )
 
         provider = AsyncMock()
@@ -594,6 +614,7 @@ class TestMetricsIntegration(unittest.TestCase):
             temperature=0.7,
             namespace="team_alpha",
             provider="groq",
+            visibility="tenant_shared",
         )
 
         asyncio.run(core.execute_query(req, provider))
@@ -650,6 +671,7 @@ class TestMetricsIntegration(unittest.TestCase):
             messages=[ChatMessage(role="user", content="How do I reverse a binary tree in Python?")],
             temperature=0.7,
             namespace="team_alpha",
+            visibility="tenant_shared",
         )
         res = asyncio.run(sem_service.lookup(eligible_req))
         self.assertIsNone(res)
@@ -702,6 +724,7 @@ class TestMetricsIntegration(unittest.TestCase):
             model="test-model",
             messages=[ChatMessage(role="user", content="Cache write failure test")],
             namespace="team_alpha",
+            visibility="tenant_shared",
         )
 
         # Must succeed and return the generated answer

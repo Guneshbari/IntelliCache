@@ -30,6 +30,13 @@ from .contracts import (
     TaskKind,
 )
 from .evidence import EvidenceAuthority, get_default_evidence_authority
+from ..privacy import (
+    CACHE_VISIBILITY_PRIVATE,
+    CACHE_VISIBILITY_UNKNOWN,
+    matches_cache_scope,
+    normalize_cache_visibility,
+    normalize_principal_id,
+)
 from ..vector_store.contracts import VectorSearchResult
 
 if TYPE_CHECKING:
@@ -139,9 +146,21 @@ class SemanticCachePolicy:
     def check_eligibility(self, request: GenerationRequest) -> EligibilityResult:
         """
         Determines if an incoming GenerationRequest is eligible for semantic caching.
-        Permits only single-turn user programming/technical queries without secrets or context dependencies,
-        with established material domain requirements.
+        Enforces strict caller privacy scope plus single-turn user programming/technical rules.
         """
+        req_vis = normalize_cache_visibility(getattr(request, "visibility", CACHE_VISIBILITY_PRIVATE))
+        req_own = normalize_principal_id(getattr(request, "principal_id", None))
+        if req_vis == CACHE_VISIBILITY_UNKNOWN:
+            return EligibilityResult(
+                False,
+                f"{CompatibilityReasonCode.VISIBILITY_MISSING_OR_UNKNOWN.value}: Request cache visibility is missing or unknown.",
+            )
+        if req_vis == CACHE_VISIBILITY_PRIVATE and req_own is None:
+            return EligibilityResult(
+                False,
+                f"{CompatibilityReasonCode.PRINCIPAL_IDENTITY_MISSING.value}: Private cache scope requires a verified principal identity.",
+            )
+
         if request.stream:
             return EligibilityResult(False, "Streaming requests are not eligible for semantic caching.")
 
@@ -267,18 +286,10 @@ class SemanticCachePolicy:
     ) -> CompatibilityDecision:
         """
         Evaluates candidate compatibility and returns an explicit tri-state CompatibilityDecision.
+        Enforces privacy scope isolation first, then technical compatibility and HMAC evidence binding.
         Only CompatibilityStatus.COMPATIBLE authorizes downstream similarity/ambiguity checks.
         Both INCOMPATIBLE and UNCERTAIN fail closed.
         """
-        if not candidate.cached_response or not candidate.cached_response.strip():
-            code = CompatibilityReasonCode.NO_ASSOCIATED_RESPONSE
-            return CompatibilityDecision(
-                status=CompatibilityStatus.INCOMPATIBLE,
-                reason_code=code,
-                message=f"{code}: Candidate has no associated active exact-cache response.",
-                dimension="response",
-            )
-
         if candidate.cache_namespace != request.namespace:
             code = CompatibilityReasonCode.NAMESPACE_MISMATCH
             return CompatibilityDecision(
@@ -295,6 +306,64 @@ class SemanticCachePolicy:
                 reason_code=code,
                 message=f"{code}: Embedding model mismatch: candidate '{candidate.model}' != configured '{self.configured_model}'.",
                 dimension="embedding_contract",
+            )
+
+        req_vis = normalize_cache_visibility(getattr(request, "visibility", CACHE_VISIBILITY_PRIVATE))
+        req_own = normalize_principal_id(getattr(request, "principal_id", None))
+        allow_shared = bool(getattr(request, "allow_shared_reads", False))
+        if req_vis == CACHE_VISIBILITY_UNKNOWN:
+            code = CompatibilityReasonCode.VISIBILITY_MISSING_OR_UNKNOWN
+            return CompatibilityDecision(
+                status=CompatibilityStatus.UNCERTAIN,
+                reason_code=code,
+                message=f"{code}: Request cache visibility is missing or unknown (fail-closed).",
+                dimension="privacy_scope",
+            )
+        if req_vis == CACHE_VISIBILITY_PRIVATE and req_own is None:
+            code = CompatibilityReasonCode.PRINCIPAL_IDENTITY_MISSING
+            return CompatibilityDecision(
+                status=CompatibilityStatus.UNCERTAIN,
+                reason_code=code,
+                message=f"{code}: Private request requires verified principal identity (fail-closed).",
+                dimension="privacy_scope",
+            )
+
+        cand_vis = normalize_cache_visibility(getattr(candidate, "visibility", CACHE_VISIBILITY_UNKNOWN))
+        cand_own = normalize_principal_id(getattr(candidate, "owner_principal_id", None))
+        if cand_vis == CACHE_VISIBILITY_UNKNOWN:
+            code = CompatibilityReasonCode.VISIBILITY_MISSING_OR_UNKNOWN
+            return CompatibilityDecision(
+                status=CompatibilityStatus.UNCERTAIN,
+                reason_code=code,
+                message=f"{code}: Candidate visibility is missing or unknown (fail-closed).",
+                dimension="privacy_scope",
+            )
+
+        if not matches_cache_scope(
+            cand_vis,
+            cand_own,
+            req_vis,
+            req_own,
+            allow_shared_reads=allow_shared,
+        ):
+            if cand_vis == CACHE_VISIBILITY_PRIVATE and req_vis == CACHE_VISIBILITY_PRIVATE:
+                code = CompatibilityReasonCode.PRINCIPAL_ISOLATION_MISMATCH
+            else:
+                code = CompatibilityReasonCode.VISIBILITY_MISMATCH
+            return CompatibilityDecision(
+                status=CompatibilityStatus.INCOMPATIBLE,
+                reason_code=code,
+                message=f"{code}: Candidate privacy scope is isolated from caller request.",
+                dimension="privacy_scope",
+            )
+
+        if not candidate.cached_response or not candidate.cached_response.strip():
+            code = CompatibilityReasonCode.NO_ASSOCIATED_RESPONSE
+            return CompatibilityDecision(
+                status=CompatibilityStatus.INCOMPATIBLE,
+                reason_code=code,
+                message=f"{code}: Candidate has no associated active exact-cache response.",
+                dimension="response",
             )
 
         meta_dict = candidate.metadata or {}
@@ -410,6 +479,9 @@ class SemanticCachePolicy:
                 fingerprint=candidate.fingerprint,
                 response_text=candidate.cached_response or "",
                 metadata=cand_meta,
+                expected_visibility=cand_vis,
+                expected_principal_id=cand_own,
+                allow_shared_reads=False,
             )
             if not bound_ok:
                 return CompatibilityDecision(

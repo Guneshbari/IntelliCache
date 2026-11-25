@@ -566,6 +566,7 @@ class SemanticThresholdCalibrator:
             max_tokens=1000,
             provider="groq",
             namespace="default",
+            visibility="tenant_shared",
         )
 
         for p in incompat_pairs:
@@ -579,6 +580,7 @@ class SemanticThresholdCalibrator:
                 max_tokens=1000,
                 provider="groq",
                 namespace="default",
+                visibility="tenant_shared",
             )
 
             cand = VectorSearchResult(
@@ -589,6 +591,7 @@ class SemanticThresholdCalibrator:
                 distance=1.0 - sim,
                 similarity=sim,
                 cached_response=p.get("cached_response_b") or "dummy response",
+                visibility="tenant_shared",
                 metadata=p.get("compatibility_metadata") or {},
             )
 

@@ -43,6 +43,10 @@ class BaseSemanticCache(ABC):
         """Returns diagnostic observability counters."""
         pass
 
+    def record_served_hit(self, namespace: Optional[str] = None) -> None:
+        """Records that a previously retrieved semantic hit passed pre-delivery checks and was served."""
+        pass
+
     @abstractmethod
     async def close(self) -> None:
         """Closes any underlying resources."""

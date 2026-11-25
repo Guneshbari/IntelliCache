@@ -12,10 +12,16 @@ from typing import AsyncGenerator, Optional
 logger = logging.getLogger("intellicache.gateway.core")
 
 from .contracts import (
+    CACHE_VISIBILITY_PRIVATE,
+    CACHE_VISIBILITY_TENANT_SHARED,
+    CACHE_VISIBILITY_UNKNOWN,
     GenerationRequest,
     GenerationResult,
     StreamChunk,
     UsageMetrics,
+    derive_scoped_exact_key,
+    normalize_cache_visibility,
+    normalize_principal_id,
 )
 from .errors import (
     ProviderAuthenticationError,
@@ -30,6 +36,10 @@ from .singleflight import SingleFlightCoordinator
 from ..cache.interfaces import BaseCache, CacheEntry
 from ..metrics import RuntimeMetricsCollector, get_metrics_collector
 from ..providers.interfaces import LLMProvider
+from ..semantic_cache.control import (
+    SemanticServingController,
+    get_semantic_serving_controller,
+)
 from ..semantic_cache.interfaces import BaseSemanticCache
 
 
@@ -46,15 +56,66 @@ class IntelliCacheCore:
         cache_enabled: bool = True,
         semantic_cache: Optional[BaseSemanticCache] = None,
         metrics_collector: Optional[RuntimeMetricsCollector] = None,
+        semantic_serving_controller: Optional[SemanticServingController] = None,
+        semantic_cache_startup_enabled: Optional[bool] = None,
     ):
         self.cache = cache
         self.single_flight = single_flight or SingleFlightCoordinator()
         self.cache_enabled = cache_enabled
         self.semantic_cache = semantic_cache
         self.metrics_collector = metrics_collector
+        self.semantic_serving_controller = semantic_serving_controller
+        self.semantic_cache_startup_enabled = (
+            (semantic_cache is not None)
+            if semantic_cache_startup_enabled is None
+            else bool(semantic_cache_startup_enabled)
+        )
 
     def _get_collector(self) -> RuntimeMetricsCollector:
         return self.metrics_collector or get_metrics_collector()
+
+    def _get_serving_controller(self) -> Optional[SemanticServingController]:
+        return (
+            self.semantic_serving_controller
+            if self.semantic_serving_controller is not None
+            else get_semantic_serving_controller()
+        )
+
+    def _check_semantic_serving_runtime(
+        self,
+        ns: str,
+        collector: RuntimeMetricsCollector,
+    ) -> bool:
+        """
+        Fail-closed runtime serving kill-switch check.
+        Effective serving requires BOTH startup enablement AND runtime controller True.
+        """
+        if self.semantic_cache is None or not self.semantic_cache_startup_enabled:
+            return False
+        controller = self._get_serving_controller()
+        if controller is None:
+            collector.record_runtime_control_failure(ns)
+            return False
+        try:
+            allowed = controller.is_serving_enabled(ns)
+        except Exception:
+            collector.record_runtime_control_failure(ns)
+            return False
+        if not isinstance(allowed, bool):
+            collector.record_runtime_control_failure(ns)
+            return False
+        return allowed
+
+    @staticmethod
+    def _record_semantic_stat_attr(semantic_cache: Optional[BaseSemanticCache], attr: str) -> None:
+        if semantic_cache is None:
+            return
+        stats = getattr(semantic_cache, "stats", None)
+        if stats is not None and hasattr(stats, attr):
+            try:
+                setattr(stats, attr, getattr(stats, attr) + 1)
+            except Exception:
+                pass
 
     async def execute_query(
         self,
@@ -111,45 +172,82 @@ class IntelliCacheCore:
         )
         fingerprint = derive_variant_exact_fingerprint(base_fingerprint, request.metadata)
 
+        req_vis = normalize_cache_visibility(getattr(request, "visibility", CACHE_VISIBILITY_PRIVATE))
+        req_own = normalize_principal_id(getattr(request, "principal_id", None))
+        allow_shared = bool(getattr(request, "allow_shared_reads", False))
+        can_cache_privately = (req_vis == CACHE_VISIBILITY_PRIVATE and req_own is not None)
+        can_cache_shared = (req_vis == CACHE_VISIBILITY_TENANT_SHARED)
+        can_use_exact_cache = can_cache_privately or can_cache_shared
+        entry_owner = req_own if req_vis == CACHE_VISIBILITY_PRIVATE else None
+        exact_storage_key = (
+            derive_scoped_exact_key(fingerprint, req_vis, entry_owner)
+            if can_use_exact_cache
+            else None
+        )
+
         # 1. Exact Cache Read
         if self.cache_enabled and not request.bypass_cache:
-            lookup_start = time.perf_counter()
-            cached_entry = await self.cache.get(fingerprint, namespace=ns)
-            lookup_latency_ms = (time.perf_counter() - lookup_start) * 1000.0
-            collector.record_exact_lookup(ns, latency_ms=lookup_latency_ms)
-
-            if cached_entry is not None:
-                total_latency_ms = (time.perf_counter() - start_time) * 1000.0
-                latency_saved_ms = max(0.0, cached_entry.latency_ms - total_latency_ms)
-                p_tok = getattr(cached_entry.usage, "prompt_tokens", 0) or 0
-                c_tok = getattr(cached_entry.usage, "completion_tokens", 0) or 0
-                t_tok = getattr(cached_entry.usage, "total_tokens", 0) or 0
-
-                collector.record_exact_hit(
-                    ns,
-                    prompt_tokens=p_tok,
-                    completion_tokens=c_tok,
-                    total_tokens=t_tok,
-                    latency_saved_ms=latency_saved_ms,
-                )
-                collector.record_latency(ns, "total_request_latency_ms", total_latency_ms)
-
-                return GenerationResult(
-                    text=cached_entry.response,
-                    model=cached_entry.model,
-                    usage=cached_entry.usage,
-                    latency_ms=round(total_latency_ms, 2),
-                    cached=True,
-                    cache_hit_count=cached_entry.hit_count,
-                    fingerprint=fingerprint,
-                    metadata=request.metadata,
-                    cache_type="exact",
-                )
-            else:
+            if not can_use_exact_cache:
+                if req_vis == CACHE_VISIBILITY_UNKNOWN:
+                    collector.record_visibility_rejection(ns)
+                    self._record_semantic_stat_attr(self.semantic_cache, "visibility_rejections")
+                else:
+                    collector.record_principal_isolation_rejection(ns)
+                    self._record_semantic_stat_attr(self.semantic_cache, "principal_isolation_rejections")
+                collector.record_exact_lookup(ns, latency_ms=0.0)
                 collector.record_exact_miss(ns)
+            else:
+                lookup_start = time.perf_counter()
+                cached_entry = await self.cache.get(
+                    exact_storage_key,
+                    namespace=ns,
+                    visibility=req_vis,
+                    principal_id=entry_owner,
+                    allow_shared_reads=False,
+                )
+                if cached_entry is None and req_vis == CACHE_VISIBILITY_PRIVATE and allow_shared:
+                    cached_entry = await self.cache.get(
+                        fingerprint,
+                        namespace=ns,
+                        visibility=CACHE_VISIBILITY_TENANT_SHARED,
+                        principal_id=None,
+                        allow_shared_reads=False,
+                    )
+                lookup_latency_ms = (time.perf_counter() - lookup_start) * 1000.0
+                collector.record_exact_lookup(ns, latency_ms=lookup_latency_ms)
 
-        # 2. Strict Bypass Semantics
-        if request.bypass_cache or not self.cache_enabled:
+                if cached_entry is not None:
+                    total_latency_ms = (time.perf_counter() - start_time) * 1000.0
+                    latency_saved_ms = max(0.0, cached_entry.latency_ms - total_latency_ms)
+                    p_tok = getattr(cached_entry.usage, "prompt_tokens", 0) or 0
+                    c_tok = getattr(cached_entry.usage, "completion_tokens", 0) or 0
+                    t_tok = getattr(cached_entry.usage, "total_tokens", 0) or 0
+
+                    collector.record_exact_hit(
+                        ns,
+                        prompt_tokens=p_tok,
+                        completion_tokens=c_tok,
+                        total_tokens=t_tok,
+                        latency_saved_ms=latency_saved_ms,
+                    )
+                    collector.record_latency(ns, "total_request_latency_ms", total_latency_ms)
+
+                    return GenerationResult(
+                        text=cached_entry.response,
+                        model=cached_entry.model,
+                        usage=cached_entry.usage,
+                        latency_ms=round(total_latency_ms, 2),
+                        cached=True,
+                        cache_hit_count=cached_entry.hit_count,
+                        fingerprint=fingerprint,
+                        metadata=request.metadata,
+                        cache_type="exact",
+                    )
+                else:
+                    collector.record_exact_miss(ns)
+
+        # 2. Strict Bypass or Fail-Closed Unidentifiable Privacy Scope
+        if request.bypass_cache or not self.cache_enabled or not can_use_exact_cache:
             await self.cache.record_miss()
             collector.record_provider_attempt(ns)
             prov_start = time.perf_counter()
@@ -186,8 +284,8 @@ class IntelliCacheCore:
                 collector.record_latency(ns, "total_request_latency_ms", total_latency_ms)
                 raise
 
-        # 3. Single-Flight Coordination (isolated per namespace and request fingerprint)
-        flight_key = (ns, fingerprint)
+        # 3. Single-Flight Coordination (strictly isolated by namespace, visibility, owner principal, and fingerprint)
+        flight_key = (ns, req_vis, entry_owner or "", fingerprint)
         is_leader, shared_future = await self.single_flight.register_or_wait(flight_key)
 
         if not is_leader:
@@ -245,61 +343,80 @@ class IntelliCacheCore:
         # Leader execution lifecycle
         flight_completed = False
         try:
-            # 4. Leader: Semantic Cache Lookup (if enabled)
-            if self.semantic_cache is not None:
-                semantic_hit = await self.semantic_cache.lookup(request)
+            # 4. Leader: Semantic Cache Lookup (two-point runtime serving control check)
+            if self.semantic_cache is not None and self.semantic_cache_startup_enabled:
+                if not self._check_semantic_serving_runtime(ns, collector):
+                    # Checkpoint 1 (pre-lookup): runtime kill switch disabled or failed closed
+                    collector.record_semantic_runtime_disabled_skip(ns)
+                    self._record_semantic_stat_attr(self.semantic_cache, "runtime_disabled_skips")
+                else:
+                    semantic_hit = await self.semantic_cache.lookup(request)
 
-                if semantic_hit is not None:
-                    total_latency_ms = (time.perf_counter() - start_time) * 1000.0
-                    latency_saved_ms = max(0.0, semantic_hit.original_latency_ms - total_latency_ms)
-                    tokens_saved = semantic_hit.total_tokens
+                    if semantic_hit is not None:
+                        if not self._check_semantic_serving_runtime(ns, collector):
+                            # Checkpoint 2 (pre-delivery): runtime serving disabled while lookup was in-flight
+                            collector.record_semantic_runtime_disabled_skip(ns)
+                            collector.record_upstream_fallback_after_semantic_miss(ns)
+                            self._record_semantic_stat_attr(self.semantic_cache, "runtime_disabled_skips")
+                            self._record_semantic_stat_attr(self.semantic_cache, "upstream_fallbacks_after_miss")
+                        else:
+                            total_latency_ms = (time.perf_counter() - start_time) * 1000.0
+                            latency_saved_ms = max(0.0, semantic_hit.original_latency_ms - total_latency_ms)
+                            tokens_saved = semantic_hit.total_tokens
 
-                    # Record savings on cache without double-counting provider generation
-                    await self.cache.record_semantic_hit(tokens_saved, latency_saved_ms)
-                    collector.record_semantic_hit(
-                        ns,
-                        prompt_tokens=semantic_hit.prompt_tokens,
-                        completion_tokens=semantic_hit.completion_tokens,
-                        total_tokens=semantic_hit.total_tokens,
-                        latency_saved_ms=latency_saved_ms,
-                    )
-                    collector.record_latency(ns, "total_request_latency_ms", total_latency_ms)
+                            # Commit semantic hit counters ONLY after Checkpoint 2 passes
+                            if hasattr(self.semantic_cache, "record_served_hit"):
+                                self.semantic_cache.record_served_hit(ns)
+                            await self.cache.record_semantic_hit(tokens_saved, latency_saved_ms)
+                            collector.record_semantic_hit(
+                                ns,
+                                prompt_tokens=semantic_hit.prompt_tokens,
+                                completion_tokens=semantic_hit.completion_tokens,
+                                total_tokens=semantic_hit.total_tokens,
+                                latency_saved_ms=latency_saved_ms,
+                            )
+                            collector.record_latency(ns, "total_request_latency_ms", total_latency_ms)
 
-                    original_usage = UsageMetrics(
-                        prompt_tokens=semantic_hit.prompt_tokens,
-                        completion_tokens=semantic_hit.completion_tokens,
-                        total_tokens=semantic_hit.total_tokens,
-                    )
+                            original_usage = UsageMetrics(
+                                prompt_tokens=semantic_hit.prompt_tokens,
+                                completion_tokens=semantic_hit.completion_tokens,
+                                total_tokens=semantic_hit.total_tokens,
+                            )
 
-                    hit_entry = CacheEntry(
-                        response=semantic_hit.cached_response,
-                        model=request.model,
-                        usage=original_usage,
-                        latency_ms=round(total_latency_ms, 2),
-                        provider=request.provider,
-                        metadata={
-                            "cache_type": "semantic",
-                            "candidate_fingerprint": semantic_hit.fingerprint,
-                            "tokens_saved": tokens_saved,
-                            "latency_saved_ms": round(latency_saved_ms, 2),
-                        },
-                    )
-                    # Complete single-flight for followers with the semantic hit entry
-                    flight_completed = True
-                    await self.single_flight.complete_success(
-                        flight_key, hit_entry, expected_future=shared_future, release=True
-                    )
-                    return GenerationResult(
-                        text=semantic_hit.cached_response,
-                        model=request.model,
-                        usage=original_usage,
-                        latency_ms=round(total_latency_ms, 2),
-                        cached=True,
-                        cache_hit_count=1,
-                        fingerprint=fingerprint,
-                        metadata=request.metadata,
-                        cache_type="semantic",
-                    )
+                            hit_entry = CacheEntry(
+                                response=semantic_hit.cached_response,
+                                model=request.model,
+                                usage=original_usage,
+                                latency_ms=round(total_latency_ms, 2),
+                                provider=request.provider,
+                                visibility=req_vis,
+                                owner_principal_id=entry_owner,
+                                metadata={
+                                    "cache_type": "semantic",
+                                    "candidate_fingerprint": semantic_hit.fingerprint,
+                                    "tokens_saved": tokens_saved,
+                                    "latency_saved_ms": round(latency_saved_ms, 2),
+                                },
+                            )
+                            # Complete single-flight for followers with the semantic hit entry
+                            flight_completed = True
+                            await self.single_flight.complete_success(
+                                flight_key, hit_entry, expected_future=shared_future, release=True
+                            )
+                            return GenerationResult(
+                                text=semantic_hit.cached_response,
+                                model=request.model,
+                                usage=original_usage,
+                                latency_ms=round(total_latency_ms, 2),
+                                cached=True,
+                                cache_hit_count=1,
+                                fingerprint=fingerprint,
+                                metadata=request.metadata,
+                                cache_type="semantic",
+                            )
+                    else:
+                        collector.record_upstream_fallback_after_semantic_miss(ns)
+                        self._record_semantic_stat_attr(self.semantic_cache, "upstream_fallbacks_after_miss")
 
             # 5. Leader: Semantic miss or disabled -> call provider
             await self.cache.record_miss()
@@ -341,6 +458,8 @@ class IntelliCacheCore:
                 usage=result.usage,
                 latency_ms=result.latency_ms,
                 provider=request.provider,
+                visibility=req_vis,
+                owner_principal_id=entry_owner,
                 metadata={"cache_type": "exact"},
             )
             flight_completed = True
@@ -348,11 +467,11 @@ class IntelliCacheCore:
                 flight_key, entry, expected_future=shared_future, release=False
             )
 
-            # 7. Write exact-cache entry
+            # 7. Write exact-cache entry under privacy-scoped key
             write_start = time.perf_counter()
             cache_write_succeeded = False
             try:
-                await self.cache.set(fingerprint, entry, namespace=ns)
+                await self.cache.set(exact_storage_key, entry, namespace=ns)
                 write_latency_ms = (time.perf_counter() - write_start) * 1000.0
                 collector.record_latency(ns, "exact_cache_write_latency_ms", write_latency_ms)
                 cache_write_succeeded = True
@@ -373,8 +492,8 @@ class IntelliCacheCore:
                     # BEFORE optional/slow semantic indexing, so subsequent requests hit exact cache without waiting
                     await self.single_flight.release(flight_key, expected_future=shared_future)
 
-            # 8. Post-generation: index in vector store if semantic cache enabled
-            if self.semantic_cache is not None:
+            # 8. Post-generation: index in vector store if startup-enabled and exact persistence succeeded
+            if self.semantic_cache is not None and self.semantic_cache_startup_enabled:
                 try:
                     await self.semantic_cache.index(request, result)
                 except asyncio.CancelledError:
@@ -478,51 +597,86 @@ class IntelliCacheCore:
         )
         fingerprint = derive_variant_exact_fingerprint(base_fingerprint, request.metadata)
 
+        req_vis = normalize_cache_visibility(getattr(request, "visibility", CACHE_VISIBILITY_PRIVATE))
+        req_own = normalize_principal_id(getattr(request, "principal_id", None))
+        allow_shared = bool(getattr(request, "allow_shared_reads", False))
+        can_use_exact_cache = (req_vis == CACHE_VISIBILITY_PRIVATE and req_own is not None) or (
+            req_vis == CACHE_VISIBILITY_TENANT_SHARED
+        )
+        entry_owner = req_own if req_vis == CACHE_VISIBILITY_PRIVATE else None
+        exact_storage_key = (
+            derive_scoped_exact_key(fingerprint, req_vis, entry_owner)
+            if can_use_exact_cache
+            else None
+        )
+
         # 1. Cache Read for Streaming
         if self.cache_enabled and not request.bypass_cache:
-            lookup_start = time.perf_counter()
-            cached_entry = await self.cache.get(fingerprint, namespace=ns)
-            lookup_latency_ms = (time.perf_counter() - lookup_start) * 1000.0
-            collector.record_exact_lookup(ns, latency_ms=lookup_latency_ms)
-
-            if cached_entry is not None:
-                total_latency_ms = (time.perf_counter() - start_time) * 1000.0
-                latency_saved_ms = max(0.0, cached_entry.latency_ms - total_latency_ms)
-                p_tok = getattr(cached_entry.usage, "prompt_tokens", 0) or 0
-                c_tok = getattr(cached_entry.usage, "completion_tokens", 0) or 0
-                t_tok = getattr(cached_entry.usage, "total_tokens", 0) or 0
-
-                collector.record_exact_hit(
-                    ns,
-                    prompt_tokens=p_tok,
-                    completion_tokens=c_tok,
-                    total_tokens=t_tok,
-                    latency_saved_ms=latency_saved_ms,
-                )
-                collector.record_latency(ns, "total_request_latency_ms", total_latency_ms)
-
-                yield StreamChunk(
-                    delta=cached_entry.response,
-                    done=False,
-                    cached=True,
-                    cache_type="exact",
-                    fingerprint=fingerprint,
-                    model=cached_entry.model,
-                )
-                yield StreamChunk(
-                    delta="",
-                    done=True,
-                    cached=True,
-                    cache_hit_count=cached_entry.hit_count,
-                    cache_type="exact",
-                    fingerprint=fingerprint,
-                    model=cached_entry.model,
-                    usage=cached_entry.usage,
-                    latency_ms=round(total_latency_ms, 2),
-                )
-                return
-            else:
+            if not can_use_exact_cache:
+                if req_vis == CACHE_VISIBILITY_UNKNOWN:
+                    collector.record_visibility_rejection(ns)
+                else:
+                    collector.record_principal_isolation_rejection(ns)
+                collector.record_exact_lookup(ns, latency_ms=0.0)
                 collector.record_exact_miss(ns)
+            else:
+                lookup_start = time.perf_counter()
+                cached_entry = await self.cache.get(
+                    exact_storage_key,
+                    namespace=ns,
+                    visibility=req_vis,
+                    principal_id=entry_owner,
+                    allow_shared_reads=False,
+                )
+                if cached_entry is None and req_vis == CACHE_VISIBILITY_PRIVATE and allow_shared:
+                    cached_entry = await self.cache.get(
+                        fingerprint,
+                        namespace=ns,
+                        visibility=CACHE_VISIBILITY_TENANT_SHARED,
+                        principal_id=None,
+                        allow_shared_reads=False,
+                    )
+                lookup_latency_ms = (time.perf_counter() - lookup_start) * 1000.0
+                collector.record_exact_lookup(ns, latency_ms=lookup_latency_ms)
+
+                if cached_entry is not None:
+                    total_latency_ms = (time.perf_counter() - start_time) * 1000.0
+                    latency_saved_ms = max(0.0, cached_entry.latency_ms - total_latency_ms)
+                    p_tok = getattr(cached_entry.usage, "prompt_tokens", 0) or 0
+                    c_tok = getattr(cached_entry.usage, "completion_tokens", 0) or 0
+                    t_tok = getattr(cached_entry.usage, "total_tokens", 0) or 0
+
+                    collector.record_exact_hit(
+                        ns,
+                        prompt_tokens=p_tok,
+                        completion_tokens=c_tok,
+                        total_tokens=t_tok,
+                        latency_saved_ms=latency_saved_ms,
+                    )
+                    collector.record_latency(ns, "total_request_latency_ms", total_latency_ms)
+
+                    yield StreamChunk(
+                        delta=cached_entry.response,
+                        done=False,
+                        cached=True,
+                        cache_type="exact",
+                        fingerprint=fingerprint,
+                        model=cached_entry.model,
+                    )
+                    yield StreamChunk(
+                        delta="",
+                        done=True,
+                        cached=True,
+                        cache_hit_count=cached_entry.hit_count,
+                        cache_type="exact",
+                        fingerprint=fingerprint,
+                        model=cached_entry.model,
+                        usage=cached_entry.usage,
+                        latency_ms=round(total_latency_ms, 2),
+                    )
+                    return
+                else:
+                    collector.record_exact_miss(ns)
 
         # 2. Streaming Miss
         await self.cache.record_miss()
@@ -563,17 +717,19 @@ class IntelliCacheCore:
                     )
                     collector.record_latency(ns, "total_request_latency_ms", elapsed_ms)
 
-                    if stream_success and full_text.strip() and self.cache_enabled and not request.bypass_cache:
+                    if stream_success and full_text.strip() and self.cache_enabled and not request.bypass_cache and can_use_exact_cache:
                         entry = CacheEntry(
                             response=full_text,
                             model=chunk.model or request.model,
                             usage=usage,
                             latency_ms=round(elapsed_ms, 2),
                             provider=request.provider,
+                            visibility=req_vis,
+                            owner_principal_id=entry_owner,
                         )
                         write_start = time.perf_counter()
                         try:
-                            await self.cache.set(fingerprint, entry, namespace=ns)
+                            await self.cache.set(exact_storage_key, entry, namespace=ns)
                             write_latency_ms = (time.perf_counter() - write_start) * 1000.0
                             collector.record_latency(ns, "exact_cache_write_latency_ms", write_latency_ms)
                         except Exception as write_err:

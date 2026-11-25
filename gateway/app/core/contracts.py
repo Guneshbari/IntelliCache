@@ -37,6 +37,18 @@ class UsageMetrics:
         }
 
 
+from ..privacy import (
+    CACHE_VISIBILITY_PRIVATE,
+    CACHE_VISIBILITY_TENANT_SHARED,
+    CACHE_VISIBILITY_UNKNOWN,
+    VALID_CACHE_VISIBILITIES,
+    derive_scoped_exact_key,
+    matches_cache_scope,
+    normalize_cache_visibility,
+    normalize_principal_id,
+)
+
+
 @dataclass
 class GenerationRequest:
     """Normalized provider-neutral request for completion or streaming generation."""
@@ -50,6 +62,9 @@ class GenerationRequest:
     bypass_cache: bool = False
     conversation_id: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    principal_id: Optional[str] = None
+    visibility: str = CACHE_VISIBILITY_PRIVATE
+    allow_shared_reads: bool = False
 
 
 @dataclass

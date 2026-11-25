@@ -65,7 +65,7 @@ class FailingVectorStore(InMemoryVectorStore):
         super().__init__(dimensions=4)
         self.error_message = error_message
 
-    async def search(self, query_vector, top_k=5, namespace=None, model=None):
+    async def search(self, query_vector, top_k=5, namespace=None, model=None, **kwargs):
         await asyncio.sleep(0.01)
         raise ConnectionRefusedError(self.error_message)
 

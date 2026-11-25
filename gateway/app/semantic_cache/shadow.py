@@ -15,7 +15,12 @@ import time
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from ..config import Settings
-from ..core.contracts import ChatMessage, GenerationRequest, GenerationResult
+from ..core.contracts import (
+    CACHE_VISIBILITY_TENANT_SHARED,
+    ChatMessage,
+    GenerationRequest,
+    GenerationResult,
+)
 from ..embeddings.contracts import EmbeddingTask
 from ..metrics.collector import RuntimeMetricsCollector, get_metrics_collector
 from ..vector_store.contracts import VectorRecord, VectorSearchResult
@@ -101,6 +106,9 @@ class ShadowTask:
     is_multi_turn: bool = False
     actual_response_text: Optional[str] = None
     bypass_cache: bool = False
+    visibility: str = CACHE_VISIBILITY_TENANT_SHARED
+    principal_id: Optional[str] = None
+    allow_shared_reads: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -151,21 +159,38 @@ class ReadOnlyVectorStoreAdapter(BaseVectorStore):
         top_k: int = 5,
         namespace: Optional[str] = None,
         model: Optional[str] = None,
+        visibility: Optional[str] = None,
+        principal_id: Optional[str] = None,
+        allow_shared_reads: bool = False,
     ) -> List[VectorSearchResult]:
         return await self._inner.search(
             query_vector=query_vector,
             top_k=top_k,
             namespace=namespace,
             model=model,
+            visibility=visibility,
+            principal_id=principal_id,
+            allow_shared_reads=allow_shared_reads,
         )
 
     async def upsert(self, record: VectorRecord) -> None:
         raise PermissionError("ReadOnlyVectorStoreAdapter rejects upsert operations in shadow mode.")
 
-    async def delete(self, fingerprint: str, namespace: Optional[str] = None) -> bool:
+    async def delete(
+        self,
+        fingerprint: str,
+        namespace: Optional[str] = None,
+        visibility: Optional[str] = None,
+        principal_id: Optional[str] = None,
+    ) -> bool:
         raise PermissionError("ReadOnlyVectorStoreAdapter rejects delete operations in shadow mode.")
 
-    async def clear(self, namespace: Optional[str] = None) -> int:
+    async def clear(
+        self,
+        namespace: Optional[str] = None,
+        visibility: Optional[str] = None,
+        principal_id: Optional[str] = None,
+    ) -> int:
         raise PermissionError("ReadOnlyVectorStoreAdapter rejects clear operations in shadow mode.")
 
     async def close(self) -> None:
@@ -338,6 +363,9 @@ class ShadowEvaluationService:
             provider=task.provider,
             namespace=task.cache_namespace,
             stream=task.stream,
+            principal_id=task.principal_id,
+            visibility=task.visibility,
+            allow_shared_reads=task.allow_shared_reads,
             metadata={"request_id": task.request_id, "task_kind": task.task_kind},
         )
 
@@ -609,6 +637,9 @@ class ShadowEvaluationService:
             provider=task.provider,
             namespace=task.cache_namespace,
             stream=task.stream,
+            visibility=task.visibility,
+            principal_id=task.principal_id,
+            allow_shared_reads=task.allow_shared_reads,
         )
         eligibility = self.semantic_cache.policy.check_eligibility(gen_req)
         if not eligibility.eligible:
@@ -631,6 +662,7 @@ class ShadowEvaluationService:
             return False
 
         # 4. Upsert into shadow vector store (shadow_vector_records)
+        rec_owner = task.principal_id if task.visibility == "private" else None
         record = VectorRecord(
             cache_namespace=task.cache_namespace,
             fingerprint=task.request_hash,
@@ -638,6 +670,8 @@ class ShadowEvaluationService:
             model=self.semantic_cache.policy.configured_model,
             vector=embed_res.vector,
             metadata=meta_dict,
+            visibility=task.visibility,
+            owner_principal_id=rec_owner,
         )
         try:
             await self.shadow_vector_store.upsert(record)
@@ -754,9 +788,12 @@ async def backfill_shadow_candidates_from_cache(
         return 0
 
     query = """
-        SELECT cache_namespace, fingerprint, query_text, response, prompt_tokens, completion_tokens, total_tokens, latency_ms
+        SELECT cache_namespace, fingerprint, query_text, response, prompt_tokens, completion_tokens, total_tokens, latency_ms,
+               visibility, owner_principal_id
         FROM cache_entries
         WHERE cache_namespace = $1
+          AND visibility = 'tenant_shared'
+          AND owner_principal_id IS NULL
           AND (expires_at IS NULL OR expires_at > NOW())
         ORDER BY created_at DESC
         LIMIT $2;
@@ -766,6 +803,10 @@ async def backfill_shadow_candidates_from_cache(
 
     count = 0
     for row in rows:
+        row_map = dict(row) if hasattr(row, "keys") else {}
+        row_vis = row_map.get("visibility")
+        if row_vis is not None and (row_vis != CACHE_VISIBILITY_TENANT_SHARED or row_map.get("owner_principal_id") is not None):
+            continue
         q_text = row["query_text"]
         resp_text = row["response"]
         if not q_text or not resp_text:
@@ -778,6 +819,7 @@ async def backfill_shadow_candidates_from_cache(
             max_tokens=None,
             provider="groq",
             namespace=row["cache_namespace"],
+            visibility=CACHE_VISIBILITY_TENANT_SHARED,
         )
         elig = policy.check_eligibility(gen_req)
         if not elig.eligible:
@@ -796,6 +838,7 @@ async def backfill_shadow_candidates_from_cache(
                 model=policy.configured_model,
                 vector=embed_res.vector,
                 metadata=meta_dict,
+                visibility=CACHE_VISIBILITY_TENANT_SHARED,
             )
             await shadow_vector_store.upsert(rec)
             count += 1

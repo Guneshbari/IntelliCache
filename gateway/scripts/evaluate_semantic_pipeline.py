@@ -60,6 +60,7 @@ from app.semantic_cache.compatibility import (
     CompatibilityReasonCode,
     SemanticCompatibilityMetadata,
 )
+from app.semantic_cache.control import SemanticServingController
 from app.semantic_cache.policy import SemanticCachePolicy
 from app.semantic_cache.service import SemanticCacheService, SemanticHit
 from app.vector_store.contracts import VectorRecord, VectorSearchResult
@@ -505,14 +506,15 @@ class Stage325PipelineEvaluator:
                     INSERT INTO cache_entries (
                         cache_namespace, fingerprint, response, model, provider,
                         prompt_tokens, completion_tokens, total_tokens, latency_ms,
-                        hit_count, metadata, created_at, last_accessed, expires_at
+                        hit_count, visibility, metadata, created_at, last_accessed, expires_at
                     ) VALUES (
                         $1, $2, $3, $4, $5,
                         $6, $7, $8, $9,
-                        $10, $11, NOW(), NOW(), NULL
+                        $10, 'tenant_shared', $11, NOW(), NOW(), NULL
                     )
                     ON CONFLICT (cache_namespace, fingerprint) DO UPDATE SET
                         response = EXCLUDED.response,
+                        visibility = EXCLUDED.visibility,
                         metadata = EXCLUDED.metadata;
                     """,
                     namespace,
@@ -533,13 +535,14 @@ class Stage325PipelineEvaluator:
                     """
                     INSERT INTO vector_records (
                         cache_namespace, fingerprint, query_text, model,
-                        vector, metadata, created_at, updated_at
+                        vector, visibility, metadata, created_at, updated_at
                     ) VALUES (
                         $1, $2, $3, $4,
-                        $5::vector, $6, NOW(), NOW()
+                        $5::vector, 'tenant_shared', $6, NOW(), NOW()
                     )
                     ON CONFLICT (cache_namespace, fingerprint, model) DO UPDATE SET
                         vector = EXCLUDED.vector,
+                        visibility = EXCLUDED.visibility,
                         metadata = EXCLUDED.metadata;
                     """,
                     namespace,
@@ -610,6 +613,7 @@ class Stage325PipelineEvaluator:
             semantic_cache=semantic_cache,
             single_flight=single_flight,
             cache_enabled=True,
+            semantic_serving_controller=SemanticServingController(initial_enabled=True),
         )
 
         stub_provider = DeterministicStubProvider(provider_name="groq", default_model="meta-llama/llama-3.1-8b-instruct")
@@ -646,6 +650,7 @@ class Stage325PipelineEvaluator:
                 max_tokens=req_max_tokens,
                 provider=req_provider,
                 namespace=namespace,
+                visibility="tenant_shared",
                 stream=False,
                 bypass_cache=False,
             )
@@ -877,6 +882,7 @@ class Stage325PipelineEvaluator:
                         distance=top_c["distance"],
                         similarity=top_c["similarity"],
                         cached_response=top_c["response"],
+                        visibility="tenant_shared",
                         metadata=top_c.get("metadata"),
                     ),
                     VectorSearchResult(
@@ -887,6 +893,7 @@ class Stage325PipelineEvaluator:
                         distance=run_c["distance"],
                         similarity=run_c["similarity"],
                         cached_response=run_c["response"],
+                        visibility="tenant_shared",
                         metadata=run_c.get("metadata"),
                     ),
                 ]
@@ -899,6 +906,7 @@ class Stage325PipelineEvaluator:
                     max_tokens=1000,
                     provider="groq",
                     namespace="eval_ambig",
+                    visibility="tenant_shared",
                 )
 
                 # Call actual runtime policy evaluate_candidates() directly with extracted request metadata
@@ -971,6 +979,7 @@ class Stage325PipelineEvaluator:
                 max_tokens=1000,
                 provider="groq",
                 namespace=namespace,
+                visibility="tenant_shared",
             )
 
             cand = VectorSearchResult(
@@ -981,6 +990,7 @@ class Stage325PipelineEvaluator:
                 distance=0.01,
                 similarity=0.99,  # High similarity!
                 cached_response=cand_resp,
+                visibility="tenant_shared",
                 metadata=cand_meta,
             )
 
@@ -1028,7 +1038,13 @@ class Stage325PipelineEvaluator:
         vstore_empty = CountingVectorStore(pool=self.pool, default_namespace=ns_empty, default_model="BAAI/bge-small-en-v1.5", dimensions=384)
         sem_empty = ReadOnlySemanticCacheService(embedding_provider=self.embedding_provider, vector_store=vstore_empty, policy=policy_empty, default_namespace=ns_empty)
         cache_empty = ReadOnlyPostgresCache(pool=self.pool, default_namespace=ns_empty)
-        core_empty = IntelliCacheCore(cache=cache_empty, semantic_cache=sem_empty, single_flight=SingleFlightCoordinator(), cache_enabled=True)
+        core_empty = IntelliCacheCore(
+            cache=cache_empty,
+            semantic_cache=sem_empty,
+            single_flight=SingleFlightCoordinator(),
+            cache_enabled=True,
+            semantic_serving_controller=SemanticServingController(initial_enabled=True),
+        )
 
         req_empty = GenerationRequest(
             model="qwen/qwen3.8-27b",
@@ -1037,6 +1053,7 @@ class Stage325PipelineEvaluator:
             max_tokens=1000,
             provider="groq",
             namespace=ns_empty,
+            visibility="tenant_shared",
         )
         elig_empty = policy_empty.check_eligibility(req_empty)
         assert elig_empty.eligible, f"Expected eligible query for no_candidate, got {elig_empty.reason}"
@@ -1085,16 +1102,16 @@ class Stage325PipelineEvaluator:
                 INSERT INTO cache_entries (
                     cache_namespace, fingerprint, response, model, provider,
                     prompt_tokens, completion_tokens, total_tokens, latency_ms,
-                    hit_count, metadata, created_at, last_accessed, expires_at
-                ) VALUES ($1, $2, $3, $4, $5, 50, 150, 200, 450.0, 0, $6, NOW() - interval '3 hours', NOW() - interval '3 hours', NOW() - interval '2 hours')
+                    hit_count, visibility, metadata, created_at, last_accessed, expires_at
+                ) VALUES ($1, $2, $3, $4, $5, 50, 150, 200, 450.0, 0, 'tenant_shared', $6, NOW() - interval '3 hours', NOW() - interval '3 hours', NOW() - interval '2 hours')
                 """,
                 ns_expired, fp_expired, "EXPIRED_STALE_CACHE_RESPONSE", "qwen/qwen3.8-27b", "groq", json.dumps(meta_expired),
             )
             await conn.execute(
                 """
                 INSERT INTO vector_records (
-                    cache_namespace, fingerprint, query_text, model, vector, metadata, created_at, updated_at
-                ) VALUES ($1, $2, $3, $4, $5::vector, $6, NOW() - interval '3 hours', NOW() - interval '3 hours')
+                    cache_namespace, fingerprint, query_text, model, vector, visibility, metadata, created_at, updated_at
+                ) VALUES ($1, $2, $3, $4, $5::vector, 'tenant_shared', $6, NOW() - interval '3 hours', NOW() - interval '3 hours')
                 """,
                 ns_expired, fp_expired, sc_expired["incoming_query"], "BAAI/bge-small-en-v1.5", vec_str, json.dumps(meta_expired),
             )
@@ -1124,7 +1141,13 @@ class Stage325PipelineEvaluator:
         vstore_expired = CountingVectorStore(pool=self.pool, default_namespace=ns_expired, default_model="BAAI/bge-small-en-v1.5", dimensions=384)
         sem_expired = ReadOnlySemanticCacheService(embedding_provider=self.embedding_provider, vector_store=vstore_expired, policy=policy_expired, default_namespace=ns_expired)
         cache_expired = ReadOnlyPostgresCache(pool=self.pool, default_namespace=ns_expired)
-        core_expired = IntelliCacheCore(cache=cache_expired, semantic_cache=sem_expired, single_flight=SingleFlightCoordinator(), cache_enabled=True)
+        core_expired = IntelliCacheCore(
+            cache=cache_expired,
+            semantic_cache=sem_expired,
+            single_flight=SingleFlightCoordinator(),
+            cache_enabled=True,
+            semantic_serving_controller=SemanticServingController(initial_enabled=True),
+        )
 
         req_expired = GenerationRequest(
             model="qwen/qwen3.8-27b",
@@ -1133,6 +1156,7 @@ class Stage325PipelineEvaluator:
             max_tokens=1000,
             provider="groq",
             namespace=ns_expired,
+            visibility="tenant_shared",
         )
         elig_expired = policy_expired.check_eligibility(req_expired)
         assert elig_expired.eligible, f"Expected eligible query for expired_candidate, got {elig_expired.reason}"
@@ -1185,16 +1209,16 @@ class Stage325PipelineEvaluator:
                 INSERT INTO cache_entries (
                     cache_namespace, fingerprint, response, model, provider,
                     prompt_tokens, completion_tokens, total_tokens, latency_ms,
-                    hit_count, metadata, created_at, last_accessed, expires_at
-                ) VALUES ($1, $2, $3, $4, $5, 50, 150, 200, 450.0, 0, $6, NOW(), NOW(), NULL)
+                    hit_count, visibility, metadata, created_at, last_accessed, expires_at
+                ) VALUES ($1, $2, $3, $4, $5, 50, 150, 200, 450.0, 0, 'tenant_shared', $6, NOW(), NOW(), NULL)
                 """,
                 ns_other, fp_ns, "CROSS_NAMESPACE_RESPONSE", "qwen/qwen3.8-27b", "groq", json.dumps(meta_ns),
             )
             await conn.execute(
                 """
                 INSERT INTO vector_records (
-                    cache_namespace, fingerprint, query_text, model, vector, metadata, created_at, updated_at
-                ) VALUES ($1, $2, $3, $4, $5::vector, $6, NOW(), NOW())
+                    cache_namespace, fingerprint, query_text, model, vector, visibility, metadata, created_at, updated_at
+                ) VALUES ($1, $2, $3, $4, $5::vector, 'tenant_shared', $6, NOW(), NOW())
                 """,
                 ns_other, fp_ns, sc_ns["incoming_query"], "BAAI/bge-small-en-v1.5", vec_str, json.dumps(meta_ns),
             )
@@ -1213,7 +1237,13 @@ class Stage325PipelineEvaluator:
         vstore_ns = CountingVectorStore(pool=self.pool, default_namespace=ns_target, default_model="BAAI/bge-small-en-v1.5", dimensions=384)
         sem_ns = ReadOnlySemanticCacheService(embedding_provider=self.embedding_provider, vector_store=vstore_ns, policy=policy_ns, default_namespace=ns_target)
         cache_ns = ReadOnlyPostgresCache(pool=self.pool, default_namespace=ns_target)
-        core_ns = IntelliCacheCore(cache=cache_ns, semantic_cache=sem_ns, single_flight=SingleFlightCoordinator(), cache_enabled=True)
+        core_ns = IntelliCacheCore(
+            cache=cache_ns,
+            semantic_cache=sem_ns,
+            single_flight=SingleFlightCoordinator(),
+            cache_enabled=True,
+            semantic_serving_controller=SemanticServingController(initial_enabled=True),
+        )
 
         req_ns = GenerationRequest(
             model="qwen/qwen3.8-27b",
@@ -1222,6 +1252,7 @@ class Stage325PipelineEvaluator:
             max_tokens=1000,
             provider="groq",
             namespace=ns_target,
+            visibility="tenant_shared",
         )
         elig_ns = policy_ns.check_eligibility(req_ns)
         assert elig_ns.eligible, f"Expected eligible query for namespace_mismatch, got {elig_ns.reason}"
@@ -1258,7 +1289,13 @@ class Stage325PipelineEvaluator:
         vstore_embed_err = PostgresVectorStore(pool=self.pool, default_namespace=ns_embed_err, default_model="BAAI/bge-small-en-v1.5", dimensions=384)
         sem_embed_err = ReadOnlySemanticCacheService(embedding_provider=failing_embed_provider, vector_store=vstore_embed_err, policy=policy_embed_err, default_namespace=ns_embed_err)
         cache_embed_err = ReadOnlyPostgresCache(pool=self.pool, default_namespace=ns_embed_err)
-        core_embed_err = IntelliCacheCore(cache=cache_embed_err, semantic_cache=sem_embed_err, single_flight=SingleFlightCoordinator(), cache_enabled=True)
+        core_embed_err = IntelliCacheCore(
+            cache=cache_embed_err,
+            semantic_cache=sem_embed_err,
+            single_flight=SingleFlightCoordinator(),
+            cache_enabled=True,
+            semantic_serving_controller=SemanticServingController(initial_enabled=True),
+        )
 
         req_embed_err = GenerationRequest(
             model="qwen/qwen3.8-27b",
@@ -1267,6 +1304,7 @@ class Stage325PipelineEvaluator:
             max_tokens=1000,
             provider="groq",
             namespace=ns_embed_err,
+            visibility="tenant_shared",
         )
         elig_embed = policy_embed_err.check_eligibility(req_embed_err)
         assert elig_embed.eligible, f"Expected eligible query for embedding_failure, got {elig_embed.reason}"
@@ -1301,7 +1339,13 @@ class Stage325PipelineEvaluator:
         policy_store_err = SemanticCachePolicy(min_similarity=0.90, min_margin=0.03, configured_model="BAAI/bge-small-en-v1.5")
         sem_store_err = ReadOnlySemanticCacheService(embedding_provider=self.embedding_provider, vector_store=failing_vstore, policy=policy_store_err, default_namespace=ns_store_err)
         cache_store_err = ReadOnlyPostgresCache(pool=self.pool, default_namespace=ns_store_err)
-        core_store_err = IntelliCacheCore(cache=cache_store_err, semantic_cache=sem_store_err, single_flight=SingleFlightCoordinator(), cache_enabled=True)
+        core_store_err = IntelliCacheCore(
+            cache=cache_store_err,
+            semantic_cache=sem_store_err,
+            single_flight=SingleFlightCoordinator(),
+            cache_enabled=True,
+            semantic_serving_controller=SemanticServingController(initial_enabled=True),
+        )
 
         req_store_err = GenerationRequest(
             model="qwen/qwen3.8-27b",
@@ -1310,6 +1354,7 @@ class Stage325PipelineEvaluator:
             max_tokens=1000,
             provider="groq",
             namespace=ns_store_err,
+            visibility="tenant_shared",
         )
         elig_store = policy_store_err.check_eligibility(req_store_err)
         assert elig_store.eligible, f"Expected eligible query for vector_store_failure, got {elig_store.reason}"

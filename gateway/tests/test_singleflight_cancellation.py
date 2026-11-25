@@ -22,6 +22,7 @@ from app.embeddings.contracts import EmbeddingResult, EmbeddingTask
 from app.embeddings.interfaces import EmbeddingProvider
 from app.metrics.collector import RuntimeMetricsCollector
 from app.providers.interfaces import LLMProvider
+from app.semantic_cache.control import SemanticServingController
 from app.semantic_cache.policy import SemanticCachePolicy
 from app.semantic_cache.service import SemanticCacheService
 from app.vector_store.contracts import VectorSearchResult
@@ -100,7 +101,7 @@ class AsyncFakeVectorStore(BaseVectorStore):
     async def delete(self, fingerprint, namespace="default"):
         pass
 
-    async def search(self, query_vector, top_k=5, namespace="default", model=None):
+    async def search(self, query_vector, top_k=5, namespace="default", model=None, **kwargs):
         if self.search_entered_event is not None:
             self.search_entered_event.set()
         if self.search_proceed_event is not None:
@@ -112,7 +113,7 @@ class AsyncFakeVectorStore(BaseVectorStore):
     async def count(self, namespace=None):
         return 0
 
-    async def clear(self, namespace=None):
+    async def clear(self, namespace=None, **kwargs):
         pass
 
     async def close(self):
@@ -136,9 +137,10 @@ class TestSingleFlightCancellation(unittest.IsolatedAsyncioTestCase):
             model="llama-3-8b",
             messages=[ChatMessage(role="user", content="How do I sort a list in Python?")],
             namespace="tenant_alpha",
+            visibility="tenant_shared",
         )
 
-    def _flight_key(self, request: GenerationRequest) -> tuple[str, str]:
+    def _flight_key(self, request: GenerationRequest) -> tuple[str, str, str, str]:
         fp = generate_fingerprint(
             messages=request.messages,
             model=request.model,
@@ -146,7 +148,8 @@ class TestSingleFlightCancellation(unittest.IsolatedAsyncioTestCase):
             max_tokens=request.max_tokens,
             provider=request.provider,
         )
-        return (request.namespace or "default", fp)
+        owner = (request.principal_id or "").strip() if request.visibility == "private" else ""
+        return (request.namespace or "default", request.visibility, owner, fp)
 
     async def test_leader_cancelled_during_provider_generation(self):
         """Leader is cancelled during provider inference: entry cleaned up, followers notified, no hang."""
@@ -203,6 +206,7 @@ class TestSingleFlightCancellation(unittest.IsolatedAsyncioTestCase):
             cache_enabled=True,
             semantic_cache=sem_cache,
             metrics_collector=self.collector,
+            semantic_serving_controller=SemanticServingController(initial_enabled=True),
         )
 
         provider = AsyncFakeProvider()
@@ -251,6 +255,7 @@ class TestSingleFlightCancellation(unittest.IsolatedAsyncioTestCase):
             cache_enabled=True,
             semantic_cache=sem_cache,
             metrics_collector=self.collector,
+            semantic_serving_controller=SemanticServingController(initial_enabled=True),
         )
 
         provider = AsyncFakeProvider()
@@ -338,6 +343,7 @@ class TestSingleFlightCancellation(unittest.IsolatedAsyncioTestCase):
             cache_enabled=True,
             semantic_cache=sem_cache,
             metrics_collector=self.collector,
+            semantic_serving_controller=SemanticServingController(initial_enabled=True),
         )
 
         provider = AsyncFakeProvider(response_text="Recovered after fail open")
@@ -442,11 +448,13 @@ class TestSingleFlightCancellation(unittest.IsolatedAsyncioTestCase):
             model="llama-3-8b",
             messages=[ChatMessage(role="user", content="Tenant isolation test")],
             namespace="team_alpha",
+            visibility="tenant_shared",
         )
         req_b = GenerationRequest(
             model="llama-3-8b",
             messages=[ChatMessage(role="user", content="Tenant isolation test")],
             namespace="team_beta",
+            visibility="tenant_shared",
         )
 
         res_a, res_b = await asyncio.gather(
@@ -661,6 +669,7 @@ class TestSingleFlightCancellation(unittest.IsolatedAsyncioTestCase):
                 model="llama-3-8b",
                 messages=[ChatMessage(role="user", content=prompt)],
                 namespace=ns,
+                visibility="tenant_shared",
             )
             t = asyncio.create_task(self.core.execute_query(req, stress_provider))
             tasks.append(t)
@@ -818,6 +827,7 @@ class TestSingleFlightCancellation(unittest.IsolatedAsyncioTestCase):
             cache_enabled=True,
             semantic_cache=sem_cache,
             metrics_collector=self.collector,
+            semantic_serving_controller=SemanticServingController(initial_enabled=True),
         )
 
         provider = AsyncFakeProvider(response_text="Released before indexing")
@@ -879,6 +889,7 @@ class TestSingleFlightCancellation(unittest.IsolatedAsyncioTestCase):
             cache_enabled=True,
             semantic_cache=sem_cache,
             metrics_collector=self.collector,
+            semantic_serving_controller=SemanticServingController(initial_enabled=True),
         )
 
         provider = AsyncFakeProvider(response_text="Single Generation For Both")

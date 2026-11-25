@@ -3,6 +3,7 @@ Configuration module for the IntelliCache Gateway backend.
 Loads settings from environment variables and .env file.
 """
 
+from dataclasses import dataclass
 from pathlib import Path
 import json
 import logging
@@ -32,6 +33,25 @@ def _get_list_from_env(key: str, default: List[str]) -> List[str]:
     if not raw:
         return default
     return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+_VALID_CACHE_VISIBILITIES = frozenset({"private", "tenant_shared"})
+_ALLOWED_TOKEN_POLICY_KEYS = frozenset({"namespace", "visibility", "allow_shared_reads"})
+_INSECURE_IDENTITY_PLACEHOLDERS = frozenset({
+    "intellicache-default-identity-secret-change-in-production",
+    "replace_with_a_secure_random_hex_or_passphrase_at_least_16_chars",
+    "replace_with_your_key",
+    "change-me",
+    "secret",
+})
+
+
+@dataclass(frozen=True)
+class ClientTokenPolicy:
+    """Server-side namespace and cache-privacy policy bound to a verified client API token."""
+    namespace: str
+    visibility: Optional[str] = None
+    allow_shared_reads: bool = False
 
 
 class Settings(BaseModel):
@@ -130,6 +150,9 @@ class Settings(BaseModel):
     conversation_identity_secret: Optional[str] = Field(
         default_factory=lambda: (os.getenv("CONVERSATION_IDENTITY_SECRET") or "").strip() or None
     )
+    principal_identity_secret: Optional[str] = Field(
+        default_factory=lambda: (os.getenv("PRINCIPAL_IDENTITY_SECRET") or "").strip() or None
+    )
     conversation_turn_lease_seconds: int = Field(
         default_factory=lambda: int(os.getenv("CONVERSATION_TURN_LEASE_SECONDS", "120"))
     )
@@ -157,6 +180,15 @@ class Settings(BaseModel):
     # Semantic Cache & Vector Storage Configuration
     semantic_cache_enabled: bool = Field(
         default_factory=lambda: os.getenv("SEMANTIC_CACHE_ENABLED", "false").lower() in ("true", "1", "yes")
+    )
+    semantic_cache_serving_enabled: bool = Field(
+        default_factory=lambda: os.getenv("SEMANTIC_CACHE_SERVING_ENABLED", "false").lower() in ("true", "1", "yes")
+    )
+    semantic_cache_default_visibility: str = Field(
+        default_factory=lambda: os.getenv("SEMANTIC_CACHE_DEFAULT_VISIBILITY", "private").strip().lower()
+    )
+    cache_default_visibility: Optional[str] = Field(
+        default_factory=lambda: (os.getenv("CACHE_DEFAULT_VISIBILITY") or "").strip().lower() or None
     )
     semantic_cache_min_similarity: float = Field(
         default_factory=lambda: float(os.getenv("SEMANTIC_CACHE_MIN_SIMILARITY", "0.92"))
@@ -357,6 +389,16 @@ class Settings(BaseModel):
             raise ValueError("SEMANTIC_CACHE_MIN_MARGIN must be between 0.0 and 1.0.")
         if self.semantic_cache_top_k <= 0:
             raise ValueError("SEMANTIC_CACHE_TOP_K must be positive.")
+        if self.semantic_cache_default_visibility not in _VALID_CACHE_VISIBILITIES:
+            raise ValueError(
+                f"SEMANTIC_CACHE_DEFAULT_VISIBILITY must be one of {sorted(_VALID_CACHE_VISIBILITIES)}, "
+                f"got {self.semantic_cache_default_visibility!r}."
+            )
+        if self.cache_default_visibility is not None and self.cache_default_visibility not in _VALID_CACHE_VISIBILITIES:
+            raise ValueError(
+                f"CACHE_DEFAULT_VISIBILITY must be one of {sorted(_VALID_CACHE_VISIBILITIES)}, "
+                f"got {self.cache_default_visibility!r}."
+            )
 
         if self.semantic_cache_evidence_secret is not None:
             validated = self._validate_evidence_secret_strength(
@@ -417,6 +459,18 @@ class Settings(BaseModel):
         self.get_client_token_map()
         return self
 
+    @staticmethod
+    def _validate_identity_secret_strength(secret_val: str, env_name: str) -> str:
+        cleaned = secret_val.strip()
+        if cleaned.lower() in _INSECURE_IDENTITY_PLACEHOLDERS:
+            raise ValueError(
+                f"{env_name} cannot be a known public/placeholder string ('{cleaned}'). "
+                "Configure a random 256-bit hex or secure private key."
+            )
+        if len(cleaned) < 16:
+            raise ValueError(f"{env_name} must be at least 16 characters long.")
+        return cleaned
+
     @model_validator(mode="after")
     def validate_conversation_config(self) -> "Settings":
         if self.conversation_max_context_messages <= 0:
@@ -426,36 +480,31 @@ class Settings(BaseModel):
         if self.conversation_turn_lease_seconds <= 0:
             raise ValueError("CONVERSATION_TURN_LEASE_SECONDS must be positive.")
         if self.conversation_identity_secret is not None:
-            cleaned = self.conversation_identity_secret.strip()
-            insecure_placeholders = {
-                "intellicache-default-identity-secret-change-in-production",
-                "replace_with_a_secure_random_hex_or_passphrase_at_least_16_chars",
-                "replace_with_your_key",
-                "change-me",
-                "secret",
-            }
-            if cleaned.lower() in insecure_placeholders:
-                raise ValueError(
-                    f"CONVERSATION_IDENTITY_SECRET cannot be a known public/placeholder string ('{cleaned}'). "
-                    "Configure a random 256-bit hex or secure private key."
-                )
-            if len(cleaned) < 16:
-                raise ValueError("CONVERSATION_IDENTITY_SECRET must be at least 16 characters long.")
+            cleaned = self._validate_identity_secret_strength(
+                self.conversation_identity_secret,
+                "CONVERSATION_IDENTITY_SECRET",
+            )
+            object.__setattr__(self, "conversation_identity_secret", cleaned)
+        if self.principal_identity_secret is not None:
+            cleaned = self._validate_identity_secret_strength(
+                self.principal_identity_secret,
+                "PRINCIPAL_IDENTITY_SECRET",
+            )
+            object.__setattr__(self, "principal_identity_secret", cleaned)
         return self
 
-    def get_client_token_map(self) -> Dict[str, str]:
+    def get_client_token_policies(self) -> Dict[str, ClientTokenPolicy]:
         """
-        Returns a mapping of {token: namespace} for client authentication.
+        Returns a mapping of {token: ClientTokenPolicy} for client authentication.
         Supports:
-        - CLIENT_API_TOKENS as a JSON object: '{"tok_a": "ns_a", "tok_b": "ns_a"}'
+        - CLIENT_API_TOKENS as JSON object: '{"tok_a": "ns_a"}' or
+          '{"tok_a": {"namespace": "ns_a", "visibility": "private", "allow_shared_reads": false}}'
         - CLIENT_API_TOKENS as comma-separated pairs: 'tok_a:ns_a,tok_b:ns_a'
         - Fallback to legacy CLIENT_API_TOKEN only if CLIENT_API_TOKENS is absent (None).
         """
-        token_map: Dict[str, str] = {}
+        policies: Dict[str, ClientTokenPolicy] = {}
 
         if self.client_api_tokens is not None:
-            # An explicitly configured CLIENT_API_TOKENS is authoritative.
-            # When legacy CLIENT_API_TOKEN is also set, emit a non-sensitive warning.
             if self.client_api_token is not None and self.client_api_token.strip():
                 logger.warning(
                     "Both CLIENT_API_TOKENS and CLIENT_API_TOKEN are configured. "
@@ -477,9 +526,7 @@ class Settings(BaseModel):
                         if k_clean in seen:
                             raise ValueError("Duplicate token key detected in CLIENT_API_TOKENS configuration.")
                         seen.add(k_clean)
-                        if not isinstance(v, str) or not v.strip():
-                            raise ValueError("Namespace value in CLIENT_API_TOKENS JSON mapping must be a non-empty string.")
-                        d[k_clean] = v.strip()
+                        d[k_clean] = v
                     return d
 
                 try:
@@ -491,7 +538,39 @@ class Settings(BaseModel):
                     raise ValueError("CLIENT_API_TOKENS JSON configuration must be a JSON object.")
                 if not parsed:
                     raise ValueError("CLIENT_API_TOKENS JSON mapping cannot be empty.")
-                token_map = parsed
+
+                for tok, val in parsed.items():
+                    if isinstance(val, str):
+                        if not val.strip():
+                            raise ValueError("Namespace value in CLIENT_API_TOKENS JSON mapping must be a non-empty string.")
+                        policies[tok] = ClientTokenPolicy(namespace=val.strip())
+                    elif isinstance(val, dict):
+                        unknown = set(val.keys()) - _ALLOWED_TOKEN_POLICY_KEYS
+                        if unknown:
+                            raise ValueError(
+                                f"Unsupported policy field(s) in CLIENT_API_TOKENS entry: {sorted(unknown)}."
+                            )
+                        raw_ns = val.get("namespace")
+                        if not isinstance(raw_ns, str) or not raw_ns.strip():
+                            raise ValueError("Namespace value in CLIENT_API_TOKENS JSON mapping must be a non-empty string.")
+                        raw_vis = val.get("visibility")
+                        vis_clean: Optional[str] = None
+                        if raw_vis is not None:
+                            if not isinstance(raw_vis, str) or raw_vis.strip().lower() not in _VALID_CACHE_VISIBILITIES:
+                                raise ValueError(
+                                    f"Visibility value in CLIENT_API_TOKENS entry must be one of {sorted(_VALID_CACHE_VISIBILITIES)}."
+                                )
+                            vis_clean = raw_vis.strip().lower()
+                        raw_shared = val.get("allow_shared_reads", False)
+                        if not isinstance(raw_shared, bool):
+                            raise ValueError("allow_shared_reads in CLIENT_API_TOKENS entry must be a boolean.")
+                        policies[tok] = ClientTokenPolicy(
+                            namespace=raw_ns.strip(),
+                            visibility=vis_clean,
+                            allow_shared_reads=raw_shared,
+                        )
+                    else:
+                        raise ValueError("Namespace value in CLIENT_API_TOKENS JSON mapping must be a non-empty string.")
             elif raw.startswith("["):
                 raise ValueError("CLIENT_API_TOKENS JSON configuration must be a JSON object, not an array.")
             else:
@@ -509,20 +588,23 @@ class Settings(BaseModel):
                         raise ValueError("Token key in CLIENT_API_TOKENS delimiter mapping must be a non-empty string.")
                     if not ns:
                         raise ValueError("Namespace value in CLIENT_API_TOKENS delimiter mapping must be a non-empty string.")
-                    if tok in token_map:
+                    if tok in policies:
                         raise ValueError("Duplicate token key detected in CLIENT_API_TOKENS delimiter mapping.")
-                    token_map[tok] = ns
-                if not token_map:
+                    policies[tok] = ClientTokenPolicy(namespace=ns)
+                if not policies:
                     raise ValueError("CLIENT_API_TOKENS delimiter mapping cannot be empty.")
         else:
-            # Legacy fallback: only active when CLIENT_API_TOKENS is absent (None)
             if self.client_api_token is not None:
                 tok = self.client_api_token.strip()
                 if not tok:
                     raise ValueError("CLIENT_API_TOKEN cannot be empty when configured.")
-                token_map[tok] = self.cache_namespace
+                policies[tok] = ClientTokenPolicy(namespace=self.cache_namespace)
 
-        return token_map
+        return policies
+
+    def get_client_token_map(self) -> Dict[str, str]:
+        """Returns a mapping of {token: namespace} for client authentication."""
+        return {tok: policy.namespace for tok, policy in self.get_client_token_policies().items()}
 
 
 _settings_instance: Optional[Settings] = None

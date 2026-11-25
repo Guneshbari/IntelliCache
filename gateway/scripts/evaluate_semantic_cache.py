@@ -675,6 +675,7 @@ async def evaluate_single_case(
                     latency_ms=cand.original_latency_ms,
                     metadata=meta,
                     provider=meta["llm_provider"],
+                    visibility="tenant_shared",
                 )
                 await cache.set(fp, cache_entry, namespace=case_ns)
 
@@ -685,6 +686,7 @@ async def evaluate_single_case(
                     model=policy.configured_model,
                     vector=cand_embed.vector,
                     metadata=meta,
+                    visibility="tenant_shared",
                 )
                 await vector_store.upsert(vec_rec)
             indexing_latency_ms = (time.perf_counter() - t_idx_start) * 1000.0
@@ -701,6 +703,7 @@ async def evaluate_single_case(
                 top_k=policy.top_k,
                 namespace=case_ns,
                 model=policy.configured_model,
+                visibility="tenant_shared",
             )
 
             top_sim = vs_candidates[0].similarity if vs_candidates else 0.0
@@ -718,6 +721,7 @@ async def evaluate_single_case(
                 stream=False,
                 bypass_cache=False,
                 namespace=case_ns,
+                visibility="tenant_shared",
             )
 
             # 4. Evaluate using policy
@@ -843,6 +847,7 @@ async def evaluate_single_case(
                 total_tokens=cand.total_tokens,
                 original_latency_ms=cand.original_latency_ms,
                 metadata=meta,
+                visibility="tenant_shared",
             )
             ranked_candidates.append((sim, vs_res, cand))
 
@@ -865,6 +870,7 @@ async def evaluate_single_case(
             stream=False,
             bypass_cache=False,
             namespace="default",
+            visibility="tenant_shared",
         )
 
         # 4. Evaluate using policy
@@ -1187,6 +1193,7 @@ async def run_benchmark(
                         latency_ms=cand.original_latency_ms,
                         metadata=meta,
                         provider=meta["llm_provider"],
+                        visibility="tenant_shared",
                     )
                     await cache.set(fp, cache_entry, namespace=case_ns)
 
@@ -1198,6 +1205,7 @@ async def run_benchmark(
                         model=policy.configured_model,
                         vector=cand_embed.vector,
                         metadata=meta,
+                        visibility="tenant_shared",
                     )
                     await vector_store.upsert(vec_rec)
                     candidate_indexing_ms.append((time.perf_counter() - t_idx0) * 1000.0)
@@ -1215,6 +1223,7 @@ async def run_benchmark(
                         namespace=first_case_ns,
                         model=policy.configured_model,
                         analyze=True,
+                        visibility="tenant_shared",
                     )
                     if db_info is not None:
                         db_info["vector_index_used"] = plan_info.get("vector_index_used", False)
@@ -1241,6 +1250,7 @@ async def run_benchmark(
                         top_k=policy.top_k,
                         namespace=case_ns,
                         model=policy.configured_model,
+                        visibility="tenant_shared",
                     )
                     t_search = (time.perf_counter() - t1) * 1000.0
                     postgres_retrieval_ms.append(t_search)
@@ -1255,6 +1265,7 @@ async def run_benchmark(
                         stream=False,
                         bypass_cache=False,
                         namespace=case_ns,
+                        visibility="tenant_shared",
                     )
                     t2 = time.perf_counter()
                     policy.evaluate_candidates(vs_candidates, case_req)
@@ -1366,6 +1377,7 @@ async def run_benchmark(
                                 "temperature": 0.7,
                                 "max_tokens": 1000,
                             },
+                            visibility="tenant_shared",
                         )
                     )
                 vs_candidates.sort(key=lambda x: x.similarity, reverse=True)
@@ -1377,6 +1389,7 @@ async def run_benchmark(
                     messages=[ChatMessage(role="user", content=case.query)],
                     provider="groq",
                     model="llama-3.3-70b-versatile",
+                    visibility="tenant_shared",
                 )
                 t2 = time.perf_counter()
                 policy.evaluate_candidates(vs_candidates, case_req)

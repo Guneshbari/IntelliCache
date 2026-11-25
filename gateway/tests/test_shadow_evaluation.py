@@ -509,6 +509,7 @@ class TestShadowEvaluationServiceExecution(unittest.IsolatedAsyncioTestCase):
             messages=[ChatMessage(role="user", content="Python reverse list")],
             temperature=0.0,
             max_tokens=100,
+            visibility="tenant_shared",
         )
         meta_dict = extractor.extract(req_seed, "BAAI/bge-small-en-v1.5").to_dict()
         meta_dict["cached_response"] = "items[::-1]"
@@ -520,6 +521,7 @@ class TestShadowEvaluationServiceExecution(unittest.IsolatedAsyncioTestCase):
                 vector=embed_res.vector,
                 model="BAAI/bge-small-en-v1.5",
                 metadata=meta_dict,
+                visibility="tenant_shared",
             )
         )
 
@@ -1605,6 +1607,7 @@ class TestShadowFastAPIIntegration(unittest.IsolatedAsyncioTestCase):
             messages=[ChatMessage(role="user", content="How to reverse a list in Python?")],
             temperature=0.0,
             max_tokens=100,
+            visibility="tenant_shared",
         )
         seed_meta = extractor.extract(req_seed, "BAAI/bge-small-en-v1.5")
         seed_meta_dict = seed_meta.to_dict()
@@ -1616,6 +1619,7 @@ class TestShadowFastAPIIntegration(unittest.IsolatedAsyncioTestCase):
             vector=embed_res.vector,
             model="BAAI/bge-small-en-v1.5",
             metadata=seed_meta_dict,
+            visibility="tenant_shared",
         )
         await raw_store.upsert(seed_record)
 

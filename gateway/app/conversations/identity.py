@@ -12,7 +12,12 @@ from typing import Optional
 
 from fastapi import Depends, HTTPException, Request, status
 
-from ..config import Settings, get_settings
+from ..config import ClientTokenPolicy, Settings, get_settings
+from ..core.contracts import (
+    CACHE_VISIBILITY_PRIVATE,
+    CACHE_VISIBILITY_TENANT_SHARED,
+    normalize_cache_visibility,
+)
 
 logger = logging.getLogger("intellicache.gateway.conversations.identity")
 
@@ -77,6 +82,142 @@ class AuthenticatedClient:
     token: str
     namespace: str
     principal_id: str
+
+
+@dataclass(frozen=True)
+class AuthenticatedCallerScope:
+    """
+    Server-derived authenticated caller identity and cache privacy scope.
+    Never derived from client-controlled body fields, query params, or headers.
+    """
+    namespace: str
+    principal_id: Optional[str]
+    visibility: str
+    allow_shared_reads: bool = False
+    used_token: bool = False
+    identity_secret_configured: bool = False
+
+
+def get_effective_identity_secret(settings: Settings) -> Optional[str]:
+    """Return configured HMAC secret used to derive opaque principal IDs (never fabricated)."""
+    return settings.principal_identity_secret or settings.conversation_identity_secret
+
+
+def _extract_client_token_candidate(request: Request) -> Optional[str]:
+    token_candidate: Optional[str] = request.headers.get("X-Client-Token")
+    if not token_candidate:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.lower().startswith("bearer "):
+            token_candidate = auth_header[7:].strip()
+    return token_candidate.strip() if isinstance(token_candidate, str) and token_candidate.strip() else None
+
+
+def _resolve_loopback_request_allowed(request: Request, settings: Settings) -> None:
+    forwarded_headers = ("x-forwarded-for", "x-forwarded-proto", "x-forwarded-host", "forwarded")
+    for hdr in forwarded_headers:
+        if hdr in request.headers:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Unauthorized: Unauthenticated loopback access rejected when forwarded headers are present.",
+            )
+
+    client_host = request.client.host if request.client else None
+    if not _is_loopback_address(client_host):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized: Direct connection peer is not a valid loopback address.",
+        )
+
+    server_info = request.scope.get("server")
+    server_host = server_info[0] if (server_info and len(server_info) > 0) else None
+    if not _is_loopback_address(server_host):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized: Server bind address is not a valid loopback address.",
+        )
+    if not _is_loopback_address(settings.host):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized: Server host setting is not a valid loopback address.",
+        )
+
+
+def resolve_authenticated_caller(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+) -> AuthenticatedCallerScope:
+    """
+    Authenticates the client request and resolves its server-enforced cache privacy scope:
+    - namespace (from token policy or server default on loopback)
+    - opaque principal_id (HMAC-SHA256 when BOTH token auth and identity secret are present; otherwise None)
+    - visibility ('private' by default when semantic cache or identity secret or private default is active;
+      'tenant_shared' only when explicitly configured via token/server policy or in legacy exact-only mode)
+    """
+    token_policies = settings.get_client_token_policies()
+    token_candidate = _extract_client_token_candidate(request)
+    identity_secret = get_effective_identity_secret(settings)
+
+    if token_candidate:
+        matched_policy: Optional[ClientTokenPolicy] = None
+        if token_policies:
+            for valid_token, policy in token_policies.items():
+                if hmac.compare_digest(token_candidate, valid_token):
+                    matched_policy = policy
+                    break
+        if matched_policy is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Unauthorized: Invalid or missing client API token.",
+            )
+
+        principal_id: Optional[str] = (
+            derive_principal_id(token_candidate, identity_secret)
+            if identity_secret
+            else None
+        )
+
+        if matched_policy.visibility is not None:
+            resolved_visibility = normalize_cache_visibility(matched_policy.visibility)
+        elif settings.cache_default_visibility is not None:
+            resolved_visibility = normalize_cache_visibility(settings.cache_default_visibility)
+        elif settings.semantic_cache_enabled or identity_secret is not None:
+            resolved_visibility = normalize_cache_visibility(settings.semantic_cache_default_visibility)
+        else:
+            # Legacy exact-only token deployment without identity secret preserves tenant-shared exact mode.
+            resolved_visibility = CACHE_VISIBILITY_TENANT_SHARED
+
+        return AuthenticatedCallerScope(
+            namespace=matched_policy.namespace,
+            principal_id=principal_id if resolved_visibility == CACHE_VISIBILITY_PRIVATE or principal_id is not None else None,
+            visibility=resolved_visibility,
+            allow_shared_reads=bool(matched_policy.allow_shared_reads),
+            used_token=True,
+            identity_secret_configured=bool(identity_secret),
+        )
+
+    if settings.allow_unauthenticated_loopback:
+        _resolve_loopback_request_allowed(request, settings)
+        # Never fabricate a fake principal identity for unauthenticated loopback requests.
+        if settings.cache_default_visibility is not None:
+            loopback_visibility = normalize_cache_visibility(settings.cache_default_visibility)
+        elif settings.semantic_cache_enabled:
+            loopback_visibility = normalize_cache_visibility(settings.semantic_cache_default_visibility)
+        else:
+            loopback_visibility = CACHE_VISIBILITY_TENANT_SHARED
+
+        return AuthenticatedCallerScope(
+            namespace=settings.cache_namespace,
+            principal_id=None,
+            visibility=loopback_visibility,
+            allow_shared_reads=False,
+            used_token=False,
+            identity_secret_configured=bool(identity_secret),
+        )
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Unauthorized: Invalid or missing client API token.",
+    )
 
 
 def derive_principal_id(client_token: str, identity_secret: str) -> str:

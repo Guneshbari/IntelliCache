@@ -26,8 +26,10 @@ from ..context.builder import ContextBuilder
 from ..context.contracts import ContextStatus
 from ..context.policy import ContextPolicy
 from ..conversations.identity import (
+    AuthenticatedCallerScope,
     AuthenticatedClient,
     compute_turn_request_hash,
+    resolve_authenticated_caller,
     verify_conversation_client,
 )
 from ..conversations.repository import (
@@ -36,11 +38,14 @@ from ..conversations.repository import (
     IdempotencyConflictError,
 )
 from ..core.contracts import (
+    CACHE_VISIBILITY_PRIVATE,
+    CACHE_VISIBILITY_TENANT_SHARED,
     ChatMessage,
     GenerationRequest,
     GenerationResult,
     StreamChunk,
     UsageMetrics,
+    normalize_cache_visibility,
 )
 from ..core.errors import (
     IntelliCacheError,
@@ -69,6 +74,7 @@ from ..metrics import (
 from ..providers.factory import ProviderFactory
 from ..providers.groq_adapter import GroqProvider
 from ..providers.interfaces import LLMProvider
+from ..semantic_cache.control import get_semantic_serving_controller
 from ..semantic_cache.interfaces import BaseSemanticCache
 from ..semantic_cache.shadow import ShadowTask
 from ..vector_store.interfaces import BaseVectorStore
@@ -101,6 +107,39 @@ _CLIENT_FORBIDDEN_EVIDENCE_FIELDS = frozenset({
     "response_digest",
     "binding_digest",
     "evidence_signature",
+    "owner_principal_id",
+    "principal_id",
+    "visibility",
+    "cache_visibility",
+    "scope",
+    "allow_shared_reads",
+    "client_token",
+    "tenant_id",
+})
+
+_SPOOFED_IGNORED_BODY_KEYS = (b'"namespace"', b'"cache_namespace"', b'"tenant"')
+_SPOOFED_SCOPE_HEADERS = frozenset({
+    "x-cache-namespace",
+    "x-namespace",
+    "x-tenant-id",
+    "x-principal-id",
+    "x-owner-principal-id",
+    "x-cache-visibility",
+    "x-visibility",
+    "x-cache-scope",
+    "x-allow-shared-reads",
+})
+_SPOOFED_SCOPE_QUERY_PARAMS = frozenset({
+    "namespace",
+    "cache_namespace",
+    "tenant",
+    "tenant_id",
+    "principal_id",
+    "owner_principal_id",
+    "visibility",
+    "cache_visibility",
+    "scope",
+    "allow_shared_reads",
 })
 
 
@@ -123,15 +162,20 @@ class QueryRequest(BaseModel):
         if isinstance(data, dict):
             forbidden_top = sorted(k for k in data.keys() if k in _CLIENT_FORBIDDEN_EVIDENCE_FIELDS)
             if forbidden_top:
+                get_metrics_collector().record_privacy_violation_attempt("default")
                 raise ValueError(
-                    f"Client payloads cannot supply compatibility/verification evidence fields: {forbidden_top}."
+                    f"Client payloads cannot supply compatibility/verification evidence or privacy scope fields: {forbidden_top}."
                 )
             raw_meta = data.get("metadata")
             if isinstance(raw_meta, dict):
-                forbidden_meta = sorted(k for k in raw_meta.keys() if k in _CLIENT_FORBIDDEN_EVIDENCE_FIELDS)
+                forbidden_meta = sorted(
+                    k for k in raw_meta.keys()
+                    if k in _CLIENT_FORBIDDEN_EVIDENCE_FIELDS or k in ("namespace", "cache_namespace", "tenant")
+                )
                 if forbidden_meta:
+                    get_metrics_collector().record_privacy_violation_attempt("default")
                     raise ValueError(
-                        f"Client metadata cannot assert compatibility/verification evidence fields: {forbidden_meta}."
+                        f"Client metadata cannot assert compatibility/verification evidence or privacy scope fields: {forbidden_meta}."
                     )
 
             prompt = data.get("prompt")
@@ -277,80 +321,9 @@ def verify_client_token(
 ) -> str:
     """
     Dependency verifying client API token for query endpoints.
-    Enforces authentication by default (HTTP 401).
-    When ALLOW_UNAUTHENTICATED_LOOPBACK is explicitly true, strictly verifies that
-    both the direct peer IP and actual ASGI server address are valid loopback addresses,
-    and rejects requests presenting forwarded headers.
     Returns the server-authorized cache_namespace for the authenticated client.
     """
-    token_map = settings.get_client_token_map()
-
-    # 1. Extract token candidate from headers
-    token_candidate: Optional[str] = request.headers.get("X-Client-Token")
-    if not token_candidate:
-        auth_header = request.headers.get("Authorization", "")
-        if auth_header.lower().startswith("bearer "):
-            token_candidate = auth_header[7:].strip()
-
-    # 2. If token candidate is present, verify against configured token_map
-    if token_candidate:
-        if token_map:
-            matched_namespace: Optional[str] = None
-            for valid_token, ns in token_map.items():
-                if hmac.compare_digest(token_candidate, valid_token):
-                    matched_namespace = ns
-                    break
-            if matched_namespace is not None:
-                return matched_namespace
-
-        # Invalid token candidate or token_map empty
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Unauthorized: Invalid or missing client API token.",
-        )
-
-    # 3. If token candidate is NOT present, check if explicit unauthenticated loopback is enabled
-    if settings.allow_unauthenticated_loopback:
-        # Check forwarded headers first: never allow bypass if forwarded headers are present
-        forwarded_headers = ("x-forwarded-for", "x-forwarded-proto", "x-forwarded-host", "forwarded")
-        for hdr in forwarded_headers:
-            if hdr in request.headers:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Unauthorized: Unauthenticated loopback access rejected when forwarded headers are present.",
-                )
-
-        # Validate direct peer IP (request.client.host)
-        client_host = request.client.host if request.client else None
-        if not _is_loopback_address(client_host):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Unauthorized: Direct connection peer is not a valid loopback address.",
-            )
-
-        # Validate actual ASGI server address (request.scope.get("server"))
-        server_info = request.scope.get("server")
-        server_host = server_info[0] if (server_info and len(server_info) > 0) else None
-        if not _is_loopback_address(server_host):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Unauthorized: Server bind address is not a valid loopback address.",
-            )
-
-        # Also verify settings.host is loopback
-        if not _is_loopback_address(settings.host):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Unauthorized: Server host setting is not a valid loopback address.",
-            )
-
-        return settings.cache_namespace
-
-    # 4. Default: Require authentication! Fail closed with HTTP 401
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Unauthorized: Invalid or missing client API token.",
-    )
+    return resolve_authenticated_caller(request, settings).namespace
 
 
 def verify_metrics_auth(
@@ -495,16 +468,23 @@ def get_core_service(
     global _core_singleton
     if not isinstance(settings, Settings):
         settings = get_settings()
+    startup_enabled = bool(settings.semantic_cache_enabled)
+    controller = get_semantic_serving_controller()
     if (
         _core_singleton is None
         or _core_singleton.cache is not cache
+        or _core_singleton.single_flight is not single_flight
         or _core_singleton.semantic_cache is not semantic_cache
+        or _core_singleton.cache_enabled != settings.cache_enabled
+        or _core_singleton.semantic_cache_startup_enabled != startup_enabled
     ):
         _core_singleton = IntelliCacheCore(
             cache=cache,
             single_flight=single_flight,
             cache_enabled=settings.cache_enabled,
             semantic_cache=semantic_cache,
+            semantic_serving_controller=controller,
+            semantic_cache_startup_enabled=startup_enabled,
         )
     return _core_singleton
 
@@ -652,7 +632,20 @@ async def execute_query(
     Supports conservative exact matching, single-flight consolidation, streaming,
     and server-managed persistent conversation turns.
     """
-    client_namespace = verify_client_token(raw_request, settings)
+    caller = resolve_authenticated_caller(raw_request, settings)
+    client_namespace = caller.namespace
+
+    collector = get_metrics_collector()
+    raw_body = getattr(raw_request, "_body", b"") or b""
+    has_spoof_header = any(h in raw_request.headers for h in _SPOOFED_SCOPE_HEADERS)
+    has_spoof_query = any(p in raw_request.query_params for p in _SPOOFED_SCOPE_QUERY_PARAMS)
+    has_spoof_body_ns = any(tok in raw_body for tok in _SPOOFED_IGNORED_BODY_KEYS)
+    if has_spoof_header or has_spoof_query or has_spoof_body_ns:
+        collector.record_privacy_violation_attempt(client_namespace)
+        logger.warning(
+            "Ignored client-supplied scope/namespace override on /query for namespace='%s'",
+            client_namespace,
+        )
 
     # PRE-02: Resolve effective model once consistently
     effective_model = (request.model or settings.groq_model).strip()
@@ -836,24 +829,26 @@ async def execute_query(
             system_prompt=request.system_prompt,
         )
 
-    # Server-derived trusted namespace (clients cannot override via request body)
+    # Server-derived trusted namespace, principal identity, and privacy scope (clients cannot override)
     gen_request = GenerationRequest(
         model=effective_model,
         messages=canonical_messages,
         temperature=effective_temperature,
         max_tokens=effective_max_tokens,
         provider=settings.llm_provider,
-        namespace=client_namespace,
+        namespace=caller.namespace,
         stream=request.stream,
         bypass_cache=effective_bypass_cache,
         conversation_id=request.conversation_id,
+        principal_id=caller.principal_id,
+        visibility=caller.visibility,
+        allow_shared_reads=caller.allow_shared_reads,
         metadata={
             "turn_id": turn_record.id if turn_record else None,
             "context_status": effective_context_status,
         },
     )
 
-    collector = get_metrics_collector()
     collector.record_request(
         client_namespace,
         stream=request.stream,
@@ -1181,6 +1176,9 @@ async def execute_query(
                     is_multi_turn=is_multi,
                     actual_response_text=result.text if result.text else None,
                     bypass_cache=effective_bypass_cache,
+                    visibility=caller.visibility,
+                    principal_id=caller.principal_id,
+                    allow_shared_reads=caller.allow_shared_reads,
                 )
                 shadow_svc.enqueue(shadow_task)
             except Exception as shadow_err:

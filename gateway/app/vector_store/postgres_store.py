@@ -13,6 +13,13 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import asyncpg
 
+from ..privacy import (
+    CACHE_VISIBILITY_PRIVATE,
+    CACHE_VISIBILITY_TENANT_SHARED,
+    CACHE_VISIBILITY_UNKNOWN,
+    normalize_cache_visibility,
+    normalize_principal_id,
+)
 from .contracts import (
     VectorRecord,
     VectorSearchResult,
@@ -112,15 +119,19 @@ class PostgresVectorStore(BaseVectorStore):
         meta_json = json.dumps(record.metadata or {})
         created_at = record.created_at or datetime.now(timezone.utc)
         variant_key = (record.variant_key or "").strip()
+        vis = normalize_cache_visibility(record.visibility)
+        owner = normalize_principal_id(record.owner_principal_id) if vis == CACHE_VISIBILITY_PRIVATE else None
+        if vis == CACHE_VISIBILITY_PRIVATE and owner is None:
+            raise VectorInvalidError("Cannot upsert private VectorRecord without owner_principal_id.")
 
         if self.table_name == "vector_records" and variant_key and record.response_text is not None:
             query = """
                 INSERT INTO semantic_variant_records (
                     cache_namespace, fingerprint, variant_key, query_text, model, vector,
-                    metadata, cached_response, created_at, updated_at
+                    metadata, cached_response, created_at, updated_at, visibility, owner_principal_id
                 )
                 VALUES (
-                    $1, $2, $3, $4, $5, $6::vector, $7::jsonb, $8, $9, NOW()
+                    $1, $2, $3, $4, $5, $6::vector, $7::jsonb, $8, $9, NOW(), $10, $11
                 )
                 ON CONFLICT (cache_namespace, fingerprint, model, variant_key)
                 DO UPDATE SET
@@ -128,6 +139,8 @@ class PostgresVectorStore(BaseVectorStore):
                     vector = EXCLUDED.vector,
                     metadata = EXCLUDED.metadata,
                     cached_response = EXCLUDED.cached_response,
+                    visibility = EXCLUDED.visibility,
+                    owner_principal_id = EXCLUDED.owner_principal_id,
                     updated_at = NOW();
             """
             params = (
@@ -140,20 +153,25 @@ class PostgresVectorStore(BaseVectorStore):
                 meta_json,
                 record.response_text,
                 created_at,
+                vis,
+                owner,
             )
         else:
             query = f"""
                 INSERT INTO {self.table_name} (
-                    cache_namespace, fingerprint, query_text, model, vector, metadata, created_at, updated_at
+                    cache_namespace, fingerprint, query_text, model, vector, metadata, created_at, updated_at,
+                    visibility, owner_principal_id
                 )
                 VALUES (
-                    $1, $2, $3, $4, $5::vector, $6::jsonb, $7, NOW()
+                    $1, $2, $3, $4, $5::vector, $6::jsonb, $7, NOW(), $8, $9
                 )
                 ON CONFLICT (cache_namespace, fingerprint, model)
                 DO UPDATE SET
                     query_text = EXCLUDED.query_text,
                     vector = EXCLUDED.vector,
                     metadata = EXCLUDED.metadata,
+                    visibility = EXCLUDED.visibility,
+                    owner_principal_id = EXCLUDED.owner_principal_id,
                     updated_at = NOW();
             """
             params = (
@@ -164,6 +182,8 @@ class PostgresVectorStore(BaseVectorStore):
                 vec_str,
                 meta_json,
                 created_at,
+                vis,
+                owner,
             )
 
         try:
@@ -186,20 +206,98 @@ class PostgresVectorStore(BaseVectorStore):
         except Exception as e:
             raise VectorStoreConnectionError(f"Connection failure during vector upsert: {e}") from e
 
-    async def search(
+    @staticmethod
+    def _build_scope_filter(
+        alias: str,
+        exact_alias: str,
+        visibility: Optional[str],
+        principal_id: Optional[str],
+        allow_shared_reads: bool,
+        use_left_join: bool = False,
+        start_idx: int = 5,
+    ) -> tuple[str, list[Any], bool]:
+        if visibility is None:
+            if use_left_join:
+                return (
+                    f"AND {alias}.visibility <> 'private' "
+                    f"AND ({exact_alias}.id IS NULL OR {exact_alias}.visibility <> 'private')",
+                    [],
+                    False,
+                )
+            return f"AND {alias}.visibility <> 'private' AND {exact_alias}.visibility <> 'private'", [], False
+
+        req_vis = normalize_cache_visibility(visibility)
+        if req_vis == CACHE_VISIBILITY_UNKNOWN:
+            return "", [], True
+
+        if req_vis == CACHE_VISIBILITY_TENANT_SHARED:
+            exact_cond = (
+                f"({exact_alias}.id IS NULL OR ({exact_alias}.visibility = 'tenant_shared' AND {exact_alias}.owner_principal_id IS NULL))"
+                if use_left_join
+                else f"{exact_alias}.visibility = 'tenant_shared' AND {exact_alias}.owner_principal_id IS NULL"
+            )
+            return (
+                f"AND {alias}.visibility = 'tenant_shared' AND {alias}.owner_principal_id IS NULL AND {exact_cond}",
+                [],
+                False,
+            )
+
+        if req_vis == CACHE_VISIBILITY_PRIVATE:
+            req_own = normalize_principal_id(principal_id)
+            if req_own is None:
+                return "", [], True
+            if not allow_shared_reads:
+                exact_cond = (
+                    f"({exact_alias}.id IS NULL OR ({exact_alias}.visibility = 'private' AND {exact_alias}.owner_principal_id = ${start_idx}))"
+                    if use_left_join
+                    else f"{exact_alias}.visibility = 'private' AND {exact_alias}.owner_principal_id = ${start_idx}"
+                )
+                return (
+                    f"AND {alias}.visibility = 'private' AND {alias}.owner_principal_id = ${start_idx} AND {exact_cond}",
+                    [req_own],
+                    False,
+                )
+            if use_left_join:
+                return (
+                    f"AND (({alias}.visibility = 'private' AND {alias}.owner_principal_id = ${start_idx} "
+                    f"AND ({exact_alias}.id IS NULL OR ({exact_alias}.visibility = 'private' AND {exact_alias}.owner_principal_id = ${start_idx}))) "
+                    f"OR ({alias}.visibility = 'tenant_shared' AND {alias}.owner_principal_id IS NULL "
+                    f"AND ({exact_alias}.id IS NULL OR ({exact_alias}.visibility = 'tenant_shared' AND {exact_alias}.owner_principal_id IS NULL))))",
+                    [req_own],
+                    False,
+                )
+            return (
+                f"AND (({alias}.visibility = 'private' AND {alias}.owner_principal_id = ${start_idx} "
+                f"AND {exact_alias}.visibility = 'private' AND {exact_alias}.owner_principal_id = ${start_idx}) "
+                f"OR ({alias}.visibility = 'tenant_shared' AND {alias}.owner_principal_id IS NULL "
+                f"AND {exact_alias}.visibility = 'tenant_shared' AND {exact_alias}.owner_principal_id IS NULL))",
+                [req_own],
+                False,
+            )
+
+        return "", [], True
+
+    def _build_search_queries(
         self,
-        query_vector: Sequence[float],
-        top_k: int = 5,
-        namespace: Optional[str] = None,
-        model: Optional[str] = None,
-    ) -> List[VectorSearchResult]:
-        """
-        Searches for top-k nearest records by cosine distance.
-        Enforces namespace and model isolation.
-        """
-    def _build_search_queries(self) -> tuple[str, Optional[str]]:
-        """Builds the parameterized single-table fallback SQL and combined UNION ALL production SQL."""
+        visibility: Optional[str] = None,
+        principal_id: Optional[str] = None,
+        allow_shared_reads: bool = False,
+    ) -> tuple[str, Optional[str], list[Any], bool]:
+        """Builds parameterized single-table fallback SQL and combined UNION ALL production SQL with scope filters."""
         join_type = "JOIN" if self.table_name == "vector_records" else "LEFT JOIN"
+        use_left_join = join_type == "LEFT JOIN"
+        scope_v, scope_params, fail_closed = self._build_scope_filter(
+            "v",
+            "c",
+            visibility,
+            principal_id,
+            allow_shared_reads,
+            use_left_join=use_left_join,
+            start_idx=5,
+        )
+        if fail_closed:
+            return "", None, [], True
+
         legacy_filter = "AND COALESCE((v.metadata->>'legacy_excluded')::boolean, FALSE) = FALSE"
         if self.exclude_unmigrated_legacy:
             legacy_filter += (
@@ -216,6 +314,8 @@ class PostgresVectorStore(BaseVectorStore):
                 v.model,
                 v.metadata,
                 v.created_at,
+                v.visibility,
+                v.owner_principal_id,
                 (v.vector <=> $1::vector) AS distance,
                 c.response AS cached_response,
                 c.prompt_tokens,
@@ -230,14 +330,24 @@ class PostgresVectorStore(BaseVectorStore):
             WHERE v.cache_namespace = $2
               AND v.model = $3
               {legacy_filter}
+              {scope_v}
             ORDER BY distance ASC
             LIMIT $4;
         """
 
         if self.table_name != "vector_records":
-            return single_query, None
+            return single_query, None, scope_params, False
 
         sv_legacy_filter = legacy_filter.replace("v.metadata", "sv.metadata")
+        scope_sv, _, _ = self._build_scope_filter(
+            "sv",
+            "c",
+            visibility,
+            principal_id,
+            allow_shared_reads,
+            use_left_join=False,
+            start_idx=5,
+        )
         combined_query = f"""
             WITH combined AS (
                 (SELECT
@@ -248,6 +358,8 @@ class PostgresVectorStore(BaseVectorStore):
                     v.model,
                     v.metadata,
                     v.created_at,
+                    v.visibility,
+                    v.owner_principal_id,
                     (v.vector <=> $1::vector) AS distance,
                     c.response AS cached_response,
                     c.prompt_tokens,
@@ -262,6 +374,7 @@ class PostgresVectorStore(BaseVectorStore):
                 WHERE v.cache_namespace = $2
                   AND v.model = $3
                   {legacy_filter}
+                  {scope_v}
                 ORDER BY distance ASC
                 LIMIT $4)
                 UNION ALL
@@ -273,6 +386,8 @@ class PostgresVectorStore(BaseVectorStore):
                     sv.model,
                     sv.metadata,
                     sv.created_at,
+                    sv.visibility,
+                    sv.owner_principal_id,
                     (sv.vector <=> $1::vector) AS distance,
                     sv.cached_response AS cached_response,
                     c.prompt_tokens,
@@ -287,12 +402,13 @@ class PostgresVectorStore(BaseVectorStore):
                 WHERE sv.cache_namespace = $2
                   AND sv.model = $3
                   {sv_legacy_filter}
+                  {scope_sv}
                 ORDER BY distance ASC
                 LIMIT $4)
             )
             SELECT * FROM combined ORDER BY distance ASC LIMIT $4;
         """
-        return single_query, combined_query
+        return single_query, combined_query, scope_params, False
 
     async def search(
         self,
@@ -300,8 +416,11 @@ class PostgresVectorStore(BaseVectorStore):
         top_k: int = 5,
         namespace: Optional[str] = None,
         model: Optional[str] = None,
+        visibility: Optional[str] = None,
+        principal_id: Optional[str] = None,
+        allow_shared_reads: bool = False,
     ) -> List[VectorSearchResult]:
-        """Searches nearest neighbors within namespace and model scope, filtering out expired entries."""
+        """Searches nearest neighbors within namespace, model, and privacy scope, filtering out expired entries."""
         if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k <= 0:
             raise VectorInvalidError(f"top_k must be a positive integer >= 1, got {top_k}.")
 
@@ -315,8 +434,16 @@ class PostgresVectorStore(BaseVectorStore):
 
         self._validate_vector_dimensions(query_vector, context="Query vector")
 
+        query, combined_query, scope_params, fail_closed = self._build_search_queries(
+            visibility=visibility,
+            principal_id=principal_id,
+            allow_shared_reads=allow_shared_reads,
+        )
+        if fail_closed:
+            return []
+
         vec_str = _format_vector(query_vector)
-        query, combined_query = self._build_search_queries()
+        params: list[Any] = [vec_str, ns, target_model, top_k, *scope_params]
 
         try:
             async with self.pool.acquire() as conn:
@@ -324,21 +451,21 @@ class PostgresVectorStore(BaseVectorStore):
                     try:
                         if self.readonly_transaction:
                             async with conn.transaction(readonly=True):
-                                rows = await conn.fetch(combined_query, vec_str, ns, target_model, top_k)
+                                rows = await conn.fetch(combined_query, *params)
                         else:
-                            rows = await conn.fetch(combined_query, vec_str, ns, target_model, top_k)
+                            rows = await conn.fetch(combined_query, *params)
                     except asyncpg.UndefinedTableError:
                         if self.readonly_transaction:
                             async with conn.transaction(readonly=True):
-                                rows = await conn.fetch(query, vec_str, ns, target_model, top_k)
+                                rows = await conn.fetch(query, *params)
                         else:
-                            rows = await conn.fetch(query, vec_str, ns, target_model, top_k)
+                            rows = await conn.fetch(query, *params)
                 else:
                     if self.readonly_transaction:
                         async with conn.transaction(readonly=True):
-                            rows = await conn.fetch(query, vec_str, ns, target_model, top_k)
+                            rows = await conn.fetch(query, *params)
                     else:
-                        rows = await conn.fetch(query, vec_str, ns, target_model, top_k)
+                        rows = await conn.fetch(query, *params)
 
             results: List[VectorSearchResult] = []
             for row in rows:
@@ -368,6 +495,8 @@ class PostgresVectorStore(BaseVectorStore):
                         original_latency_ms=orig_latency,
                         metadata=meta,
                         created_at=row["created_at"],
+                        visibility=row["visibility"],
+                        owner_principal_id=row["owner_principal_id"],
                     )
                 )
 
@@ -391,8 +520,10 @@ class PostgresVectorStore(BaseVectorStore):
         namespace: Optional[str] = None,
         model: Optional[str] = None,
         variant_key: Optional[str] = None,
+        visibility: Optional[str] = None,
+        principal_id: Optional[str] = None,
     ) -> Optional[VectorRecord]:
-        """Retrieves a specific vector record by namespace, fingerprint, and model (optionally scoped by variant_key)."""
+        """Retrieves a specific vector record by namespace, fingerprint, model[, variant_key[, scope]]."""
         fp = (fingerprint or "").strip()
         if not fp:
             raise VectorInvalidError("Fingerprint cannot be empty.")
@@ -405,10 +536,29 @@ class PostgresVectorStore(BaseVectorStore):
         if not target_model:
             raise VectorInvalidError("Model cannot be empty.")
 
+        scope_sql = ""
+        scope_params: list[Any] = []
+        if visibility is not None:
+            norm_vis = normalize_cache_visibility(visibility)
+            if norm_vis == CACHE_VISIBILITY_UNKNOWN:
+                return None
+            if norm_vis == CACHE_VISIBILITY_PRIVATE:
+                norm_p = normalize_principal_id(principal_id)
+                if norm_p is None:
+                    return None
+                scope_sql = " AND visibility = 'private' AND owner_principal_id = $4"
+                scope_params = [norm_p]
+            else:
+                scope_sql = " AND visibility = 'tenant_shared' AND owner_principal_id IS NULL"
+        else:
+            scope_sql = " AND visibility <> 'private'"
+
+        base_params: list[Any] = [ns, fp, target_model, *scope_params]
         query = f"""
-            SELECT cache_namespace, fingerprint, query_text, model, vector, metadata, created_at
+            SELECT cache_namespace, fingerprint, query_text, model, vector, metadata, created_at,
+                   visibility, owner_principal_id
             FROM {self.table_name}
-            WHERE cache_namespace = $1 AND fingerprint = $2 AND model = $3
+            WHERE cache_namespace = $1 AND fingerprint = $2 AND model = $3{scope_sql}
         """
 
         try:
@@ -416,30 +566,30 @@ class PostgresVectorStore(BaseVectorStore):
                 if self.table_name == "vector_records":
                     try:
                         if variant_key is not None:
+                            vk_idx = 4 + len(scope_params)
                             sv_row = await conn.fetchrow(
-                                """
-                                SELECT cache_namespace, fingerprint, variant_key, query_text, model, vector, metadata, cached_response, created_at
+                                f"""
+                                SELECT cache_namespace, fingerprint, variant_key, query_text, model, vector, metadata,
+                                       cached_response, created_at, visibility, owner_principal_id
                                 FROM semantic_variant_records
-                                WHERE cache_namespace = $1 AND fingerprint = $2 AND model = $3 AND variant_key = $4
+                                WHERE cache_namespace = $1 AND fingerprint = $2 AND model = $3{scope_sql}
+                                  AND variant_key = ${vk_idx}
                                 LIMIT 1
                                 """,
-                                ns,
-                                fp,
-                                target_model,
+                                *base_params,
                                 variant_key.strip(),
                             )
                         else:
                             sv_row = await conn.fetchrow(
-                                """
-                                SELECT cache_namespace, fingerprint, variant_key, query_text, model, vector, metadata, cached_response, created_at
+                                f"""
+                                SELECT cache_namespace, fingerprint, variant_key, query_text, model, vector, metadata,
+                                       cached_response, created_at, visibility, owner_principal_id
                                 FROM semantic_variant_records
-                                WHERE cache_namespace = $1 AND fingerprint = $2 AND model = $3
+                                WHERE cache_namespace = $1 AND fingerprint = $2 AND model = $3{scope_sql}
                                 ORDER BY updated_at DESC
                                 LIMIT 1
                                 """,
-                                ns,
-                                fp,
-                                target_model,
+                                *base_params,
                             )
                     except asyncpg.UndefinedTableError:
                         sv_row = None
@@ -457,24 +607,26 @@ class PostgresVectorStore(BaseVectorStore):
                             created_at=sv_row["created_at"],
                             variant_key=sv_row["variant_key"],
                             response_text=sv_row["cached_response"],
+                            visibility=sv_row["visibility"],
+                            owner_principal_id=sv_row["owner_principal_id"],
                         )
                     if variant_key is not None:
+                        vk_idx = 4 + len(scope_params)
                         row = await conn.fetchrow(
                             f"""
-                            SELECT cache_namespace, fingerprint, query_text, model, vector, metadata, created_at
+                            SELECT cache_namespace, fingerprint, query_text, model, vector, metadata, created_at,
+                                   visibility, owner_principal_id
                             FROM {self.table_name}
-                            WHERE cache_namespace = $1 AND fingerprint = $2 AND model = $3
-                              AND metadata->>'variant_key' = $4
+                            WHERE cache_namespace = $1 AND fingerprint = $2 AND model = $3{scope_sql}
+                              AND metadata->>'variant_key' = ${vk_idx}
                             """,
-                            ns,
-                            fp,
-                            target_model,
+                            *base_params,
                             variant_key.strip(),
                         )
                     else:
-                        row = await conn.fetchrow(query, ns, fp, target_model)
+                        row = await conn.fetchrow(query, *base_params)
                 else:
-                    row = await conn.fetchrow(query, ns, fp, target_model)
+                    row = await conn.fetchrow(query, *base_params)
 
                 if not row:
                     return None
@@ -491,6 +643,8 @@ class PostgresVectorStore(BaseVectorStore):
                     vector=parsed_vec,
                     metadata=meta,
                     created_at=row["created_at"],
+                    visibility=row["visibility"],
+                    owner_principal_id=row["owner_principal_id"],
                 )
         except asyncpg.PostgresError as e:
             raise VectorStoreError(f"Database error during vector retrieval: {e}") from e
@@ -503,17 +657,32 @@ class PostgresVectorStore(BaseVectorStore):
         namespace: Optional[str] = None,
         model: Optional[str] = None,
         variant_key: Optional[str] = None,
+        visibility: Optional[str] = None,
+        principal_id: Optional[str] = None,
     ) -> Optional[VectorRecord]:
-        """Retrieves an existing vector record for (namespace, fingerprint, model[, variant_key]), if any."""
+        """Retrieves an existing vector record for (namespace, fingerprint, model[, variant_key[, scope]]), if any."""
         ns = (namespace or self.default_namespace).strip()
         target_model = (model or self.default_model).strip()
         fp = (fingerprint or "").strip()
         if not ns or not fp or not target_model:
             return None
-        return await self.get(fp, namespace=ns, model=target_model, variant_key=variant_key)
+        return await self.get(
+            fp,
+            namespace=ns,
+            model=target_model,
+            variant_key=variant_key,
+            visibility=visibility,
+            principal_id=principal_id,
+        )
 
-    async def delete(self, fingerprint: str, namespace: Optional[str] = None) -> bool:
-        """Deletes vector records matching fingerprint and namespace."""
+    async def delete(
+        self,
+        fingerprint: str,
+        namespace: Optional[str] = None,
+        visibility: Optional[str] = None,
+        principal_id: Optional[str] = None,
+    ) -> bool:
+        """Deletes vector records matching fingerprint, namespace, and optional privacy scope."""
         fp = (fingerprint or "").strip()
         if not fp:
             raise VectorInvalidError("Fingerprint cannot be empty.")
@@ -522,18 +691,33 @@ class PostgresVectorStore(BaseVectorStore):
         if not ns:
             raise VectorInvalidError("Namespace cannot be empty.")
 
-        query = f"DELETE FROM {self.table_name} WHERE cache_namespace = $1 AND fingerprint = $2"
+        clauses = ["cache_namespace = $1", "fingerprint = $2"]
+        params: list[Any] = [ns, fp]
+        if visibility is not None:
+            norm_vis = normalize_cache_visibility(visibility)
+            if norm_vis == CACHE_VISIBILITY_UNKNOWN:
+                return False
+            params.append(norm_vis)
+            clauses.append(f"visibility = ${len(params)}")
+        if principal_id is not None:
+            norm_p = normalize_principal_id(principal_id)
+            if norm_p is None:
+                return False
+            params.append(norm_p)
+            clauses.append(f"owner_principal_id = ${len(params)}")
+
+        where_sql = " AND ".join(clauses)
+        query = f"DELETE FROM {self.table_name} WHERE {where_sql}"
         try:
             total_deleted = 0
             async with self.pool.acquire() as conn:
-                result_tag = await conn.execute(query, ns, fp)
+                result_tag = await conn.execute(query, *params)
                 total_deleted += int(result_tag.split()[-1]) if result_tag else 0
                 if self.table_name == "vector_records":
                     try:
                         sv_tag = await conn.execute(
-                            "DELETE FROM semantic_variant_records WHERE cache_namespace = $1 AND fingerprint = $2",
-                            ns,
-                            fp,
+                            f"DELETE FROM semantic_variant_records WHERE {where_sql}",
+                            *params,
                         )
                         total_deleted += int(sv_tag.split()[-1]) if sv_tag else 0
                     except asyncpg.UndefinedTableError:
@@ -544,23 +728,44 @@ class PostgresVectorStore(BaseVectorStore):
         except Exception as e:
             raise VectorStoreConnectionError(f"Connection failure during vector deletion: {e}") from e
 
-    async def clear(self, namespace: Optional[str] = None) -> int:
-        """Deletes all vector records within the specified namespace."""
+    async def clear(
+        self,
+        namespace: Optional[str] = None,
+        visibility: Optional[str] = None,
+        principal_id: Optional[str] = None,
+    ) -> int:
+        """Deletes vector records within the specified namespace (optionally scoped by visibility/principal)."""
         ns = (namespace or self.default_namespace).strip()
         if not ns:
             raise VectorInvalidError("Namespace cannot be empty.")
 
-        query = f"DELETE FROM {self.table_name} WHERE cache_namespace = $1"
+        clauses = ["cache_namespace = $1"]
+        params: list[Any] = [ns]
+        if visibility is not None:
+            norm_vis = normalize_cache_visibility(visibility)
+            if norm_vis == CACHE_VISIBILITY_UNKNOWN:
+                return 0
+            params.append(norm_vis)
+            clauses.append(f"visibility = ${len(params)}")
+        if principal_id is not None:
+            norm_p = normalize_principal_id(principal_id)
+            if norm_p is None:
+                return 0
+            params.append(norm_p)
+            clauses.append(f"owner_principal_id = ${len(params)}")
+
+        where_sql = " AND ".join(clauses)
+        query = f"DELETE FROM {self.table_name} WHERE {where_sql}"
         try:
             count = 0
             async with self.pool.acquire() as conn:
-                result_tag = await conn.execute(query, ns)
+                result_tag = await conn.execute(query, *params)
                 count += int(result_tag.split()[-1]) if result_tag else 0
                 if self.table_name == "vector_records":
                     try:
                         sv_tag = await conn.execute(
-                            "DELETE FROM semantic_variant_records WHERE cache_namespace = $1",
-                            ns,
+                            f"DELETE FROM semantic_variant_records WHERE {where_sql}",
+                            *params,
                         )
                         count += int(sv_tag.split()[-1]) if sv_tag else 0
                     except asyncpg.UndefinedTableError:
@@ -616,6 +821,9 @@ class PostgresVectorStore(BaseVectorStore):
         namespace: Optional[str] = None,
         model: Optional[str] = None,
         analyze: bool = False,
+        visibility: Optional[str] = None,
+        principal_id: Optional[str] = None,
+        allow_shared_reads: bool = False,
     ) -> Dict[str, Any]:
         """
         Executes EXPLAIN (or EXPLAIN ANALYZE) on the exact production nearest-neighbour
@@ -630,33 +838,37 @@ class PostgresVectorStore(BaseVectorStore):
         vec_str = _format_vector(query_vector)
 
         explain_cmd = "EXPLAIN (ANALYZE, BUFFERS)" if analyze else "EXPLAIN (BUFFERS)"
-        single_query, combined_query = self._build_search_queries()
+        single_query, combined_query, scope_params, fail_closed = self._build_search_queries(
+            visibility=visibility,
+            principal_id=principal_id,
+            allow_shared_reads=allow_shared_reads,
+        )
+        if fail_closed:
+            return {
+                "vector_index_used": False,
+                "vector_records_hnsw_used": False,
+                "semantic_variant_records_hnsw_used": False,
+                "retrieval_method": "Fail-closed empty scope",
+                "execution_plan_summary": [],
+            }
+        params: list[Any] = [vec_str, ns, target_model, top_k, *scope_params]
         try:
             async with self.pool.acquire() as conn:
                 if combined_query is not None:
                     try:
                         rows = await conn.fetch(
                             f"{explain_cmd}\n{combined_query}",
-                            vec_str,
-                            ns,
-                            target_model,
-                            top_k,
+                            *params,
                         )
                     except asyncpg.UndefinedTableError:
                         rows = await conn.fetch(
                             f"{explain_cmd}\n{single_query}",
-                            vec_str,
-                            ns,
-                            target_model,
-                            top_k,
+                            *params,
                         )
                 else:
                     rows = await conn.fetch(
                         f"{explain_cmd}\n{single_query}",
-                        vec_str,
-                        ns,
-                        target_model,
-                        top_k,
+                        *params,
                     )
             plan_lines = [r[0] for r in rows]
             plan_text = " ".join(plan_lines).lower()

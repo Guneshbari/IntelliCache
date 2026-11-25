@@ -57,6 +57,13 @@ from .legacy import (
     classify_legacy_record_metadata,
 )
 from .policy import SemanticCachePolicy
+from .control import (
+    RuntimeServingControlState,
+    SemanticServingController,
+    get_semantic_serving_controller,
+    reset_semantic_serving_controller,
+    sync_semantic_serving_controller_from_settings,
+)
 from .service import SemanticCacheService
 from .verification import ResponseArtifactVerifier
 
@@ -86,12 +93,14 @@ __all__ = [
     "REQUIRED_DIMENSIONS",
     "ResponseArtifactVerifier",
     "ResponseVerificationResult",
+    "RuntimeServingControlState",
     "SUPPORTED_SCHEMA_VERSIONS",
     "SemanticCachePolicy",
     "SemanticCacheService",
     "SemanticCacheStats",
     "SemanticCompatibilityMetadata",
     "SemanticHit",
+    "SemanticServingController",
     "TRUSTED_CURATED_EVIDENCE_ID",
     "TRUSTED_REQUEST_EXTRACTOR_ID",
     "TRUSTED_RESPONSE_VERIFIER_ID",
@@ -109,4 +118,7 @@ __all__ = [
     "compute_variant_key",
     "extract_effective_user_query",
     "get_default_evidence_authority",
+    "get_semantic_serving_controller",
+    "reset_semantic_serving_controller",
+    "sync_semantic_serving_controller_from_settings",
 ]

@@ -13,6 +13,14 @@ import asyncpg
 
 from .interfaces import BaseCache, CacheEntry, CacheStats
 from ..core.contracts import UsageMetrics
+from ..privacy import (
+    CACHE_VISIBILITY_PRIVATE,
+    CACHE_VISIBILITY_TENANT_SHARED,
+    CACHE_VISIBILITY_UNKNOWN,
+    matches_cache_scope,
+    normalize_cache_visibility,
+    normalize_principal_id,
+)
 
 logger = logging.getLogger("intellicache.gateway.postgres_cache")
 
@@ -48,20 +56,61 @@ class PostgresCache(BaseCache):
         self._tokens_saved: int = 0
         self._latency_saved_ms: float = 0.0
 
-    async def get(self, key: str, namespace: Optional[str] = None) -> Optional[CacheEntry]:
+    @staticmethod
+    def _build_scope_clause(
+        visibility: Optional[str],
+        principal_id: Optional[str],
+        allow_shared_reads: bool,
+        start_idx: int = 3,
+    ) -> tuple[str, list[Any], bool]:
+        if visibility is None:
+            return " AND visibility <> 'private'", [], False
+        req_vis = normalize_cache_visibility(visibility)
+        if req_vis == CACHE_VISIBILITY_UNKNOWN:
+            return "", [], True
+        if req_vis == CACHE_VISIBILITY_TENANT_SHARED:
+            return " AND visibility = 'tenant_shared' AND owner_principal_id IS NULL", [], False
+        if req_vis == CACHE_VISIBILITY_PRIVATE:
+            req_own = normalize_principal_id(principal_id)
+            if req_own is None:
+                return "", [], True
+            if not allow_shared_reads:
+                return f" AND visibility = 'private' AND owner_principal_id = ${start_idx}", [req_own], False
+            return (
+                f" AND ((visibility = 'private' AND owner_principal_id = ${start_idx}) "
+                f"OR (visibility = 'tenant_shared' AND owner_principal_id IS NULL))",
+                [req_own],
+                False,
+            )
+        return "", [], True
+
+    async def get(
+        self,
+        key: str,
+        namespace: Optional[str] = None,
+        visibility: Optional[str] = None,
+        principal_id: Optional[str] = None,
+        allow_shared_reads: bool = False,
+    ) -> Optional[CacheEntry]:
         """
-        Retrieves an unexpired cache entry for the specified namespace and fingerprint.
+        Retrieves an unexpired cache entry matching caller privacy scope.
         Updates last_accessed timestamp and increments hit count atomically.
         """
+        scope_sql, scope_params, fail_closed = self._build_scope_clause(
+            visibility, principal_id, allow_shared_reads, start_idx=3
+        )
+        if fail_closed:
+            return None
+
         ns = (namespace or self.default_namespace).strip()
-        query = """
+        query = f"""
             SELECT id, response, model, provider, prompt_tokens, completion_tokens, total_tokens,
-                   latency_ms, hit_count, metadata, created_at, expires_at
+                   latency_ms, hit_count, metadata, created_at, expires_at, visibility, owner_principal_id
             FROM cache_entries
-            WHERE cache_namespace = $1 AND fingerprint = $2
+            WHERE cache_namespace = $1 AND fingerprint = $2{scope_sql}
         """
         async with self.pool.acquire() as conn:
-            row = await conn.fetchrow(query, ns, key)
+            row = await conn.fetchrow(query, ns, key, *scope_params)
             if not row:
                 return None
 
@@ -71,11 +120,18 @@ class PostgresCache(BaseCache):
                 if expires_at.tzinfo is None:
                     expires_at = expires_at.replace(tzinfo=timezone.utc)
                 if expires_at <= now:
-                    # Entry is expired: clean up lazily and treat as cache miss
                     await conn.execute("DELETE FROM cache_entries WHERE id = $1", row["id"])
                     return None
 
-            # Mark hit and update access timestamp
+            if not matches_cache_scope(
+                row["visibility"],
+                row["owner_principal_id"],
+                visibility,
+                principal_id,
+                allow_shared_reads=allow_shared_reads,
+            ):
+                return None
+
             await conn.execute(
                 """
                 UPDATE cache_entries
@@ -115,6 +171,8 @@ class PostgresCache(BaseCache):
             latency_ms=latency,
             metadata=metadata,
             provider=row["provider"],
+            visibility=row["visibility"],
+            owner_principal_id=row["owner_principal_id"],
         )
         entry.hit_count = row["hit_count"] + 1
         created = row["created_at"]
@@ -122,21 +180,34 @@ class PostgresCache(BaseCache):
             entry.created_at = created.timestamp()
         return entry
 
-    async def peek(self, key: str, namespace: Optional[str] = None) -> Optional[CacheEntry]:
+    async def peek(
+        self,
+        key: str,
+        namespace: Optional[str] = None,
+        visibility: Optional[str] = None,
+        principal_id: Optional[str] = None,
+        allow_shared_reads: bool = False,
+    ) -> Optional[CacheEntry]:
         """
         Non-mutating read operation for candidate validation.
-        Fetches row and checks TTL without updating last_accessed, hit_count, or savings.
+        Fetches row and checks TTL + strict privacy scope without updating last_accessed or counters.
         """
+        scope_sql, scope_params, fail_closed = self._build_scope_clause(
+            visibility, principal_id, allow_shared_reads, start_idx=3
+        )
+        if fail_closed:
+            return None
+
         ns = (namespace or self.default_namespace).strip()
-        query = """
+        query = f"""
             SELECT id, cache_namespace, fingerprint, response, model, provider,
                    prompt_tokens, completion_tokens, total_tokens, latency_ms,
-                   hit_count, metadata, created_at, expires_at
+                   hit_count, metadata, created_at, expires_at, visibility, owner_principal_id
             FROM cache_entries
-            WHERE cache_namespace = $1 AND fingerprint = $2
+            WHERE cache_namespace = $1 AND fingerprint = $2{scope_sql}
         """
         async with self.pool.acquire() as conn:
-            row = await conn.fetchrow(query, ns, key)
+            row = await conn.fetchrow(query, ns, key, *scope_params)
             if not row:
                 return None
 
@@ -148,6 +219,15 @@ class PostgresCache(BaseCache):
                 if expires_at <= now:
                     await conn.execute("DELETE FROM cache_entries WHERE id = $1", row["id"])
                     return None
+
+            if not matches_cache_scope(
+                row["visibility"],
+                row["owner_principal_id"],
+                visibility,
+                principal_id,
+                allow_shared_reads=allow_shared_reads,
+            ):
+                return None
 
         total_toks = row["total_tokens"] or 0
         latency = float(row["latency_ms"] or 0.0)
@@ -176,6 +256,8 @@ class PostgresCache(BaseCache):
             latency_ms=latency,
             metadata=metadata,
             provider=row["provider"],
+            visibility=row["visibility"],
+            owner_principal_id=row["owner_principal_id"],
         )
         entry.hit_count = row["hit_count"]
         created = row["created_at"]
@@ -188,6 +270,15 @@ class PostgresCache(BaseCache):
         Inserts or updates an exact-match entry with conflict safety and bounded LRU capacity.
         """
         ns = (namespace or self.default_namespace).strip()
+        vis = normalize_cache_visibility(getattr(entry, "visibility", CACHE_VISIBILITY_UNKNOWN))
+        owner = normalize_principal_id(getattr(entry, "owner_principal_id", None))
+        if vis == CACHE_VISIBILITY_PRIVATE and owner is None:
+            raise ValueError("Cannot persist private cache entry without owner_principal_id.")
+        if vis == CACHE_VISIBILITY_TENANT_SHARED and owner is not None:
+            raise ValueError("Cannot persist tenant_shared cache entry with owner_principal_id.")
+        if vis != CACHE_VISIBILITY_PRIVATE:
+            owner = None
+
         now = datetime.now(timezone.utc)
         expires_at: Optional[datetime] = None
         if self.ttl_seconds > 0:
@@ -205,11 +296,13 @@ class PostgresCache(BaseCache):
             INSERT INTO cache_entries (
                 cache_namespace, fingerprint, response, model, provider,
                 prompt_tokens, completion_tokens, total_tokens, latency_ms,
-                hit_count, metadata, created_at, last_accessed, expires_at
+                hit_count, metadata, created_at, last_accessed, expires_at,
+                visibility, owner_principal_id
             ) VALUES (
                 $1, $2, $3, $4, $5,
                 $6, $7, $8, $9,
-                $10, $11::jsonb, $12, $13, $14
+                $10, $11::jsonb, $12, $13, $14,
+                $15, $16
             )
             ON CONFLICT (cache_namespace, fingerprint) DO UPDATE SET
                 response = EXCLUDED.response,
@@ -221,16 +314,16 @@ class PostgresCache(BaseCache):
                 latency_ms = EXCLUDED.latency_ms,
                 metadata = EXCLUDED.metadata,
                 last_accessed = EXCLUDED.last_accessed,
-                expires_at = EXCLUDED.expires_at;
+                expires_at = EXCLUDED.expires_at,
+                visibility = EXCLUDED.visibility,
+                owner_principal_id = EXCLUDED.owner_principal_id;
         """
 
         lock_id = _namespace_to_lock_id(ns)
         async with self.pool.acquire() as conn:
             async with conn.transaction():
-                # Serialize upsert and capacity enforcement per namespace
                 await conn.execute("SELECT pg_advisory_xact_lock($1)", lock_id)
 
-                # 1. Conflict-safe upsert
                 await conn.execute(
                     upsert_query,
                     ns,
@@ -247,6 +340,8 @@ class PostgresCache(BaseCache):
                     created_dt,
                     now,
                     expires_at,
+                    vis,
+                    owner,
                 )
 
                 # 2. Evict expired entries in this namespace
@@ -300,8 +395,65 @@ class PostgresCache(BaseCache):
         self._tokens_saved += max(0, tokens_saved)
         self._latency_saved_ms += max(0.0, latency_saved_ms)
 
-    async def clear(self, namespace: Optional[str] = None) -> None:
-        """Clears entries in PostgreSQL. If namespace is provided, clears only that namespace."""
+    async def delete(
+        self,
+        key: str,
+        namespace: Optional[str] = None,
+        visibility: Optional[str] = None,
+        principal_id: Optional[str] = None,
+    ) -> bool:
+        """Deletes a cache entry matching key/namespace and optional privacy scope."""
+        ns = (namespace or self.default_namespace).strip()
+        clauses = ["cache_namespace = $1", "fingerprint = $2"]
+        params: list[Any] = [ns, key]
+        if visibility is not None:
+            norm_vis = normalize_cache_visibility(visibility)
+            if norm_vis == CACHE_VISIBILITY_UNKNOWN:
+                return False
+            params.append(norm_vis)
+            clauses.append(f"visibility = ${len(params)}")
+        if principal_id is not None:
+            norm_p = normalize_principal_id(principal_id)
+            if norm_p is None:
+                return False
+            params.append(norm_p)
+            clauses.append(f"owner_principal_id = ${len(params)}")
+        query = f"DELETE FROM cache_entries WHERE {' AND '.join(clauses)}"
+        async with self.pool.acquire() as conn:
+            tag = await conn.execute(query, *params)
+        deleted = int(tag.split()[-1]) if tag else 0
+        return deleted > 0
+
+    async def clear(
+        self,
+        namespace: Optional[str] = None,
+        visibility: Optional[str] = None,
+        principal_id: Optional[str] = None,
+    ) -> None:
+        """Clears entries in PostgreSQL (optionally scoped by namespace, visibility, and principal)."""
+        if visibility is not None or principal_id is not None:
+            clauses: list[str] = []
+            params: list[Any] = []
+            if namespace is not None:
+                params.append(namespace.strip())
+                clauses.append(f"cache_namespace = ${len(params)}")
+            if visibility is not None:
+                norm_vis = normalize_cache_visibility(visibility)
+                if norm_vis == CACHE_VISIBILITY_UNKNOWN:
+                    return
+                params.append(norm_vis)
+                clauses.append(f"visibility = ${len(params)}")
+            if principal_id is not None:
+                norm_p = normalize_principal_id(principal_id)
+                if norm_p is None:
+                    return
+                params.append(norm_p)
+                clauses.append(f"owner_principal_id = ${len(params)}")
+            query = f"DELETE FROM cache_entries WHERE {' AND '.join(clauses)}"
+            async with self.pool.acquire() as conn:
+                await conn.execute(query, *params)
+            return
+
         async with self.pool.acquire() as conn:
             if namespace is not None:
                 await conn.execute(

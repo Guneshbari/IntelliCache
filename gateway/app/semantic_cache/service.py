@@ -28,7 +28,15 @@ from .evidence import EvidenceAuthority, get_default_evidence_authority
 from .interfaces import BaseSemanticCache
 from .policy import SemanticCachePolicy
 from .verification import ResponseArtifactVerifier
-from ..core.contracts import GenerationRequest, GenerationResult
+from ..core.contracts import (
+    CACHE_VISIBILITY_PRIVATE,
+    CACHE_VISIBILITY_UNKNOWN,
+    GenerationRequest,
+    GenerationResult,
+    derive_scoped_exact_key,
+    normalize_cache_visibility,
+    normalize_principal_id,
+)
 from ..core.errors import sanitize_error_message
 from ..core.fingerprinting import generate_fingerprint
 from ..embeddings.contracts import EmbeddingTask
@@ -109,10 +117,22 @@ class SemanticCacheService(BaseSemanticCache):
         lookup_start = time.perf_counter()
         query_text = extract_effective_user_query(request)
         query_hash = hashlib.sha256(query_text.encode("utf-8")).hexdigest()
+        req_vis = normalize_cache_visibility(getattr(request, "visibility", CACHE_VISIBILITY_PRIVATE))
+        req_own = normalize_principal_id(getattr(request, "principal_id", None))
+        allow_shared = bool(getattr(request, "allow_shared_reads", False))
 
         eligibility = self.is_eligible(request)
         if not eligibility.eligible:
             self.stats.eligibility_rejections += 1
+            reason_msg = eligibility.reason or ""
+            if reason_msg.startswith(CompatibilityReasonCode.VISIBILITY_MISSING_OR_UNKNOWN.value):
+                self.stats.visibility_rejections += 1
+                collector.record_visibility_rejection(ns)
+                collector.record_semantic_rejection_reason(ns, CompatibilityReasonCode.VISIBILITY_MISSING_OR_UNKNOWN.value)
+            elif reason_msg.startswith(CompatibilityReasonCode.PRINCIPAL_IDENTITY_MISSING.value):
+                self.stats.principal_isolation_rejections += 1
+                collector.record_principal_isolation_rejection(ns)
+                collector.record_semantic_rejection_reason(ns, CompatibilityReasonCode.PRINCIPAL_IDENTITY_MISSING.value)
             logger.debug(
                 "Request ineligible for semantic caching: %s",
                 eligibility.reason,
@@ -215,7 +235,12 @@ class SemanticCacheService(BaseSemanticCache):
                 top_k=retrieval_limit,
                 namespace=ns,
                 model=self.policy.configured_model,
+                visibility=req_vis,
+                principal_id=req_own,
+                allow_shared_reads=allow_shared,
             )
+            self.stats.candidates_retrieved += len(candidates)
+            collector.record_semantic_candidates_retrieved(ns, len(candidates))
             search_lat_ms = (time.perf_counter() - search_start) * 1000.0
             collector.record_latency(ns, "vector_search_latency_ms", search_lat_ms)
         except Exception as exc:
@@ -326,6 +351,39 @@ class SemanticCacheService(BaseSemanticCache):
                 else:
                     collector.record_incompatible_candidate(ns)
 
+                cand_decisions = eval_diag.get("candidate_decisions") if isinstance(eval_diag, dict) else None
+                recorded_codes: list[str] = []
+                if isinstance(cand_decisions, list):
+                    for item in cand_decisions:
+                        dec = item.get("decision") if isinstance(item, dict) else None
+                        if isinstance(dec, dict) and dec.get("reason_code"):
+                            recorded_codes.append(str(dec["reason_code"]))
+                elif isinstance(eval_diag, dict) and eval_diag.get("reason_code"):
+                    recorded_codes.append(str(eval_diag["reason_code"]))
+                for r_code in recorded_codes:
+                    collector.record_semantic_rejection_reason(ns, r_code)
+                    if r_code in (
+                        CompatibilityReasonCode.VISIBILITY_MISSING_OR_UNKNOWN.value,
+                        CompatibilityReasonCode.VISIBILITY_MISMATCH.value,
+                    ):
+                        self.stats.visibility_rejections += 1
+                        collector.record_visibility_rejection(ns)
+                    elif r_code in (
+                        CompatibilityReasonCode.PRINCIPAL_IDENTITY_MISSING.value,
+                        CompatibilityReasonCode.PRINCIPAL_ISOLATION_MISMATCH.value,
+                    ):
+                        self.stats.principal_isolation_rejections += 1
+                        collector.record_principal_isolation_rejection(ns)
+                    elif r_code in (
+                        CompatibilityReasonCode.EVIDENCE_BINDING_MISMATCH.value,
+                        CompatibilityReasonCode.EVIDENCE_SIGNATURE_INVALID.value,
+                        CompatibilityReasonCode.EVIDENCE_SCOPE_MISMATCH.value,
+                        CompatibilityReasonCode.UNVERIFIED_COMPATIBILITY_EVIDENCE.value,
+                        CompatibilityReasonCode.AMBIGUOUS_COMPATIBILITY_EVIDENCE.value,
+                    ):
+                        self.stats.evidence_validation_rejections += 1
+                        collector.record_evidence_validation_rejection(ns)
+
             logger.debug("Semantic lookup miss: %s", rejection_reason)
             diag_payload: Dict[str, Any] = {
                 "query_hash": query_hash,
@@ -358,10 +416,9 @@ class SemanticCacheService(BaseSemanticCache):
             self._emit_diagnostics(diag_payload, hook=diagnostics_hook)
             return None
 
-        # 4. Successful semantic cache hit
-        self.stats.hits += 1
-        logger.info(
-            "Semantic cache hit: namespace='%s', fingerprint='%s...', distance=%.4f, similarity=%.4f",
+        # 4. Candidate validated and selected — caller (IntelliCacheCore) confirms pre-delivery runtime gate
+        logger.debug(
+            "Semantic candidate validated for delivery: namespace='%s', fingerprint='%s...', distance=%.4f, similarity=%.4f",
             winning_candidate.cache_namespace,
             winning_candidate.fingerprint[:12],
             winning_candidate.distance,
@@ -404,11 +461,16 @@ class SemanticCacheService(BaseSemanticCache):
             metadata=winning_candidate.metadata,
         )
 
+    def record_served_hit(self, namespace: Optional[str] = None) -> None:
+        """Records that a validated semantic hit passed final pre-delivery control check and was served."""
+        self.stats.hits += 1
+
     async def index(self, request: GenerationRequest, result: GenerationResult) -> bool:
         """
         Verifies generated response artifacts, mints cryptographically bound compatibility evidence,
         enforces variant coexistence rules, and indexes verified candidates into the vector store.
-        Does not admit FAILED, UNCERTAIN, truncated, or colliding variant responses.
+        Enforces strict visibility & owner_principal_id isolation before admitting.
+        Does not admit FAILED, UNCERTAIN, truncated, unknown visibility, missing private principal, or colliding variants.
         Fails safely without raising exceptions or invalidating the generation result.
         """
         # Rule 8: Do not index responses from semantic hits or exact hits
@@ -416,6 +478,31 @@ class SemanticCacheService(BaseSemanticCache):
             return False
 
         self.last_admission_decision = None
+        ns = request.namespace or self.default_namespace
+        collector = self._get_collector()
+
+        req_vis = normalize_cache_visibility(getattr(request, "visibility", CACHE_VISIBILITY_PRIVATE))
+        req_own = normalize_principal_id(getattr(request, "principal_id", None))
+        if req_vis == CACHE_VISIBILITY_UNKNOWN:
+            self.stats.visibility_rejections += 1
+            collector.record_visibility_rejection(ns)
+            self.last_admission_decision = AdmissionDecision(
+                status=AdmissionStatus.REJECT,
+                reason_code=CompatibilityReasonCode.VISIBILITY_MISSING_OR_UNKNOWN,
+                message="Admission rejected: missing or unknown cache visibility.",
+            )
+            return False
+        if req_vis == CACHE_VISIBILITY_PRIVATE and req_own is None:
+            self.stats.principal_isolation_rejections += 1
+            collector.record_principal_isolation_rejection(ns)
+            self.last_admission_decision = AdmissionDecision(
+                status=AdmissionStatus.REJECT,
+                reason_code=CompatibilityReasonCode.PRINCIPAL_IDENTITY_MISSING,
+                message="Admission rejected: private cache scope requires verified principal_id.",
+            )
+            return False
+
+        owner_to_bind = req_own if req_vis == CACHE_VISIBILITY_PRIVATE else None
 
         # Only index eligible queries - evaluate policy directly to avoid duplicate request eligibility metrics
         eligibility = self.policy.check_eligibility(request)
@@ -428,8 +515,6 @@ class SemanticCacheService(BaseSemanticCache):
             return False
 
         query_text = extract_effective_user_query(request)
-        ns = request.namespace or self.default_namespace
-        collector = self._get_collector()
         idx_start = time.perf_counter()
 
         # 1. Build request-derived v3 metadata and verify actual generated response BEFORE embedding/upsert
@@ -509,7 +594,12 @@ class SemanticCacheService(BaseSemanticCache):
             )
             return False
 
-        variant_key = compute_variant_key(base_meta, schema_digest=verification.verified_schema_digest)
+        variant_key = compute_variant_key(
+            base_meta,
+            schema_digest=verification.verified_schema_digest,
+            visibility=req_vis,
+            owner_principal_id=owner_to_bind,
+        )
         effective_fp = (getattr(result, "fingerprint", None) or "").strip()
         if not effective_fp:
             effective_fp = generate_fingerprint(
@@ -519,15 +609,18 @@ class SemanticCacheService(BaseSemanticCache):
                 max_tokens=request.max_tokens,
                 provider=request.provider,
             )
+        storage_fp = derive_scoped_exact_key(effective_fp, req_vis, owner_to_bind)
 
         # 2. Mint cryptographically bound response_verified CompatibilityEvidence
         try:
             bound_evidence = self.evidence_authority.mint_response_verified_evidence(
                 cache_namespace=ns,
-                fingerprint=effective_fp,
+                fingerprint=storage_fp,
                 response_text=result.text,
                 metadata=base_meta,
                 verification=verification,
+                visibility=req_vis,
+                owner_principal_id=owner_to_bind,
             )
             verified_meta_obj = SemanticCompatibilityMetadata(
                 schema_version=base_meta.schema_version,
@@ -590,13 +683,15 @@ class SemanticCacheService(BaseSemanticCache):
 
         record = VectorRecord(
             cache_namespace=ns,
-            fingerprint=effective_fp,
+            fingerprint=storage_fp,
             query_text=query_text,
             vector=embed_res.vector,
             model=self.policy.configured_model,
             metadata=meta,
             variant_key=variant_key,
             response_text=result.text,
+            visibility=req_vis,
+            owner_principal_id=owner_to_bind,
         )
 
         # 4. Upsert verified record into vector store
@@ -664,6 +759,15 @@ class SemanticCacheService(BaseSemanticCache):
             "admission_verified": s.admission_verified,
             "admission_rejected": s.admission_rejected,
             "admission_uncertain": s.admission_uncertain,
+            "runtime_disabled_skips": s.semantic_runtime_disabled_skips,
+            "candidates_retrieved": s.semantic_candidates_retrieved,
+            "visibility_rejections": s.visibility_rejections,
+            "principal_isolation_rejections": s.principal_isolation_rejections,
+            "evidence_validation_rejections": s.evidence_validation_rejections,
+            "upstream_fallbacks_after_miss": s.upstream_fallbacks_after_semantic_miss,
+            "runtime_control_changes": s.runtime_control_changes,
+            "runtime_control_failures": s.runtime_control_failures,
+            "privacy_violation_attempts": s.privacy_violation_attempts,
         }
 
     async def close(self) -> None:

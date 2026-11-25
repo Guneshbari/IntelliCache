@@ -13,6 +13,13 @@ import math
 import time
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from ..privacy import (
+    CACHE_VISIBILITY_PRIVATE,
+    CACHE_VISIBILITY_UNKNOWN,
+    matches_cache_scope,
+    normalize_cache_visibility,
+    normalize_principal_id,
+)
 from .contracts import VectorRecord, VectorSearchResult, cosine_distance_to_similarity
 from .errors import (
     VectorDimensionMismatchError,
@@ -138,12 +145,14 @@ class InMemoryVectorStore(BaseVectorStore):
         top_k: int = 5,
         namespace: Optional[str] = None,
         model: Optional[str] = None,
+        visibility: Optional[str] = None,
+        principal_id: Optional[str] = None,
+        allow_shared_reads: bool = False,
     ) -> List[VectorSearchResult]:
         """
         Searches for top-k nearest records by cosine distance.
-        Enforces namespace and model isolation.
-        Performs non-mutating exact cache lookups using peek() to prevent
-        candidate inspections from modifying exact-cache LRU order or metrics.
+        Enforces namespace, model, and strict visibility/principal isolation
+        prior to computing similarity or reading cached response bodies.
         """
         if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k <= 0:
             raise VectorInvalidError(f"top_k must be a positive integer >= 1, got {top_k}.")
@@ -158,6 +167,13 @@ class InMemoryVectorStore(BaseVectorStore):
 
         self._validate_vector_dimensions(query_vector, context="Query vector")
 
+        if visibility is not None:
+            req_vis = normalize_cache_visibility(visibility)
+            if req_vis == CACHE_VISIBILITY_UNKNOWN:
+                return []
+            if req_vis == CACHE_VISIBILITY_PRIVATE and normalize_principal_id(principal_id) is None:
+                return []
+
         async with self._lock:
             candidates = []
             for (k, rec) in self._records.items():
@@ -169,6 +185,14 @@ class InMemoryVectorStore(BaseVectorStore):
                     sv = rec.metadata.get("schema_version")
                     if not isinstance(sv, int) or isinstance(sv, bool) or sv < 3:
                         continue
+                if not matches_cache_scope(
+                    rec.visibility,
+                    rec.owner_principal_id,
+                    visibility,
+                    principal_id,
+                    allow_shared_reads=allow_shared_reads,
+                ):
+                    continue
                 candidates.append((k, rec, self._record_versions.get(k, 0)))
 
         if not candidates:
@@ -208,15 +232,39 @@ class InMemoryVectorStore(BaseVectorStore):
             original_latency_ms = 0.0
 
             if self.exact_cache is not None:
+                peek_vis = rec.visibility if rec.visibility != CACHE_VISIBILITY_UNKNOWN else None
                 # Use non-mutating peek() to avoid modifying LRU recency or incrementing hit counts
                 if hasattr(self.exact_cache, "peek"):
-                    entry = await self.exact_cache.peek(rec.fingerprint, namespace=rec.cache_namespace)
+                    if peek_vis is not None:
+                        entry = await self.exact_cache.peek(
+                            rec.fingerprint,
+                            namespace=rec.cache_namespace,
+                            visibility=peek_vis,
+                            principal_id=rec.owner_principal_id,
+                        )
+                    else:
+                        entry = await self.exact_cache.peek(
+                            rec.fingerprint,
+                            namespace=rec.cache_namespace,
+                        )
                 else:
-                    entry = await self.exact_cache.get(rec.fingerprint, namespace=rec.cache_namespace)
+                    entry = await self.exact_cache.get(
+                        rec.fingerprint,
+                        namespace=rec.cache_namespace,
+                    )
 
                 if entry is None:
                     # Stale or expired exact cache entry: mark for lazy cleanup and skip
                     orphaned_candidates.append((k, rec, ver))
+                    continue
+
+                if not matches_cache_scope(
+                    entry.visibility,
+                    entry.owner_principal_id,
+                    visibility,
+                    principal_id,
+                    allow_shared_reads=allow_shared_reads,
+                ):
                     continue
 
                 cached_resp = rec.response_text if rec.response_text is not None else entry.response
@@ -243,6 +291,8 @@ class InMemoryVectorStore(BaseVectorStore):
                     original_latency_ms=original_latency_ms,
                     metadata=dict(rec.metadata),
                     created_at=rec.created_at,
+                    visibility=rec.visibility,
+                    owner_principal_id=rec.owner_principal_id,
                 )
             )
 
@@ -268,8 +318,10 @@ class InMemoryVectorStore(BaseVectorStore):
         namespace: Optional[str] = None,
         model: Optional[str] = None,
         variant_key: Optional[str] = None,
+        visibility: Optional[str] = None,
+        principal_id: Optional[str] = None,
     ) -> Optional[VectorRecord]:
-        """Retrieves an existing vector record for (namespace, fingerprint, model[, variant_key]), if any."""
+        """Retrieves an existing vector record for (namespace, fingerprint, model[, variant_key[, scope]]), if any."""
         ns = (namespace or self.default_namespace).strip()
         target_model = (model or self.default_model).strip()
         fp = (fingerprint or "").strip()
@@ -277,24 +329,45 @@ class InMemoryVectorStore(BaseVectorStore):
             return None
         async with self._lock:
             if variant_key is not None:
-                return self._records.get((ns, fp, target_model, variant_key.strip()))
+                rec = self._records.get((ns, fp, target_model, variant_key.strip()))
+                if rec is not None and (visibility is not None or principal_id is not None):
+                    if not matches_cache_scope(rec.visibility, rec.owner_principal_id, visibility, principal_id):
+                        return None
+                return rec
             for k, rec in self._records.items():
                 if k[0] == ns and k[1] == fp and k[2] == target_model:
+                    if visibility is not None or principal_id is not None:
+                        if not matches_cache_scope(rec.visibility, rec.owner_principal_id, visibility, principal_id):
+                            continue
                     return rec
             return None
 
-    async def delete(self, fingerprint: str, namespace: Optional[str] = None) -> bool:
-        """Deletes a vector record by namespace and exact-cache fingerprint."""
+    async def delete(
+        self,
+        fingerprint: str,
+        namespace: Optional[str] = None,
+        visibility: Optional[str] = None,
+        principal_id: Optional[str] = None,
+    ) -> bool:
+        """Deletes vector records matching namespace, exact-cache fingerprint, and optional privacy scope."""
         if not fingerprint or not fingerprint.strip():
             raise VectorInvalidError("Fingerprint cannot be empty.")
 
         ns = (namespace or self.default_namespace).strip()
         fp = fingerprint.strip()
+        norm_vis = normalize_cache_visibility(visibility) if visibility is not None else None
+        norm_p = normalize_principal_id(principal_id)
+        if visibility is not None and norm_vis == CACHE_VISIBILITY_UNKNOWN:
+            return False
+        if principal_id is not None and norm_p is None:
+            return False
 
         async with self._lock:
             keys_to_delete = [
-                k for k in self._records
+                k for k, rec in self._records.items()
                 if k[0] == ns and k[1] == fp
+                and (norm_vis is None or rec.visibility == norm_vis)
+                and (principal_id is None or rec.owner_principal_id == norm_p)
             ]
             for k in keys_to_delete:
                 del self._records[k]
@@ -302,13 +375,26 @@ class InMemoryVectorStore(BaseVectorStore):
                 self._record_versions.pop(k, None)
             return len(keys_to_delete) > 0
 
-    async def clear(self, namespace: Optional[str] = None) -> int:
-        """Deletes all vector records within the specified namespace."""
+    async def clear(
+        self,
+        namespace: Optional[str] = None,
+        visibility: Optional[str] = None,
+        principal_id: Optional[str] = None,
+    ) -> int:
+        """Deletes vector records within namespace (optionally scoped by visibility and principal)."""
         ns = (namespace or self.default_namespace).strip()
+        norm_vis = normalize_cache_visibility(visibility) if visibility is not None else None
+        norm_p = normalize_principal_id(principal_id)
+        if visibility is not None and norm_vis == CACHE_VISIBILITY_UNKNOWN:
+            return 0
+        if principal_id is not None and norm_p is None:
+            return 0
         async with self._lock:
             keys_to_delete = [
-                k for k in self._records
+                k for k, rec in self._records.items()
                 if k[0] == ns
+                and (norm_vis is None or rec.visibility == norm_vis)
+                and (principal_id is None or rec.owner_principal_id == norm_p)
             ]
             for k in keys_to_delete:
                 del self._records[k]

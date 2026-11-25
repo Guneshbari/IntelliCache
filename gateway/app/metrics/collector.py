@@ -112,6 +112,16 @@ class _NamespaceData:
         self.ambiguous_candidate_rejections = 0
         self.incompatible_candidate_rejections = 0
         self.uncertain_candidate_rejections = 0
+        self.semantic_runtime_disabled_skips = 0
+        self.semantic_candidates_retrieved = 0
+        self.visibility_rejections = 0
+        self.principal_isolation_rejections = 0
+        self.evidence_validation_rejections = 0
+        self.upstream_fallbacks_after_semantic_miss = 0
+        self.runtime_control_changes = 0
+        self.runtime_control_failures = 0
+        self.privacy_violation_attempts = 0
+        self.semantic_rejection_reasons: Dict[str, int] = {}
         self.no_candidate_misses = 0
         self.threshold_rejections = 0
         self.all_candidates_rejected_misses = 0
@@ -282,6 +292,50 @@ class _NamespaceData:
     def record_retrieval_budget_exhaustion(self) -> None:
         with self.lock:
             self.retrieval_budget_exhaustions += 1
+
+    def record_semantic_runtime_disabled_skip(self) -> None:
+        with self.lock:
+            self.semantic_runtime_disabled_skips += 1
+
+    def record_semantic_candidates_retrieved(self, count: int) -> None:
+        with self.lock:
+            self.semantic_candidates_retrieved += max(0, int(count))
+
+    def record_visibility_rejection(self) -> None:
+        with self.lock:
+            self.visibility_rejections += 1
+
+    def record_principal_isolation_rejection(self) -> None:
+        with self.lock:
+            self.principal_isolation_rejections += 1
+
+    def record_evidence_validation_rejection(self) -> None:
+        with self.lock:
+            self.evidence_validation_rejections += 1
+
+    def record_upstream_fallback_after_semantic_miss(self) -> None:
+        with self.lock:
+            self.upstream_fallbacks_after_semantic_miss += 1
+
+    def record_runtime_control_change(self) -> None:
+        with self.lock:
+            self.runtime_control_changes += 1
+
+    def record_runtime_control_failure(self) -> None:
+        with self.lock:
+            self.runtime_control_failures += 1
+
+    def record_privacy_violation_attempt(self) -> None:
+        with self.lock:
+            self.privacy_violation_attempts += 1
+
+    def record_semantic_rejection_reason(self, reason_code: str) -> None:
+        code_clean = str(reason_code or "OTHER").strip().upper()[:64] or "OTHER"
+        with self.lock:
+            if len(self.semantic_rejection_reasons) < 64 or code_clean in self.semantic_rejection_reasons:
+                self.semantic_rejection_reasons[code_clean] = (
+                    self.semantic_rejection_reasons.get(code_clean, 0) + 1
+                )
 
     def record_admission_outcome(self, status: str) -> None:
         with self.lock:
@@ -454,6 +508,16 @@ class _NamespaceData:
                 ambiguous_candidate_rejections=self.ambiguous_candidate_rejections,
                 incompatible_candidate_rejections=self.incompatible_candidate_rejections,
                 uncertain_candidate_rejections=self.uncertain_candidate_rejections,
+                semantic_runtime_disabled_skips=self.semantic_runtime_disabled_skips,
+                semantic_candidates_retrieved=self.semantic_candidates_retrieved,
+                visibility_rejections=self.visibility_rejections,
+                principal_isolation_rejections=self.principal_isolation_rejections,
+                evidence_validation_rejections=self.evidence_validation_rejections,
+                upstream_fallbacks_after_semantic_miss=self.upstream_fallbacks_after_semantic_miss,
+                runtime_control_changes=self.runtime_control_changes,
+                runtime_control_failures=self.runtime_control_failures,
+                privacy_violation_attempts=self.privacy_violation_attempts,
+                semantic_rejection_reasons=dict(self.semantic_rejection_reasons),
                 no_candidate_misses=self.no_candidate_misses,
                 threshold_rejections=self.threshold_rejections,
                 all_candidates_rejected_misses=self.all_candidates_rejected_misses,
@@ -753,6 +817,76 @@ class RuntimeMetricsCollector:
         except Exception as e:
             logger.debug("Metrics record_retrieval_budget_exhaustion failed: %s", e)
 
+    def record_semantic_runtime_disabled_skip(self, namespace: str = "default") -> None:
+        try:
+            ns_data = self.get_or_create_namespace(namespace)
+            ns_data.record_semantic_runtime_disabled_skip()
+        except Exception as e:
+            logger.debug("Metrics record_semantic_runtime_disabled_skip failed: %s", e)
+
+    def record_semantic_candidates_retrieved(self, namespace: str, count: int) -> None:
+        try:
+            ns_data = self.get_or_create_namespace(namespace)
+            ns_data.record_semantic_candidates_retrieved(count)
+        except Exception as e:
+            logger.debug("Metrics record_semantic_candidates_retrieved failed: %s", e)
+
+    def record_visibility_rejection(self, namespace: str = "default") -> None:
+        try:
+            ns_data = self.get_or_create_namespace(namespace)
+            ns_data.record_visibility_rejection()
+        except Exception as e:
+            logger.debug("Metrics record_visibility_rejection failed: %s", e)
+
+    def record_principal_isolation_rejection(self, namespace: str = "default") -> None:
+        try:
+            ns_data = self.get_or_create_namespace(namespace)
+            ns_data.record_principal_isolation_rejection()
+        except Exception as e:
+            logger.debug("Metrics record_principal_isolation_rejection failed: %s", e)
+
+    def record_evidence_validation_rejection(self, namespace: str = "default") -> None:
+        try:
+            ns_data = self.get_or_create_namespace(namespace)
+            ns_data.record_evidence_validation_rejection()
+        except Exception as e:
+            logger.debug("Metrics record_evidence_validation_rejection failed: %s", e)
+
+    def record_upstream_fallback_after_semantic_miss(self, namespace: str = "default") -> None:
+        try:
+            ns_data = self.get_or_create_namespace(namespace)
+            ns_data.record_upstream_fallback_after_semantic_miss()
+        except Exception as e:
+            logger.debug("Metrics record_upstream_fallback_after_semantic_miss failed: %s", e)
+
+    def record_runtime_control_change(self, namespace: str = "default") -> None:
+        try:
+            ns_data = self.get_or_create_namespace(namespace)
+            ns_data.record_runtime_control_change()
+        except Exception as e:
+            logger.debug("Metrics record_runtime_control_change failed: %s", e)
+
+    def record_runtime_control_failure(self, namespace: str = "default") -> None:
+        try:
+            ns_data = self.get_or_create_namespace(namespace)
+            ns_data.record_runtime_control_failure()
+        except Exception as e:
+            logger.debug("Metrics record_runtime_control_failure failed: %s", e)
+
+    def record_privacy_violation_attempt(self, namespace: str = "default") -> None:
+        try:
+            ns_data = self.get_or_create_namespace(namespace)
+            ns_data.record_privacy_violation_attempt()
+        except Exception as e:
+            logger.debug("Metrics record_privacy_violation_attempt failed: %s", e)
+
+    def record_semantic_rejection_reason(self, namespace: str, reason_code: str) -> None:
+        try:
+            ns_data = self.get_or_create_namespace(namespace)
+            ns_data.record_semantic_rejection_reason(reason_code)
+        except Exception as e:
+            logger.debug("Metrics record_semantic_rejection_reason failed: %s", e)
+
     def record_admission_outcome(self, namespace: str, status: str) -> None:
         try:
             ns_data = self.get_or_create_namespace(namespace)
@@ -956,6 +1090,19 @@ class RuntimeMetricsCollector:
             agg_sem.ambiguous_candidate_rejections += s.ambiguous_candidate_rejections
             agg_sem.incompatible_candidate_rejections += s.incompatible_candidate_rejections
             agg_sem.uncertain_candidate_rejections += s.uncertain_candidate_rejections
+            agg_sem.semantic_runtime_disabled_skips += s.semantic_runtime_disabled_skips
+            agg_sem.semantic_candidates_retrieved += s.semantic_candidates_retrieved
+            agg_sem.visibility_rejections += s.visibility_rejections
+            agg_sem.principal_isolation_rejections += s.principal_isolation_rejections
+            agg_sem.evidence_validation_rejections += s.evidence_validation_rejections
+            agg_sem.upstream_fallbacks_after_semantic_miss += s.upstream_fallbacks_after_semantic_miss
+            agg_sem.runtime_control_changes += s.runtime_control_changes
+            agg_sem.runtime_control_failures += s.runtime_control_failures
+            agg_sem.privacy_violation_attempts += s.privacy_violation_attempts
+            for r_code, r_count in s.semantic_rejection_reasons.items():
+                agg_sem.semantic_rejection_reasons[r_code] = (
+                    agg_sem.semantic_rejection_reasons.get(r_code, 0) + r_count
+                )
             agg_sem.no_candidate_misses += s.no_candidate_misses
             agg_sem.threshold_rejections += s.threshold_rejections
             agg_sem.all_candidates_rejected_misses += s.all_candidates_rejected_misses

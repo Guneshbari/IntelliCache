@@ -49,11 +49,21 @@ class SemanticMetrics(BaseModel):
     """Detailed diagnostics for semantic cache eligibility, retrieval, and indexing."""
     semantic_eligibility_rejections: int = 0
     semantic_lookup_attempts: int = 0
+    semantic_runtime_disabled_skips: int = 0
+    semantic_candidates_retrieved: int = 0
     semantic_hits: int = 0
     semantic_misses: int = 0
     ambiguous_candidate_rejections: int = 0
     incompatible_candidate_rejections: int = 0
     uncertain_candidate_rejections: int = 0
+    visibility_rejections: int = 0
+    principal_isolation_rejections: int = 0
+    evidence_validation_rejections: int = 0
+    upstream_fallbacks_after_semantic_miss: int = 0
+    runtime_control_changes: int = 0
+    runtime_control_failures: int = 0
+    privacy_violation_attempts: int = 0
+    semantic_rejection_reasons: Dict[str, int] = Field(default_factory=dict)
     no_candidate_misses: int = 0
     threshold_rejections: int = 0
     all_candidates_rejected_misses: int = 0

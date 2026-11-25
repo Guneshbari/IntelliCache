@@ -60,12 +60,15 @@ gateway/
 │   │   ├── in_memory_store.py # Bounded InMemoryVectorStore with dynamic pruning
 │   │   ├── postgres_store.py # PostgresVectorStore implementation
 │   │   └── migration.py      # Independent pgvector migration runner
-│   ├── semantic_cache/       # Semantic caching policy, candidate validation, and orchestration
+│   ├── semantic_cache/       # Semantic caching policy, candidate validation, runtime control, and orchestration
 │   │   ├── __init__.py
-│   │   ├── contracts.py      # EligibilityResult, SemanticHit, and SemanticCacheStats
+│   │   ├── contracts.py      # EligibilityResult, SemanticHit, compatibility contracts & SemanticCacheStats
+│   │   ├── control.py        # Fail-closed SemanticServingController runtime kill switch
+│   │   ├── evidence.py       # HMAC-SHA256 CompatibilityEvidence minting & verification
 │   │   ├── interfaces.py     # BaseSemanticCache interface
-│   │   ├── policy.py         # Deterministic technical query eligibility & candidate compatibility
-│   │   └── service.py        # SemanticCacheService (lookup, indexing, and failure safe-handling)
+│   │   ├── policy.py         # Deterministic query eligibility & attribute-aware candidate compatibility
+│   │   ├── service.py        # SemanticCacheService (lookup, admission, indexing, and failure safe-handling)
+│   │   └── verification.py   # ResponseArtifactVerifier (format, JSON/Schema & truncation checks)
 │   ├── metrics/              # Runtime metrics and observability layer (Step 11)
 │   │   ├── __init__.py       # Singleton collector access and lifecycle
 │   │   ├── contracts.py      # Pydantic schemas for namespace, admin, and latency metrics
@@ -73,14 +76,18 @@ gateway/
 │   ├── routes/               # Backward compatibility facade for query routes
 │   │   ├── __init__.py
 │   │   └── query.py
+│   ├── privacy.py            # Leaf visibility ('private'/'tenant_shared'/'unknown') & scoped key primitives
 │   ├── config.py             # Pydantic Settings, environment loader, and payload size bounds
 │   └── main.py               # FastAPI application factory, lifespan, CORS, and health/admin routes
 ├── migrations/               # SQL migration scripts
 │   ├── 001_create_cache_entries.sql
 │   ├── 002_create_conversations.sql # Persistent conversation, turn, and message schema
+│   ├── 006_add_cache_scope_columns.sql # Stage 3.5.4 cache_entries visibility/owner_principal_id columns
 │   └── vector/               # Vector store migrations (applied only when SEMANTIC_CACHE_ENABLED=true)
 │       ├── 001_create_vector_records.sql
-│       └── 002_create_hnsw_index.sql
+│       ├── 002_create_hnsw_index.sql
+│       ├── 004_create_semantic_variant_records.sql
+│       └── 005_add_vector_scope_columns.sql # Stage 3.5.4 vector/variant scope isolation columns
 ├── tests/
 │   ├── test_core.py          # Core orchestration tests using pure FakeProvider & AST import boundary tests
 │   ├── test_context_builder.py # ContextBuilder budgeting, truncation, and status tests
@@ -281,7 +288,15 @@ EMBEDDING_TIMEOUT_SECONDS=30.0
 
 - **Client Authentication (`POST /query` & `POST /api/v1/query`)**: Protected by `CLIENT_API_TOKENS` (or legacy `CLIENT_API_TOKEN`) via `X-Client-Token` or `Authorization: Bearer <token>`. Constant-time comparison (`hmac.compare_digest`) prevents timing side-channel attacks.
 - **Fail-Closed Protection**: Unauthenticated requests receive HTTP 401 by default. Even when `ALLOW_UNAUTHENTICATED_LOOPBACK=true` is set, external peers, Uvicorn `--host 0.0.0.0` bindings, and forwarded headers are strictly rejected.
-- **Admin Endpoint Protection (`POST /cache/clear`)**: Administrative operations require `ADMIN_API_TOKEN` to be set on the server. Clients must supply the token via `X-Admin-Token: <token>` or `Authorization: Bearer <token>`. Requests are validated using constant-time comparison (`hmac.compare_digest`). If unset or invalid, the endpoint responds with HTTP 403 Forbidden.
+- **Admin Endpoint Protection (`POST /cache/clear`, `GET/POST /admin/semantic-cache/serving`)**: Administrative operations require `ADMIN_API_TOKEN` to be set on the server. Clients must supply the token via `X-Admin-Token: <token>` or `Authorization: Bearer <token>`. Requests are validated using constant-time comparison (`hmac.compare_digest`). If unset or invalid, the endpoint responds with HTTP 403 Forbidden.
+- **Controlled Semantic Serving Kill Switch (Stage 3.5.4)**: Startup wiring (`SEMANTIC_CACHE_ENABLED=false` default) is decoupled from runtime serving (`SEMANTIC_CACHE_SERVING_ENABLED=false` default). Semantic cache hits are served **only** when BOTH startup infrastructure and the server-side `SemanticServingController` permit serving, checked both pre-lookup and immediately pre-delivery. Missing, malformed, or failing runtime state fails closed (falls back to upstream generation). Operators can inspect or toggle global or per-namespace serving atomically via `GET /admin/semantic-cache/serving` and `POST /admin/semantic-cache/serving` (`{"enabled": bool, "namespace": optional, "clear_namespace_override": bool, "reason": optional}`).
+- **Per-Principal Privacy Isolation (`private` vs `tenant_shared`)**:
+  - Client identities are derived strictly on the server as `principal_id = HMAC-SHA256(PRINCIPAL_IDENTITY_SECRET, token)` when both token auth and `PRINCIPAL_IDENTITY_SECRET` (or fallback `CONVERSATION_IDENTITY_SECRET`) are configured. Plaintext tokens are never stored or returned.
+  - Default cache visibility is `"private"` whenever semantic caching or an identity secret is configured (`SEMANTIC_CACHE_DEFAULT_VISIBILITY=private`), preventing accidental cross-user cache reuse within a shared tenant namespace. Explicit tenant-wide sharing requires server-side token policy (`"visibility": "tenant_shared"`) or opt-in read sharing (`"allow_shared_reads": true`, where writes still remain `private`).
+  - Client-supplied spoofing fields (`principal_id`, `visibility`, `scope`, `allow_shared_reads`, `tenant_id`, or `metadata` overrides) are rejected with HTTP 422; top-level `"namespace"`, scope headers, and query params are ignored and increment `privacy_violation_attempts`.
+  - Unauthenticated loopback requests (`ALLOW_UNAUTHENTICATED_LOOPBACK=true`) NEVER fabricate fake principal IDs and therefore fail closed on `private` cache reads/writes (falling back safely to upstream).
+  - **Migration & Rollback Notice**: Migrations `006_add_cache_scope_columns.sql` and `vector/005_add_vector_scope_columns.sql` add `visibility` (default `'unknown'`) and `owner_principal_id`. Existing legacy rows default to `'unknown'` and fail closed for both `private` and `tenant_shared` queries. Rollback DDL statements are documented in the header of each SQL file (manual DBA execution only; any entries stored while upgraded cannot be read cleanly after dropping scope columns without full cleanup).
+  - **Trust Boundary**: If client tokens lack distinct identities or `PRINCIPAL_IDENTITY_SECRET` is unset, `private` requests fail closed; all gateway workers must share identical `PRINCIPAL_IDENTITY_SECRET` and `SEMANTIC_CACHE_EVIDENCE_SECRET` values.
 - **Credential Storage & Rotation**: Real client API tokens and database passwords must **never** be committed to Git or logged in plaintext. Token rotation can be achieved by updating `CLIENT_API_TOKENS` and reloading gateway settings.
 - **Secret & Path Redaction**: Upstream error messages and logs automatically redact Groq API keys (`gsk_***`), Bearer tokens, absolute filesystem paths (`<redacted_path>`), and IP addresses (`<redacted_ip>`).
 - **Payload Size Limits**: Inbound payload character limits protect gateway memory against denial-of-service payloads.
@@ -397,7 +412,9 @@ IntelliCache supports two cohesive operational modes for semantic caching:
 ### Configuration
 
 ```bash
-SEMANTIC_CACHE_ENABLED=false           # Disabled by default
+SEMANTIC_CACHE_ENABLED=false           # Startup wiring disabled by default
+SEMANTIC_CACHE_SERVING_ENABLED=false   # Runtime serving kill switch (both must be true to serve hits)
+SEMANTIC_CACHE_DEFAULT_VISIBILITY=private # Default per-principal isolation scope ("private" or "tenant_shared")
 CACHE_BACKEND=memory                   # "memory" or "postgres"
 VECTOR_STORE_BACKEND=memory            # "memory" or "postgres" (must match CACHE_BACKEND)
 VECTOR_STORE_MAX_ENTRIES=1000          # Maximum vector records in memory store
@@ -423,6 +440,14 @@ Available at `GET /cache/semantic/stats` and within `GET /cache/stats`:
 - `vector_store_failures`: Database retrieval errors.
 - `indexing_successes`: Successfully persisted vector records.
 - `indexing_failures`: Safely caught indexing errors.
+- `runtime_disabled_skips`: Semantic lookups/deliveries skipped because the runtime kill switch was disabled or failed closed.
+- `candidates_retrieved`: Nearest-neighbour candidates retrieved prior to policy filtering.
+- `visibility_rejections`: Operations rejected due to missing/unknown or mismatched visibility scope.
+- `principal_isolation_rejections`: Operations rejected due to missing or mismatched `principal_id`.
+- `evidence_validation_rejections`: Candidates rejected due to untrusted, tampered, copied, or scope-mismatched HMAC evidence.
+- `upstream_fallbacks_after_miss`: Requests that fell back safely to upstream generation after semantic skip/miss.
+- `runtime_control_changes` / `runtime_control_failures`: Atomic kill-switch transitions and fail-closed control state errors.
+- `privacy_violation_attempts`: Blocked or ignored client attempts to spoof namespace, visibility, or principal fields.
 
 ---
 
@@ -432,9 +457,9 @@ IntelliCache implements a cancellation-safe, process-local request coalescing co
 
 ### Concurrency & Cancellation Model
 
-1. **Namespace-Isolated Flight Keys**:
-   - SingleFlight keys use the composite tuple `(namespace, fingerprint)`.
-   - Identical queries from distinct tenant namespaces execute independently without coalescing or cross-tenant cache contamination.
+1. **Namespace- and Privacy-Isolated Flight Keys**:
+   - SingleFlight keys use the composite tuple `(namespace, visibility, owner_principal_id, fingerprint)`.
+   - Identical queries from distinct tenant namespaces or distinct private principals within the same tenant execute independently without coalescing or cross-principal contamination.
 2. **Deterministic Leader Lifecycle**:
    - The first request to arrive for a `(namespace, fingerprint)` key registers as the leader; concurrent identical requests register as followers and await the leader's shielded future (`asyncio.shield(shared_future)`).
    - Every registered leader is guaranteed to complete its shared future on all exit paths: success, failure, or cancellation. No abandoned futures remain in `_in_flight`.
@@ -666,6 +691,9 @@ python -m unittest tests/test_metrics_integration.py # Multi-client metrics isol
 python -m unittest tests/test_query.py         # API route & streaming tests
 python -m unittest tests/test_multi_client.py  # Multi-client auth, namespaces & PostgreSQL tests
 python -m unittest tests/test_evaluation.py    # Semantic evaluation, threshold sweeps & pgvector benchmarking
+python -m unittest tests/test_stage3_5_2_compatibility.py # Attribute-aware compatibility policy & validator hardening
+python -m unittest tests/test_stage3_5_3_admission_and_coexistence.py # Response verification, evidence HMAC, variant coexistence
+python -m unittest tests/test_stage3_5_4_serving_and_privacy.py # Runtime kill switch, per-principal privacy isolation & HTTP scenarios
 python -m unittest tests/test_config.py        # Configuration tests
 python -m unittest tests/test_main.py          # Application integration tests
 ```

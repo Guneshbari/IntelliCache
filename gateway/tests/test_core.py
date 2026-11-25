@@ -129,6 +129,7 @@ class TestIntelliCacheCoreOrchestration(unittest.IsolatedAsyncioTestCase):
             model="test-model",
             messages=[ChatMessage(role="user", content="What is 2+2?")],
             temperature=0.7,
+            visibility="tenant_shared",
         )
 
         # First execution -> Cache miss
@@ -157,6 +158,7 @@ class TestIntelliCacheCoreOrchestration(unittest.IsolatedAsyncioTestCase):
             messages=[ChatMessage(role="user", content="Test provider metadata")],
             provider="anthropic",
             namespace="provider_ns",
+            visibility="tenant_shared",
         )
 
         res = await self.core.execute_query(req, provider)
@@ -197,6 +199,7 @@ class TestIntelliCacheCoreOrchestration(unittest.IsolatedAsyncioTestCase):
         req = GenerationRequest(
             model="test-model",
             messages=[ChatMessage(role="user", content="Concurrent Question")],
+            visibility="tenant_shared",
         )
 
         leader_task = asyncio.create_task(self.core.execute_query(req, provider))
@@ -240,6 +243,7 @@ class TestIntelliCacheCoreOrchestration(unittest.IsolatedAsyncioTestCase):
         req = GenerationRequest(
             model="test-model",
             messages=[ChatMessage(role="user", content="Will Fail")],
+            visibility="tenant_shared",
         )
 
         leader_task = asyncio.create_task(self.core.execute_query(req, provider))
@@ -275,6 +279,7 @@ class TestIntelliCacheCoreOrchestration(unittest.IsolatedAsyncioTestCase):
         req = GenerationRequest(
             model="test-model",
             messages=[ChatMessage(role="user", content="Cancel follower test")],
+            visibility="tenant_shared",
         )
 
         leader_task = asyncio.create_task(self.core.execute_query(req, provider))
@@ -309,6 +314,7 @@ class TestIntelliCacheCoreOrchestration(unittest.IsolatedAsyncioTestCase):
             model=mixed_casing_model,
             messages=[ChatMessage(role="user", content="echo")],
             temperature=0.7,
+            visibility="tenant_shared",
         )
 
         res = await self.core.execute_query(req, provider)

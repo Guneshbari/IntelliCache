@@ -64,6 +64,7 @@ from app.semantic_cache.legacy import (
     build_migrated_record_metadata,
     classify_legacy_record_metadata,
 )
+from app.semantic_cache.control import SemanticServingController
 from app.semantic_cache.policy import SemanticCachePolicy
 from app.semantic_cache.service import SemanticCacheService
 from app.semantic_cache.verification import ResponseArtifactVerifier
@@ -82,6 +83,7 @@ def _req(
     temperature: float = 0.7,
     max_tokens: int | None = 1000,
     metadata: dict | None = None,
+    visibility: str = "tenant_shared",
 ) -> GenerationRequest:
     return GenerationRequest(
         messages=[ChatMessage(role="user", content=prompt)],
@@ -91,6 +93,7 @@ def _req(
         max_tokens=max_tokens,
         namespace=namespace,
         metadata=metadata or {},
+        visibility=visibility,
     )
 
 
@@ -610,6 +613,7 @@ class TestStage353EndToEndInMemory(unittest.IsolatedAsyncioTestCase):
             cache=self.exact_cache,
             cache_enabled=True,
             semantic_cache=svc,
+            semantic_serving_controller=SemanticServingController(initial_enabled=True),
         )
         return svc, upstream, core
 
@@ -833,6 +837,7 @@ class TestStage353EndToEndInMemory(unittest.IsolatedAsyncioTestCase):
                 usage=UsageMetrics(prompt_tokens=5, completion_tokens=5, total_tokens=10),
                 latency_ms=4.0,
                 provider=req_a.provider,
+                visibility="tenant_shared",
             ),
             namespace="default",
         )
@@ -904,7 +909,12 @@ class TestStage353EndToEndInMemory(unittest.IsolatedAsyncioTestCase):
             policy=self.policy,
             evidence_authority=self.authority,
         )
-        core = IntelliCacheCore(cache=self.exact_cache, cache_enabled=True, semantic_cache=core_svc)
+        core = IntelliCacheCore(
+            cache=self.exact_cache,
+            cache_enabled=True,
+            semantic_cache=core_svc,
+            semantic_serving_controller=SemanticServingController(initial_enabled=True),
+        )
         out_a = await core.execute_query(_req("Serialize node in Python conforming to schema", metadata={"json_schema": schema_a}), MockUpstream(core_responder))
         out_b = await core.execute_query(_req("Serialize node in Python conforming to schema", metadata={"json_schema": schema_b}), MockUpstream(core_responder))
         self.assertFalse(out_a.cached)
@@ -987,7 +997,12 @@ class TestStage353EndToEndInMemory(unittest.IsolatedAsyncioTestCase):
             policy=self.policy,
             evidence_authority=self.authority,
         )
-        core = IntelliCacheCore(cache=self.exact_cache, cache_enabled=True, semantic_cache=svc)
+        core = IntelliCacheCore(
+            cache=self.exact_cache,
+            cache_enabled=True,
+            semantic_cache=svc,
+            semantic_serving_controller=SemanticServingController(initial_enabled=True),
+        )
 
         r1 = await core.execute_query(
             _req(prompt, metadata={"max_words": 3}),
@@ -1029,7 +1044,14 @@ class TestStage353EndToEndInMemory(unittest.IsolatedAsyncioTestCase):
             qp = f"Reverse list {i} in Java"
             await self.exact_cache.set(
                 fp,
-                CacheEntry(response=f"java_{i}", model="llama-3.3-70b-versatile", usage=UsageMetrics(), latency_ms=2.0, provider="groq"),
+                CacheEntry(
+                    response=f"java_{i}",
+                    model="llama-3.3-70b-versatile",
+                    usage=UsageMetrics(),
+                    latency_ms=2.0,
+                    provider="groq",
+                    visibility="tenant_shared",
+                ),
                 namespace="default",
             )
             m = ext.extract_from_text(qp, configured_model="nomic-embed-text").to_dict()
@@ -1040,6 +1062,7 @@ class TestStage353EndToEndInMemory(unittest.IsolatedAsyncioTestCase):
                     query_text=qp,
                     vector=_topic_vec(768, float(i) * 0.2),
                     model="nomic-embed-text",
+                    visibility="tenant_shared",
                     metadata=m,
                     response_text=f"java_{i}",
                 )
@@ -1054,6 +1077,7 @@ class TestStage353EndToEndInMemory(unittest.IsolatedAsyncioTestCase):
             response_text="list(reversed(x))",
             metadata=target_meta,
             verification=ver,
+            visibility="tenant_shared",
         )
         m_target = SemanticCompatibilityMetadata(
             schema_version=target_meta.schema_version,
@@ -1068,7 +1092,14 @@ class TestStage353EndToEndInMemory(unittest.IsolatedAsyncioTestCase):
         m_target["variant_key"] = vk_target
         await self.exact_cache.set(
             "fp_compat_rank26",
-            CacheEntry(response="list(reversed(x))", model="llama-3.3-70b-versatile", usage=UsageMetrics(), latency_ms=2.0, provider="groq"),
+            CacheEntry(
+                response="list(reversed(x))",
+                model="llama-3.3-70b-versatile",
+                usage=UsageMetrics(),
+                latency_ms=2.0,
+                provider="groq",
+                visibility="tenant_shared",
+            ),
             namespace="default",
         )
         await self.vector_store.upsert(
@@ -1078,6 +1109,7 @@ class TestStage353EndToEndInMemory(unittest.IsolatedAsyncioTestCase):
                 query_text="Reverse list in Python",
                 vector=_topic_vec(768, 12.0),
                 model="nomic-embed-text",
+                visibility="tenant_shared",
                 metadata=m_target,
                 variant_key=vk_target,
                 response_text="list(reversed(x))",
@@ -1290,7 +1322,7 @@ class TestStage353PostgresPgvectorLifecycle(unittest.IsolatedAsyncioTestCase):
                 pass
             await self.pool.close()
 
-    async def _seed_raw_row(self, *, fp: str, query_text: str, resp: str | None, meta: dict, angle_deg: float):
+    async def _seed_raw_row(self, *, fp: str, query_text: str, resp: str | None, meta: dict, angle_deg: float, visibility: str = "tenant_shared"):
         vec = _topic_vec(768, angle_deg)
         v_str = "[" + ",".join(f"{x:.6f}" for x in vec) + "]"
         async with self.pool.acquire() as conn:
@@ -1299,20 +1331,20 @@ class TestStage353PostgresPgvectorLifecycle(unittest.IsolatedAsyncioTestCase):
                     """
                     INSERT INTO cache_entries (
                         cache_namespace, fingerprint, response, model, provider,
-                        prompt_tokens, completion_tokens, total_tokens, latency_ms, hit_count, metadata
+                        prompt_tokens, completion_tokens, total_tokens, latency_ms, hit_count, visibility, metadata
                     )
-                    VALUES ($1, $2, $3, 'llama-3.3-70b-versatile', 'groq', 8, 12, 20, 12.0, 0, $4::jsonb)
-                    ON CONFLICT (cache_namespace, fingerprint) DO UPDATE SET response = EXCLUDED.response, metadata = EXCLUDED.metadata
+                    VALUES ($1, $2, $3, 'llama-3.3-70b-versatile', 'groq', 8, 12, 20, 12.0, 0, $4, $5::jsonb)
+                    ON CONFLICT (cache_namespace, fingerprint) DO UPDATE SET response = EXCLUDED.response, visibility = EXCLUDED.visibility, metadata = EXCLUDED.metadata
                     """,
-                    self.ns, fp, resp, json.dumps(meta),
+                    self.ns, fp, resp, visibility, json.dumps(meta),
                 )
             await conn.execute(
                 """
-                INSERT INTO vector_records (cache_namespace, fingerprint, query_text, model, vector, metadata)
-                VALUES ($1, $2, $3, 'nomic-embed-text', $4::vector, $5::jsonb)
-                ON CONFLICT (cache_namespace, fingerprint, model) DO UPDATE SET metadata = EXCLUDED.metadata, vector = EXCLUDED.vector
+                INSERT INTO vector_records (cache_namespace, fingerprint, query_text, model, vector, visibility, metadata)
+                VALUES ($1, $2, $3, 'nomic-embed-text', $4::vector, $5, $6::jsonb)
+                ON CONFLICT (cache_namespace, fingerprint, model) DO UPDATE SET visibility = EXCLUDED.visibility, metadata = EXCLUDED.metadata, vector = EXCLUDED.vector
                 """,
-                self.ns, fp, query_text, v_str, json.dumps(meta),
+                self.ns, fp, query_text, v_str, visibility, json.dumps(meta),
             )
 
     async def test_scenario_9_starvation_prevention_and_legacy_lifecycle(self):
@@ -1389,6 +1421,7 @@ class TestStage353PostgresPgvectorLifecycle(unittest.IsolatedAsyncioTestCase):
                 usage=UsageMetrics(prompt_tokens=6, completion_tokens=8, total_tokens=14),
                 latency_ms=11.0,
                 provider="groq",
+                visibility="tenant_shared",
             ),
             namespace=self.ns,
         )
@@ -1401,6 +1434,7 @@ class TestStage353PostgresPgvectorLifecycle(unittest.IsolatedAsyncioTestCase):
             response_text="def rev(s): return s[::-1]",
             metadata=m_v3,
             verification=ver_target,
+            visibility="tenant_shared",
         )
         m_v3_dict = SemanticCompatibilityMetadata(
             schema_version=m_v3.schema_version,
@@ -1492,7 +1526,12 @@ class TestStage353PostgresPgvectorLifecycle(unittest.IsolatedAsyncioTestCase):
                 finish_reason="stop",
             )
         )
-        core = IntelliCacheCore(cache=self.cache, cache_enabled=True, semantic_cache=svc)
+        core = IntelliCacheCore(
+            cache=self.cache,
+            cache_enabled=True,
+            semantic_cache=svc,
+            semantic_serving_controller=SemanticServingController(initial_enabled=True),
+        )
         req1 = _req("Format record in Python and output strict JSON", namespace=self.ns)
         r1 = await core.execute_query(req1, upstream)
         self.assertFalse(r1.cached)
@@ -1530,16 +1569,16 @@ class TestStage353PostgresPgvectorLifecycle(unittest.IsolatedAsyncioTestCase):
             )
             await conn.execute(
                 """
-                INSERT INTO cache_entries (cache_namespace, fingerprint, response, model, provider, prompt_tokens, completion_tokens, total_tokens, latency_ms, hit_count, metadata)
-                VALUES ($1, 'fp_copied', '{"status":"ok"}', 'llama-3.3-70b-versatile', 'groq', 6, 6, 12, 5.0, 0, '{}'::jsonb)
+                INSERT INTO cache_entries (cache_namespace, fingerprint, response, model, provider, prompt_tokens, completion_tokens, total_tokens, latency_ms, hit_count, visibility, metadata)
+                VALUES ($1, 'fp_copied', '{"status":"ok"}', 'llama-3.3-70b-versatile', 'groq', 6, 6, 12, 5.0, 0, 'tenant_shared', '{}'::jsonb)
                 """,
                 self.ns,
             )
             v_str = "[" + ",".join(f"{x:.6f}" for x in _topic_vec(768, 0.0)) + "]"
             await conn.execute(
                 """
-                INSERT INTO vector_records (cache_namespace, fingerprint, query_text, model, vector, metadata)
-                VALUES ($1, 'fp_copied', 'Copied evidence query', 'nomic-embed-text', $2::vector, $3::jsonb)
+                INSERT INTO vector_records (cache_namespace, fingerprint, query_text, model, vector, visibility, metadata)
+                VALUES ($1, 'fp_copied', 'Copied evidence query', 'nomic-embed-text', $2::vector, 'tenant_shared', $3::jsonb)
                 """,
                 self.ns, v_str, row1_meta,
             )
@@ -1579,7 +1618,14 @@ class TestStage353PostgresPgvectorLifecycle(unittest.IsolatedAsyncioTestCase):
         from app.cache.exact_cache import CacheEntry
         await self.cache.set(
             shared_fp,
-            CacheEntry(response='{"a": 1}', model=req_a.model, usage=UsageMetrics(prompt_tokens=6, completion_tokens=6, total_tokens=12), latency_ms=5.0, provider="groq"),
+            CacheEntry(
+                response='{"a": 1}',
+                model=req_a.model,
+                usage=UsageMetrics(prompt_tokens=6, completion_tokens=6, total_tokens=12),
+                latency_ms=5.0,
+                provider="groq",
+                visibility="tenant_shared",
+            ),
             namespace=self.ns,
         )
 
@@ -1725,6 +1771,7 @@ class TestStage353PostgresPgvectorLifecycle(unittest.IsolatedAsyncioTestCase):
                     usage=UsageMetrics(prompt_tokens=8, completion_tokens=6, total_tokens=14),
                     latency_ms=3.0,
                     provider="groq",
+                    visibility="tenant_shared",
                 ),
                 namespace=self.ns,
             )
@@ -1735,6 +1782,7 @@ class TestStage353PostgresPgvectorLifecycle(unittest.IsolatedAsyncioTestCase):
                     query_text=qp,
                     vector=_topic_vec(768, 10.0 + float(j) * 0.5),
                     model="nomic-embed-text",
+                    visibility="tenant_shared",
                     metadata=m,
                     variant_key=vk,
                     response_text=f'{{"k{j}": {j}}}',
@@ -1932,7 +1980,12 @@ class TestStage353FastEmbedRealPostgresE2E(unittest.IsolatedAsyncioTestCase):
             )
 
         upstream = MockUpstream(responder)
-        core = IntelliCacheCore(cache=self.cache, cache_enabled=True, semantic_cache=self.svc)
+        core = IntelliCacheCore(
+            cache=self.cache,
+            cache_enabled=True,
+            semantic_cache=self.svc,
+            semantic_serving_controller=SemanticServingController(initial_enabled=True),
+        )
 
         async def _count_rows() -> int:
             async with self.pool.acquire() as conn:

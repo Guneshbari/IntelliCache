@@ -532,6 +532,7 @@ class TestCandidateCompatibilityRules(unittest.TestCase):
             "stream": False,
             "bypass_cache": False,
             "namespace": "default",
+            "visibility": "tenant_shared",
         }
         defaults.update(kwargs)
         return GenerationRequest(
@@ -560,6 +561,7 @@ class TestCandidateCompatibilityRules(unittest.TestCase):
             similarity=kwargs.get("similarity", 0.95),
             cached_response=cached_response,
             metadata=meta_dict,
+            visibility=kwargs.get("visibility", "tenant_shared"),
         )
 
     def test_language_mismatch_rejected(self):
@@ -864,6 +866,7 @@ class TestCandidateEvaluationOrderingAndAdversarial(unittest.TestCase):
             stream=False,
             bypass_cache=False,
             namespace="default",
+            visibility="tenant_shared",
         )
 
     def _make_cand(self, text: str, resp: str, sim: float) -> VectorSearchResult:
@@ -885,6 +888,7 @@ class TestCandidateEvaluationOrderingAndAdversarial(unittest.TestCase):
             similarity=sim,
             cached_response=resp,
             metadata=meta_dict,
+            visibility="tenant_shared",
         )
 
     def test_similarity_1_0_incompatible_is_rejected(self):
@@ -1095,6 +1099,7 @@ class TestValidatorFallbackE2E(unittest.IsolatedAsyncioTestCase):
             similarity=0.99,
             cached_response="s[::-1]",
             metadata={"schema_version": CURRENT_SCHEMA_VERSION},
+            visibility="tenant_shared",
         )
         mock_vector_store.search.return_value = [mock_cand]
 
@@ -1107,10 +1112,12 @@ class TestValidatorFallbackE2E(unittest.IsolatedAsyncioTestCase):
             metrics_collector=metrics,
         )
 
+        from app.semantic_cache.control import SemanticServingController
         core = IntelliCacheCore(
             cache=exact_cache,
             cache_enabled=True,
             semantic_cache=semantic_service,
+            semantic_serving_controller=SemanticServingController(initial_enabled=True),
         )
 
         upstream_provider = AsyncMock()
@@ -1128,6 +1135,7 @@ class TestValidatorFallbackE2E(unittest.IsolatedAsyncioTestCase):
             model="llama-3.3-70b-versatile",
             temperature=0.7,
             max_tokens=1000,
+            visibility="tenant_shared",
         )
 
         # Inject validator exception during candidate evaluation
@@ -1160,6 +1168,7 @@ class TestValidatorFallbackE2E(unittest.IsolatedAsyncioTestCase):
             similarity=0.99,
             cached_response="s[::-1]",
             metadata={"schema_version": CURRENT_SCHEMA_VERSION},
+            visibility="tenant_shared",
         )
         mock_vector_store.search.return_value = [mock_cand]
 
@@ -1178,6 +1187,7 @@ class TestValidatorFallbackE2E(unittest.IsolatedAsyncioTestCase):
             model="llama-3.3-70b-versatile",
             temperature=0.7,
             max_tokens=1000,
+            visibility="tenant_shared",
         )
 
         with patch.object(policy, "evaluate_candidates", side_effect=asyncio.CancelledError()):
@@ -1218,10 +1228,12 @@ class TestValidatorFallbackE2E(unittest.IsolatedAsyncioTestCase):
             metrics_collector=metrics,
         )
 
+        from app.semantic_cache.control import SemanticServingController
         core = IntelliCacheCore(
             cache=exact_cache,
             cache_enabled=True,
             semantic_cache=semantic_service,
+            semantic_serving_controller=SemanticServingController(initial_enabled=True),
         )
 
         upstream_provider = AsyncMock()
@@ -1231,6 +1243,7 @@ class TestValidatorFallbackE2E(unittest.IsolatedAsyncioTestCase):
             model="llama-3.3-70b-versatile",
             temperature=0.7,
             max_tokens=1000,
+            visibility="tenant_shared",
         )
 
         with patch.object(policy, "evaluate_candidates", side_effect=asyncio.CancelledError()):

@@ -576,6 +576,7 @@ class TestSemanticCacheInMemoryIntegration(unittest.IsolatedAsyncioTestCase):
             provider="groq",
             temperature=0.7,
             namespace="default",
+            visibility="tenant_shared",
         )
         res1 = GenerationResult(
             text="Rust manages memory through its ownership and borrowing system.",
@@ -593,6 +594,7 @@ class TestSemanticCacheInMemoryIntegration(unittest.IsolatedAsyncioTestCase):
             usage=res1.usage,
             latency_ms=res1.latency_ms,
             provider=req1.provider,
+            visibility="tenant_shared",
         )
         await exact_cache.set(res1.fingerprint, entry, namespace="default")
 
@@ -607,6 +609,7 @@ class TestSemanticCacheInMemoryIntegration(unittest.IsolatedAsyncioTestCase):
             provider="groq",
             temperature=0.7,
             namespace="default",
+            visibility="tenant_shared",
         )
         hit = await service.lookup(req2)
         self.assertIsNotNone(hit)
