@@ -1,0 +1,721 @@
+{
+  "dataset_version": "3.7",
+  "description": "Stage 3.7 Context Classification Evaluation Dataset with strictly disjoint development and held_out splits and independent ground-truth annotations across all 8 context categories plus fingerprint stability/invalidation pairs.",
+  "splits": {
+    "development": [
+      {
+        "id": "DEV-CTX-01",
+        "category": "independent_standalone",
+        "messages": [
+          {
+            "role": "user",
+            "content": "How do I compute the union of two sets in Python?"
+          }
+        ],
+        "expected_context_class": "CONTEXT_INDEPENDENT",
+        "expected_sensitive": false,
+        "annotation_rationale": "Self-contained Python question requiring zero conversation history."
+      },
+      {
+        "id": "DEV-CTX-02",
+        "category": "independent_standalone",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Explain the difference between a mutex and a semaphore in Go."
+          }
+        ],
+        "expected_context_class": "CONTEXT_INDEPENDENT",
+        "expected_sensitive": false,
+        "annotation_rationale": "Self-contained Go concurrency conceptual question."
+      },
+      {
+        "id": "DEV-CTX-03",
+        "category": "explicit_followup_code",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Write a Python function def chunk_items(items, size) that splits a list."
+          },
+          {
+            "role": "assistant",
+            "content": "```python\ndef chunk_items(items, size):\n    return [items[i:i + size] for i in range(0, len(items), size)]\n```"
+          },
+          {
+            "role": "user",
+            "content": "Update the previous implementation to raise ValueError if size <= 0."
+          }
+        ],
+        "expected_context_class": "CONTEXT_DEPENDENT",
+        "expected_sensitive": false,
+        "annotation_rationale": "Follow-up explicitly refers to prior chunk_items implementation."
+      },
+      {
+        "id": "DEV-CTX-04",
+        "category": "schema_decision_reference",
+        "messages": [
+          {
+            "role": "user",
+            "content": "CREATE TABLE webhooks (webhook_id UUID PRIMARY KEY, target_url TEXT NOT NULL, disabled_at TIMESTAMPTZ);"
+          },
+          {
+            "role": "user",
+            "content": "Write a SQL query to count enabled webhooks."
+          }
+        ],
+        "expected_context_class": "CONTEXT_DEPENDENT",
+        "expected_sensitive": false,
+        "annotation_rationale": "SQL question relies directly on the prior DDL table webhooks."
+      },
+      {
+        "id": "DEV-CTX-05",
+        "category": "ambiguous_backref_missing_history",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Change that to handle retries safely"
+          }
+        ],
+        "expected_context_class": "CONTEXT_UNCERTAIN",
+        "expected_sensitive": false,
+        "annotation_rationale": "Deictic 'that' without prior context cannot be resolved safely."
+      },
+      {
+        "id": "DEV-CTX-06",
+        "category": "missing_compacted_history",
+        "metadata": {
+          "context_status": "incomplete"
+        },
+        "messages": [
+          {
+            "role": "user",
+            "content": "How do I validate an email address in Python?"
+          }
+        ],
+        "expected_context_class": "CONTEXT_UNCERTAIN",
+        "expected_sensitive": false,
+        "annotation_rationale": "Server-side context_status='incomplete' requires fail-closed CONTEXT_UNCERTAIN."
+      },
+      {
+        "id": "DEV-CTX-07",
+        "category": "irrelevant_history",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Hey there!"
+          },
+          {
+            "role": "assistant",
+            "content": "Hello! How can I assist you?"
+          },
+          {
+            "role": "user",
+            "content": "How do I binary search a sorted list in Python?"
+          }
+        ],
+        "expected_context_class": "CONTEXT_INDEPENDENT",
+        "expected_sensitive": false,
+        "annotation_rationale": "Prior greeting chatter does not alter the answer to a self-contained algorithm query."
+      },
+      {
+        "id": "DEV-CTX-08",
+        "category": "sensitive_material",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Debug why my Python client fails using api_key=sk-devtestsecret1234567890abcdef"
+          }
+        ],
+        "expected_context_class": "CONTEXT_INDEPENDENT",
+        "expected_sensitive": true,
+        "annotation_rationale": "Single-turn query containing an inline API secret must flag sensitive=True and bypass cache."
+      }
+    ],
+    "held_out": [
+      {
+        "id": "HO-CTX-01",
+        "category": "independent_standalone",
+        "messages": [
+          {
+            "role": "user",
+            "content": "How do I implement a thread-safe LRU cache decorator or class in Python?"
+          }
+        ],
+        "expected_context_class": "CONTEXT_INDEPENDENT",
+        "expected_sensitive": false,
+        "annotation_rationale": "Self-contained Python implementation prompt with zero prior-turn reliance."
+      },
+      {
+        "id": "HO-CTX-02",
+        "category": "independent_standalone",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Explain why HTTP 429 uses Retry-After headers and exponential backoff in REST APIs."
+          }
+        ],
+        "expected_context_class": "CONTEXT_INDEPENDENT",
+        "expected_sensitive": false,
+        "annotation_rationale": "Self-contained conceptual architecture/HTTP question."
+      },
+      {
+        "id": "HO-CTX-03",
+        "category": "independent_standalone",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Write a TypeScript generic helper function to group an array of objects by key."
+          }
+        ],
+        "expected_context_class": "CONTEXT_INDEPENDENT",
+        "expected_sensitive": false,
+        "annotation_rationale": "Standalone TypeScript generic utility request."
+      },
+      {
+        "id": "HO-CTX-04",
+        "category": "independent_standalone",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Debug this Python traceback in a standalone snippet:\n```python\ndef first_item(rows):\n    return rows[0]\n# IndexError: list index out of range when rows=[]\n```\nFix the function to return None safely."
+          }
+        ],
+        "expected_context_class": "CONTEXT_INDEPENDENT",
+        "expected_sensitive": false,
+        "annotation_rationale": "All referenced code and error details are included inline inside the single turn."
+      },
+      {
+        "id": "HO-CTX-05",
+        "category": "explicit_followup_history",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Write a Rust function fn normalize_slug(raw: &str) -> String using lowercase ASCII."
+          },
+          {
+            "role": "assistant",
+            "content": "```rust\nfn normalize_slug(raw: &str) -> String {\n    raw.trim().to_ascii_lowercase().replace(' ', \"-\")\n}\n```"
+          },
+          {
+            "role": "user",
+            "content": "Modify the previous implementation to collapse repeated hyphens."
+          }
+        ],
+        "expected_context_class": "CONTEXT_DEPENDENT",
+        "expected_sensitive": false,
+        "annotation_rationale": "Explicitly depends on the prior normalize_slug Rust implementation."
+      },
+      {
+        "id": "HO-CTX-06",
+        "category": "explicit_followup_history",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Our worker service uses Python 3.12 with asyncio and psycopg3."
+          },
+          {
+            "role": "assistant",
+            "content": "Noted. I will target Python 3.12 asyncio with psycopg3 async connection pools."
+          },
+          {
+            "role": "user",
+            "content": "Continue with building an exponential backoff retry helper based on the setup."
+          }
+        ],
+        "expected_context_class": "CONTEXT_DEPENDENT",
+        "expected_sensitive": false,
+        "annotation_rationale": "Explicit follow-up referencing prior architectural decisions and runtime setup."
+      },
+      {
+        "id": "HO-CTX-07",
+        "category": "reference_schema",
+        "messages": [
+          {
+            "role": "user",
+            "content": "CREATE TABLE deployments (deploy_id BIGSERIAL PRIMARY KEY, env_name TEXT NOT NULL, status VARCHAR(32) NOT NULL, deployed_at TIMESTAMPTZ);"
+          },
+          {
+            "role": "user",
+            "content": "Write a SQL query to find the latest failed deployment per environment."
+          }
+        ],
+        "expected_context_class": "CONTEXT_DEPENDENT",
+        "expected_sensitive": false,
+        "annotation_rationale": "Requires exact table and column names from earlier DDL schema turn."
+      },
+      {
+        "id": "HO-CTX-08",
+        "category": "reference_config",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Our service configuration is:\nretry_budget_ms: 450\nmax_attempts: 4\npool_max_overflow: 12"
+          },
+          {
+            "role": "user",
+            "content": "How should our client backoff parameters align with our configuration?"
+          }
+        ],
+        "expected_context_class": "CONTEXT_DEPENDENT",
+        "expected_sensitive": false,
+        "annotation_rationale": "Answer explicitly depends on YAML-style timeout and attempt settings from earlier turn."
+      },
+      {
+        "id": "HO-CTX-09",
+        "category": "reference_decisions",
+        "messages": [
+          {
+            "role": "system",
+            "content": "Always output Python examples using type hints and dataclasses, never Pydantic."
+          },
+          {
+            "role": "user",
+            "content": "How do I represent a structured webhook event payload in Python?"
+          }
+        ],
+        "expected_context_class": "CONTEXT_DEPENDENT",
+        "expected_sensitive": false,
+        "annotation_rationale": "System instruction constrains framework/library choices in the answer."
+      },
+      {
+        "id": "HO-CTX-10",
+        "category": "reference_code_artifact",
+        "messages": [
+          {
+            "role": "user",
+            "content": "We have def verify_hmac_header(payload: bytes, sig: str, secret: bytes) -> bool:"
+          },
+          {
+            "role": "user",
+            "content": "Write pytest unit tests for verify_hmac_header covering constant-time mismatch."
+          }
+        ],
+        "expected_context_class": "CONTEXT_DEPENDENT",
+        "expected_sensitive": false,
+        "annotation_rationale": "References exact function signature verify_hmac_header defined in prior turn."
+      },
+      {
+        "id": "HO-CTX-11",
+        "category": "ambiguous_reference",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Change that to return JSON"
+          }
+        ],
+        "expected_context_class": "CONTEXT_UNCERTAIN",
+        "expected_sensitive": false,
+        "annotation_rationale": "Bare deictic 'Change that' with no prior turn has missing referent."
+      },
+      {
+        "id": "HO-CTX-12",
+        "category": "ambiguous_reference",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Use the previous implementation cleanly"
+          }
+        ],
+        "expected_context_class": "CONTEXT_UNCERTAIN",
+        "expected_sensitive": false,
+        "annotation_rationale": "Refers to 'the previous implementation' with empty prior conversation history."
+      },
+      {
+        "id": "HO-CTX-13",
+        "category": "ambiguous_reference",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Continue from above and optimize latency"
+          }
+        ],
+        "expected_context_class": "CONTEXT_UNCERTAIN",
+        "expected_sensitive": false,
+        "annotation_rationale": "Explicit back-reference 'Continue from above' with zero prior turns."
+      },
+      {
+        "id": "HO-CTX-14",
+        "category": "ambiguous_reference_after_chitchat",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Hi"
+          },
+          {
+            "role": "assistant",
+            "content": "Hello! Ready when you are."
+          },
+          {
+            "role": "user",
+            "content": "Fix the above code and add error handling"
+          }
+        ],
+        "expected_context_class": "CONTEXT_UNCERTAIN",
+        "expected_sensitive": false,
+        "annotation_rationale": "Prior conversation contains only greetings with no code referent for 'the above code'."
+      },
+      {
+        "id": "HO-CTX-15",
+        "category": "missing_history_compacted",
+        "metadata": {
+          "context_status": "compacted"
+        },
+        "messages": [
+          {
+            "role": "user",
+            "content": "Write a Python function to parse ISO-8601 timestamps."
+          }
+        ],
+        "expected_context_class": "CONTEXT_UNCERTAIN",
+        "expected_sensitive": false,
+        "annotation_rationale": "Server-side compacted context status requires failing closed as CONTEXT_UNCERTAIN."
+      },
+      {
+        "id": "HO-CTX-16",
+        "category": "missing_history_followup",
+        "conversation_id": "conv_missing_turns_ho",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Refactor it to use asyncio.TaskGroup cleanly"
+          }
+        ],
+        "expected_context_class": "CONTEXT_UNCERTAIN",
+        "expected_sensitive": false,
+        "annotation_rationale": "Pronominal reference 'Refactor it' without inline snippet or prior turn."
+      },
+      {
+        "id": "HO-CTX-17",
+        "category": "irrelevant_history",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Good morning!"
+          },
+          {
+            "role": "assistant",
+            "content": "Good morning! How can I help you today?"
+          },
+          {
+            "role": "user",
+            "content": "Thanks so much."
+          },
+          {
+            "role": "assistant",
+            "content": "You're welcome! Let me know what you need."
+          },
+          {
+            "role": "user",
+            "content": "How do I compute a SHA-256 checksum in Python?"
+          }
+        ],
+        "expected_context_class": "CONTEXT_INDEPENDENT",
+        "expected_sensitive": false,
+        "annotation_rationale": "Multi-turn greeting filler has zero technical impact on SHA-256 checksum computation."
+      },
+      {
+        "id": "HO-CTX-18",
+        "category": "irrelevant_history_distinct_domain",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Explain how B-tree page splits work conceptually."
+          },
+          {
+            "role": "assistant",
+            "content": "B-tree pages split when key capacity is exceeded, promoting a median separator key."
+          },
+          {
+            "role": "user",
+            "content": "What does Python GIL contention mean for CPU-bound threads?"
+          }
+        ],
+        "expected_context_class": "CONTEXT_INDEPENDENT",
+        "expected_sensitive": false,
+        "annotation_rationale": "Wait: standalone conceptual question sharing zero code/schema/decisions with earlier DB conceptual explanation."
+      },
+      {
+        "id": "HO-CTX-19",
+        "category": "sensitive_api_key",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Write a Python script sending Authorization: Bearer sk-live-secret-token-9876543210abcdef"
+          }
+        ],
+        "expected_context_class": "CONTEXT_INDEPENDENT",
+        "expected_sensitive": true,
+        "annotation_rationale": "Inline Bearer/API token must trigger sensitive detection."
+      },
+      {
+        "id": "HO-CTX-20",
+        "category": "sensitive_dsn_postgresql",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Test connecting asyncpg to postgresql://analytics_svc:MyStrongPass99@db.internal:5432/prod_warehouse in Python"
+          }
+        ],
+        "expected_context_class": "CONTEXT_INDEPENDENT",
+        "expected_sensitive": true,
+        "annotation_rationale": "Inline credentialed postgresql:// DSN must be flagged as sensitive."
+      },
+      {
+        "id": "HO-CTX-21",
+        "category": "sensitive_prior_turn",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Our DB password=Sup3rS3cretPassword! in staging."
+          },
+          {
+            "role": "assistant",
+            "content": "Acknowledged."
+          },
+          {
+            "role": "user",
+            "content": "How do I connect asyncpg safely?"
+          }
+        ],
+        "expected_context_class": "CONTEXT_INDEPENDENT",
+        "expected_sensitive": true,
+        "annotation_rationale": "Sensitive password assignment in prior message must mark ContextAssessment sensitive."
+      },
+      {
+        "id": "HO-CTX-22",
+        "category": "irrelevant_history_chitchat_with_code",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Okay got it, thanks!"
+          },
+          {
+            "role": "user",
+            "content": "How to decode a base64 string in Go?"
+          }
+        ],
+        "expected_context_class": "CONTEXT_INDEPENDENT",
+        "expected_sensitive": false,
+        "annotation_rationale": "Single acknowledgment turn does not establish conversation dependency."
+      },
+      {
+        "id": "HO-CTX-23",
+        "category": "changing_context_baseline_turn",
+        "messages": [
+          {
+            "role": "user",
+            "content": "CREATE TABLE billing_events (event_id UUID PRIMARY KEY, org_id TEXT NOT NULL, amount_cents INT);"
+          },
+          {
+            "role": "user",
+            "content": "Write a SQL query to sum total amount per org"
+          }
+        ],
+        "expected_context_class": "CONTEXT_DEPENDENT",
+        "expected_sensitive": false,
+        "annotation_rationale": "Baseline schema turn before technical context evolution."
+      },
+      {
+        "id": "HO-CTX-24",
+        "category": "changing_context_evolved_turn",
+        "messages": [
+          {
+            "role": "user",
+            "content": "CREATE TABLE billing_events (event_id UUID PRIMARY KEY, org_id TEXT NOT NULL, amount_cents INT, refunded_at TIMESTAMPTZ);"
+          },
+          {
+            "role": "user",
+            "content": "Write a SQL query to sum total amount per org"
+          }
+        ],
+        "expected_context_class": "CONTEXT_DEPENDENT",
+        "expected_sensitive": false,
+        "annotation_rationale": "Added refunded_at column must invalidate prior context_fingerprint compared to HO-CTX-23."
+      }
+    ],
+    "fingerprint_pairs": [
+      {
+        "id": "FP-STABLE-WHITESPACE",
+        "expected_same_fingerprint": true,
+        "description": "CRLF vs LF newlines and outer padding on identical schema/question preserve context_fingerprint",
+        "request_a": {
+          "messages": [
+            {
+              "role": "user",
+              "content": "CREATE TABLE jobs (job_id INT PRIMARY KEY, state TEXT);\r\n"
+            },
+            {
+              "role": "user",
+              "content": "Write a SQL query for pending jobs"
+            }
+          ]
+        },
+        "request_b": {
+          "messages": [
+            {
+              "role": "user",
+              "content": "  CREATE TABLE jobs (job_id INT PRIMARY KEY, state TEXT);  "
+            },
+            {
+              "role": "user",
+              "content": "Write a SQL query for pending jobs"
+            }
+          ]
+        }
+      },
+      {
+        "id": "FP-STABLE-IRRELEVANT-CHATTER",
+        "expected_same_fingerprint": true,
+        "description": "Adding greetings around identical substantive context preserves context_fingerprint",
+        "request_a": {
+          "messages": [
+            {
+              "role": "user",
+              "content": "CREATE TABLE api_keys (id INT PRIMARY KEY, revoked BOOLEAN);"
+            },
+            {
+              "role": "user",
+              "content": "Query active api_keys"
+            }
+          ]
+        },
+        "request_b": {
+          "messages": [
+            {
+              "role": "user",
+              "content": "Hi!"
+            },
+            {
+              "role": "assistant",
+              "content": "Hello! How can I help?"
+            },
+            {
+              "role": "user",
+              "content": "CREATE TABLE api_keys (id INT PRIMARY KEY, revoked BOOLEAN);"
+            },
+            {
+              "role": "user",
+              "content": "Query active api_keys"
+            }
+          ]
+        }
+      },
+      {
+        "id": "FP-INVALIDATE-SCHEMA-CHANGE",
+        "expected_same_fingerprint": false,
+        "description": "Schema column change produces distinct context_fingerprint",
+        "request_a": {
+          "messages": [
+            {
+              "role": "user",
+              "content": "CREATE TABLE invoices (id INT PRIMARY KEY, total_cents INT);"
+            },
+            {
+              "role": "user",
+              "content": "Write SQL to sum totals"
+            }
+          ]
+        },
+        "request_b": {
+          "messages": [
+            {
+              "role": "user",
+              "content": "CREATE TABLE invoices (id INT PRIMARY KEY, total_cents INT, status TEXT);"
+            },
+            {
+              "role": "user",
+              "content": "Write SQL to sum totals"
+            }
+          ]
+        }
+      },
+      {
+        "id": "FP-INVALIDATE-CONFIG-CHANGE",
+        "expected_same_fingerprint": false,
+        "description": "Configuration threshold change produces distinct context_fingerprint",
+        "request_a": {
+          "messages": [
+            {
+              "role": "user",
+              "content": "timeout_ms: 2500\nmax_retries: 2"
+            },
+            {
+              "role": "user",
+              "content": "Adjust retry logic for our timeout setting"
+            }
+          ]
+        },
+        "request_b": {
+          "messages": [
+            {
+              "role": "user",
+              "content": "timeout_ms: 8000\nmax_retries: 5"
+            },
+            {
+              "role": "user",
+              "content": "Adjust retry logic for our timeout setting"
+            }
+          ]
+        }
+      },
+      {
+        "id": "FP-INVALIDATE-FRAMEWORK-DECISION",
+        "expected_same_fingerprint": false,
+        "description": "Target framework version change in conversation decision produces distinct context_fingerprint",
+        "request_a": {
+          "messages": [
+            {
+              "role": "user",
+              "content": "Our backend app uses FastAPI 0.109 on Python 3.11."
+            },
+            {
+              "role": "user",
+              "content": "Add lifespan startup hook to the previous setup"
+            }
+          ]
+        },
+        "request_b": {
+          "messages": [
+            {
+              "role": "user",
+              "content": "Our backend app uses FastAPI 0.115 on Python 3.12."
+            },
+            {
+              "role": "user",
+              "content": "Add lifespan startup hook to the previous setup"
+            }
+          ]
+        }
+      },
+      {
+        "id": "FP-INVALIDATE-SYSTEM-PROMPT",
+        "expected_same_fingerprint": false,
+        "description": "Changing system instruction produces distinct context_fingerprint",
+        "request_a": {
+          "messages": [
+            {
+              "role": "system",
+              "content": "Always respond with concise Python standard library solutions."
+            },
+            {
+              "role": "user",
+              "content": "How do I parse CLI flags in Python?"
+            }
+          ]
+        },
+        "request_b": {
+          "messages": [
+            {
+              "role": "system",
+              "content": "Always respond with async Python libraries and structured logging."
+            },
+            {
+              "role": "user",
+              "content": "How do I parse CLI flags in Python?"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,345 @@
+{
+  "dataset_version": "3.7",
+  "description": "Stage 3.7 Held-Out Compatibility & False-Semantic-Hit Dataset covering all 26 Phase 3 scenarios plus positive controls executed against FastEmbed BAAI/bge-small-en-v1.5 and PostgreSQL + pgvector.",
+  "scenarios": [
+    {
+      "id": "COMPAT-01-EXACT",
+      "category": "exact_compatible",
+      "mode": "http",
+      "seed_prompt": "How do I compute the median of numeric items in Python?",
+      "seed_response": "```python\nimport statistics\ndef median_value(values: list[float]) -> float:\n    return statistics.median(values)\n```",
+      "probe_prompt": "How do I compute the median of numeric items in Python?",
+      "expected_compatible": true,
+      "expected_cache_type": "exact"
+    },
+    {
+      "id": "COMPAT-02-PARAPHRASE",
+      "category": "valid_paraphrase",
+      "mode": "http",
+      "seed_prompt": "How do I reverse a string in Python?",
+      "seed_response": "```python\ndef reverse_text(s: str) -> str:\n    return s[::-1]\n```",
+      "probe_prompt": "What is the Python syntax to reverse a string?",
+      "expected_compatible": true,
+      "expected_cache_type": "semantic"
+    },
+    {
+      "id": "COMPAT-03-DIFF-LANG",
+      "category": "different_language",
+      "mode": "http",
+      "seed_prompt": "Write a function to deduplicate integers in Python while keeping order",
+      "seed_response": "```python\ndef dedupe_order(nums: list[int]) -> list[int]:\n    return list(dict.fromkeys(nums))\n```",
+      "probe_prompt": "Write a function to deduplicate integers in Go while keeping order",
+      "expected_compatible": false,
+      "expected_reason": "LANGUAGE_MISMATCH"
+    },
+    {
+      "id": "COMPAT-04-DIFF-FRAMEWORK-VER",
+      "category": "different_framework_version",
+      "mode": "http",
+      "seed_prompt": "Write a route with lifespan handler in FastAPI 0.110 using Python",
+      "seed_response": "```python\nfrom fastapi import FastAPI\napp = FastAPI()\n```",
+      "probe_prompt": "Write a route with lifespan handler in FastAPI 0.95 using Python",
+      "expected_compatible": false,
+      "expected_reason": "FRAMEWORK_VERSION_MISMATCH"
+    },
+    {
+      "id": "COMPAT-05-DIFF-RUNTIME-VER",
+      "category": "different_runtime_version",
+      "mode": "http",
+      "seed_prompt": "Write typed dictionary unpacking using Python 3.12 runtime features",
+      "seed_response": "```python\ndef merge_cfg(**kwargs: str) -> dict[str, str]:\n    return dict(kwargs)\n```",
+      "probe_prompt": "Write typed dictionary unpacking using Python 3.11 runtime features",
+      "expected_compatible": false,
+      "expected_reason": "RUNTIME_VERSION_MISMATCH"
+    },
+    {
+      "id": "COMPAT-06-DIFF-DEPENDENCY-VER",
+      "category": "different_dependency_version",
+      "mode": "http",
+      "seed_prompt": "Define a strict model validator using Pydantic v2 in Python",
+      "seed_response": "```python\nfrom pydantic import BaseModel, field_validator\nclass User(BaseModel):\n    name: str\n```",
+      "probe_prompt": "Define a strict model validator using Pydantic v1 in Python",
+      "expected_compatible": false,
+      "expected_reason": "DEPENDENCY_VERSION_MISMATCH"
+    },
+    {
+      "id": "COMPAT-07-DIFF-EXEC-MODEL",
+      "category": "different_execution_model",
+      "mode": "http",
+      "seed_prompt": "Write an async Python HTTP fetch helper using httpx",
+      "seed_response": "```python\nimport httpx\nasync def fetch_ok(url: str) -> int:\n    async with httpx.AsyncClient() as c:\n        return (await c.get(url)).status_code\n```",
+      "probe_prompt": "Write a synchronous Python HTTP fetch helper using httpx",
+      "expected_compatible": false,
+      "expected_reason": "EXECUTION_MODEL_MISMATCH"
+    },
+    {
+      "id": "COMPAT-08-DIFF-OUTPUT-FORMAT",
+      "category": "different_output_format",
+      "mode": "http",
+      "seed_prompt": "Write a Python service health config summary and return valid JSON only",
+      "seed_response": "{\"service\": \"gateway\", \"healthy\": true}",
+      "probe_prompt": "Write a Python service health config summary and output as YAML",
+      "expected_compatible": false,
+      "expected_reason": "OUTPUT_FORMAT_MISMATCH"
+    },
+    {
+      "id": "COMPAT-09-DIFF-JSON-SCHEMA",
+      "category": "different_json_schema",
+      "mode": "http",
+      "seed_prompt": "Return strict JSON matching schema:\n```json\n{\"type\": \"object\", \"required\": [\"id\", \"status\"], \"properties\": {\"id\": {\"type\": \"integer\"}, \"status\": {\"type\": \"string\"}}, \"additionalProperties\": false}\n```\nRepresent a Python job state.",
+      "seed_response": "{\"id\": 10, \"status\": \"running\"}",
+      "probe_prompt": "Return strict JSON matching schema:\n```json\n{\"type\": \"object\", \"required\": [\"job_uuid\", \"ok\"], \"properties\": {\"job_uuid\": {\"type\": \"string\"}, \"ok\": {\"type\": \"boolean\"}}, \"additionalProperties\": false}\n```\nRepresent a Python job state.",
+      "expected_compatible": false,
+      "expected_reason": "OUTPUT_CONSTRAINT_MISMATCH"
+    },
+    {
+      "id": "COMPAT-10-DIFF-CONSTRAINTS",
+      "category": "different_output_constraints",
+      "mode": "http",
+      "seed_prompt": "Explain Python generator expressions in under 15 words",
+      "seed_response": "Generators yield items lazily without allocating full intermediate lists in memory.",
+      "probe_prompt": "Explain Python generator expressions with max 60 words",
+      "expected_compatible": false,
+      "expected_reason": "OUTPUT_CONSTRAINT_MISMATCH"
+    },
+    {
+      "id": "COMPAT-11-DIFF-SYSTEM-INST",
+      "category": "different_system_instructions",
+      "mode": "http",
+      "seed_system_prompt": "Respond using standard library Python only without external libraries.",
+      "seed_prompt": "How do I validate JSON payloads in Python?",
+      "seed_response": "```python\nimport json\ndef parse_json(raw: str) -> dict:\n    return json.loads(raw)\n```",
+      "probe_system_prompt": "Respond with Pydantic v2 validation examples and strict schema constraints.",
+      "probe_prompt": "How do I validate JSON payloads in Python?",
+      "expected_compatible": false,
+      "expected_reason": "CONTEXT_FINGERPRINT_MISMATCH"
+    },
+    {
+      "id": "COMPAT-12-DIFF-CODE-CTX",
+      "category": "different_code_context",
+      "mode": "http",
+      "seed_messages": [
+        {
+          "role": "user",
+          "content": "def compute_discount(price_cents: int, tier: str) -> int:\n    return int(price_cents * 0.9)"
+        },
+        {
+          "role": "user",
+          "content": "Update the previous implementation to clamp negative totals to zero"
+        }
+      ],
+      "seed_response": "```python\ndef compute_discount(price_cents: int, tier: str) -> int:\n    return max(0, int(price_cents * 0.9))\n```",
+      "probe_messages": [
+        {
+          "role": "user",
+          "content": "function calculateTax(subtotalCents, regionCode) {\n  return Math.round(subtotalCents * 0.08);\n}"
+        },
+        {
+          "role": "user",
+          "content": "Update the previous implementation to clamp negative totals to zero"
+        }
+      ],
+      "expected_compatible": false,
+      "expected_reason": "CONTEXT_FINGERPRINT_MISMATCH"
+    },
+    {
+      "id": "COMPAT-13-DIFF-SCHEMA-CFG",
+      "category": "different_db_schema_or_config",
+      "mode": "http",
+      "seed_messages": [
+        {
+          "role": "user",
+          "content": "CREATE TABLE subscriptions (sub_id UUID PRIMARY KEY, status TEXT NOT NULL, canceled_at TIMESTAMPTZ);"
+        },
+        {
+          "role": "user",
+          "content": "Write a SQL query to select active rows cleanly"
+        }
+      ],
+      "seed_response": "```sql\nSELECT sub_id FROM subscriptions WHERE canceled_at IS NULL;\n```",
+      "probe_messages": [
+        {
+          "role": "user",
+          "content": "CREATE TABLE api_tokens (token_hash TEXT PRIMARY KEY, expires_at TIMESTAMPTZ);"
+        },
+        {
+          "role": "user",
+          "content": "Write a SQL query to select active rows cleanly"
+        }
+      ],
+      "expected_compatible": false,
+      "expected_reason": "CONTEXT_FINGERPRINT_MISMATCH"
+    },
+    {
+      "id": "COMPAT-14-MISSING-META",
+      "category": "missing_compatibility_metadata",
+      "mode": "injected_pg_row",
+      "seed_prompt": "How do I normalize path strings in Python cleanly?",
+      "seed_response": "```python\nfrom pathlib import Path\np = Path('a/b').resolve()\n```",
+      "probe_prompt": "How do I normalize file path strings in Python cleanly?",
+      "expected_compatible": false,
+      "expected_reason": "LEGACY_METADATA_MISSING"
+    },
+    {
+      "id": "COMPAT-15-MISSING-HISTORY",
+      "category": "missing_conversation_history",
+      "mode": "http",
+      "probe_prompt": "Modify the previous implementation to add structured logging",
+      "expected_compatible": false,
+      "expected_reason": "ADMISSION_REJECTED_CONTEXT_UNCERTAIN"
+    },
+    {
+      "id": "COMPAT-16-AMBIGUOUS-CANDIDATES",
+      "category": "ambiguous_candidates",
+      "mode": "http_multi_seed",
+      "seed_candidates": [
+        {
+          "prompt": "Check whether a filesystem path exists in Python using pathlib",
+          "response": "```python\nfrom pathlib import Path\nexists = Path('data.json').exists()\n```"
+        },
+        {
+          "prompt": "Check whether a filesystem path exists in Python using os.path",
+          "response": "```python\nimport os\nexists = os.path.exists('data.json')\n```"
+        }
+      ],
+      "probe_prompt": "Check whether a filesystem path exists in Python",
+      "expected_compatible": false,
+      "expected_reason": "AMBIGUOUS"
+    },
+    {
+      "id": "COMPAT-17-CONFLICTING-MULTI",
+      "category": "conflicting_compatibility_pool",
+      "mode": "policy_unit",
+      "description": "High-similarity incompatible rank-1 (React 18) paired with lower-similarity compatible rank-2 (React 19) above threshold vs all-incompatible pool.",
+      "query_prompt": "Write a React 19 hook component in JavaScript",
+      "candidates": [
+        {
+          "id": "cand_react18",
+          "prompt": "Write a React 18 hook component in JavaScript",
+          "response": "```javascript\nexport function Comp18() { return null; }\n```",
+          "similarity": 0.97,
+          "expected_status": "INCOMPATIBLE"
+        },
+        {
+          "id": "cand_react19_low",
+          "prompt": "Write a React 19 async action hook in JavaScript",
+          "response": "```javascript\nexport function Comp19() { return null; }\n```",
+          "similarity": 0.89,
+          "expected_status": "COMPATIBLE"
+        }
+      ],
+      "expected_compatible": false,
+      "expected_reason": "THRESHOLD_MISS"
+    },
+    {
+      "id": "COMPAT-18-TIME-SENSITIVE",
+      "category": "time_sensitive_request",
+      "mode": "http",
+      "seed_prompt": "What is PostgreSQL 16 release overview?",
+      "seed_response": "PostgreSQL 16 introduced logical replication from standbys and SIMD optimizations.",
+      "probe_prompt": "What are the latest breaking changes in PostgreSQL as of today?",
+      "expected_compatible": false,
+      "expected_reason": "FRESHNESS_NOT_ESTABLISHED"
+    },
+    {
+      "id": "COMPAT-19-FRESHNESS",
+      "category": "freshness_sensitive_info",
+      "mode": "http",
+      "seed_prompt": "Compare Python 3.11 and Python 3.12 typing changes",
+      "seed_response": "Python 3.12 added PEP 695 type parameter syntax.",
+      "probe_prompt": "What is the current latest supported LTS Node.js release right now?",
+      "expected_compatible": false,
+      "expected_reason": "FRESHNESS_NOT_ESTABLISHED"
+    },
+    {
+      "id": "COMPAT-20-TRUNCATED-INVALID",
+      "category": "truncated_or_invalid_response",
+      "mode": "http_truncated_seed",
+      "seed_prompt": "Write a Python dict helper and return valid JSON with required keys: id, ok",
+      "truncated_response": "{\"id\": 1, \"ok\": ",
+      "finish_reason": "length",
+      "probe_prompt": "Create a Python dict helper returning valid JSON with required keys: id, ok",
+      "expected_admitted": false,
+      "expected_compatible": false,
+      "expected_reason": "VERIFICATION_FAILED_TRUNCATED"
+    },
+    {
+      "id": "COMPAT-21-UNKNOWN-FW-DEP",
+      "category": "unknown_framework_or_dependency",
+      "mode": "http",
+      "seed_prompt": "Explain Python dependency injection cleanly",
+      "seed_response": "Dependency injection passes collaborators explicitly to functions or constructors.",
+      "probe_prompt": "How do I configure routing in the ZephyrKit framework using Python?",
+      "expected_compatible": false,
+      "expected_reason": "UNKNOWN_MATERIAL_DIMENSION"
+    },
+    {
+      "id": "COMPAT-22-INDEP-CROSS-CONV",
+      "category": "independent_cross_conversation",
+      "mode": "http_two_convs",
+      "seed_prompt": "How do I sort a list in Python?",
+      "seed_response": "```python\ndef sort_items(xs: list) -> list:\n    return sorted(xs)\n```",
+      "probe_prompt": "How to sort a Python list?",
+      "expected_compatible": true,
+      "expected_cache_type": "semantic"
+    },
+    {
+      "id": "COMPAT-23-DEP-MATCHING-CTX",
+      "category": "dependent_matching_context",
+      "mode": "http_messages",
+      "prior_messages": [
+        {
+          "role": "user",
+          "content": "Write a Python helper def parse_csv_row(line: str) -> list[str]."
+        },
+        {
+          "role": "assistant",
+          "content": "```python\ndef parse_csv_row(line: str) -> list[str]:\n    return line.strip().split(',')\n```"
+        }
+      ],
+      "seed_followup": "Modify the previous implementation to strip empty trailing cells",
+      "seed_response": "```python\ndef parse_csv_row(line: str) -> list[str]:\n    return [c.strip() for c in line.strip().split(',') if c.strip()]\n```",
+      "probe_followup": "Modify the previous implementation so it strips empty trailing cells cleanly",
+      "expected_compatible": true,
+      "expected_cache_type": "semantic"
+    },
+    {
+      "id": "COMPAT-24-DEP-INCOMPAT-CTX",
+      "category": "dependent_incompatible_context",
+      "mode": "http_messages",
+      "prior_messages_a": [
+        {
+          "role": "user",
+          "content": "CREATE TABLE orders (order_id BIGINT PRIMARY KEY, total_cents INT);"
+        }
+      ],
+      "prior_messages_b": [
+        {
+          "role": "user",
+          "content": "CREATE TABLE refunds (refund_id UUID PRIMARY KEY, reason TEXT);"
+        }
+      ],
+      "shared_followup": "Modify the previous schema query to filter archived items",
+      "expected_compatible": false,
+      "expected_reason": "CONTEXT_FINGERPRINT_MISMATCH"
+    },
+    {
+      "id": "COMPAT-25-EMBED-FAILURE",
+      "category": "embedding_provider_failure",
+      "mode": "http_fault",
+      "fault": "embedding_timeout",
+      "prompt": "How do I sort a list in Python safely under failure?",
+      "expected_compatible": false,
+      "expected_status": 200
+    },
+    {
+      "id": "COMPAT-26-VECTOR-FAILURE",
+      "category": "vector_store_failure",
+      "mode": "http_fault",
+      "fault": "vector_store_error",
+      "prompt": "How do I sort a list in Python safely during vector store outage?",
+      "expected_compatible": false,
+      "expected_status": 200
+    }
+  ]
+}

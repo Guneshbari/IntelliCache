@@ -33,6 +33,7 @@ from .contracts import (
 )
 from .context import (
     ContextAssessment,
+    ScopeResolution,
     analyze_request_context,
     contains_sensitive_material,
     resolve_context_cache_scope,
@@ -337,6 +338,8 @@ class SemanticCachePolicy:
         candidate: VectorSearchResult,
         request: GenerationRequest,
         request_metadata: Optional[SemanticCompatibilityMetadata] = None,
+        _req_ctx: Optional[ContextAssessment] = None,
+        _req_scope: Optional[ScopeResolution] = None,
     ) -> CompatibilityDecision:
         """
         Evaluates candidate compatibility and returns an explicit tri-state CompatibilityDecision.
@@ -362,8 +365,8 @@ class SemanticCachePolicy:
                 dimension="embedding_contract",
             )
 
-        req_ctx = analyze_request_context(request)
-        scope = resolve_context_cache_scope(request, req_ctx, "")
+        req_ctx = _req_ctx if _req_ctx is not None else analyze_request_context(request)
+        scope = _req_scope if _req_scope is not None else resolve_context_cache_scope(request, req_ctx, "")
         req_vis = scope.effective_visibility
         req_own = scope.effective_owner
         allow_shared = scope.allow_shared_reads
@@ -629,6 +632,8 @@ class SemanticCachePolicy:
             return None, "No vector candidates retrieved."
 
         ctx_start = _time.perf_counter()
+        req_ctx = analyze_request_context(request)
+        req_scope = resolve_context_cache_scope(request, req_ctx, "")
         req_meta = request_metadata
         if req_meta is None:
             try:
@@ -664,7 +669,13 @@ class SemanticCachePolicy:
             if raw_sv is None or raw_sv == 2:
                 legacy_count += 1
             cand_ctx_t0 = _time.perf_counter()
-            decision = self.validate_candidate(cand, request, request_metadata=req_meta)
+            decision = self.validate_candidate(
+                cand,
+                request,
+                request_metadata=req_meta,
+                _req_ctx=req_ctx,
+                _req_scope=req_scope,
+            )
             cand_val_ms = (_time.perf_counter() - cand_ctx_t0) * 1000.0
             if decision.dimension == "context_dependency" or decision.is_compatible:
                 ctx_elapsed_ms += cand_val_ms

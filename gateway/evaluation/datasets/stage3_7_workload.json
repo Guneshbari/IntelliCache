@@ -1,0 +1,284 @@
+{
+  "dataset_version": "3.7",
+  "description": "Stage 3.7 Realistic Multi-Conversation, Multi-Principal, and Cross-Tenant Technical Workload Dataset.",
+  "phases": [
+    {
+      "id": "WL-EXACT-AND-PARAPHRASE",
+      "actor": "tok_carol",
+      "title": "Standalone shared technical prompts with repeated exact and natural paraphrases across independent conversations",
+      "operations": [
+        {
+          "op_id": "wl_rev_seed",
+          "kind": "query",
+          "actor": "tok_carol",
+          "new_conversation": true,
+          "category": "programming_implementation",
+          "prompt": "How do I reverse a string in Python?",
+          "response": "```python\ndef reverse_text(text: str) -> str:\n    return text[::-1]\n```",
+          "expected_cached": false
+        },
+        {
+          "op_id": "wl_rev_exact",
+          "kind": "query",
+          "actor": "tok_dave",
+          "new_conversation": true,
+          "category": "repeated_identical",
+          "prompt": "How do I reverse a string in Python?",
+          "expected_cached": true,
+          "expected_cache_type": "exact"
+        },
+        {
+          "op_id": "wl_rev_para",
+          "kind": "query",
+          "actor": "tok_erin",
+          "new_conversation": true,
+          "category": "natural_paraphrase",
+          "prompt": "What is the Python syntax to reverse a string?",
+          "expected_cached": true,
+          "expected_cache_type": "semantic"
+        },
+        {
+          "op_id": "wl_rev_unauth_shared_reader",
+          "kind": "query",
+          "actor": "tok_fay",
+          "new_conversation": true,
+          "category": "unauthorized_shared_read",
+          "prompt": "What is the Python syntax to reverse a string?",
+          "expected_cached": false
+        },
+        {
+          "op_id": "wl_rev_cross_tenant",
+          "kind": "query",
+          "actor": "tok_frank",
+          "new_conversation": true,
+          "category": "cross_tenant_isolation",
+          "prompt": "What is the Python syntax to reverse a string?",
+          "expected_cached": false
+        }
+      ]
+    },
+    {
+      "id": "WL-DIVERSE-TECH-CATEGORIES",
+      "actor": "tok_carol",
+      "title": "Programming, debugging, algorithms, technical comparisons, architecture, and framework-specific requests across conversations",
+      "operations": [
+        {
+          "op_id": "wl_algo_seed",
+          "kind": "query",
+          "actor": "tok_carol",
+          "new_conversation": true,
+          "category": "algorithm_explanation",
+          "prompt": "How do I sort a list in Python?",
+          "response": "```python\ndef sort_values(items: list) -> list:\n    return sorted(items)\n```",
+          "expected_cached": false
+        },
+        {
+          "op_id": "wl_algo_cross_conv",
+          "kind": "query",
+          "actor": "tok_dave",
+          "new_conversation": true,
+          "category": "cross_conversation_reuse",
+          "prompt": "How to sort a Python list?",
+          "expected_cached": true,
+          "expected_cache_type": "semantic"
+        },
+        {
+          "op_id": "wl_cmp_seed",
+          "kind": "query",
+          "actor": "tok_carol",
+          "new_conversation": true,
+          "category": "technical_comparison",
+          "prompt": "Compare Python tuple vs list mutability and memory characteristics conceptually",
+          "response": "Lists are mutable dynamic arrays; tuples are fixed-length immutable sequences with smaller allocation overhead.",
+          "expected_cached": false
+        },
+        {
+          "op_id": "wl_arch_seed",
+          "kind": "query",
+          "actor": "tok_carol",
+          "new_conversation": true,
+          "category": "architecture_question",
+          "prompt": "Explain idempotency keys and database unique constraints in REST microservice architectures conceptually",
+          "response": "Idempotency keys persisted under unique constraints prevent duplicate side effects during retries.",
+          "expected_cached": false
+        },
+        {
+          "op_id": "wl_fw_fastapi",
+          "kind": "query",
+          "actor": "tok_carol",
+          "new_conversation": true,
+          "category": "framework_specific",
+          "prompt": "Write a FastAPI 0.110 Python endpoint returning JSON health status",
+          "response": "```python\nfrom fastapi import FastAPI\napp = FastAPI()\n@app.get('/health')\ndef health(): return {'status': 'ok'}\n```",
+          "expected_cached": false
+        },
+        {
+          "op_id": "wl_dbg_inline",
+          "kind": "query",
+          "actor": "tok_carol",
+          "new_conversation": true,
+          "category": "debugging_request",
+          "prompt": "Debug a Python KeyError when accessing missing dict keys cleanly",
+          "response": "```python\nvalue = payload.get('key', default_val)\n```",
+          "expected_cached": false
+        }
+      ]
+    },
+    {
+      "id": "WL-SAME-PRINCIPAL-MULTI-CONV-AND-PRIVATE",
+      "actor": "tok_alice",
+      "title": "Same principal across multiple conversations (private reuse) vs second principal in same tenant",
+      "operations": [
+        {
+          "op_id": "wl_alice_conv1_seed",
+          "kind": "query",
+          "actor": "tok_alice",
+          "new_conversation": true,
+          "category": "private_cross_conv",
+          "prompt": "How do I merge two dictionaries in Python?",
+          "response": "```python\ndef merge_maps(a: dict, b: dict) -> dict:\n    return {**a, **b}\n```",
+          "expected_cached": false
+        },
+        {
+          "op_id": "wl_alice_conv2_hit",
+          "kind": "query",
+          "actor": "tok_alice",
+          "new_conversation": true,
+          "category": "private_cross_conv",
+          "prompt": "How to merge two dicts in Python?",
+          "expected_cached": true,
+          "expected_cache_type": "semantic"
+        },
+        {
+          "op_id": "wl_bob_same_tenant_blocked",
+          "kind": "query",
+          "actor": "tok_bob",
+          "new_conversation": true,
+          "category": "private_same_tenant_isolation",
+          "prompt": "How do I merge two dictionaries in Python?",
+          "expected_cached": false
+        }
+      ]
+    },
+    {
+      "id": "WL-HISTORY-IRRELEVANT-VS-RELEVANT",
+      "actor": "tok_carol",
+      "title": "Irrelevant greetings allow cross-conversation reuse whereas genuine code/schema history isolates context-dependent follow-ups",
+      "operations": [
+        {
+          "op_id": "wl_chatter_para",
+          "kind": "query_messages",
+          "actor": "tok_dave",
+          "category": "irrelevant_history_reuse",
+          "messages": [
+            {"role": "user", "content": "Good morning!"},
+            {"role": "assistant", "content": "Good morning! How can I assist you today?"},
+            {"role": "user", "content": "How to sort a Python list?"}
+          ],
+          "expected_cached": true,
+          "expected_cache_type": "semantic"
+        },
+        {
+          "op_id": "wl_cmp_para",
+          "kind": "query",
+          "actor": "tok_dave",
+          "new_conversation": true,
+          "category": "technical_comparison_reuse",
+          "prompt": "Compare mutability and memory overhead of a Python tuple vs list conceptually",
+          "expected_cached": true,
+          "expected_cache_type": "semantic"
+        },
+        {
+          "op_id": "wl_ctx_dep_seed",
+          "kind": "query_messages",
+          "actor": "tok_carol",
+          "category": "context_dependent_followup",
+          "messages": [
+            {"role": "user", "content": "Write a Python helper def sum_positive(nums: list[int]) -> int."},
+            {"role": "assistant", "content": "```python\ndef sum_positive(nums: list[int]) -> int:\n    return sum(n for n in nums if n > 0)\n```"},
+            {"role": "user", "content": "Modify the previous implementation to handle None entries safely"}
+          ],
+          "response": "```python\ndef sum_positive(nums: list[int | None]) -> int:\n    return sum(n for n in nums if n is not None and n > 0)\n```",
+          "expected_cached": false
+        },
+        {
+          "op_id": "wl_ctx_dep_match_hit",
+          "kind": "query_messages",
+          "actor": "tok_dave",
+          "category": "context_dependent_reuse",
+          "messages": [
+            {"role": "user", "content": "Write a Python helper def sum_positive(nums: list[int]) -> int."},
+            {"role": "assistant", "content": "```python\ndef sum_positive(nums: list[int]) -> int:\n    return sum(n for n in nums if n > 0)\n```"},
+            {"role": "user", "content": "Modify the previous implementation so it handles None entries safely"}
+          ],
+          "expected_cached": true,
+          "expected_cache_type": "semantic"
+        },
+        {
+          "op_id": "wl_ctx_dep_diff_blocked",
+          "kind": "query_messages",
+          "actor": "tok_dave",
+          "category": "context_dependent_isolation",
+          "messages": [
+            {"role": "user", "content": "Write a Python helper def avg_positive(nums: list[int]) -> float."},
+            {"role": "assistant", "content": "```python\ndef avg_positive(nums: list[int]) -> float:\n    pos = [n for n in nums if n > 0]\n    return sum(pos) / len(pos) if pos else 0.0\n```"},
+            {"role": "user", "content": "Modify the previous implementation to handle None entries safely"}
+          ],
+          "expected_cached": false
+        },
+        {
+          "op_id": "wl_ctx_uncertain_fail_closed",
+          "kind": "query_messages",
+          "actor": "tok_dave",
+          "category": "context_uncertain_blocked",
+          "messages": [
+            {"role": "user", "content": "Change that implementation right away"}
+          ],
+          "expected_cached": false
+        }
+      ]
+    },
+    {
+      "id": "WL-SENSITIVE-AND-ANTI-SPOOF",
+      "actor": "tok_carol",
+      "title": "Sensitive credentials, personal context, and spoofed payload fields must never leak or override server authorization",
+      "operations": [
+        {
+          "op_id": "wl_secret_bypass",
+          "kind": "query",
+          "actor": "tok_carol",
+          "category": "sensitive_secret_bypass",
+          "prompt": "Connect using postgresql://svc_reader:SuperSecret37@db.example.internal:5432/metrics in Python",
+          "expected_cached": false
+        },
+        {
+          "op_id": "wl_personal_downgrade",
+          "kind": "query",
+          "actor": "tok_carol",
+          "category": "personal_context_isolation",
+          "prompt": "Debug my script at /home/carol/projects/internal_billing.py in Python",
+          "expected_cached": false
+        },
+        {
+          "op_id": "wl_personal_probe_blocked",
+          "kind": "query",
+          "actor": "tok_dave",
+          "category": "personal_context_isolation",
+          "prompt": "Debug my script at /home/carol/projects/internal_billing.py in Python",
+          "expected_cached": false
+        },
+        {
+          "op_id": "wl_spoof_rejected_422",
+          "kind": "spoof_query",
+          "actor": "tok_bob",
+          "payload": {
+            "prompt": "How do I merge two dictionaries in Python?",
+            "visibility": "tenant_shared",
+            "principal_id": "forged-admin"
+          },
+          "expected_status": 422
+        }
+      ]
+    }
+  ]
+}

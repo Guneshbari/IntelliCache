@@ -701,6 +701,7 @@ python -m unittest tests/test_stage3_5_3_admission_and_coexistence.py # Response
 python -m unittest tests/test_stage3_5_4_serving_and_privacy.py # Runtime kill switch, per-principal privacy isolation & HTTP scenarios
 python -m unittest tests/test_stage3_5_5_http_operational_evaluation.py # Stage 3.5.5 local-first HTTP FastEmbed + PostgreSQL operational evaluation
 python -m unittest tests/test_stage3_6_context_cache.py # Stage 3.6 context-aware centralized semantic cache, index & HTTP suite
+python -m unittest tests/test_stage3_7_workload.py # Stage 3.7 workload, optimization & failure-recovery regression suite
 python -m unittest tests/test_config.py        # Configuration tests
 python -m unittest tests/test_main.py          # Application integration tests
 ```
@@ -721,6 +722,25 @@ TEST_DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:5433/intellicache_fa
     .venv/bin/python scripts/evaluate_stage3_6_context_cache.py \
     --test-database-url postgresql://postgres:postgres@127.0.0.1:5433/intellicache_fastembed_test \
     --output-dir /tmp/stage3_6_eval
+```
+
+To run the reproducible Stage 3.7 workload, scalability (`100` to `10,000` entries), controlled A/B/C performance comparison, and 13-scenario failure-recovery evaluation against live PostgreSQL + pgvector + FastEmbed (`BAAI/bge-small-en-v1.5`, `384-d`):
+
+```bash
+cd gateway
+TEST_DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:5433/intellicache_fastembed_test" \
+    .venv/bin/python scripts/evaluate_stage3_7_workload.py \
+    --test-database-url postgresql://postgres:postgres@127.0.0.1:5433/intellicache_fastembed_test \
+    --output-dir /tmp/stage3_7_eval
+```
+
+For quick deterministic CI verification without the larger `5,000`/`10,000`-row scalability loops:
+
+```bash
+cd gateway
+RUN_FASTEMBED_PGVECTOR_TEST=1 REQUIRE_FASTEMBED_PGVECTOR_TEST=1 \
+    TEST_DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:5433/intellicache_fastembed_test" \
+    .venv/bin/python -m unittest -v tests.test_stage3_7_workload
 ```
 
 ---

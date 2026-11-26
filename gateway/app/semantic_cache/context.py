@@ -61,13 +61,13 @@ CLIENT_FORBIDDEN_CONTEXT_KEYS = frozenset({
 _HARD_BACKREF_RE = re.compile(
     r"\b(?:"
     r"the\s+above|"
-    r"above\s+(?:code|snippet|error|function|output|query|example|script|schema|config|implementation|table)|"
-    r"(?:the\s+)?previous\s+(?:implementation|code|snippet|function|method|class|message|response|output|attempt|turn|approach|version|schema|config|example|query)|"
-    r"earlier\s+(?:code|snippet|implementation|message|response|answer|turn|discussion|version|schema|config)|"
+    r"above\s+(?:code|snippet|error|function|output|query|example|script|schema|config|implementation|table|setup)|"
+    r"(?:the\s+)?previous\s+(?:implementation|code|snippet|function|method|class|message|response|output|attempt|turn|approach|version|schema|config|example|query|setup|stack|architecture|framework)|"
+    r"earlier\s+(?:code|snippet|implementation|message|response|answer|turn|discussion|version|schema|config|setup)|"
     r"as\s+(?:discussed\s+earlier|mentioned\s+(?:earlier|above)|shown\s+above|noted\s+earlier|before)|"
     r"from\s+earlier|"
     r"continue(?:\s+(?:from|with|building|implementing|that|this))?|"
-    r"the\s+same\s+(?:change|function|implementation|schema|query|code|snippet|class|endpoint|config)|"
+    r"the\s+same\s+(?:change|function|implementation|schema|query|code|snippet|class|endpoint|config|setup)|"
     r"based\s+on\s+(?:the|that|this|our)\s+(?:schema|config|configuration|code|implementation|snippet|discussion|conversation|context|table|setup)|"
     r"using\s+(?:the|that|this|our)\s+(?:previous|above|existing)\s+\w+"
     r")\b",
@@ -113,7 +113,8 @@ _CONFIG_SIGNAL_RE = re.compile(
 )
 
 _DECISION_SIGNAL_RE = re.compile(
-    r"\b(?:we\s+(?:are\s+)?us(?:e|ing)|our\s+(?:stack|backend|app|project|service)\s+uses?|"
+    r"\b(?:we\s+(?:use|are\s+using|standardized\s+on)|"
+    r"our\s+(?:[a-z]+\s+)?(?:stack|backend|app|application|project|service|system|api)\s+uses?|"
     r"target(?:ing)?\s+(?:python|node|react|fastapi|django|postgresql|postgres|java|go|typescript)|"
     r"always\s+(?:output|return|use|respond|include|exclude)|"
     r"must\s+(?:use|output|return|include|support)|"
@@ -198,14 +199,40 @@ def _extract_table_and_column_tokens(text: str) -> Set[str]:
     return found
 
 
+_CHITCHAT_ACK_RE = re.compile(
+    r"^(?:hi|hello|hey|ok|okay|sure|great|cool|got\s+it|noted|thanks|thank\s+you|"
+    r"ready\s+when\s+you\s+are|happy\s+to\s+help|"
+    r"how\s+can\s+i\s+(?:help|assist)(?:\s+you)?(?:\s+today)?|"
+    r"(?:you'?re|you\s+are)\s+welcome|let\s+me\s+know(?:\s+what\s+you\s+need)?)"
+    r"(?:[\s!.,?\-]+(?:ready\s+when\s+you\s+are|happy\s+to\s+help|"
+    r"how\s+can\s+i\s+(?:help|assist)(?:\s+you)?(?:\s+today)?|let\s+me\s+know(?:\s+what\s+you\s+need)?|"
+    r"(?:you'?re|you\s+are)\s+welcome))*[\s!.,?]*$",
+    re.IGNORECASE,
+)
+
+_SUBSTANTIVE_PROSE_TECH_RE = re.compile(
+    r"\b(?:function|method|class|interface|struct|table|column|row|schema|migration|query|sql|index|"
+    r"endpoint|api|config|configuration|parameter|timeout|retry|backoff|async|await|exception|error|"
+    r"traceback|complexity|memory|thread|process|python|javascript|typescript|rust|java|golang|"
+    r"fastapi|django|flask|react|postgres|postgresql|json|yaml|http)\b",
+    re.IGNORECASE,
+)
+
+
 def _has_code_construct(text: str) -> bool:
     return bool(
         "```" in text
-        or re.search(r"(?:^|\n)\s*(?:def |async def |class |function |export |interface |struct |impl |const |let |public\s+)", text)
+        or re.search(
+            r"(?:^|\n)\s*(?:def |async def |class |function |export |interface |struct |impl |const |let |public\s+)"
+            r"|\b(?:def|async\s+def|class|function)\s+[a-zA-Z_][a-zA-Z0-9_]*\s*[\(:]",
+            text,
+        )
     )
 
 
 def _is_chitchat_turn(text: str) -> bool:
+    if _CHITCHAT_ACK_RE.match((text or "").strip()):
+        return True
     cleaned = re.sub(r"[^a-z0-9\s]", "", (text or "").lower()).strip()
     if not cleaned:
         return True
@@ -476,7 +503,13 @@ def _extract_prior_context_materials(
             identifiers.update(_extract_identifiers(content))
             substantive_turns.append({"role": role, "content": content})
 
-        if role == "assistant" and (msg_has_ddl or msg_has_code or msg_has_cfg or msg_has_dec or len(content) >= 24):
+        if role == "assistant" and (
+            msg_has_ddl
+            or msg_has_code
+            or msg_has_cfg
+            or msg_has_dec
+            or (len(content) >= 24 and bool(_SUBSTANTIVE_PROSE_TECH_RE.search(content)))
+        ):
             last_assistant_artifact = content
 
     if schema_blocks:

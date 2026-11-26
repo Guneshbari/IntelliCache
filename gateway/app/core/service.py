@@ -7,7 +7,7 @@ This module MUST NOT import FastAPI or any provider-specific SDK.
 import asyncio
 import logging
 import time
-from typing import AsyncGenerator, Optional
+from typing import Any, AsyncGenerator, Optional
 
 logger = logging.getLogger("intellicache.gateway.core")
 
@@ -76,6 +76,61 @@ class IntelliCacheCore:
 
     def _get_collector(self) -> RuntimeMetricsCollector:
         return self.metrics_collector or get_metrics_collector()
+
+    async def _safe_exact_lookup(
+        self,
+        *,
+        fingerprint: str,
+        exact_storage_key: str,
+        namespace: str,
+        req_vis: str,
+        entry_owner: Optional[str],
+        allow_shared: bool,
+        stream: bool = False,
+    ) -> Optional[CacheEntry]:
+        """Fails open on exact-cache read errors so DB/pool glitches fall back to upstream inference."""
+        try:
+            cached_entry = await self.cache.get(
+                exact_storage_key,
+                namespace=namespace,
+                visibility=req_vis,
+                principal_id=entry_owner,
+                allow_shared_reads=False,
+            )
+            if cached_entry is None and req_vis == CACHE_VISIBILITY_PRIVATE and allow_shared:
+                cached_entry = await self.cache.get(
+                    fingerprint,
+                    namespace=namespace,
+                    visibility=CACHE_VISIBILITY_TENANT_SHARED,
+                    principal_id=None,
+                    allow_shared_reads=False,
+                )
+            return cached_entry
+        except asyncio.CancelledError:
+            raise
+        except Exception as read_err:
+            mode_label = "Streaming exact" if stream else "Exact"
+            logger.warning(
+                "%s cache read failed for namespace='%s' (failing open to upstream): %s",
+                mode_label,
+                namespace,
+                sanitize_error_message(str(read_err)),
+            )
+            return None
+
+    async def _safe_cache_counter(self, awaitable: Any, *, op_name: str, namespace: str) -> None:
+        """Executes best-effort cache statistics hooks without breaking upstream fallback on outage."""
+        try:
+            await awaitable
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:
+            logger.debug(
+                "Cache counter '%s' failed for namespace='%s': %s",
+                op_name,
+                namespace,
+                sanitize_error_message(str(err)),
+            )
 
     def _get_serving_controller(self) -> Optional[SemanticServingController]:
         return (
@@ -222,21 +277,15 @@ class IntelliCacheCore:
                 collector.record_exact_miss(ns)
             else:
                 lookup_start = time.perf_counter()
-                cached_entry = await self.cache.get(
-                    exact_storage_key,
+                cached_entry = await self._safe_exact_lookup(
+                    fingerprint=fingerprint,
+                    exact_storage_key=exact_storage_key,
                     namespace=ns,
-                    visibility=req_vis,
-                    principal_id=entry_owner,
-                    allow_shared_reads=False,
+                    req_vis=req_vis,
+                    entry_owner=entry_owner,
+                    allow_shared=allow_shared,
+                    stream=False,
                 )
-                if cached_entry is None and req_vis == CACHE_VISIBILITY_PRIVATE and allow_shared:
-                    cached_entry = await self.cache.get(
-                        fingerprint,
-                        namespace=ns,
-                        visibility=CACHE_VISIBILITY_TENANT_SHARED,
-                        principal_id=None,
-                        allow_shared_reads=False,
-                    )
                 lookup_latency_ms = (time.perf_counter() - lookup_start) * 1000.0
                 collector.record_exact_lookup(ns, latency_ms=lookup_latency_ms)
 
@@ -272,7 +321,7 @@ class IntelliCacheCore:
 
         # 2. Strict Bypass or Fail-Closed Unidentifiable Privacy Scope
         if request.bypass_cache or not self.cache_enabled or not can_use_exact_cache:
-            await self.cache.record_miss()
+            await self._safe_cache_counter(self.cache.record_miss(), op_name="record_miss", namespace=ns)
             collector.record_provider_attempt(ns)
             prov_start = time.perf_counter()
             try:
@@ -406,7 +455,11 @@ class IntelliCacheCore:
                                     )
                                 except TypeError:
                                     self.semantic_cache.record_served_hit(ns)
-                            await self.cache.record_semantic_hit(tokens_saved, latency_saved_ms)
+                            await self._safe_cache_counter(
+                self.cache.record_semantic_hit(tokens_saved, latency_saved_ms),
+                op_name="record_semantic_hit",
+                namespace=ns,
+            )
                             collector.record_semantic_hit(
                                 ns,
                                 prompt_tokens=semantic_hit.prompt_tokens,
@@ -459,7 +512,7 @@ class IntelliCacheCore:
                         self._record_semantic_stat_attr(self.semantic_cache, "semantic_fallbacks")
 
             # 5. Leader: Semantic miss or disabled -> call provider
-            await self.cache.record_miss()
+            await self._safe_cache_counter(self.cache.record_miss(), op_name="record_miss", namespace=ns)
             collector.record_provider_attempt(ns)
             prov_start = time.perf_counter()
             try:
@@ -654,21 +707,15 @@ class IntelliCacheCore:
                 collector.record_exact_miss(ns)
             else:
                 lookup_start = time.perf_counter()
-                cached_entry = await self.cache.get(
-                    exact_storage_key,
+                cached_entry = await self._safe_exact_lookup(
+                    fingerprint=fingerprint,
+                    exact_storage_key=exact_storage_key,
                     namespace=ns,
-                    visibility=req_vis,
-                    principal_id=entry_owner,
-                    allow_shared_reads=False,
+                    req_vis=req_vis,
+                    entry_owner=entry_owner,
+                    allow_shared=allow_shared,
+                    stream=True,
                 )
-                if cached_entry is None and req_vis == CACHE_VISIBILITY_PRIVATE and allow_shared:
-                    cached_entry = await self.cache.get(
-                        fingerprint,
-                        namespace=ns,
-                        visibility=CACHE_VISIBILITY_TENANT_SHARED,
-                        principal_id=None,
-                        allow_shared_reads=False,
-                    )
                 lookup_latency_ms = (time.perf_counter() - lookup_start) * 1000.0
                 collector.record_exact_lookup(ns, latency_ms=lookup_latency_ms)
 
@@ -712,7 +759,7 @@ class IntelliCacheCore:
                     collector.record_exact_miss(ns)
 
         # 2. Streaming Miss
-        await self.cache.record_miss()
+        await self._safe_cache_counter(self.cache.record_miss(), op_name="record_miss", namespace=ns)
         collector.record_provider_attempt(ns)
         prov_start = time.perf_counter()
         accumulated_text: list[str] = []

@@ -435,6 +435,42 @@ class PostgresVectorStore(BaseVectorStore):
         """
         return single_query, combined_query, all_filter_params, False
 
+    @staticmethod
+    def _specialize_low_selectivity_context_sql(
+        sql: str,
+        params: list[Any],
+        context_class: Optional[str],
+        context_fingerprint: Optional[str],
+    ) -> tuple[str, list[Any]]:
+        """
+        Replaces validated fixed CONTEXT_INDEPENDENT literal parameters at the tail of `params`
+        with SQL string literals so PostgreSQL's prepared-statement planner sees exact MCV table
+        statistics even after switching to a generic plan (exec >= 6) and preserves HNSW scans
+        instead of falling back to high-cost B-tree context index scans on large tables.
+        """
+        if not sql or context_class is None:
+            return sql, params
+        norm_cls = str(context_class).strip().upper()
+        if norm_cls != "CONTEXT_INDEPENDENT":
+            return sql, params
+        norm_fp = str(context_fingerprint).strip() if context_fingerprint is not None else None
+        if norm_fp is not None and norm_fp != "ctx-v1:independent":
+            return sql, params
+
+        out_params = list(params)
+        out_sql = sql
+        if norm_fp == "ctx-v1:independent" and len(out_params) >= 2 and out_params[-2:] == ["CONTEXT_INDEPENDENT", "ctx-v1:independent"]:
+            fp_idx = len(out_params)
+            cls_idx = len(out_params) - 1
+            out_sql = out_sql.replace(f"->>'context_class') = ${cls_idx}", "->>'context_class') = 'CONTEXT_INDEPENDENT'")
+            out_sql = out_sql.replace(f"->>'context_fingerprint') = ${fp_idx}", "->>'context_fingerprint') = 'ctx-v1:independent'")
+            return out_sql, out_params[:-2]
+        if norm_fp is None and len(out_params) >= 1 and out_params[-1] == "CONTEXT_INDEPENDENT":
+            cls_idx = len(out_params)
+            out_sql = out_sql.replace(f"->>'context_class') = ${cls_idx}", "->>'context_class') = 'CONTEXT_INDEPENDENT'")
+            return out_sql, out_params[:-1]
+        return sql, params
+
     async def search(
         self,
         query_vector: Sequence[float],
@@ -472,29 +508,37 @@ class PostgresVectorStore(BaseVectorStore):
             return []
 
         vec_str = _format_vector(query_vector)
-        params: list[Any] = [vec_str, ns, target_model, top_k, *scope_params]
+        base_params: list[Any] = [vec_str, ns, target_model, top_k, *scope_params]
+        exec_single, params = self._specialize_low_selectivity_context_sql(
+            query, base_params, context_class, context_fingerprint
+        )
+        exec_combined = combined_query
+        if combined_query is not None:
+            exec_combined, _ = self._specialize_low_selectivity_context_sql(
+                combined_query, base_params, context_class, context_fingerprint
+            )
 
         try:
             async with self.pool.acquire() as conn:
-                if combined_query is not None:
+                if exec_combined is not None:
                     try:
                         if self.readonly_transaction:
                             async with conn.transaction(readonly=True):
-                                rows = await conn.fetch(combined_query, *params)
+                                rows = await conn.fetch(exec_combined, *params)
                         else:
-                            rows = await conn.fetch(combined_query, *params)
+                            rows = await conn.fetch(exec_combined, *params)
                     except asyncpg.UndefinedTableError:
                         if self.readonly_transaction:
                             async with conn.transaction(readonly=True):
-                                rows = await conn.fetch(query, *params)
+                                rows = await conn.fetch(exec_single, *params)
                         else:
-                            rows = await conn.fetch(query, *params)
+                            rows = await conn.fetch(exec_single, *params)
                 else:
                     if self.readonly_transaction:
                         async with conn.transaction(readonly=True):
-                            rows = await conn.fetch(query, *params)
+                            rows = await conn.fetch(exec_single, *params)
                     else:
-                        rows = await conn.fetch(query, *params)
+                        rows = await conn.fetch(exec_single, *params)
 
             results: List[VectorSearchResult] = []
             for row in rows:
@@ -853,6 +897,8 @@ class PostgresVectorStore(BaseVectorStore):
         visibility: Optional[str] = None,
         principal_id: Optional[str] = None,
         allow_shared_reads: bool = False,
+        context_class: Optional[str] = None,
+        context_fingerprint: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Executes EXPLAIN (or EXPLAIN ANALYZE) on the exact production nearest-neighbour
@@ -871,6 +917,8 @@ class PostgresVectorStore(BaseVectorStore):
             visibility=visibility,
             principal_id=principal_id,
             allow_shared_reads=allow_shared_reads,
+            context_class=context_class,
+            context_fingerprint=context_fingerprint,
         )
         if fail_closed:
             return {
@@ -880,23 +928,31 @@ class PostgresVectorStore(BaseVectorStore):
                 "retrieval_method": "Fail-closed empty scope",
                 "execution_plan_summary": [],
             }
-        params: list[Any] = [vec_str, ns, target_model, top_k, *scope_params]
+        base_params: list[Any] = [vec_str, ns, target_model, top_k, *scope_params]
+        exec_single, params = self._specialize_low_selectivity_context_sql(
+            single_query, base_params, context_class, context_fingerprint
+        )
+        exec_combined = combined_query
+        if combined_query is not None:
+            exec_combined, _ = self._specialize_low_selectivity_context_sql(
+                combined_query, base_params, context_class, context_fingerprint
+            )
         try:
             async with self.pool.acquire() as conn:
-                if combined_query is not None:
+                if exec_combined is not None:
                     try:
                         rows = await conn.fetch(
-                            f"{explain_cmd}\n{combined_query}",
+                            f"{explain_cmd}\n{exec_combined}",
                             *params,
                         )
                     except asyncpg.UndefinedTableError:
                         rows = await conn.fetch(
-                            f"{explain_cmd}\n{single_query}",
+                            f"{explain_cmd}\n{exec_single}",
                             *params,
                         )
                 else:
                     rows = await conn.fetch(
-                        f"{explain_cmd}\n{single_query}",
+                        f"{explain_cmd}\n{exec_single}",
                         *params,
                     )
             plan_lines = [r[0] for r in rows]
