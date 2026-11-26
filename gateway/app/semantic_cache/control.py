@@ -82,10 +82,12 @@ class RuntimeServingControlState:
 
 class SemanticServingController:
     """
-    Thread-safe runtime serving kill-switch controller.
+    Thread-safe, process-local runtime serving kill-switch controller.
 
     Guarantees fail-closed behavior whenever state is missing, malformed,
-    or a state provider raises an exception.
+    or a state provider raises an exception. Note: State is maintained per
+    worker process unless an external shared `state_provider` is configured;
+    restarts restore the configured startup `SEMANTIC_CACHE_SERVING_ENABLED`.
     """
 
     def __init__(

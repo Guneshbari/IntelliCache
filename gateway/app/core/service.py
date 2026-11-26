@@ -302,7 +302,10 @@ class IntelliCacheCore:
                 c_tok = getattr(cached_entry.usage, "completion_tokens", 0) or 0
                 t_tok = getattr(cached_entry.usage, "total_tokens", 0) or 0
 
-                # Record successful reuse for tokens
+                # Record successful reuse for tokens; followers receive the leader's result
+                # (including semantic hits with cache_type="semantic") without an independent
+                # Checkpoint 2 check and are tracked via coalesced_joins/coalesced_successes
+                # rather than incrementing semantic_hits twice.
                 await self.cache.record_coalesced_success(cached_entry)
                 collector.record_coalesced_success(
                     ns,
@@ -360,6 +363,9 @@ class IntelliCacheCore:
                             self._record_semantic_stat_attr(self.semantic_cache, "runtime_disabled_skips")
                             self._record_semantic_stat_attr(self.semantic_cache, "upstream_fallbacks_after_miss")
                         else:
+                            # Intended operational policy: once Checkpoint 2 authorizes delivery,
+                            # the leader completes metrics commit, SingleFlight follower resolution,
+                            # and response return even if runtime control flips afterward.
                             total_latency_ms = (time.perf_counter() - start_time) * 1000.0
                             latency_saved_ms = max(0.0, semantic_hit.original_latency_ms - total_latency_ms)
                             tokens_saved = semantic_hit.total_tokens

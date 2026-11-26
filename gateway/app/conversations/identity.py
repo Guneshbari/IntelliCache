@@ -149,7 +149,9 @@ def resolve_authenticated_caller(
     """
     Authenticates the client request and resolves its server-enforced cache privacy scope:
     - namespace (from token policy or server default on loopback)
-    - opaque principal_id (HMAC-SHA256 when BOTH token auth and identity secret are present; otherwise None)
+    - credential-scoped opaque principal_id (HMAC-SHA256(secret, client_token) when BOTH token
+      auth and identity secret are present; otherwise None). Multiple tokens for the same user
+      or rotated tokens yield distinct principal IDs until Stage 5 stable user identities.
     - visibility ('private' by default when semantic cache or identity secret or private default is active;
       'tenant_shared' only when explicitly configured via token/server policy or in legacy exact-only mode)
     """

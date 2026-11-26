@@ -490,6 +490,147 @@ class TestStage354ConfigAndControl(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snap2.semantic.semantic_runtime_disabled_skips, 1)
         self.assertGreaterEqual(snap2.semantic.upstream_fallbacks_after_semantic_miss, 1)
 
+    async def test_post_checkpoint_2_toggle_completes_authorized_leader_and_follower_accounting(self) -> None:
+        """
+        Verifies documented Checkpoint 2 + SingleFlight semantics:
+        - A leader passing Checkpoint 2 completes delivery even if runtime control flips OFF during
+          final delivery accounting (`cache.record_semantic_hit`).
+        - A coalesced follower receives the leader's `cache_type='semantic'` result without an
+          independent Checkpoint 2 check and accounts via `coalesced_successes` (not duplicate `semantic_hits`).
+        - Any subsequent request immediately sees the disabled state and falls back to upstream.
+        """
+        collector = get_metrics_collector()
+        collector.reset()
+        auth = EvidenceAuthority(secret_key=_STRONG_EVIDENCE_SECRET)
+        embedder = TopicEmbedder([("reverse", 0.0)], dim=768)
+        cache = ExactCache(max_entries=100, ttl_seconds=3600)
+        vstore = InMemoryVectorStore(dimensions=768, default_model="nomic-embed-text", exact_cache=cache)
+        policy = SemanticCachePolicy(
+            min_similarity=0.92,
+            min_margin=0.03,
+            top_k=5,
+            configured_model="nomic-embed-text",
+            evidence_authority=auth,
+        )
+        svc = SemanticCacheService(
+            embedding_provider=embedder,
+            vector_store=vstore,
+            policy=policy,
+            evidence_authority=auth,
+        )
+        ctrl = SemanticServingController(initial_enabled=True, metrics_collector=collector)
+        sf = SingleFlightCoordinator()
+
+        p_alice = derive_principal_id("tok_cp2_alice", _STRONG_IDENTITY_SECRET)
+        seed_req = _make_req(
+            "How do I reverse a list in Python?",
+            namespace="ns_post_cp2",
+            visibility="private",
+            principal_id=p_alice,
+        )
+        seed_res = GenerationResult(
+            text="def rev(x): return list(reversed(x))",
+            model=seed_req.model,
+            usage=UsageMetrics(prompt_tokens=20, completion_tokens=30, total_tokens=50),
+            latency_ms=300.0,
+            fingerprint="seed_fp_post_cp2",
+            finish_reason="stop",
+        )
+        scoped_seed_fp = derive_scoped_exact_key("seed_fp_post_cp2", "private", p_alice)
+        await cache.set(
+            scoped_seed_fp,
+            CacheEntry(
+                response=seed_res.text,
+                model=seed_req.model,
+                usage=seed_res.usage,
+                latency_ms=300.0,
+                provider="groq",
+                visibility="private",
+                owner_principal_id=p_alice,
+            ),
+            namespace="ns_post_cp2",
+        )
+        self.assertTrue(await svc.index(seed_req, seed_res))
+
+        # Pause leader inside lookup BEFORE Checkpoint 2 so follower coalesces onto same flight key,
+        # then disable kill switch AFTER Checkpoint 2 inside cache.record_semantic_hit.
+        in_lookup = asyncio.Event()
+        proceed_lookup = asyncio.Event()
+        orig_lookup = svc.lookup
+
+        async def paused_lookup(req, *args, **kwargs):
+            in_lookup.set()
+            await proceed_lookup.wait()
+            return await orig_lookup(req, *args, **kwargs)
+
+        orig_record_sem_hit = cache.record_semantic_hit
+
+        async def record_and_disable_after_cp2(*args, **kwargs):
+            await orig_record_sem_hit(*args, **kwargs)
+            ctrl.set_serving_enabled(False, updated_by="post_cp2_kill", reason="post checkpoint 2 flip")
+
+        svc.lookup = paused_lookup  # type: ignore[method-assign]
+        cache.record_semantic_hit = record_and_disable_after_cp2  # type: ignore[method-assign]
+
+        core = IntelliCacheCore(
+            cache=cache,
+            semantic_cache=svc,
+            single_flight=sf,
+            cache_enabled=True,
+            semantic_serving_controller=ctrl,
+            semantic_cache_startup_enabled=True,
+        )
+        prov = CountingMockProvider("AFTER_CP2")
+        para_req = _make_req(
+            "How to write Python code to reverse a list?",
+            namespace="ns_post_cp2",
+            visibility="private",
+            principal_id=p_alice,
+        )
+        from app.core.fingerprinting import derive_variant_exact_fingerprint, generate_fingerprint
+        base_fp = generate_fingerprint(
+            para_req.messages, para_req.model, para_req.temperature, para_req.max_tokens, para_req.provider
+        )
+        fp = derive_variant_exact_fingerprint(base_fp, para_req.metadata)
+        expected_flight_key = ("ns_post_cp2", "private", p_alice, fp)
+
+        leader_task = asyncio.create_task(core.execute_query(para_req, prov))
+        await in_lookup.wait()
+        follower_task = asyncio.create_task(core.execute_query(para_req, prov))
+        await sf.wait_for_waiters(expected_flight_key, count=1)
+        proceed_lookup.set()
+
+        leader_out, follower_out = await asyncio.gather(leader_task, follower_task)
+        self.assertTrue(leader_out.cached)
+        self.assertEqual(leader_out.cache_type, "semantic")
+        self.assertTrue(follower_out.cached)
+        self.assertEqual(follower_out.cache_type, "semantic")
+        self.assertEqual(leader_out.text, follower_out.text)
+        self.assertEqual(len(prov.calls), 0)
+
+        snap = collector.get_namespace_snapshot("ns_post_cp2")
+        self.assertEqual(snap.semantic.semantic_hits, 1)
+        self.assertEqual(snap.request_and_cache.coalesced_joins, 1)
+        self.assertEqual(snap.request_and_cache.coalesced_successes, 1)
+        self.assertEqual(snap.provider_and_savings.provider_calls_avoided, 2)
+
+        # Very next paraphrase request MUST immediately see disabled runtime state and fall back
+        svc.lookup = orig_lookup  # type: ignore[method-assign]
+        next_out = await core.execute_query(
+            _make_req(
+                "Write a Python function to reverse a list",
+                namespace="ns_post_cp2",
+                visibility="private",
+                principal_id=p_alice,
+            ),
+            prov,
+        )
+        self.assertFalse(next_out.cached)
+        self.assertEqual(next_out.cache_type, "none")
+        self.assertEqual(len(prov.calls), 1)
+        snap_after = collector.get_namespace_snapshot("ns_post_cp2")
+        self.assertEqual(snap_after.semantic.semantic_runtime_disabled_skips, 1)
+
 
 class TestStage354PrivacyIsolationInMemory(unittest.IsolatedAsyncioTestCase):
     """Per-principal isolation, shared opt-in, unknown fail-closed, SingleFlight & streaming."""
@@ -609,6 +750,28 @@ class TestStage354PrivacyIsolationInMemory(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(slow_prov.calls), 2)
         self.assertEqual(res_a1.text, res_a2.text)
         self.assertNotEqual(res_a1.text, res_b1.text)
+
+    async def test_credential_scoped_identity_two_tokens_same_user_isolated(self) -> None:
+        """
+        Confirms Stage 3.5.4 credential-scoped identity behavior:
+        two API tokens for the same user (or rotated tokens) derive distinct principal_ids and stay isolated.
+        """
+        tok_a1_pid = derive_principal_id("alice_api_token_v1", _STRONG_IDENTITY_SECRET)
+        tok_a2_pid = derive_principal_id("alice_api_token_v2_rotated", _STRONG_IDENTITY_SECRET)
+        self.assertNotEqual(tok_a1_pid, tok_a2_pid)
+
+        prov = CountingMockProvider("CRED")
+        out_v1 = await self.core.execute_query(
+            _make_req("How do I reverse a list in Python?", namespace="team_alpha", visibility="private", principal_id=tok_a1_pid),
+            prov,
+        )
+        self.assertFalse(out_v1.cached)
+        out_v2 = await self.core.execute_query(
+            _make_req("How to write Python code to reverse a list?", namespace="team_alpha", visibility="private", principal_id=tok_a2_pid),
+            prov,
+        )
+        self.assertFalse(out_v2.cached)
+        self.assertEqual(len(prov.calls), 2)
 
     async def test_shared_vs_private_and_allow_shared_reads_and_clear_isolation(self) -> None:
         prov = CountingMockProvider("SCOPE")
