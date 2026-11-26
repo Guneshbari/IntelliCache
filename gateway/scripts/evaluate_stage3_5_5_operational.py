@@ -49,6 +49,7 @@ from app.api.routes import (  # noqa: E402
     set_vector_store,
 )
 from app.config import reload_settings  # noqa: E402
+from app.conversations.identity import derive_principal_id  # noqa: E402
 from app.core.contracts import GenerationRequest, GenerationResult, StreamChunk, UsageMetrics  # noqa: E402
 from app.embeddings.contracts import EmbeddingResult, EmbeddingTask  # noqa: E402
 from app.embeddings.errors import EmbeddingTimeoutError  # noqa: E402
@@ -76,12 +77,24 @@ DEFAULT_CLIENT_TOKENS: Dict[str, Dict[str, Any]] = {
     "tok_carol": {"namespace": "team_beta", "visibility": "tenant_shared", "allow_shared_reads": True},
     "tok_dave": {"namespace": "team_beta", "visibility": "tenant_shared", "allow_shared_reads": True},
     "tok_erin": {"namespace": "team_beta", "visibility": "private", "allow_shared_reads": True},
+    "tok_fay": {"namespace": "team_beta", "visibility": "private", "allow_shared_reads": False},
     "tok_frank": {"namespace": "team_gamma", "visibility": "tenant_shared", "allow_shared_reads": True},
     "tok_sf_a": {"namespace": "team_sf", "visibility": "private", "allow_shared_reads": False},
     "tok_sf_b": {"namespace": "team_sf", "visibility": "private", "allow_shared_reads": False},
     "tok_ctrl": {"namespace": "team_ctrl", "visibility": "private", "allow_shared_reads": False},
     "tok_bench": {"namespace": "team_bench", "visibility": "private", "allow_shared_reads": False},
 }
+
+FORBIDDEN_INTERNAL_RESPONSE_KEYS = frozenset(
+    {
+        "principal_id",
+        "owner_principal_id",
+        "evidence_signature",
+        "client_token",
+        "identity_secret",
+        "evidence_secret",
+    }
+)
 
 
 class ControlledEvalProvider(LLMProvider):
@@ -330,17 +343,63 @@ async def reset_pg_tables(db_url: str) -> None:
         await conn.close()
 
 
+def build_forbidden_disclosure_values(
+    tokens: Sequence[str],
+    identity_secret: str,
+    *,
+    extra_secrets: Sequence[str] = (),
+) -> Tuple[List[str], List[str]]:
+    """
+    Computes derived principal identifiers using the production HMAC helper
+    together with raw credential tokens and secret strings for non-disclosure checks.
+    """
+    derived_principals = [derive_principal_id(tok, identity_secret) for tok in tokens]
+    forbidden_substrings: List[str] = [
+        identity_secret,
+        *extra_secrets,
+        *FORBIDDEN_INTERNAL_RESPONSE_KEYS,
+        *tokens,
+        *derived_principals,
+    ]
+    return derived_principals, forbidden_substrings
+
+
+def _find_forbidden_keys(obj: Any, path: str = "$") -> Optional[str]:
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            key_lower = str(key).strip().lower()
+            if key_lower in FORBIDDEN_INTERNAL_RESPONSE_KEYS:
+                return f"{path}.{key}"
+            nested = _find_forbidden_keys(value, f"{path}.{key}")
+            if nested is not None:
+                return nested
+    elif isinstance(obj, list):
+        for idx, item in enumerate(obj):
+            nested = _find_forbidden_keys(item, f"{path}[{idx}]")
+            if nested is not None:
+                return nested
+    return None
+
+
 def verify_no_sensitive_leaks(
     payload: Any,
     forbidden_substrings: Sequence[str],
     context: str,
+    *,
+    check_forbidden_keys: bool = True,
 ) -> None:
-    """Asserts that no credential token, principal ID, secret, or signature appears in HTTP payloads."""
-    serialized = json.dumps(payload, sort_keys=True)
+    """Asserts no token, derived principal ID, secret, signature, or internal identity key leaks."""
+    if check_forbidden_keys:
+        forbidden_key_path = _find_forbidden_keys(payload)
+        if forbidden_key_path is not None:
+            raise AssertionError(
+                f"Forbidden internal identity/signature key '{forbidden_key_path}' exposed during {context}"
+            )
+    serialized = payload if isinstance(payload, str) else json.dumps(payload, sort_keys=True)
     for forbidden in forbidden_substrings:
         if forbidden and forbidden in serialized:
             raise AssertionError(
-                f"Sensitive value leaked in HTTP response during {context}: matched redacted length={len(forbidden)}"
+                f"Sensitive value leaked in {context}: matched redacted length={len(forbidden)}"
             )
 
 
@@ -384,7 +443,7 @@ def _admin_hdr() -> Dict[str, str]:
     return {"X-Admin-Token": STAGE_3_5_5_ADMIN_TOKEN}
 
 
-async def _post_query(
+async def _raw_post_query(
     client: httpx.AsyncClient,
     token: str,
     prompt: str,
@@ -460,14 +519,11 @@ async def run_operational_evaluation(
     if resolved_db_url:
         env_vars["DATABASE_URL"] = resolved_db_url
 
-    forbidden_secrets: List[str] = [
+    derived_principals, forbidden_secrets = build_forbidden_disclosure_values(
+        list(DEFAULT_CLIENT_TOKENS.keys()),
         STAGE_3_5_5_IDENTITY_SECRET,
-        STAGE_3_5_5_EVIDENCE_SECRET,
-        STAGE_3_5_5_ADMIN_TOKEN,
-        "owner_principal_id",
-        "evidence_signature",
-        *DEFAULT_CLIENT_TOKENS.keys(),
-    ]
+        extra_secrets=[STAGE_3_5_5_EVIDENCE_SECRET, STAGE_3_5_5_ADMIN_TOKEN],
+    )
 
     outcomes: List[ScenarioOutcome] = []
     benchmark_report: Dict[str, Any] = {}
@@ -500,6 +556,16 @@ async def run_operational_evaluation(
                         transport=httpx.ASGITransport(app=test_app),
                         base_url="http://testserver",
                     ) as client:
+                        async def _post_query(
+                            httpx_client: httpx.AsyncClient,
+                            token: str,
+                            prompt: str,
+                        ) -> Tuple[httpx.Response, float]:
+                            resp, elapsed_ms = await _raw_post_query(httpx_client, token, prompt)
+                            if "application/json" in resp.headers.get("content-type", ""):
+                                verify_no_sensitive_leaks(resp.json(), forbidden_secrets, "POST /query response")
+                            return resp, elapsed_ms
+
                         async def _reset_state() -> None:
                             for ns in {entry["namespace"] for entry in DEFAULT_CLIENT_TOKENS.values()}:
                                 r = await client.post(f"/cache/clear?namespace={ns}", headers=_admin_hdr())
@@ -631,12 +697,16 @@ async def run_operational_evaluation(
                         _assert(not s1.json()["cached"] and not s2.json()["cached"], "Seeds failed")
 
                         # Disable team_alpha override only: team_alpha falls back, team_ctrl still hits!
+                        srv_get = await client.get("/admin/semantic-cache/serving", headers=_admin_hdr())
+                        _assert(srv_get.status_code == 200, f"GET /admin/semantic-cache/serving failed: {srv_get.text}")
+                        verify_no_sensitive_leaks(srv_get.json(), forbidden_secrets, "GET /admin/semantic-cache/serving")
                         ns_off = await client.post(
                             "/admin/semantic-cache/serving",
                             headers=_admin_hdr(),
                             json={"enabled": False, "namespace": "team_alpha", "reason": "canary_disable"},
                         )
                         _assert(ns_off.status_code == 200 and ns_off.json()["effective_enabled"] is False, f"Namespace override error: {ns_off.text}")
+                        verify_no_sensitive_leaks(ns_off.json(), forbidden_secrets, "POST /admin/semantic-cache/serving")
                         a_par, _ = await _post_query(client, "tok_alice", ctrl_item["paraphrase_prompt"])
                         c_par, _ = await _post_query(client, "tok_ctrl", ctrl_item["paraphrase_prompt"])
                         a_ex, _ = await _post_query(client, "tok_alice", ctrl_item["exact_prompt"])
@@ -714,12 +784,28 @@ async def run_operational_evaluation(
                         _assert(bob_sem.json()["cached"] is False, "Private semantic leak Alice -> Bob!")
 
                         # Scenario F: Carol shared -> Dave shared hits; Erin private(allow_shared_reads=true) hits;
+                        # Fay private(allow_shared_reads=false) in same tenant MUST NOT hit Carol's shared entry;
                         # Erin's private write NOT readable by Carol; Frank cross-tenant denied!
                         await _post_query(client, priv_shared["seed_actor"]["token"], priv_shared["seed_prompt"])
                         dave_sem, _ = await _post_query(client, priv_shared["shared_reader"]["token"], priv_shared["semantic_probe_prompt"])
                         erin_sem, _ = await _post_query(client, priv_shared["opt_in_private_reader"]["token"], priv_shared["semantic_probe_prompt"])
                         _assert(dave_sem.json()["cached"] is True and dave_sem.json()["cache_type"] == "semantic", f"Shared reader Dave missed: {dave_sem.json()}")
                         _assert(erin_sem.json()["cached"] is True and erin_sem.json()["cache_type"] == "semantic", f"Opt-in private reader Erin missed: {erin_sem.json()}")
+
+                        # Same-tenant private reader with allow_shared_reads=false MUST miss & fall back to upstream
+                        disallowed_reader = priv_shared["private_disallowed_shared_reader"]
+                        calls_before_fay = len(provider.calls)
+                        fay_sem, _ = await _post_query(client, disallowed_reader["token"], priv_shared["semantic_probe_prompt"])
+                        _assert(
+                            fay_sem.status_code == 200
+                            and fay_sem.json()["cached"] is False
+                            and fay_sem.json()["cache_type"] == "none",
+                            f"Same-tenant private reader (allow_shared_reads=false) leaked tenant_shared entry: {fay_sem.json()}",
+                        )
+                        _assert(
+                            len(provider.calls) == calls_before_fay + 1,
+                            "Disallowed same-tenant private reader must fall back to upstream provider",
+                        )
 
                         # Erin writes private entry; Carol must NOT see it!
                         await _post_query(client, priv_shared["opt_in_private_reader"]["token"], priv_shared["private_seed_prompt_by_opt_in"])
@@ -731,6 +817,13 @@ async def run_operational_evaluation(
                         _assert(frank_cross.json()["cached"] is False, f"Cross-tenant semantic leak to team_gamma: {frank_cross.json()}")
 
                         # Scenario G: Spoof attempts rejected (422) & ignored headers increment privacy_violation_attempts
+                        spoof_error_forbidden = [
+                            STAGE_3_5_5_IDENTITY_SECRET,
+                            STAGE_3_5_5_EVIDENCE_SECRET,
+                            STAGE_3_5_5_ADMIN_TOKEN,
+                            *DEFAULT_CLIENT_TOKENS.keys(),
+                            *derived_principals,
+                        ]
                         for spoof_body in (
                             {"model": "mock-qwen-27b", "messages": [{"role": "user", "content": "hi"}], "principal_id": "forged"},
                             {"model": "mock-qwen-27b", "messages": [{"role": "user", "content": "hi"}], "visibility": "tenant_shared"},
@@ -739,6 +832,12 @@ async def run_operational_evaluation(
                         ):
                             sp_r = await client.post("/query", headers=_hdr("tok_alice"), json=spoof_body)
                             _assert(sp_r.status_code == 422, f"Spoof body must 422: {spoof_body} -> {sp_r.status_code}")
+                            verify_no_sensitive_leaks(
+                                sp_r.json(),
+                                spoof_error_forbidden,
+                                "POST /query spoof 422 detail",
+                                check_forbidden_keys=False,
+                            )
 
                         hdr_spoof = await client.post(
                             "/query",
@@ -746,7 +845,9 @@ async def run_operational_evaluation(
                             json={"model": "mock-qwen-27b", "messages": [{"role": "user", "content": "How do I merge two dictionaries in Python?"}], "namespace": "team_beta"},
                         )
                         _assert(hdr_spoof.status_code == 200, "Ignored namespace/header should still complete in caller namespace")
+                        verify_no_sensitive_leaks(hdr_spoof.json(), forbidden_secrets, "Scenario G header spoof response")
                         st_alpha = (await client.get("/cache/semantic/stats", headers=_hdr("tok_alice"))).json()
+                        verify_no_sensitive_leaks(st_alpha, forbidden_secrets, "Scenario G semantic stats")
                         _assert(st_alpha["privacy_violation_attempts"] >= 1, f"Expected privacy_violation_attempts increment: {st_alpha}")
 
                         # DB Legacy visibility='unknown' and Tampered Signature Fail-Closed Check (when PG active)
@@ -796,7 +897,11 @@ async def run_operational_evaluation(
                             ScenarioOutcome(
                                 "scenario_e_f_g_privacy_isolation_and_db_safety",
                                 True,
-                                "Private/shared/opt-in/cross-tenant isolation, spoof rejection, legacy 'unknown' SQL block, and tampered evidence rejection verified.",
+                                "Private/shared/opt-in/disallowed-shared-read/cross-tenant isolation, spoof rejection, derived principal non-disclosure, legacy 'unknown' SQL block, and tampered evidence rejection verified.",
+                                {
+                                    "derived_principals_checked": len(derived_principals),
+                                    "credentials_checked": len(DEFAULT_CLIENT_TOKENS),
+                                },
                             )
                         )
 
@@ -846,11 +951,17 @@ async def run_operational_evaluation(
 
                         sf_me = (await client.get("/metrics/me", headers=_hdr("tok_sf_a"))).json()
                         sf_st = (await client.get("/cache/semantic/stats", headers=_hdr("tok_sf_a"))).json()
+                        sf_adm = (await client.get("/admin/metrics", headers=_admin_hdr())).json()
+                        verify_no_sensitive_leaks(sf_me, forbidden_secrets, "Scenario H /metrics/me")
+                        verify_no_sensitive_leaks(sf_st, forbidden_secrets, "Scenario H /cache/semantic/stats")
+                        verify_no_sensitive_leaks(sf_adm, forbidden_secrets, "Scenario H /admin/metrics")
                         _assert(sf_me["semantic"]["semantic_hits"] == 1, f"Expected 1 semantic leader hit: {sf_me}")
                         _assert(sf_me["request_and_cache"]["coalesced_joins"] == 1, f"Expected 1 coalesced join: {sf_me}")
                         _assert(sf_me["request_and_cache"]["coalesced_successes"] == 1, f"Expected 1 coalesced success: {sf_me}")
                         _assert(sf_me["request_and_cache"]["coalesced_semantic_hits"] == 1, f"Expected 1 coalesced semantic hit: {sf_me}")
                         _assert(sf_st["coalesced_semantic_hits"] == 1, f"Expected 1 coalesced semantic hit in stats endpoint: {sf_st}")
+                        _assert(sf_adm["aggregate"]["request_and_cache"]["coalesced_semantic_hits"] == 1, f"Admin aggregate request_and_cache coalesced_semantic_hits mismatch: {sf_adm}")
+                        _assert(sf_adm["aggregate"]["semantic"]["coalesced_semantic_hits"] == 1, f"Admin aggregate semantic coalesced_semantic_hits mismatch: {sf_adm}")
                         _assert(sf_me["provider_and_savings"]["provider_calls_avoided"] == 2, f"Expected 2 provider calls avoided (leader+follower): {sf_me}")
 
                         # Post-Checkpoint-2 flip over HTTP: once record_semantic_hit runs (post-CP2),
@@ -1072,7 +1183,7 @@ async def run_operational_evaluation(
             reload_settings()
 
     all_passed = all(o.passed for o in outcomes)
-    return {
+    report_payload: Dict[str, Any] = {
         "stage": "3.5.5",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "environment": {
@@ -1095,6 +1206,9 @@ async def run_operational_evaluation(
         ],
         "benchmark": benchmark_report,
     }
+    verify_no_sensitive_leaks(report_payload, forbidden_secrets, "evaluation JSON report")
+    verify_no_sensitive_leaks(render_markdown_report(report_payload), forbidden_secrets, "evaluation Markdown report")
+    return report_payload
 
 
 def render_markdown_report(result: Dict[str, Any]) -> str:

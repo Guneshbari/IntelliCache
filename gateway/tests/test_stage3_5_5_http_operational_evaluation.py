@@ -40,6 +40,7 @@ from app.api.routes import (
     set_vector_store,
 )
 from app.config import reload_settings
+from app.conversations.identity import derive_principal_id
 from app.core.contracts import GenerationRequest
 from app.main import create_app
 from app.metrics import get_metrics_collector
@@ -53,10 +54,13 @@ from scripts.evaluate_stage3_5_5_operational import (
     STAGE_3_5_5_EVIDENCE_SECRET,
     STAGE_3_5_5_IDENTITY_SECRET,
     TopicDeterministicEmbedder,
+    build_forbidden_disclosure_values,
     build_response_map_from_dataset,
     load_stage355_dataset,
+    render_markdown_report,
     resolve_fastembed_database_url,
     run_operational_evaluation,
+    verify_no_sensitive_leaks,
 )
 
 
@@ -105,6 +109,8 @@ class TestStage355HttpLifecycleInMemory(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bench["iterations_per_mode"], 10)
         self.assertGreater(bench["metrics_snapshot_semantic_phase"]["total_tokens_saved"], 0)
         self.assertEqual(bench["metrics_snapshot_semantic_phase"]["semantic_hits"], 10)
+        priv_scenario = next(s for s in result["scenarios"] if s["scenario_id"] == "scenario_e_f_g_privacy_isolation_and_db_safety")
+        self.assertEqual(priv_scenario["details"]["derived_principals_checked"], len(DEFAULT_CLIENT_TOKENS))
 
     async def test_startup_runtime_control_matrix_over_http(self) -> None:
         """Verifies all four (startup, runtime) combinations serve only when both are True."""
@@ -177,6 +183,142 @@ class TestStage355HttpLifecycleInMemory(unittest.IsolatedAsyncioTestCase):
                                 self.assertEqual(st["runtime_serving_enabled"], runtime_on)
                                 self.assertEqual(st["effective_enabled"], expected_hit)
 
+    async def test_private_reader_without_shared_reads_cannot_hit_tenant_shared_over_http(self) -> None:
+        """
+        Verifies same-tenant private reader with allow_shared_reads=false cannot hit
+        a tenant_shared entry, while allow_shared_reads=true and shared readers can,
+        and preserves all remaining tenant/principal/spoof invariants over HTTP.
+        """
+        response_map = build_response_map_from_dataset(self.dataset)
+        provider = ControlledEvalProvider(response_map=response_map)
+        embedder = TopicDeterministicEmbedder()
+        env = {
+            "CLIENT_API_TOKENS": json.dumps(DEFAULT_CLIENT_TOKENS),
+            "ADMIN_API_TOKEN": STAGE_3_5_5_ADMIN_TOKEN,
+            "PRINCIPAL_IDENTITY_SECRET": STAGE_3_5_5_IDENTITY_SECRET,
+            "SEMANTIC_CACHE_EVIDENCE_SECRET": STAGE_3_5_5_EVIDENCE_SECRET,
+            "SEMANTIC_CACHE_ENABLED": "true",
+            "SEMANTIC_CACHE_SERVING_ENABLED": "true",
+            "CACHE_BACKEND": "memory",
+            "VECTOR_STORE_BACKEND": "memory",
+            "EMBEDDING_PROVIDER": "fastembed",
+            "EMBEDDING_MODEL": FASTEMBED_MODEL,
+            "VECTOR_DIMENSIONS": str(FASTEMBED_DIM),
+            "LLM_PROVIDER": "mock",
+        }
+        _, forbidden_secrets = build_forbidden_disclosure_values(
+            list(DEFAULT_CLIENT_TOKENS.keys()),
+            STAGE_3_5_5_IDENTITY_SECRET,
+            extra_secrets=[STAGE_3_5_5_EVIDENCE_SECRET, STAGE_3_5_5_ADMIN_TOKEN],
+        )
+        get_metrics_collector().reset()
+        reset_semantic_serving_controller(False)
+        with patch.dict(os.environ, env, clear=False):
+            reload_settings()
+            with patch("app.main.EmbeddingProviderFactory.create", return_value=embedder):
+                app = create_app()
+                app.dependency_overrides[get_llm_provider] = lambda: provider
+                async with app.router.lifespan_context(app):
+                    async with httpx.AsyncClient(
+                        transport=httpx.ASGITransport(app=app),
+                        base_url="http://testserver",
+                    ) as client:
+                        async def _ask(token: str, prompt: str) -> Dict[str, Any]:
+                            resp = await client.post(
+                                "/query",
+                                headers={"X-Client-Token": token},
+                                json={
+                                    "model": "mock-qwen-27b",
+                                    "messages": [{"role": "user", "content": prompt}],
+                                    "temperature": 0.0,
+                                },
+                            )
+                            self.assertEqual(resp.status_code, 200, resp.text)
+                            body = resp.json()
+                            verify_no_sensitive_leaks(body, forbidden_secrets, f"POST /query {token[:5]}")
+                            return body
+
+                        # Shared writer Carol seeds team_beta
+                        seed = await _ask("tok_carol", "How do I reverse a string in Python?")
+                        self.assertFalse(seed["cached"])
+                        calls_after_seed = len(provider.calls)
+
+                        # Same-tenant private reader WITHOUT allow_shared_reads MUST miss & call upstream
+                        fay_miss = await _ask("tok_fay", "What is the Python syntax to reverse a string?")
+                        self.assertFalse(fay_miss["cached"])
+                        self.assertEqual(fay_miss["cache_type"], "none")
+                        self.assertEqual(len(provider.calls), calls_after_seed + 1)
+
+                        # Same-tenant private reader WITH allow_shared_reads=true CAN hit Carol's shared entry
+                        erin_hit = await _ask("tok_erin", "What is the Python syntax to reverse a string?")
+                        self.assertTrue(erin_hit["cached"])
+                        self.assertEqual(erin_hit["cache_type"], "semantic")
+                        self.assertEqual(len(provider.calls), calls_after_seed + 1)
+
+                        # Same-tenant shared reader Dave CAN hit Carol's shared entry
+                        dave_hit = await _ask("tok_dave", "Reverse a string in Python")
+                        self.assertTrue(dave_hit["cached"])
+                        self.assertEqual(dave_hit["cache_type"], "semantic")
+
+                        # Private write by Erin stays isolated from Carol/Dave
+                        await _ask("tok_erin", "How do I sort a list in Python?")
+                        dave_probe_private = await _ask("tok_dave", "How to sort a Python list?")
+                        self.assertFalse(dave_probe_private["cached"])
+
+                        # Cross-tenant shared reader Frank (team_gamma) stays isolated from team_beta
+                        frank_cross = await _ask("tok_frank", "What is the Python syntax to reverse a string?")
+                        self.assertFalse(frank_cross["cached"])
+
+                        # Client cannot spoof allow_shared_reads=true or visibility
+                        spoof_r = await client.post(
+                            "/query",
+                            headers={"X-Client-Token": "tok_fay"},
+                            json={
+                                "model": "mock-qwen-27b",
+                                "messages": [{"role": "user", "content": "Reverse a string in Python"}],
+                                "allow_shared_reads": True,
+                            },
+                        )
+                        self.assertEqual(spoof_r.status_code, 422)
+
+    async def test_derived_principal_id_non_disclosure_and_leak_detection(self) -> None:
+        """
+        Verifies derived HMAC principal IDs from production derive_principal_id are
+        explicitly checked and detected if leaked in HTTP or report payloads.
+        """
+        derived_ids, forbidden = build_forbidden_disclosure_values(
+            list(DEFAULT_CLIENT_TOKENS.keys()),
+            STAGE_3_5_5_IDENTITY_SECRET,
+            extra_secrets=[STAGE_3_5_5_EVIDENCE_SECRET, STAGE_3_5_5_ADMIN_TOKEN],
+        )
+        expected_alice_principal = derive_principal_id("tok_alice", STAGE_3_5_5_IDENTITY_SECRET)
+        expected_fay_principal = derive_principal_id("tok_fay", STAGE_3_5_5_IDENTITY_SECRET)
+        self.assertIn(expected_alice_principal, derived_ids)
+        self.assertIn(expected_fay_principal, derived_ids)
+        self.assertIn(expected_alice_principal, forbidden)
+        self.assertIn(expected_fay_principal, forbidden)
+
+        # Verify leak detector catches derived principal ID, key names, raw tokens, and secrets
+        with self.assertRaises(AssertionError):
+            verify_no_sensitive_leaks({"response": f"owner={expected_alice_principal}"}, forbidden, "test_val")
+        with self.assertRaises(AssertionError):
+            verify_no_sensitive_leaks({"principal_id": "abc"}, forbidden, "test_key_principal")
+        with self.assertRaises(AssertionError):
+            verify_no_sensitive_leaks({"nested": {"owner_principal_id": "xyz"}}, forbidden, "test_key_owner")
+        with self.assertRaises(AssertionError):
+            verify_no_sensitive_leaks({"sig": "x", "evidence_signature": "deadbeef"}, forbidden, "test_key_sig")
+
+        # Verify clean operational report and Markdown output pass with zero false positives
+        result = await run_operational_evaluation(
+            dataset=self.dataset,
+            use_postgres=False,
+            use_real_fastembed=False,
+            benchmark_iterations=2,
+            simulated_upstream_delay_ms=5.0,
+        )
+        verify_no_sensitive_leaks(result, forbidden, "clean JSON report")
+        verify_no_sensitive_leaks(render_markdown_report(result), forbidden, "clean Markdown report")
+
 
 class TestStage355RealFastEmbedPostgresHttpEvaluation(unittest.IsolatedAsyncioTestCase):
     """
@@ -248,6 +390,8 @@ class TestStage355RealFastEmbedPostgresHttpEvaluation(unittest.IsolatedAsyncioTe
             bench["semantic_hit"]["p50_ms"],
             bench["baseline_with_simulated_upstream"]["p50_ms"],
         )
+        priv_scenario = next(s for s in result["scenarios"] if s["scenario_id"] == "scenario_e_f_g_privacy_isolation_and_db_safety")
+        self.assertEqual(priv_scenario["details"]["derived_principals_checked"], len(DEFAULT_CLIENT_TOKENS))
 
     async def test_postgres_variant_coexistence_and_sql_privacy_rows(self) -> None:
         """

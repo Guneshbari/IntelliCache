@@ -19,7 +19,6 @@ class RequestAndCacheMetrics(BaseModel):
     semantic_eligibility_rejections: int = 0
     semantic_lookups: int = 0
     semantic_hits: int = 0
-    coalesced_semantic_hits: int = 0
     semantic_misses: int = 0
     provider_generation_attempts: int = 0
     provider_generation_successes: int = 0

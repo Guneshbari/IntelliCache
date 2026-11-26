@@ -169,11 +169,13 @@
       "seed_actor": {"token": "tok_carol", "namespace": "team_beta", "visibility": "tenant_shared", "allow_shared_reads": true},
       "shared_reader": {"token": "tok_dave", "namespace": "team_beta", "visibility": "tenant_shared", "allow_shared_reads": true},
       "opt_in_private_reader": {"token": "tok_erin", "namespace": "team_beta", "visibility": "private", "allow_shared_reads": true},
+      "private_disallowed_shared_reader": {"token": "tok_fay", "namespace": "team_beta", "visibility": "private", "allow_shared_reads": false},
       "seed_prompt": "How do I reverse a string in Python?",
       "semantic_probe_prompt": "What is the Python syntax to reverse a string?",
       "private_seed_prompt_by_opt_in": "How do I sort a list in Python?",
       "expected_shared_hit": true,
       "expected_opt_in_hit": true,
+      "expected_private_disallowed_shared_hit": false,
       "expected_shared_reading_private_hit": false
     },
     {

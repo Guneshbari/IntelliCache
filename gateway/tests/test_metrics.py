@@ -3,7 +3,9 @@ Unit tests for RuntimeMetricsCollector, namespace isolation, bounded latency sto
 percentiles, token savings, and thread safety.
 """
 
+import ast
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 import time
 import unittest
 
@@ -13,6 +15,7 @@ from app.metrics import (
     get_metrics_collector,
     set_metrics_collector,
 )
+from app.metrics.contracts import RequestAndCacheMetrics, SemanticMetrics
 
 
 class TestRuntimeMetricsCollector(unittest.TestCase):
@@ -183,6 +186,40 @@ class TestRuntimeMetricsCollector(unittest.TestCase):
             self.collector.record_provider_success("ns_safe", latency_ms=None)
         except Exception as e:
             self.fail(f"Collector raised unexpected exception on malformed inputs: {e}")
+
+    def test_request_and_cache_metrics_no_duplicate_coalesced_field_and_admin_aggregation(self):
+        """RequestAndCacheMetrics declares coalesced_semantic_hits once and aggregates cleanly."""
+        contracts_path = Path(__file__).resolve().parent.parent / "app" / "metrics" / "contracts.py"
+        tree = ast.parse(contracts_path.read_text(encoding="utf-8"))
+        field_counts = {}
+        for node in tree.body:
+            if isinstance(node, ast.ClassDef) and node.name in ("RequestAndCacheMetrics", "SemanticMetrics"):
+                names = [
+                    stmt.target.id
+                    for stmt in node.body
+                    if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name)
+                ]
+                field_counts[node.name] = names
+
+        self.assertEqual(field_counts["RequestAndCacheMetrics"].count("coalesced_semantic_hits"), 1)
+        self.assertEqual(field_counts["SemanticMetrics"].count("coalesced_semantic_hits"), 1)
+        self.assertIn("coalesced_semantic_hits", RequestAndCacheMetrics.model_fields)
+        self.assertIn("coalesced_semantic_hits", SemanticMetrics.model_fields)
+
+        self.collector.record_coalesced_success("ns_sem", total_tokens=100, cache_type="semantic")
+        self.collector.record_coalesced_success("ns_exact", total_tokens=50, cache_type="exact")
+
+        snap_sem = self.collector.get_namespace_snapshot("ns_sem")
+        snap_exact = self.collector.get_namespace_snapshot("ns_exact")
+        admin_snap = self.collector.get_admin_snapshot()
+
+        self.assertEqual(snap_sem.request_and_cache.coalesced_semantic_hits, 1)
+        self.assertEqual(snap_sem.semantic.coalesced_semantic_hits, 1)
+        self.assertEqual(snap_exact.request_and_cache.coalesced_semantic_hits, 0)
+        self.assertEqual(snap_exact.semantic.coalesced_semantic_hits, 0)
+        self.assertEqual(admin_snap.aggregate.request_and_cache.coalesced_successes, 2)
+        self.assertEqual(admin_snap.aggregate.request_and_cache.coalesced_semantic_hits, 1)
+        self.assertEqual(admin_snap.aggregate.semantic.coalesced_semantic_hits, 1)
 
 
 if __name__ == "__main__":
