@@ -43,7 +43,7 @@ from ..semantic_cache.control import (
 from ..semantic_cache.interfaces import BaseSemanticCache
 
 
-from ..semantic_cache.context import analyze_request_context, resolve_context_cache_scope
+from ..semantic_cache.context import ScopeResolution, analyze_request_context, resolve_context_cache_scope
 
 
 class IntelliCacheCore:
@@ -108,6 +108,36 @@ class IntelliCacheCore:
             collector.record_runtime_control_failure(ns)
             return False
         return allowed
+
+    def _record_exact_scope_rejection(
+        self,
+        collector: RuntimeMetricsCollector,
+        ns: str,
+        request: GenerationRequest,
+        scope: ScopeResolution,
+    ) -> None:
+        """Records telemetry when exact/semantic scope resolution fails closed or bypasses caching."""
+        reason = getattr(scope, "privacy_rejection_reason", None)
+        if reason == "VISIBILITY_MISSING_OR_UNKNOWN" or scope.effective_visibility == CACHE_VISIBILITY_UNKNOWN:
+            collector.record_visibility_rejection(ns)
+            self._record_semantic_stat_attr(self.semantic_cache, "visibility_rejections")
+            return
+        if reason == "ADMISSION_REJECTED_CONTEXT_PRIVACY":
+            raw_vis = normalize_cache_visibility(getattr(request, "visibility", CACHE_VISIBILITY_PRIVATE))
+            if raw_vis == CACHE_VISIBILITY_TENANT_SHARED:
+                collector.record_tenant_shared_authorization_rejection(ns)
+                self._record_semantic_stat_attr(self.semantic_cache, "tenant_shared_authorization_rejections")
+            else:
+                collector.record_private_scope_rejection(ns)
+                self._record_semantic_stat_attr(self.semantic_cache, "private_scope_rejections")
+            if scope.effective_owner is None:
+                collector.record_principal_isolation_rejection(ns)
+                self._record_semantic_stat_attr(self.semantic_cache, "principal_isolation_rejections")
+            return
+        collector.record_principal_isolation_rejection(ns)
+        self._record_semantic_stat_attr(self.semantic_cache, "principal_isolation_rejections")
+        collector.record_private_scope_rejection(ns)
+        self._record_semantic_stat_attr(self.semantic_cache, "private_scope_rejections")
 
     @staticmethod
     def _record_semantic_stat_attr(semantic_cache: Optional[BaseSemanticCache], attr: str) -> None:
@@ -180,19 +210,14 @@ class IntelliCacheCore:
         req_vis = scope.effective_visibility
         req_own = normalize_principal_id(getattr(request, "principal_id", None))
         allow_shared = scope.allow_shared_reads
-        can_use_exact_cache = scope.can_cache_exact
+        can_use_exact_cache = bool(scope.can_cache_exact and scope.exact_storage_key)
         entry_owner = scope.effective_owner
         exact_storage_key = scope.exact_storage_key
 
         # 1. Exact Cache Read
         if self.cache_enabled and not request.bypass_cache:
             if not can_use_exact_cache:
-                if req_vis == CACHE_VISIBILITY_UNKNOWN:
-                    collector.record_visibility_rejection(ns)
-                    self._record_semantic_stat_attr(self.semantic_cache, "visibility_rejections")
-                else:
-                    collector.record_principal_isolation_rejection(ns)
-                    self._record_semantic_stat_attr(self.semantic_cache, "principal_isolation_rejections")
+                self._record_exact_scope_rejection(collector, ns, request, scope)
                 collector.record_exact_lookup(ns, latency_ms=0.0)
                 collector.record_exact_miss(ns)
             else:
@@ -617,17 +642,14 @@ class IntelliCacheCore:
         req_vis = scope.effective_visibility
         req_own = normalize_principal_id(getattr(request, "principal_id", None))
         allow_shared = scope.allow_shared_reads
-        can_use_exact_cache = scope.can_cache_exact
+        can_use_exact_cache = bool(scope.can_cache_exact and scope.exact_storage_key)
         entry_owner = scope.effective_owner
         exact_storage_key = scope.exact_storage_key
 
         # 1. Cache Read for Streaming
         if self.cache_enabled and not request.bypass_cache:
             if not can_use_exact_cache:
-                if req_vis == CACHE_VISIBILITY_UNKNOWN:
-                    collector.record_visibility_rejection(ns)
-                else:
-                    collector.record_principal_isolation_rejection(ns)
+                self._record_exact_scope_rejection(collector, ns, request, scope)
                 collector.record_exact_lookup(ns, latency_ms=0.0)
                 collector.record_exact_miss(ns)
             else:

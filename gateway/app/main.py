@@ -222,9 +222,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     vector_store=vector_store,
                     policy=policy,
                     default_namespace=settings.cache_namespace,
+                    sql_context_prefilter=True,
                 )
                 logger.info(
-                    "Semantic cache initialized: dimensions=%d, model=%s, min_sim=%.2f, min_margin=%.2f, top_k=%d",
+                    "Semantic cache initialized: dimensions=%d, model=%s, min_sim=%.2f, min_margin=%.2f, top_k=%d, sql_context_prefilter=True",
                     settings.vector_dimensions,
                     settings.embedding_model,
                     settings.semantic_cache_min_similarity,

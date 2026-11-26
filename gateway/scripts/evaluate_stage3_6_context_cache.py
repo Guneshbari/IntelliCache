@@ -56,6 +56,7 @@ from app.providers.interfaces import LLMProvider  # noqa: E402
 from app.semantic_cache.compatibility import CompatibilityExtractor  # noqa: E402
 from app.semantic_cache.contracts import (  # noqa: E402
     CompatibilityReasonCode,
+    ContextClass,
     SemanticCompatibilityMetadata,
     compute_variant_key,
 )
@@ -276,11 +277,13 @@ async def _run_pg_context_index_benchmark(
     app: Any,
     embedder: EmbeddingProvider,
     resolved_db_url: str,
+    *,
+    client: Optional[httpx.AsyncClient] = None,
 ) -> Dict[str, Any]:
     """
     Executes Phase 3.6.6 PostgreSQL vector context index checks, EXPLAIN ANALYZE plans,
     mixed-workload starvation comparison (unfiltered budget=25 vs SQL context prefilter),
-    and asyncpg pool concurrency checks.
+    and HTTP-level starvation immunity through POST /query with sql_context_prefilter=True.
     """
     vs = app.state.vector_store
     cache = get_query_cache()
@@ -288,7 +291,7 @@ async def _run_pg_context_index_benchmark(
     model_name = app.state.semantic_cache.policy.configured_model
     ext = CompatibilityExtractor()
     verifier = ResponseArtifactVerifier()
-    ns = "bench_ctx_perf"
+    ns = "team_gamma" if client is not None else "bench_ctx_perf"
 
     # Seed 30 wrong-context rows (ctx-v1:noise_i) sharing prompt wording + 1 target row at lower similarity
     target_ctx = [
@@ -297,6 +300,7 @@ async def _run_pg_context_index_benchmark(
     ]
     target_req = GenerationRequest(
         model="mock-qwen-27b",
+        provider="mock",
         messages=target_ctx,
         temperature=0.0,
         namespace=ns,
@@ -321,6 +325,7 @@ async def _run_pg_context_index_benchmark(
     for i in range(30):
         noise_req = GenerationRequest(
             model="mock-qwen-27b",
+            provider="mock",
             messages=[
                 ChatMessage(role="user", content=f"We use CREATE TABLE shard_{i} (shard_{i}_id INT PRIMARY KEY, state TEXT);"),
                 ChatMessage(role="user", content="Add a structured pagination helper for the previous implementation"),
@@ -447,6 +452,61 @@ async def _run_pg_context_index_benchmark(
     _assert(not unfiltered_found_target, "Expected unfiltered top-25 over 31 rows to suffer rank-31 starvation")
     _assert(prefiltered_found_target and len(prefiltered_res) == 1, "Expected SQL context prefilter to recover rank-31 match")
 
+    http_starvation_report: Optional[Dict[str, Any]] = None
+    if client is not None:
+        _assert(
+            bool(getattr(app.state.semantic_cache, "sql_context_prefilter", False)) is True,
+            "Expected app.state.semantic_cache.sql_context_prefilter=True for PostgreSQL app",
+        )
+        captured_search_calls: List[Dict[str, Any]] = []
+        orig_vs_search = vs.search
+
+        async def _spy_search(*args: Any, **kwargs: Any):
+            captured_search_calls.append(
+                {
+                    "context_class": kwargs.get("context_class"),
+                    "context_fingerprint": kwargs.get("context_fingerprint"),
+                    "visibility": kwargs.get("visibility"),
+                    "top_k": kwargs.get("top_k"),
+                }
+            )
+            return await orig_vs_search(*args, **kwargs)
+
+        with patch.object(vs, "search", side_effect=_spy_search):
+            http_resp = await client.post(
+                "/query",
+                headers=_hdr("tok_frank"),
+                json={
+                    "model": "mock-qwen-27b",
+                    "messages": [
+                        {"role": "user", "content": "We use CREATE TABLE ledger_entries (entry_id BIGINT PRIMARY KEY, posted_at TIMESTAMPTZ);"},
+                        {"role": "user", "content": "Add a structured pagination helper for the previous implementation"},
+                    ],
+                    "temperature": 0.0,
+                },
+            )
+        _assert(http_resp.status_code == 200, f"HTTP starvation check failed: {http_resp.text}")
+        http_body = http_resp.json()
+        _assert(
+            http_body["cached"] is True
+            and http_body["cache_type"] == "semantic"
+            and "ledger_entries" in http_body["response"],
+            f"HTTP-level POST /query did not recover rank-31 target via SQL prefilter: {http_body}",
+        )
+        _assert(
+            len(captured_search_calls) == 1
+            and captured_search_calls[0]["context_class"] == ContextClass.CONTEXT_DEPENDENT.value
+            and captured_search_calls[0]["context_fingerprint"] == target_meta.context_contract.context_fingerprint,
+            f"Expected app lookup to pass SQL context prefilter args: {captured_search_calls}",
+        )
+        http_starvation_report = {
+            "http_semantic_hit": True,
+            "cache_type": http_body["cache_type"],
+            "app_sql_context_prefilter": True,
+            "search_call_context_class": captured_search_calls[0]["context_class"],
+            "search_call_has_fingerprint": bool(captured_search_calls[0]["context_fingerprint"]),
+        }
+
     # Inspect PostgreSQL indexes and EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
     q_vec_str = f"[{','.join(str(float(x)) for x in base_target_vec)}]"
     async with pool.acquire() as conn:
@@ -533,6 +593,7 @@ async def _run_pg_context_index_benchmark(
 
     return {
         "database_url_redacted": redact_database_url(resolved_db_url),
+        "app_sql_context_prefilter_enabled": bool(getattr(app.state.semantic_cache, "sql_context_prefilter", False)),
         "indexes_present": index_names,
         "required_context_indexes_present": all(
             any(req_idx in name for name in index_names)
@@ -552,6 +613,7 @@ async def _run_pg_context_index_benchmark(
             "sql_prefilter_found_target": prefiltered_found_target,
             "sql_prefilter_latency_ms": round(prefiltered_ms, 3),
         },
+        "http_starvation_recovery": http_starvation_report,
         "explain_unfiltered": {
             "execution_time_ms": explain_unfiltered[0].get("Execution Time"),
             "plan_nodes": _collect_nodes(explain_unfiltered[0]["Plan"]),
@@ -1340,7 +1402,16 @@ async def run_stage3_6_evaluation(
                     # Phase 3.6.6 PostgreSQL Index + EXPLAIN + Server-Managed Conversations check
                     server_conv_report: Optional[Dict[str, Any]] = None
                     if use_postgres and resolved_db_url:
-                        pg_benchmark_report = await _run_pg_context_index_benchmark(app, app.state.semantic_cache.embedding_provider, resolved_db_url)
+                        _assert(
+                            bool(getattr(app.state.semantic_cache, "sql_context_prefilter", False)) is True,
+                            "PostgreSQL SemanticCacheService must enable sql_context_prefilter=True",
+                        )
+                        pg_benchmark_report = await _run_pg_context_index_benchmark(
+                            app,
+                            app.state.semantic_cache.embedding_provider,
+                            resolved_db_url,
+                            client=client,
+                        )
                         # Verify server-managed persistent conversation turns via POST /conversations -> POST /query
                         conv_create = await client.post(
                             "/conversations",
@@ -1407,9 +1478,12 @@ async def run_stage3_6_evaluation(
                     _assert(flat_21_metrics["context_dependent_requests"] > 0, "Expected context_dependent_requests > 0")
                     _assert(flat_21_metrics["context_uncertain_requests"] > 0, "Expected context_uncertain_requests > 0")
                     _assert(flat_21_metrics["context_compatibility_matches"] > 0, "Expected context_compatibility_matches > 0")
-                    _assert(flat_21_metrics["context_compatibility_rejections"] > 0, "Expected context_compatibility_rejections > 0")
-                    _assert(flat_21_metrics["context_metadata_missing"] > 0, "Expected context_metadata_missing > 0")
-                    _assert(flat_21_metrics["context_fingerprint_mismatches"] > 0, "Expected context_fingerprint_mismatches > 0")
+                    if not use_postgres:
+                        _assert(flat_21_metrics["context_compatibility_rejections"] > 0, "Expected context_compatibility_rejections > 0")
+                        _assert(flat_21_metrics["context_metadata_missing"] > 0, "Expected context_metadata_missing > 0")
+                        _assert(flat_21_metrics["context_fingerprint_mismatches"] > 0, "Expected context_fingerprint_mismatches > 0")
+                    else:
+                        _assert(flat_21_metrics["context_metadata_missing"] == 0, "SQL prefilter must keep missing-context rows out of retrieval")
                     _assert(agg["semantic"]["ambiguous_candidate_rejections"] > 0, "Expected ambiguous_candidate_rejections > 0")
                     _assert(agg["semantic"]["evidence_validation_rejections"] > 0, "Expected evidence_validation_rejections > 0")
                     _assert(flat_21_metrics["cross_conversation_semantic_hits"] > 0, "Expected cross_conversation_semantic_hits > 0")

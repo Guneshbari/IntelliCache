@@ -63,7 +63,7 @@ _SENSITIVE_PATTERNS = [
     re.compile(r"(?:password|passwd|pwd)\s*[:=]\s*\S+", re.IGNORECASE),
     re.compile(r"api[_\-]?key\s*[:=]\s*\S+", re.IGNORECASE),
     re.compile(r"secret[_\-]?key\s*[:=]\s*\S+", re.IGNORECASE),
-    re.compile(r"(?:postgres|mysql|mongodb|redis):\/\/[^:\s]+:[^@\s]+@", re.IGNORECASE),
+    re.compile(r"(?:postgres(?:ql)?|mysql|mongodb|redis):\/\/[^:\s]+:[^@\s]+@", re.IGNORECASE),
 ]
 
 # Technical & programming keywords, languages, frameworks, and syntax indicators

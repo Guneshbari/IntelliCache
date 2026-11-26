@@ -46,7 +46,7 @@ SENSITIVE_MATERIAL_PATTERNS = (
     re.compile(r"(?:password|passwd|pwd)\s*[:=]\s*\S+", re.IGNORECASE),
     re.compile(r"api[_\-]?key\s*[:=]\s*\S+", re.IGNORECASE),
     re.compile(r"secret[_\-]?key\s*[:=]\s*\S+", re.IGNORECASE),
-    re.compile(r"(?:postgres|mysql|mongodb|redis):\/\/[^:\s]+:[^@\s]+@", re.IGNORECASE),
+    re.compile(r"(?:postgres(?:ql)?|mysql|mongodb|redis):\/\/[^:\s]+:[^@\s]+@", re.IGNORECASE),
 )
 
 CLIENT_FORBIDDEN_CONTEXT_KEYS = frozenset({
@@ -262,7 +262,13 @@ def resolve_context_cache_scope(
     Computes identical visibility, owner_principal_id, and exact storage key for both
     exact_cache persistence/lookup and semantic vector/variant persistence/lookup so the
     PostgreSQL FK (cache_namespace, fingerprint) -> cache_entries never diverges while
-    guaranteeing conversation-bound or personal context-dependent records stay isolated.
+    guaranteeing sensitive, conversation-bound, or personal context-dependent records
+    never leak into tenant_shared exact or semantic caches.
+
+    Explicit security policy for detected credentials/secrets (`contains_sensitive_material`):
+    Full bypass of both exact and semantic caching (`can_cache_exact=False`,
+    `can_admit_semantic=False`, `exact_storage_key=None`) for both `private` and
+    `tenant_shared` callers, preventing persistent credential storage in centralized DBs.
     """
     req_vis = normalize_cache_visibility(getattr(request, "visibility", CACHE_VISIBILITY_PRIVATE))
     req_own = normalize_principal_id(getattr(request, "principal_id", None))
@@ -281,6 +287,19 @@ def resolve_context_cache_scope(
             privacy_rejection_reason="VISIBILITY_MISSING_OR_UNKNOWN",
         )
 
+    # Full bypass for detected credentials, API keys, private keys, or credentialed DSNs
+    # across both private and tenant_shared callers (never persist secrets in cache_entries).
+    if assessment.contains_sensitive_material:
+        return ScopeResolution(
+            effective_visibility=CACHE_VISIBILITY_PRIVATE,
+            effective_owner=req_own,
+            allow_shared_reads=False,
+            can_cache_exact=False,
+            can_admit_semantic=False,
+            exact_storage_key=None,
+            privacy_rejection_reason="ADMISSION_REJECTED_CONTEXT_PRIVACY",
+        )
+
     if req_vis == CACHE_VISIBILITY_PRIVATE:
         if req_own is None:
             return ScopeResolution(
@@ -293,22 +312,19 @@ def resolve_context_cache_scope(
                 privacy_rejection_reason="PRINCIPAL_IDENTITY_MISSING",
             )
         exact_key = derive_scoped_exact_key(fingerprint, CACHE_VISIBILITY_PRIVATE, req_own)
-        if assessment.contains_sensitive_material:
-            return ScopeResolution(
-                effective_visibility=CACHE_VISIBILITY_PRIVATE,
-                effective_owner=req_own,
-                allow_shared_reads=False,
-                can_cache_exact=True,
-                can_admit_semantic=False,
-                exact_storage_key=exact_key,
-                privacy_rejection_reason="ADMISSION_REJECTED_CONTEXT_PRIVACY",
-            )
         can_admit = ctx_class != ContextClass.CONTEXT_UNCERTAIN
+        is_conv_dep = ctx_class == ContextClass.CONTEXT_DEPENDENT and bool(conv_id)
+        allow_shared_out = bool(
+            allow_shared
+            and not assessment.contains_personal_context
+            and can_admit
+            and not is_conv_dep
+        )
         reason = "ADMISSION_REJECTED_CONTEXT_UNCERTAIN" if not can_admit else None
         return ScopeResolution(
             effective_visibility=CACHE_VISIBILITY_PRIVATE,
             effective_owner=req_own,
-            allow_shared_reads=bool(allow_shared and not assessment.contains_personal_context),
+            allow_shared_reads=allow_shared_out,
             can_cache_exact=True,
             can_admit_semantic=can_admit,
             exact_storage_key=exact_key,
@@ -316,20 +332,9 @@ def resolve_context_cache_scope(
         )
 
     # req_vis == CACHE_VISIBILITY_TENANT_SHARED
-    if assessment.contains_sensitive_material:
-        exact_key = derive_scoped_exact_key(fingerprint, CACHE_VISIBILITY_TENANT_SHARED, None)
-        return ScopeResolution(
-            effective_visibility=CACHE_VISIBILITY_TENANT_SHARED,
-            effective_owner=None,
-            allow_shared_reads=False,
-            can_cache_exact=True,
-            can_admit_semantic=False,
-            exact_storage_key=exact_key,
-            privacy_rejection_reason="ADMISSION_REJECTED_CONTEXT_PRIVACY",
-        )
-
-    needs_private_isolation = assessment.contains_personal_context or (
-        ctx_class == ContextClass.CONTEXT_DEPENDENT and bool(conv_id)
+    needs_private_isolation = bool(
+        assessment.contains_personal_context
+        or (ctx_class in (ContextClass.CONTEXT_DEPENDENT, ContextClass.CONTEXT_UNCERTAIN) and bool(conv_id))
     )
     if needs_private_isolation:
         if req_own is not None:
@@ -345,14 +350,14 @@ def resolve_context_cache_scope(
                 exact_storage_key=exact_key,
                 privacy_rejection_reason=reason,
             )
-        exact_key = derive_scoped_exact_key(fingerprint, CACHE_VISIBILITY_TENANT_SHARED, None)
+        # Cannot isolate safely without a verified principal identity -> bypass caching completely.
         return ScopeResolution(
-            effective_visibility=CACHE_VISIBILITY_TENANT_SHARED,
+            effective_visibility=CACHE_VISIBILITY_PRIVATE,
             effective_owner=None,
             allow_shared_reads=False,
-            can_cache_exact=True,
+            can_cache_exact=False,
             can_admit_semantic=False,
-            exact_storage_key=exact_key,
+            exact_storage_key=None,
             privacy_rejection_reason="ADMISSION_REJECTED_CONTEXT_PRIVACY",
         )
 
