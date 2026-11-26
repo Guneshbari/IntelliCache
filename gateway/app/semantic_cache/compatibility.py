@@ -24,6 +24,9 @@ from .contracts import (
     GenerationContract,
     MetadataStatus,
     SemanticCompatibilityMetadata,
+    ContextClass,
+    SUPPORTED_CONTEXT_CONTRACT_VERSIONS,
+    CONTEXT_INDEPENDENT_SENTINEL,
     TRUSTED_REQUEST_EXTRACTOR_ID,
     TaskKind,
 )
@@ -134,6 +137,9 @@ def extract_effective_user_query(request: GenerationRequest) -> str:
     return query_text
 
 
+from .context import ContextAssessment, analyze_request_context
+
+
 class CompatibilityExtractor:
     """
     Deterministic requirement extractor (schema v3).
@@ -197,9 +203,15 @@ class CompatibilityExtractor:
         "junit": "java",
     }
 
-    def extract(self, request: GenerationRequest, configured_model: str) -> SemanticCompatibilityMetadata:
-        """Extracts complete versioned v3 metadata from a GenerationRequest."""
-        query_text = extract_effective_user_query(request)
+    def extract(
+        self,
+        request: GenerationRequest,
+        configured_model: str,
+        context_assessment: Optional[ContextAssessment] = None,
+    ) -> SemanticCompatibilityMetadata:
+        """Extracts complete versioned v3 compatibility metadata and Stage 3.6 context contract."""
+        ctx_eval = context_assessment or analyze_request_context(request)
+        query_text = ctx_eval.effective_query or extract_effective_user_query(request)
         req_extra = getattr(request, "metadata", None)
         return self.extract_from_text(
             text=query_text,
@@ -209,6 +221,7 @@ class CompatibilityExtractor:
             max_tokens=request.max_tokens,
             configured_model=configured_model,
             request_metadata=req_extra if isinstance(req_extra, dict) else None,
+            context_assessment=ctx_eval,
         )
 
     def extract_from_text(
@@ -220,8 +233,9 @@ class CompatibilityExtractor:
         max_tokens: Optional[int] = None,
         configured_model: str = "nomic-embed-text",
         request_metadata: Optional[Dict[str, Any]] = None,
+        context_assessment: Optional[ContextAssessment] = None,
     ) -> SemanticCompatibilityMetadata:
-        """Deterministic extraction from raw query text plus generation contract parameters."""
+        """Deterministic extraction from raw query text plus generation and context parameters."""
         clean_text = (text or "").strip()
 
         task_kind_dim = self._detect_task_kind(clean_text)
@@ -250,7 +264,73 @@ class CompatibilityExtractor:
         out_constraints_dim = self._detect_output_constraints(clean_text, request_metadata=request_metadata)
         constraints_dim = self._detect_constraints(clean_text)
         freshness_dim = self._detect_freshness(clean_text)
-        context_dep_dim = self._detect_context_dependency(clean_text)
+
+        context_contract = None
+        if context_assessment is not None:
+            context_contract = context_assessment.contract
+            if context_contract.context_class == ContextClass.CONTEXT_INDEPENDENT:
+                context_dep_dim = DimensionValue(status=MetadataStatus.NOT_APPLICABLE, value=None)
+            elif context_contract.context_class == ContextClass.CONTEXT_DEPENDENT:
+                context_dep_dim = DimensionValue(
+                    status=MetadataStatus.KNOWN,
+                    value=context_contract.context_fingerprint,
+                )
+                hint_text = (context_assessment.relevant_context_hint_text or "").strip()
+                if hint_text:
+                    hint_fw = self._detect_framework(hint_text)
+                    if framework_dim.status == MetadataStatus.NOT_APPLICABLE and hint_fw.status == MetadataStatus.KNOWN:
+                        framework_dim = hint_fw
+                        framework_val = hint_fw.value
+
+                    hint_deps = self._detect_dependencies(hint_text)
+                    if deps_dim.status == MetadataStatus.NOT_APPLICABLE and hint_deps.status == MetadataStatus.KNOWN:
+                        deps_dim = hint_deps
+                        if isinstance(hint_deps.value, list):
+                            dep_names = {d.name for d in hint_deps.value if isinstance(d, DependencyItem)}
+
+                    if lang_dim.status != MetadataStatus.KNOWN:
+                        hint_dep_names = set(dep_names)
+                        if hint_deps.status == MetadataStatus.KNOWN and isinstance(hint_deps.value, list):
+                            hint_dep_names.update(d.name for d in hint_deps.value if isinstance(d, DependencyItem))
+                        hint_lang = self._detect_language(
+                            hint_text,
+                            TaskKind.CODE_GENERATION,
+                            framework_val,
+                            hint_dep_names,
+                        )
+                        if hint_lang.status == MetadataStatus.KNOWN:
+                            lang_dim = hint_lang
+                            lang_val = hint_lang.value
+
+                    if runtime_dim.status == MetadataStatus.NOT_APPLICABLE:
+                        hint_rt = self._detect_runtime(hint_text)
+                        if hint_rt.status == MetadataStatus.KNOWN:
+                            runtime_dim = hint_rt
+                            runtime_val = hint_rt.value
+
+                    h_lang_ver, h_fw_ver, h_rt_ver = self._detect_versions(
+                        hint_text, lang_val, framework_val, runtime_val
+                    )
+                    if lang_ver_dim.status == MetadataStatus.NOT_APPLICABLE and h_lang_ver.status == MetadataStatus.KNOWN:
+                        lang_ver_dim = h_lang_ver
+                    if fw_ver_dim.status == MetadataStatus.NOT_APPLICABLE and h_fw_ver.status == MetadataStatus.KNOWN:
+                        fw_ver_dim = h_fw_ver
+                    if runtime_ver_dim.status == MetadataStatus.NOT_APPLICABLE and h_rt_ver.status == MetadataStatus.KNOWN:
+                        runtime_ver_dim = h_rt_ver
+
+                    if exec_dim.status == MetadataStatus.NOT_APPLICABLE:
+                        hint_exec = self._detect_execution_model(hint_text)
+                        if hint_exec.status == MetadataStatus.KNOWN:
+                            exec_dim = hint_exec
+
+                    if fmt_dim.status == MetadataStatus.NOT_APPLICABLE:
+                        hint_fmt = self._detect_output_format(hint_text, request_metadata=None)
+                        if hint_fmt.status == MetadataStatus.KNOWN:
+                            fmt_dim = hint_fmt
+            else:
+                context_dep_dim = DimensionValue(status=MetadataStatus.UNKNOWN, value=None)
+        else:
+            context_dep_dim = self._detect_context_dependency(clean_text)
 
         dimensions = {
             "language": lang_dim,
@@ -281,6 +361,7 @@ class CompatibilityExtractor:
             ),
             embedding_contract=EmbeddingContract(model=configured_model),
             compatibility_evidence=CompatibilityEvidence.default_request_derived(self.EXTRACTOR_VERSION),
+            context_contract=context_contract,
         )
 
     def _detect_task_kind(self, text: str) -> DimensionValue:
@@ -635,6 +716,8 @@ class CompatibilityExtractor:
         if re.search(r"\bcase\s+class\s+[A-Z][A-Za-z0-9_]*\s*\(", text):
             return DimensionValue(status=MetadataStatus.KNOWN, value="scala")
         if re.search(r"\bSELECT\s+.+\s+FROM\b", text, re.IGNORECASE):
+            return DimensionValue(status=MetadataStatus.KNOWN, value="sql")
+        if re.search(r"\b(?:CREATE|ALTER)\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[a-zA-Z_]\w*\s*\(", text, re.IGNORECASE):
             return DimensionValue(status=MetadataStatus.KNOWN, value="sql")
         if "public static void main" in text or "System.out.println" in text:
             return DimensionValue(status=MetadataStatus.KNOWN, value="java")
@@ -1368,8 +1451,15 @@ class CompatibilityValidator:
 
         # Record top-priority root-cause uncertainties cleanly while still letting any
         # independently established hard incompatibility below take precedence.
-        ctx_early = self._check_context_dependency(req_meta, cand_meta, trusted_cand_ev)
+        ctx_early = self._check_context_dependency(
+            req_meta,
+            cand_meta,
+            trusted_cand_ev,
+            raw_candidate_metadata=raw_candidate_metadata,
+        )
         if ctx_early is not None:
+            if ctx_early.is_incompatible:
+                return ctx_early
             _note_uncertain(ctx_early)
 
         fresh_early = self._check_freshness(req_meta, cand_meta, trusted_cand_ev)
@@ -2013,7 +2103,166 @@ class CompatibilityValidator:
         req_meta: SemanticCompatibilityMetadata,
         cand_meta: SemanticCompatibilityMetadata,
         trusted_cand_ev: Optional[CompatibilityEvidence],
+        raw_candidate_metadata: Optional[Dict[str, Any]] = None,
     ) -> Optional[CompatibilityDecision]:
+        req_cc = getattr(req_meta, "context_contract", None)
+        cand_cc = getattr(cand_meta, "context_contract", None)
+        raw_cc_present = (
+            isinstance(raw_candidate_metadata, dict)
+            and raw_candidate_metadata.get("context_contract") is not None
+        )
+
+        # Stage 3.6 versioned context contract enforcement
+        if req_cc is not None:
+            if req_cc.context_version not in SUPPORTED_CONTEXT_CONTRACT_VERSIONS:
+                code = CompatibilityReasonCode.CONTEXT_METADATA_INVALID
+                return CompatibilityDecision(
+                    status=CompatibilityStatus.UNCERTAIN,
+                    reason_code=code,
+                    message=f"{code}: Unsupported request context contract version {req_cc.context_version}.",
+                    dimension="context_dependency",
+                    evidence={"request_context_version": req_cc.context_version},
+                )
+            if req_cc.context_class == ContextClass.CONTEXT_UNCERTAIN:
+                code = CompatibilityReasonCode.CONTEXT_DEPENDENCY_UNRESOLVED
+                return CompatibilityDecision(
+                    status=CompatibilityStatus.UNCERTAIN,
+                    reason_code=code,
+                    message=f"{code}: Request context classification is CONTEXT_UNCERTAIN.",
+                    dimension="context_dependency",
+                    evidence={"request_context_class": req_cc.context_class.value},
+                )
+
+            if cand_cc is None:
+                if raw_cc_present:
+                    code = CompatibilityReasonCode.CONTEXT_METADATA_INVALID
+                    return CompatibilityDecision(
+                        status=CompatibilityStatus.UNCERTAIN,
+                        reason_code=code,
+                        message=f"{code}: Candidate context_contract metadata is invalid.",
+                        dimension="context_dependency",
+                    )
+                c_ctx = cand_meta.dimensions.get("context_dependency")
+                c_ctx_standalone = c_ctx is not None and c_ctx.status == MetadataStatus.NOT_APPLICABLE
+                # Preserve pre-Stage-3.6 compatibility strictly for verified standalone CONTEXT_INDEPENDENT entries
+                if req_cc.context_class == ContextClass.CONTEXT_INDEPENDENT and c_ctx_standalone:
+                    return None
+                code = CompatibilityReasonCode.CONTEXT_METADATA_MISSING
+                return CompatibilityDecision(
+                    status=CompatibilityStatus.UNCERTAIN,
+                    reason_code=code,
+                    message=f"{code}: Candidate is missing required Stage 3.6 context_contract metadata.",
+                    dimension="context_dependency",
+                    evidence={"request_context_class": req_cc.context_class.value},
+                )
+
+            if cand_cc.context_version not in SUPPORTED_CONTEXT_CONTRACT_VERSIONS:
+                code = CompatibilityReasonCode.CONTEXT_METADATA_INVALID
+                return CompatibilityDecision(
+                    status=CompatibilityStatus.INCOMPATIBLE,
+                    reason_code=code,
+                    message=f"{code}: Unsupported candidate context contract version {cand_cc.context_version}.",
+                    dimension="context_dependency",
+                    evidence={"candidate_context_version": cand_cc.context_version},
+                )
+
+            if cand_cc.context_class == ContextClass.CONTEXT_UNCERTAIN:
+                code = CompatibilityReasonCode.CONTEXT_CLASS_MISMATCH
+                return CompatibilityDecision(
+                    status=CompatibilityStatus.UNCERTAIN,
+                    reason_code=code,
+                    message=f"{code}: Candidate context_class is CONTEXT_UNCERTAIN.",
+                    dimension="context_dependency",
+                    evidence={
+                        "request_context_class": req_cc.context_class.value,
+                        "candidate_context_class": cand_cc.context_class.value,
+                    },
+                )
+
+            if req_cc.context_class != cand_cc.context_class:
+                code = CompatibilityReasonCode.CONTEXT_CLASS_MISMATCH
+                return CompatibilityDecision(
+                    status=CompatibilityStatus.INCOMPATIBLE,
+                    reason_code=code,
+                    message=(
+                        f"{code}: Context class mismatch: request '{req_cc.context_class.value}' "
+                        f"!= candidate '{cand_cc.context_class.value}'."
+                    ),
+                    dimension="context_dependency",
+                    evidence={
+                        "request_context_class": req_cc.context_class.value,
+                        "candidate_context_class": cand_cc.context_class.value,
+                    },
+                )
+
+            if req_cc.context_class == ContextClass.CONTEXT_INDEPENDENT:
+                if cand_cc.context_fingerprint != CONTEXT_INDEPENDENT_SENTINEL:
+                    code = CompatibilityReasonCode.CONTEXT_METADATA_INVALID
+                    return CompatibilityDecision(
+                        status=CompatibilityStatus.INCOMPATIBLE,
+                        reason_code=code,
+                        message=f"{code}: CONTEXT_INDEPENDENT candidate must carry canonical independent sentinel.",
+                        dimension="context_dependency",
+                    )
+                return None
+
+            # Both CONTEXT_DEPENDENT: enforce matching versioned context_fingerprint
+            if (
+                trusted_cand_ev is not None
+                and cand_meta.compatibility_evidence is not None
+                and cand_meta.compatibility_evidence.context_independent
+            ):
+                code = CompatibilityReasonCode.CONTEXT_METADATA_INVALID
+                return CompatibilityDecision(
+                    status=CompatibilityStatus.UNCERTAIN,
+                    reason_code=code,
+                    message=f"{code}: CONTEXT_DEPENDENT candidate claims context_independent=True.",
+                    dimension="context_dependency",
+                )
+            if not req_cc.context_fingerprint or not cand_cc.context_fingerprint:
+                code = CompatibilityReasonCode.CONTEXT_METADATA_MISSING
+                return CompatibilityDecision(
+                    status=CompatibilityStatus.UNCERTAIN,
+                    reason_code=code,
+                    message=f"{code}: CONTEXT_DEPENDENT validation requires non-empty context_fingerprint on both sides.",
+                    dimension="context_dependency",
+                )
+            if req_cc.context_fingerprint != cand_cc.context_fingerprint:
+                code = CompatibilityReasonCode.CONTEXT_FINGERPRINT_MISMATCH
+                return CompatibilityDecision(
+                    status=CompatibilityStatus.INCOMPATIBLE,
+                    reason_code=code,
+                    message=(
+                        f"{code}: Context fingerprint mismatch: request '{req_cc.context_fingerprint[:24]}...' "
+                        f"!= candidate '{cand_cc.context_fingerprint[:24]}...'."
+                    ),
+                    dimension="context_dependency",
+                    evidence={
+                        "request_context_fingerprint": req_cc.context_fingerprint,
+                        "candidate_context_fingerprint": cand_cc.context_fingerprint,
+                    },
+                )
+            return None
+
+        if cand_cc is not None:
+            if cand_cc.context_class == ContextClass.CONTEXT_DEPENDENT:
+                code = CompatibilityReasonCode.CONTEXT_CLASS_MISMATCH
+                return CompatibilityDecision(
+                    status=CompatibilityStatus.INCOMPATIBLE,
+                    reason_code=code,
+                    message=f"{code}: Single-turn request cannot reuse CONTEXT_DEPENDENT candidate.",
+                    dimension="context_dependency",
+                )
+            if cand_cc.context_class == ContextClass.CONTEXT_UNCERTAIN:
+                code = CompatibilityReasonCode.CONTEXT_METADATA_INVALID
+                return CompatibilityDecision(
+                    status=CompatibilityStatus.UNCERTAIN,
+                    reason_code=code,
+                    message=f"{code}: Candidate carries CONTEXT_UNCERTAIN contract.",
+                    dimension="context_dependency",
+                )
+            return None
+
         r_ctx = req_meta.dimensions.get("context_dependency")
         c_ctx = cand_meta.dimensions.get("context_dependency")
         if r_ctx is None or c_ctx is None:

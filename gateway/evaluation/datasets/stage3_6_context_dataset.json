@@ -1,0 +1,244 @@
+{
+  "dataset_version": "3.6",
+  "description": "Stage 3.6 context-aware centralized semantic cache evaluation dataset covering CTX-001 through CTX-024 under production defaults (min_similarity=0.92, min_margin=0.03, top_k=5, max_retrieval_candidates=25, FastEmbed BAAI/bge-small-en-v1.5 384-d).",
+  "metadata": {
+    "embedding_model": "BAAI/bge-small-en-v1.5",
+    "vector_dimensions": 384,
+    "production_defaults": {
+      "semantic_cache_enabled": false,
+      "semantic_cache_serving_enabled": false,
+      "shadow_evaluation_enabled": false,
+      "default_visibility": "private",
+      "min_similarity": 0.92,
+      "min_margin": 0.03,
+      "top_k": 5,
+      "max_retrieval_candidates": 25
+    }
+  },
+  "scenarios": [
+    {
+      "id": "CTX-001",
+      "title": "Equivalent standalone technical question in two independent conversations",
+      "category": "cross_conversation_reuse",
+      "seed_prompt": "How do I reverse a string in Python?",
+      "probe_prompt": "What is the Python syntax to reverse a string?",
+      "expected_context_class": "CONTEXT_INDEPENDENT",
+      "expected_hit": true
+    },
+    {
+      "id": "CTX-002",
+      "title": "Equivalent standalone question from two principals in the same tenant",
+      "category": "same_tenant_authorization",
+      "seed_prompt": "How do I sort a list in Python?",
+      "probe_prompt": "How to sort a Python list?",
+      "expected_context_class": "CONTEXT_INDEPENDENT"
+    },
+    {
+      "id": "CTX-003",
+      "title": "Equivalent question from two different tenants",
+      "category": "tenant_isolation",
+      "seed_prompt": "How do I merge two dictionaries in Python?",
+      "probe_prompt": "How to merge two dicts in Python?",
+      "expected_hit": false
+    },
+    {
+      "id": "CTX-004",
+      "title": "Same wording but different previous conversation context",
+      "category": "context_fingerprint_isolation",
+      "context_a": "def parse_records_v1(rows):\n    return [r.strip() for r in rows if r]",
+      "context_b": "async function fetchInvoices(clientId) {\n  return await db.query('SELECT * FROM invoices WHERE client_id = $1', [clientId]);\n}",
+      "shared_followup": "Refactor the previous implementation to add structured error handling",
+      "expected_hit": false,
+      "expected_reason": "CONTEXT_FINGERPRINT_MISMATCH"
+    },
+    {
+      "id": "CTX-005",
+      "title": "Follow-up request referencing previous code or implementation",
+      "category": "context_dependent_reuse",
+      "prior_user": "Write a Python function def filter_active(users) to keep active records.",
+      "prior_assistant": "```python\ndef filter_active(users):\n    return [u for u in users if u.get('active')]\n```",
+      "seed_followup": "Modify the previous implementation to handle empty lists",
+      "probe_followup": "Modify the previous implementation so it handles empty lists cleanly",
+      "expected_context_class": "CONTEXT_DEPENDENT",
+      "expected_hit": true
+    },
+    {
+      "id": "CTX-006",
+      "title": "Follow-up request with missing conversation history",
+      "category": "context_uncertain_fail_closed",
+      "probe_followup": "Modify the previous implementation to handle empty lists",
+      "expected_context_class": "CONTEXT_UNCERTAIN",
+      "expected_hit": false
+    },
+    {
+      "id": "CTX-007",
+      "title": "Standalone technical question with irrelevant previous conversation history",
+      "category": "irrelevant_history_exclusion",
+      "seed_prompt": "How do I parse JSON strings in Python?",
+      "prior_chatter": [
+        {"role": "user", "content": "Hi"},
+        {"role": "assistant", "content": "Hello! How can I help you today?"}
+      ],
+      "probe_prompt": "How to parse a JSON string in Python?",
+      "expected_context_class": "CONTEXT_INDEPENDENT",
+      "expected_hit": true
+    },
+    {
+      "id": "CTX-008",
+      "title": "Same question with different database schemas",
+      "category": "schema_context_isolation",
+      "schema_a": "CREATE TABLE users (id BIGSERIAL PRIMARY KEY, email VARCHAR(255) NOT NULL, is_active BOOLEAN NOT NULL DEFAULT TRUE);",
+      "schema_b": "CREATE TABLE customer_accounts (account_uuid UUID PRIMARY KEY, account_status VARCHAR(32) NOT NULL, deleted_at TIMESTAMPTZ);",
+      "question": "Write a SQL query to select all active records",
+      "expected_hit": false,
+      "expected_reason": "CONTEXT_FINGERPRINT_MISMATCH"
+    },
+    {
+      "id": "CTX-009",
+      "title": "Same question with different source code or configuration",
+      "category": "config_context_isolation",
+      "config_a": "database_timeout_seconds: 5\nmax_retries: 2\npool_size: 10",
+      "config_b": "database_timeout_seconds: 30\nmax_retries: 5\npool_size: 50",
+      "question": "What timeout and retry settings should our client use based on our configuration?",
+      "expected_hit": false,
+      "expected_reason": "CONTEXT_FINGERPRINT_MISMATCH"
+    },
+    {
+      "id": "CTX-010",
+      "title": "Same question with different framework versions",
+      "category": "framework_version_compatibility",
+      "context_fastapi_110": "We are using FastAPI 0.110 with Python 3.12 for our backend router.",
+      "context_fastapi_095": "We are using FastAPI 0.95 with Python 3.12 for our backend router.",
+      "question": "Add a dependency injection health check route in the previous implementation",
+      "expected_hit": false
+    },
+    {
+      "id": "CTX-011",
+      "title": "Context metadata missing or invalid",
+      "category": "metadata_fail_closed",
+      "probe_prompt": "Modify the previous implementation to handle empty lists",
+      "expected_hit": false
+    },
+    {
+      "id": "CTX-012",
+      "title": "Tampered context fingerprint or context metadata",
+      "category": "evidence_binding_security",
+      "expected_hit": false,
+      "expected_reason": "EVIDENCE_BINDING_MISMATCH"
+    },
+    {
+      "id": "CTX-013",
+      "title": "Private response retrieved by another principal",
+      "category": "private_principal_isolation",
+      "seed_prompt": "How do I check if a file exists in Python?",
+      "probe_prompt": "How to check if a file exists in Python?",
+      "expected_hit": false
+    },
+    {
+      "id": "CTX-014",
+      "title": "Tenant-shared response retrieved by an unauthorized reader",
+      "category": "shared_read_authorization",
+      "seed_prompt": "How do I read lines from a file in Python?",
+      "probe_prompt": "How to read a file line by line in Python?",
+      "expected_hit_fay": false,
+      "expected_hit_erin": true
+    },
+    {
+      "id": "CTX-015",
+      "title": "Client attempts to spoof principal, context scope or visibility",
+      "category": "anti_spoofing",
+      "spoof_fields": [
+        "context_fingerprint",
+        "context_class",
+        "context_version",
+        "context_contract",
+        "context_metadata",
+        "principal_id",
+        "visibility"
+      ],
+      "expected_http_status": 422
+    },
+    {
+      "id": "CTX-016",
+      "title": "Two compatible variants with the same base request fingerprint",
+      "category": "variant_coexistence",
+      "prompt": "Write a Python helper to format a user object",
+      "variant_a_meta": {"output_format": "json"},
+      "variant_b_meta": {"output_format": "plain_text"}
+    },
+    {
+      "id": "CTX-017",
+      "title": "Context changes after a response has been cached",
+      "category": "dynamic_context_mutation",
+      "turn_1": "We have def process_order(order_id: int) -> bool: return order_id > 0",
+      "turn_2_followup": "Update the previous function to log invalid inputs",
+      "turn_3_change": "We also added asyncpg connection pooling and PostgreSQL advisory locks to def process_order(order_id: int).",
+      "expected_hit_after_change": false
+    },
+    {
+      "id": "CTX-018",
+      "title": "Context-independent response with different irrelevant conversation history",
+      "category": "cross_conversation_chatter_reuse",
+      "seed_chatter": [
+        {"role": "user", "content": "Good morning!"},
+        {"role": "assistant", "content": "Good morning! Ready to assist."}
+      ],
+      "seed_prompt": "How do I create a virtual environment in Python?",
+      "probe_chatter": [
+        {"role": "user", "content": "Thanks for earlier, quick new question."},
+        {"role": "assistant", "content": "Sure, go ahead!"}
+      ],
+      "probe_prompt": "How to create a Python virtual environment?",
+      "expected_hit": true
+    },
+    {
+      "id": "CTX-019",
+      "title": "Embedding provider unavailable",
+      "category": "fail_open_embedding",
+      "probe_prompt": "How do I reverse a string in Python?",
+      "expected_cached": false,
+      "expected_status": 200
+    },
+    {
+      "id": "CTX-020",
+      "title": "PostgreSQL or pgvector retrieval failure",
+      "category": "fail_open_vector_store",
+      "probe_prompt": "How do I reverse a string in Python?",
+      "expected_cached": false,
+      "expected_status": 200
+    },
+    {
+      "id": "CTX-021",
+      "title": "Ambiguous semantic candidates with different context requirements",
+      "category": "ambiguity_margin_rejection",
+      "probe_prompt": "Explain Python decorator execution order",
+      "expected_cached": false
+    },
+    {
+      "id": "CTX-022",
+      "title": "Incomplete or truncated upstream response",
+      "category": "admission_verification_gate",
+      "seed_prompt": "Write a Python function returning JSON with required keys: id, status",
+      "truncated_response": "{\"id\": 1, \"status\": ",
+      "finish_reason": "length",
+      "expected_admitted": false
+    },
+    {
+      "id": "CTX-023",
+      "title": "Multiple simultaneous requests for the same eligible cache entry",
+      "category": "singleflight_concurrency",
+      "concurrency": 8,
+      "prompt": "How do I flatten a nested list in Python?",
+      "expected_provider_calls": 1,
+      "expected_coalesced_joins": 7
+    },
+    {
+      "id": "CTX-024",
+      "title": "Runtime semantic serving is disabled while new requests arrive",
+      "category": "runtime_kill_switch",
+      "seed_prompt": "How do I format a datetime in Python?",
+      "probe_prompt": "How to format a Python datetime object?",
+      "expected_cached_when_disabled": false
+    }
+  ]
+}

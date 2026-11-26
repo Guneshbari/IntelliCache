@@ -12,11 +12,18 @@ import time
 from typing import Any, Callable, Dict, Optional
 
 from .compatibility import extract_effective_user_query
+from .context import (
+    ContextAssessment,
+    analyze_request_context,
+    compute_source_conversation_digest,
+    resolve_context_cache_scope,
+)
 from .contracts import (
     AdmissionDecision,
     AdmissionStatus,
     CompatibilityReasonCode,
     CompatibilityStatus,
+    ContextClass,
     EligibilityResult,
     SemanticCacheStats,
     SemanticCompatibilityMetadata,
@@ -64,6 +71,7 @@ class SemanticCacheService(BaseSemanticCache):
         diagnostics_hook: Optional[Callable[[Dict[str, Any]], None]] = None,
         verifier: Optional[ResponseArtifactVerifier] = None,
         evidence_authority: Optional[EvidenceAuthority] = None,
+        sql_context_prefilter: bool = False,
     ):
         self.embedding_provider = embedding_provider
         self.vector_store = vector_store
@@ -78,6 +86,7 @@ class SemanticCacheService(BaseSemanticCache):
             or getattr(policy, "evidence_authority", None)
             or get_default_evidence_authority()
         )
+        self.sql_context_prefilter = bool(sql_context_prefilter)
         self.last_admission_decision: Optional[AdmissionDecision] = None
 
     def _get_collector(self) -> RuntimeMetricsCollector:
@@ -121,8 +130,21 @@ class SemanticCacheService(BaseSemanticCache):
         req_own = normalize_principal_id(getattr(request, "principal_id", None))
         allow_shared = bool(getattr(request, "allow_shared_reads", False))
 
+        ctx_cls_start = time.perf_counter()
         eligibility = self.is_eligible(request)
+        elig_ctx_ms = (time.perf_counter() - ctx_cls_start) * 1000.0
+        ctx_eval: ContextAssessment = getattr(eligibility, "context_assessment", None) or analyze_request_context(request)
+        ctx_cls_val = ctx_eval.context_class.value
+        if ctx_cls_val == ContextClass.CONTEXT_INDEPENDENT.value:
+            self.stats.context_independent_requests += 1
+        elif ctx_cls_val == ContextClass.CONTEXT_DEPENDENT.value:
+            self.stats.context_dependent_requests += 1
+        else:
+            self.stats.context_uncertain_requests += 1
+        collector.record_context_classification(ns, ctx_cls_val)
+
         if not eligibility.eligible:
+            collector.record_latency(ns, "context_validation_latency_ms", elig_ctx_ms)
             self.stats.eligibility_rejections += 1
             reason_msg = eligibility.reason or ""
             if reason_msg.startswith(CompatibilityReasonCode.VISIBILITY_MISSING_OR_UNKNOWN.value):
@@ -131,8 +153,15 @@ class SemanticCacheService(BaseSemanticCache):
                 collector.record_semantic_rejection_reason(ns, CompatibilityReasonCode.VISIBILITY_MISSING_OR_UNKNOWN.value)
             elif reason_msg.startswith(CompatibilityReasonCode.PRINCIPAL_IDENTITY_MISSING.value):
                 self.stats.principal_isolation_rejections += 1
+                self.stats.private_scope_rejections += 1
                 collector.record_principal_isolation_rejection(ns)
+                collector.record_private_scope_rejection(ns)
                 collector.record_semantic_rejection_reason(ns, CompatibilityReasonCode.PRINCIPAL_IDENTITY_MISSING.value)
+            elif reason_msg.startswith(CompatibilityReasonCode.ADMISSION_REJECTED_CONTEXT_UNCERTAIN.value):
+                collector.record_semantic_rejection_reason(ns, CompatibilityReasonCode.ADMISSION_REJECTED_CONTEXT_UNCERTAIN.value)
+            elif ctx_eval.contains_sensitive_material and req_vis == "tenant_shared":
+                self.stats.tenant_shared_authorization_rejections += 1
+                collector.record_tenant_shared_authorization_rejection(ns)
             logger.debug(
                 "Request ineligible for semantic caching: %s",
                 eligibility.reason,
@@ -143,6 +172,8 @@ class SemanticCacheService(BaseSemanticCache):
                     "eligible": False,
                     "reason": eligibility.reason,
                     "metadata": None,
+                    "context_class": ctx_cls_val,
+                    "context_fingerprint": ctx_eval.context_fingerprint,
                     "embed_latency_ms": 0.0,
                     "search_latency_ms": 0.0,
                     "eval_latency_ms": 0.0,
@@ -158,7 +189,13 @@ class SemanticCacheService(BaseSemanticCache):
         self.stats.lookups += 1
         collector.record_semantic_lookup(ns)
 
-        # 1. Generate query embedding
+        scope = resolve_context_cache_scope(request, ctx_eval, "")
+        search_vis = scope.effective_visibility
+        search_own = scope.effective_owner
+        search_allow_shared = scope.allow_shared_reads
+        use_sql_ctx_filter = bool(getattr(self, "sql_context_prefilter", False))
+
+        # 1. Generate query embedding (effective user query only; never embed unrelated chatter or raw secrets)
         embed_start = time.perf_counter()
         try:
             embed_res = await self.embedding_provider.embed(query_text, task=EmbeddingTask.QUERY)
@@ -167,6 +204,7 @@ class SemanticCacheService(BaseSemanticCache):
         except Exception as exc:
             embed_lat_ms = (time.perf_counter() - embed_start) * 1000.0
             collector.record_latency(ns, "embedding_latency_ms", embed_lat_ms)
+            collector.record_latency(ns, "context_validation_latency_ms", elig_ctx_ms)
             self.stats.embedding_failures += 1
             collector.record_embedding_failure(ns)
             sem_lat_ms = (time.perf_counter() - lookup_start) * 1000.0
@@ -196,6 +234,7 @@ class SemanticCacheService(BaseSemanticCache):
 
         # Validate reported model identity against configured model (fail open)
         if embed_res.model != self.policy.configured_model:
+            collector.record_latency(ns, "context_validation_latency_ms", elig_ctx_ms)
             self.stats.embedding_failures += 1
             collector.record_embedding_failure(ns)
             sem_lat_ms = (time.perf_counter() - lookup_start) * 1000.0
@@ -230,14 +269,20 @@ class SemanticCacheService(BaseSemanticCache):
             int(getattr(self.policy, "retrieval_budget", getattr(self.policy, "top_k", 5))),
         )
         try:
+            search_kwargs: Dict[str, Any] = {}
+            if use_sql_ctx_filter:
+                search_kwargs["context_class"] = ctx_cls_val
+                if ctx_eval.context_fingerprint:
+                    search_kwargs["context_fingerprint"] = ctx_eval.context_fingerprint
             candidates = await self.vector_store.search(
                 query_vector=embed_res.vector,
                 top_k=retrieval_limit,
                 namespace=ns,
                 model=self.policy.configured_model,
-                visibility=req_vis,
-                principal_id=req_own,
-                allow_shared_reads=allow_shared,
+                visibility=search_vis,
+                principal_id=search_own,
+                allow_shared_reads=search_allow_shared,
+                **search_kwargs,
             )
             self.stats.candidates_retrieved += len(candidates)
             collector.record_semantic_candidates_retrieved(ns, len(candidates))
@@ -246,6 +291,7 @@ class SemanticCacheService(BaseSemanticCache):
         except Exception as exc:
             search_lat_ms = (time.perf_counter() - search_start) * 1000.0
             collector.record_latency(ns, "vector_search_latency_ms", search_lat_ms)
+            collector.record_latency(ns, "context_validation_latency_ms", elig_ctx_ms)
             self.stats.vector_store_failures += 1
             collector.record_vector_store_failure(ns)
             sem_lat_ms = (time.perf_counter() - lookup_start) * 1000.0
@@ -289,6 +335,8 @@ class SemanticCacheService(BaseSemanticCache):
             eval_lat_ms = (time.perf_counter() - eval_start) * 1000.0
             sem_lat_ms = (time.perf_counter() - lookup_start) * 1000.0
             collector.record_latency(ns, "candidate_policy_latency_ms", eval_lat_ms)
+            collector.record_latency(ns, "context_validation_latency_ms", elig_ctx_ms)
+            collector.record_latency(ns, "compatibility_validation_latency_ms", eval_lat_ms)
             collector.record_latency(ns, "semantic_lookup_latency_ms", sem_lat_ms)
             self.stats.validator_failures += 1
             collector.record_validator_failure(ns)
@@ -320,13 +368,52 @@ class SemanticCacheService(BaseSemanticCache):
 
         eval_lat_ms = (time.perf_counter() - eval_start) * 1000.0
         collector.record_latency(ns, "candidate_policy_latency_ms", eval_lat_ms)
+        eval_diag = getattr(self.policy, "_last_evaluation_diagnostics", None)
+        cand_ctx_ms = float(eval_diag.get("context_validation_latency_ms") or 0.0) if isinstance(eval_diag, dict) else 0.0
+        compat_val_ms = float(eval_diag.get("compatibility_validation_latency_ms") or eval_lat_ms) if isinstance(eval_diag, dict) else eval_lat_ms
+        collector.record_latency(ns, "context_validation_latency_ms", elig_ctx_ms + cand_ctx_ms)
+        collector.record_latency(ns, "compatibility_validation_latency_ms", compat_val_ms)
+
         sem_lat_ms = (time.perf_counter() - lookup_start) * 1000.0
         collector.record_latency(ns, "semantic_lookup_latency_ms", sem_lat_ms)
-        eval_diag = getattr(self.policy, "_last_evaluation_diagnostics", None)
+
+        if isinstance(eval_diag, dict):
+            ctx_matches = int(eval_diag.get("context_compatibility_matches") or 0)
+            ctx_rejs = int(eval_diag.get("context_compatibility_rejections") or 0)
+            ctx_miss_meta = int(eval_diag.get("context_metadata_missing") or 0)
+            ctx_fp_mis = int(eval_diag.get("context_fingerprint_mismatches") or 0)
+            priv_rejs = int(eval_diag.get("private_scope_rejections") or 0)
+            ts_auth_rejs = int(eval_diag.get("tenant_shared_authorization_rejections") or 0)
+            for _ in range(ctx_matches):
+                self.stats.context_compatibility_matches += 1
+                collector.record_context_compatibility_match(ns)
+            for _ in range(ctx_rejs):
+                self.stats.context_compatibility_rejections += 1
+                collector.record_context_compatibility_rejection(ns)
+            for _ in range(ctx_miss_meta):
+                self.stats.context_metadata_missing += 1
+                collector.record_context_metadata_missing(ns)
+            for _ in range(ctx_fp_mis):
+                self.stats.context_fingerprint_mismatches += 1
+                collector.record_context_fingerprint_mismatch(ns)
+            for _ in range(priv_rejs):
+                self.stats.private_scope_rejections += 1
+                collector.record_private_scope_rejection(ns)
+            for _ in range(ts_auth_rejs):
+                self.stats.tenant_shared_authorization_rejections += 1
+                collector.record_tenant_shared_authorization_rejection(ns)
+
+        req_conv_digest = compute_source_conversation_digest(request)
 
         if winning_candidate is None:
             self.stats.misses += 1
             collector.record_semantic_miss(ns)
+            if any(
+                (c.metadata or {}).get("source_conversation_digest") not in (None, req_conv_digest)
+                for c in candidates
+            ):
+                self.stats.cross_conversation_semantic_misses += 1
+                collector.record_cross_conversation_miss(ns)
             eval_outcome = eval_diag.get("outcome") if isinstance(eval_diag, dict) else None
             decision_status = eval_diag.get("decision_status") if isinstance(eval_diag, dict) else None
             if eval_outcome == "empty_candidates":
@@ -351,14 +438,19 @@ class SemanticCacheService(BaseSemanticCache):
                 else:
                     collector.record_incompatible_candidate(ns)
 
+            if eval_outcome in ("compatibility_rejected", "below_threshold", "ambiguous"):
                 cand_decisions = eval_diag.get("candidate_decisions") if isinstance(eval_diag, dict) else None
                 recorded_codes: list[str] = []
                 if isinstance(cand_decisions, list):
                     for item in cand_decisions:
                         dec = item.get("decision") if isinstance(item, dict) else None
                         if isinstance(dec, dict) and dec.get("reason_code"):
-                            recorded_codes.append(str(dec["reason_code"]))
-                elif isinstance(eval_diag, dict) and eval_diag.get("reason_code"):
+                            if eval_outcome == "compatibility_rejected" or dec.get("status") in (
+                                CompatibilityStatus.INCOMPATIBLE.value,
+                                CompatibilityStatus.UNCERTAIN.value,
+                            ):
+                                recorded_codes.append(str(dec["reason_code"]))
+                elif eval_outcome == "compatibility_rejected" and isinstance(eval_diag, dict) and eval_diag.get("reason_code"):
                     recorded_codes.append(str(eval_diag["reason_code"]))
                 for r_code in recorded_codes:
                     collector.record_semantic_rejection_reason(ns, r_code)
@@ -390,6 +482,8 @@ class SemanticCacheService(BaseSemanticCache):
                 "eligible": True,
                 "reason": eligibility.reason,
                 "metadata": eligibility.metadata,
+                "context_class": ctx_cls_val,
+                "context_fingerprint": ctx_eval.context_fingerprint,
                 "embed_latency_ms": embed_lat_ms,
                 "search_latency_ms": search_lat_ms,
                 "eval_latency_ms": eval_lat_ms,
@@ -413,10 +507,16 @@ class SemanticCacheService(BaseSemanticCache):
                 diag_payload["all_candidates_rejected"] = eval_diag.get("all_candidates_rejected")
                 diag_payload["retrieval_budget_exhausted"] = eval_diag.get("retrieval_budget_exhausted")
                 diag_payload["retrieval_budget"] = eval_diag.get("retrieval_budget")
+                diag_payload["context_compatibility_matches"] = eval_diag.get("context_compatibility_matches")
+                diag_payload["context_compatibility_rejections"] = eval_diag.get("context_compatibility_rejections")
+                diag_payload["context_metadata_missing"] = eval_diag.get("context_metadata_missing")
+                diag_payload["context_fingerprint_mismatches"] = eval_diag.get("context_fingerprint_mismatches")
             self._emit_diagnostics(diag_payload, hook=diagnostics_hook)
             return None
 
         # 4. Candidate validated and selected — caller (IntelliCacheCore) confirms pre-delivery runtime gate
+        cand_conv_digest = (winning_candidate.metadata or {}).get("source_conversation_digest")
+        is_cross_conv_hit = bool(cand_conv_digest and cand_conv_digest != req_conv_digest)
         logger.debug(
             "Semantic candidate validated for delivery: namespace='%s', fingerprint='%s...', distance=%.4f, similarity=%.4f",
             winning_candidate.cache_namespace,
@@ -430,6 +530,9 @@ class SemanticCacheService(BaseSemanticCache):
             "eligible": True,
             "reason": eligibility.reason,
             "metadata": eligibility.metadata,
+            "context_class": ctx_cls_val,
+            "context_fingerprint": ctx_eval.context_fingerprint,
+            "is_cross_conversation": is_cross_conv_hit,
             "embed_latency_ms": embed_lat_ms,
             "search_latency_ms": search_lat_ms,
             "eval_latency_ms": eval_lat_ms,
@@ -459,11 +562,16 @@ class SemanticCacheService(BaseSemanticCache):
             total_tokens=winning_candidate.total_tokens,
             original_latency_ms=winning_candidate.original_latency_ms,
             metadata=winning_candidate.metadata,
+            is_cross_conversation=is_cross_conv_hit,
         )
 
-    def record_served_hit(self, namespace: Optional[str] = None) -> None:
+    def record_served_hit(self, namespace: Optional[str] = None, cross_conversation: bool = False) -> None:
         """Records that a validated semantic hit passed final pre-delivery control check and was served."""
         self.stats.hits += 1
+        if cross_conversation:
+            self.stats.cross_conversation_semantic_hits += 1
+            ns = namespace or self.default_namespace
+            self._get_collector().record_cross_conversation_hit(ns)
 
     async def index(self, request: GenerationRequest, result: GenerationResult) -> bool:
         """
@@ -481,32 +589,80 @@ class SemanticCacheService(BaseSemanticCache):
         ns = request.namespace or self.default_namespace
         collector = self._get_collector()
 
-        req_vis = normalize_cache_visibility(getattr(request, "visibility", CACHE_VISIBILITY_PRIVATE))
-        req_own = normalize_principal_id(getattr(request, "principal_id", None))
-        if req_vis == CACHE_VISIBILITY_UNKNOWN:
+        ctx_eval = analyze_request_context(request)
+        raw_vis = normalize_cache_visibility(getattr(request, "visibility", CACHE_VISIBILITY_PRIVATE))
+        effective_fp = (getattr(result, "fingerprint", None) or "").strip()
+        if not effective_fp:
+            effective_fp = generate_fingerprint(
+                messages=request.messages,
+                model=request.model,
+                temperature=request.temperature,
+                max_tokens=request.max_tokens,
+                provider=request.provider,
+            )
+
+        scope = resolve_context_cache_scope(request, ctx_eval, effective_fp)
+        if scope.privacy_rejection_reason == "VISIBILITY_MISSING_OR_UNKNOWN":
             self.stats.visibility_rejections += 1
+            self.stats.semantic_admission_rejections += 1
             collector.record_visibility_rejection(ns)
+            collector.record_semantic_admission_outcome(ns, accepted=False)
             self.last_admission_decision = AdmissionDecision(
                 status=AdmissionStatus.REJECT,
                 reason_code=CompatibilityReasonCode.VISIBILITY_MISSING_OR_UNKNOWN,
                 message="Admission rejected: missing or unknown cache visibility.",
             )
             return False
-        if req_vis == CACHE_VISIBILITY_PRIVATE and req_own is None:
+        if scope.privacy_rejection_reason == "PRINCIPAL_IDENTITY_MISSING":
             self.stats.principal_isolation_rejections += 1
+            self.stats.private_scope_rejections += 1
+            self.stats.semantic_admission_rejections += 1
             collector.record_principal_isolation_rejection(ns)
+            collector.record_private_scope_rejection(ns)
+            collector.record_semantic_admission_outcome(ns, accepted=False)
             self.last_admission_decision = AdmissionDecision(
                 status=AdmissionStatus.REJECT,
                 reason_code=CompatibilityReasonCode.PRINCIPAL_IDENTITY_MISSING,
                 message="Admission rejected: private cache scope requires verified principal_id.",
             )
             return False
+        if not scope.can_admit_semantic:
+            if scope.privacy_rejection_reason == "ADMISSION_REJECTED_CONTEXT_PRIVACY":
+                self.stats.admission_rejected += 1
+                self.stats.semantic_admission_rejections += 1
+                collector.record_admission_outcome(ns, AdmissionStatus.REJECT.value)
+                collector.record_semantic_admission_outcome(ns, accepted=False)
+                if raw_vis == "tenant_shared":
+                    self.stats.tenant_shared_authorization_rejections += 1
+                    collector.record_tenant_shared_authorization_rejection(ns)
+                else:
+                    self.stats.private_scope_rejections += 1
+                    collector.record_private_scope_rejection(ns)
+                self.last_admission_decision = AdmissionDecision(
+                    status=AdmissionStatus.REJECT,
+                    reason_code=CompatibilityReasonCode.ADMISSION_REJECTED_CONTEXT_PRIVACY,
+                    message="Admission rejected: context contains sensitive credentials or restricted private scope.",
+                )
+            else:
+                self.stats.admission_uncertain += 1
+                self.stats.semantic_admission_rejections += 1
+                collector.record_admission_outcome(ns, AdmissionStatus.UNCERTAIN.value)
+                collector.record_semantic_admission_outcome(ns, accepted=False)
+                self.last_admission_decision = AdmissionDecision(
+                    status=AdmissionStatus.UNCERTAIN,
+                    reason_code=CompatibilityReasonCode.ADMISSION_REJECTED_CONTEXT_UNCERTAIN,
+                    message="Admission rejected: conversation context is uncertain or incomplete.",
+                )
+            return False
 
-        owner_to_bind = req_own if req_vis == CACHE_VISIBILITY_PRIVATE else None
+        req_vis = scope.effective_visibility
+        owner_to_bind = scope.effective_owner
 
         # Only index eligible queries - evaluate policy directly to avoid duplicate request eligibility metrics
         eligibility = self.policy.check_eligibility(request)
         if not eligibility.eligible:
+            self.stats.semantic_admission_rejections += 1
+            collector.record_semantic_admission_outcome(ns, accepted=False)
             self.last_admission_decision = AdmissionDecision(
                 status=AdmissionStatus.REJECT,
                 reason_code=CompatibilityReasonCode.ADMISSION_REJECTED_INELIGIBLE,
@@ -519,11 +675,17 @@ class SemanticCacheService(BaseSemanticCache):
 
         # 1. Build request-derived v3 metadata and verify actual generated response BEFORE embedding/upsert
         try:
-            base_meta = eligibility.metadata or self.policy.extractor.extract(request, self.policy.configured_model)
+            base_meta = eligibility.metadata or self.policy.extractor.extract(
+                request,
+                self.policy.configured_model,
+                context_assessment=ctx_eval,
+            )
             base_meta.validate()
         except Exception as exc:
             self.stats.indexing_failures += 1
+            self.stats.semantic_admission_rejections += 1
             collector.record_indexing_failure(ns)
+            collector.record_semantic_admission_outcome(ns, accepted=False)
             idx_lat_ms = (time.perf_counter() - idx_start) * 1000.0
             collector.record_latency(ns, "vector_indexing_latency_ms", idx_lat_ms)
             self.last_admission_decision = AdmissionDecision(
@@ -553,7 +715,9 @@ class SemanticCacheService(BaseSemanticCache):
             )
         except Exception as exc:
             self.stats.admission_uncertain += 1
+            self.stats.semantic_admission_rejections += 1
             collector.record_admission_outcome(ns, AdmissionStatus.UNCERTAIN.value)
+            collector.record_semantic_admission_outcome(ns, accepted=False)
             self.stats.indexing_failures += 1
             collector.record_indexing_failure(ns)
             self.last_admission_decision = AdmissionDecision(
@@ -570,15 +734,35 @@ class SemanticCacheService(BaseSemanticCache):
         verify_lat_ms = (time.perf_counter() - verify_start) * 1000.0
 
         if verification.status != VerificationStatus.VERIFIED:
+            self.stats.semantic_admission_rejections += 1
             if verification.status == VerificationStatus.FAILED:
                 self.stats.admission_rejected += 1
                 adm_status = AdmissionStatus.REJECT
-                adm_code = CompatibilityReasonCode.ADMISSION_REJECTED_VERIFICATION
+                adm_code = (
+                    verification.reason_code
+                    if verification.reason_code in (
+                        CompatibilityReasonCode.ADMISSION_REJECTED_CONTEXT_UNCERTAIN,
+                        CompatibilityReasonCode.ADMISSION_REJECTED_CONTEXT_PRIVACY,
+                    )
+                    else CompatibilityReasonCode.ADMISSION_REJECTED_VERIFICATION
+                )
             else:
                 self.stats.admission_uncertain += 1
                 adm_status = AdmissionStatus.UNCERTAIN
-                adm_code = CompatibilityReasonCode.ADMISSION_UNCERTAIN_VERIFICATION
+                adm_code = (
+                    verification.reason_code
+                    if verification.reason_code == CompatibilityReasonCode.ADMISSION_REJECTED_CONTEXT_UNCERTAIN
+                    else CompatibilityReasonCode.ADMISSION_UNCERTAIN_VERIFICATION
+                )
+            if adm_code == CompatibilityReasonCode.ADMISSION_REJECTED_CONTEXT_PRIVACY:
+                if req_vis == "tenant_shared":
+                    self.stats.tenant_shared_authorization_rejections += 1
+                    collector.record_tenant_shared_authorization_rejection(ns)
+                else:
+                    self.stats.private_scope_rejections += 1
+                    collector.record_private_scope_rejection(ns)
             collector.record_admission_outcome(ns, adm_status.value)
+            collector.record_semantic_admission_outcome(ns, accepted=False)
             self.last_admission_decision = AdmissionDecision(
                 status=adm_status,
                 reason_code=adm_code,
@@ -600,25 +784,21 @@ class SemanticCacheService(BaseSemanticCache):
             visibility=req_vis,
             owner_principal_id=owner_to_bind,
         )
-        effective_fp = (getattr(result, "fingerprint", None) or "").strip()
-        if not effective_fp:
-            effective_fp = generate_fingerprint(
-                messages=request.messages,
-                model=request.model,
-                temperature=request.temperature,
-                max_tokens=request.max_tokens,
-                provider=request.provider,
-            )
-        storage_fp = derive_scoped_exact_key(effective_fp, req_vis, owner_to_bind)
+        storage_fp = scope.exact_storage_key or derive_scoped_exact_key(effective_fp, req_vis, owner_to_bind)
 
         # 2. Mint cryptographically bound response_verified CompatibilityEvidence
         try:
+            is_ctx_independent = bool(
+                base_meta.context_contract is not None
+                and base_meta.context_contract.context_class == ContextClass.CONTEXT_INDEPENDENT
+            )
             bound_evidence = self.evidence_authority.mint_response_verified_evidence(
                 cache_namespace=ns,
                 fingerprint=storage_fp,
                 response_text=result.text,
                 metadata=base_meta,
                 verification=verification,
+                context_independent=is_ctx_independent,
                 visibility=req_vis,
                 owner_principal_id=owner_to_bind,
             )
@@ -631,14 +811,18 @@ class SemanticCacheService(BaseSemanticCache):
                 embedding_contract=base_meta.embedding_contract,
                 indexed_at=base_meta.indexed_at,
                 compatibility_evidence=bound_evidence,
+                context_contract=base_meta.context_contract,
             )
             meta = verified_meta_obj.to_dict()
             meta["variant_key"] = variant_key
             meta["truncation_status"] = verification.truncation_status.value
             meta["admission_status"] = AdmissionStatus.ADMIT.value
+            meta["source_conversation_digest"] = compute_source_conversation_digest(request)
         except Exception as exc:
             self.stats.indexing_failures += 1
+            self.stats.semantic_admission_rejections += 1
             collector.record_indexing_failure(ns)
+            collector.record_semantic_admission_outcome(ns, accepted=False)
             idx_lat_ms = (time.perf_counter() - idx_start) * 1000.0
             collector.record_latency(ns, "vector_indexing_latency_ms", idx_lat_ms)
             logger.warning(
@@ -659,7 +843,9 @@ class SemanticCacheService(BaseSemanticCache):
             idx_lat_ms = (time.perf_counter() - idx_start) * 1000.0
             collector.record_latency(ns, "embedding_latency_ms", embed_lat_ms)
             self.stats.indexing_failures += 1
+            self.stats.semantic_admission_rejections += 1
             collector.record_indexing_failure(ns)
+            collector.record_semantic_admission_outcome(ns, accepted=False)
             collector.record_latency(ns, "vector_indexing_latency_ms", idx_lat_ms)
             logger.warning(
                 "Vector indexing failed during embedding (%s): %s",
@@ -671,7 +857,9 @@ class SemanticCacheService(BaseSemanticCache):
         # Validate reported model identity against configured model (fail open)
         if embed_res.model != self.policy.configured_model:
             self.stats.indexing_failures += 1
+            self.stats.semantic_admission_rejections += 1
             collector.record_indexing_failure(ns)
+            collector.record_semantic_admission_outcome(ns, accepted=False)
             idx_lat_ms = (time.perf_counter() - idx_start) * 1000.0
             collector.record_latency(ns, "vector_indexing_latency_ms", idx_lat_ms)
             logger.warning(
@@ -698,7 +886,9 @@ class SemanticCacheService(BaseSemanticCache):
         try:
             await self.vector_store.upsert(record)
             self.stats.admission_verified += 1
+            self.stats.semantic_admission_successes += 1
             collector.record_admission_outcome(ns, AdmissionStatus.ADMIT.value)
+            collector.record_semantic_admission_outcome(ns, accepted=True)
             self.stats.indexing_successes += 1
             idx_lat_ms = (time.perf_counter() - idx_start) * 1000.0
             collector.record_indexing_success(ns, latency_ms=idx_lat_ms)
@@ -722,7 +912,9 @@ class SemanticCacheService(BaseSemanticCache):
             return True
         except Exception as exc:
             self.stats.indexing_failures += 1
+            self.stats.semantic_admission_rejections += 1
             collector.record_indexing_failure(ns)
+            collector.record_semantic_admission_outcome(ns, accepted=False)
             idx_lat_ms = (time.perf_counter() - idx_start) * 1000.0
             collector.record_latency(ns, "vector_indexing_latency_ms", idx_lat_ms)
             logger.warning(
@@ -769,6 +961,20 @@ class SemanticCacheService(BaseSemanticCache):
             "runtime_control_changes": s.runtime_control_changes,
             "runtime_control_failures": s.runtime_control_failures,
             "privacy_violation_attempts": s.privacy_violation_attempts,
+            "context_independent_requests": s.context_independent_requests,
+            "context_dependent_requests": s.context_dependent_requests,
+            "context_uncertain_requests": s.context_uncertain_requests,
+            "context_compatibility_matches": s.context_compatibility_matches,
+            "context_compatibility_rejections": s.context_compatibility_rejections,
+            "context_metadata_missing": s.context_metadata_missing,
+            "context_fingerprint_mismatches": s.context_fingerprint_mismatches,
+            "cross_conversation_semantic_hits": s.cross_conversation_semantic_hits,
+            "cross_conversation_semantic_misses": s.cross_conversation_semantic_misses,
+            "private_scope_rejections": s.private_scope_rejections,
+            "tenant_shared_authorization_rejections": s.tenant_shared_authorization_rejections,
+            "semantic_admission_successes": s.semantic_admission_successes,
+            "semantic_admission_rejections": s.semantic_admission_rejections,
+            "semantic_fallbacks": s.semantic_fallbacks,
         }
 
     async def close(self) -> None:

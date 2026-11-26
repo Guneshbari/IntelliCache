@@ -131,19 +131,19 @@ class TestSemanticCachePolicy(unittest.TestCase):
         self.assertTrue(res.eligible)
 
     def test_multiturn_query_is_ineligible(self):
-        """Multi-turn conversation is rejected."""
+        """Ambiguous or incomplete multi-turn follow-up without verifiable substantive context is rejected."""
         req = GenerationRequest(
             model="llama-3",
             messages=[
-                ChatMessage(role="user", content="How do I sort a list in Python?"),
-                ChatMessage(role="assistant", content="Use list.sort()"),
+                ChatMessage(role="user", content="Hi"),
+                ChatMessage(role="assistant", content="Hello! How can I help?"),
                 ChatMessage(role="user", content="Can you show an example?"),
             ],
             visibility="tenant_shared",
         )
         res = self.policy.check_eligibility(req)
         self.assertFalse(res.eligible)
-        self.assertIn("single-turn", res.reason.lower())
+        self.assertIn("uncertain", res.reason.lower())
 
     def test_system_prompt_is_ineligible(self):
         """System prompt in messages or metadata is rejected."""

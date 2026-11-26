@@ -148,6 +148,8 @@ class InMemoryVectorStore(BaseVectorStore):
         visibility: Optional[str] = None,
         principal_id: Optional[str] = None,
         allow_shared_reads: bool = False,
+        context_class: Optional[str] = None,
+        context_fingerprint: Optional[str] = None,
     ) -> List[VectorSearchResult]:
         """
         Searches for top-k nearest records by cosine distance.
@@ -193,6 +195,14 @@ class InMemoryVectorStore(BaseVectorStore):
                     allow_shared_reads=allow_shared_reads,
                 ):
                     continue
+                if context_class is not None or context_fingerprint is not None:
+                    cc_meta = rec.metadata.get("context_contract") if isinstance(rec.metadata, dict) else None
+                    if not isinstance(cc_meta, dict):
+                        continue
+                    if context_class is not None and str(cc_meta.get("context_class") or "").strip().lower() != str(context_class).strip().lower():
+                        continue
+                    if context_fingerprint is not None and str(cc_meta.get("context_fingerprint") or "").strip() != str(context_fingerprint).strip():
+                        continue
                 candidates.append((k, rec, self._record_versions.get(k, 0)))
 
         if not candidates:

@@ -765,24 +765,32 @@ class TestStage352ServiceLookupAndInvariants(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res.cache_type, "exact")
         mock_embedder.embed.assert_not_called()
 
-        # Multi-turn & system prompt exclusions remain strictly enforced
-        req_multi = _make_req(
+        # Multi-turn irrelevant chatter allows safe standalone eligibility in Stage 3.6,
+        # while unresolved/uncertain context-dependent queries remain strictly excluded.
+        req_irrelevant_chatter = _make_req(
             "",
             messages=[
                 ChatMessage(role="user", content="Hi"),
                 ChatMessage(role="assistant", content="Hello"),
-                ChatMessage(role="user", content="Sort in Python"),
+                ChatMessage(role="user", content="Sort a list in Python"),
             ],
         )
-        req_sys = _make_req(
+        req_uncertain_ctx = _make_req(
             "",
             messages=[
-                ChatMessage(role="system", content="Be brief"),
-                ChatMessage(role="user", content="Sort in Python"),
+                ChatMessage(role="user", content="Modify the previous implementation to handle empty lists"),
             ],
         )
-        self.assertFalse(policy.check_eligibility(req_multi).eligible)
-        self.assertFalse(policy.check_eligibility(req_sys).eligible)
+        req_compacted_ctx = _make_req(
+            "",
+            messages=[
+                ChatMessage(role="user", content="How do I sort a list in Python?"),
+            ],
+            metadata={"context_status": "compacted"},
+        )
+        self.assertTrue(policy.check_eligibility(req_irrelevant_chatter).eligible)
+        self.assertFalse(policy.check_eligibility(req_uncertain_ctx).eligible)
+        self.assertFalse(policy.check_eligibility(req_compacted_ctx).eligible)
 
     def test_operational_safety_defaults_unchanged(self):
         """Production semantic serving, shadow eval, threshold, and margin defaults remain unchanged."""

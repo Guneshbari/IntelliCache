@@ -699,6 +699,7 @@ python -m unittest tests/test_stage3_5_2_compatibility.py # Attribute-aware comp
 python -m unittest tests/test_stage3_5_3_admission_and_coexistence.py # Response verification, evidence HMAC, variant coexistence
 python -m unittest tests/test_stage3_5_4_serving_and_privacy.py # Runtime kill switch, per-principal privacy isolation & HTTP scenarios
 python -m unittest tests/test_stage3_5_5_http_operational_evaluation.py # Stage 3.5.5 local-first HTTP FastEmbed + PostgreSQL operational evaluation
+python -m unittest tests/test_stage3_6_context_cache.py # Stage 3.6 context-aware centralized semantic cache, index & HTTP suite
 python -m unittest tests/test_config.py        # Configuration tests
 python -m unittest tests/test_main.py          # Application integration tests
 ```
@@ -709,6 +710,16 @@ To run the reproducible Stage 3.5.5 local-first HTTP operational evaluation agai
 cd gateway
 TEST_DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:5433/intellicache_fastembed_test" \
     .venv/bin/python scripts/evaluate_stage3_5_5_operational.py --iterations 25
+```
+
+To run the reproducible Stage 3.6 context-aware centralized semantic evaluation (24 `CTX-*` scenarios, 21 observability metrics, PostgreSQL `006_add_vector_context_indexes.sql` index verification & `EXPLAIN ANALYZE`, and server-managed `/conversations` checks):
+
+```bash
+cd gateway
+TEST_DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:5433/intellicache_fastembed_test" \
+    .venv/bin/python scripts/evaluate_stage3_6_context_cache.py \
+    --test-database-url postgresql://postgres:postgres@127.0.0.1:5433/intellicache_fastembed_test \
+    --output-dir /tmp/stage3_6_eval
 ```
 
 ---
@@ -743,5 +754,5 @@ The following capabilities represent the current implementation state:
 - **SingleFlight Boundary**: Request coalescing is strictly process-local (within a single Python asyncio event loop and process).
 - **Runtime Kill-Switch Boundary**: `SemanticServingController` state is process-local (supported for a single gateway process only); multi-worker propagation and durable runtime overrides across restarts require a shared control store in a later stage.
 - **Credential-Scoped Principal Identity**: `principal_id` is HMAC-derived from each client API token rather than a stable server-assigned user ID; token rotation changes the derived `principal_id`.
-- **Multi-Turn Semantic Policy**: Semantic caching explicitly evaluates independent single-turn technical queries (`messages` count = 1, role = 'user', no `conversation_id`). Multi-turn conversations and requests with `conversation_id` are excluded from semantic caching by design to prevent contextual ambiguity.
+- **Context-Aware Semantic Caching Policy (Stage 3.6)**: Requests are deterministically classified into `CONTEXT_INDEPENDENT`, `CONTEXT_DEPENDENT` (versioned `context-v1:` SHA-256 `context_fingerprint` covering schemas, code, configs, framework versions, and system instructions), or `CONTEXT_UNCERTAIN` (fail closed on dangling references, incomplete/compacted history, or missing referents). PostgreSQL migration `006_add_vector_context_indexes.sql` adds partial JSONB context-scope indexes (`idx_vector_records_context_scope`, `idx_vector_records_private_context_scope`, `idx_semantic_variant_records_context_scope`, `idx_semantic_variant_records_private_context_scope`), while heuristic extraction remains deterministic and conservative rather than LLM-synthesized.
 - **Persistent Conversation Store**: Persistent conversation management, bounded context windows, HMAC principal isolation, and concurrency safety are fully implemented and integrated across the gateway and demo client.

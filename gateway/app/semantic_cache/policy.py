@@ -22,12 +22,20 @@ from .contracts import (
     CompatibilityDecision,
     CompatibilityReasonCode,
     CompatibilityStatus,
+    ContextClass,
+    ContextCompatibilityContract,
     EVIDENCE_TIER_RESPONSE_VERIFIED,
     EligibilityResult,
     MetadataStatus,
     SUPPORTED_SCHEMA_VERSIONS,
     SemanticCompatibilityMetadata,
     TaskKind,
+)
+from .context import (
+    ContextAssessment,
+    analyze_request_context,
+    contains_sensitive_material,
+    resolve_context_cache_scope,
 )
 from .evidence import EvidenceAuthority, get_default_evidence_authority
 from ..privacy import (
@@ -167,53 +175,82 @@ class SemanticCachePolicy:
         if request.bypass_cache:
             return EligibilityResult(False, "Cache bypass explicitly requested.")
 
-        if request.conversation_id and request.conversation_id.strip():
-            return EligibilityResult(False, "Multi-turn conversation context or conversation ID present.")
+        # Context-aware eligibility via Stage 3.6 ContextAssessment
+        ctx_eval = analyze_request_context(request)
 
-        if not request.messages or len(request.messages) != 1:
-            msg_count = len(request.messages) if request.messages else 0
+        if not request.messages:
             return EligibilityResult(
                 False,
-                f"Only single-turn user requests are eligible for semantic caching (received {msg_count} messages).",
+                "Only requests with at least one non-empty user message are eligible for semantic caching.",
+                context_assessment=ctx_eval,
             )
 
-        single_msg = request.messages[0]
-        if single_msg.role != "user":
+        query_text = ctx_eval.effective_query
+        if not query_text:
             return EligibilityResult(
                 False,
-                f"Single turn must have role 'user' (received '{single_msg.role}').",
+                "Request must contain a non-empty user message for semantic caching.",
+                context_assessment=ctx_eval,
             )
 
-        query_text = (single_msg.content or "").strip()
         if len(query_text) < 3:
-            return EligibilityResult(False, "Query text is too short to establish semantic intent.")
+            return EligibilityResult(
+                False,
+                "Query text is too short to establish semantic intent.",
+                context_assessment=ctx_eval,
+            )
 
-        # Check for system prompt in metadata or payload
-        if request.metadata.get("system_prompt") or any(m.role == "system" for m in request.messages):
-            return EligibilityResult(False, "System prompts are not eligible for semantic caching.")
-
-        # Check for credentials or secrets in query text
-        for pattern in _SENSITIVE_PATTERNS:
-            if pattern.search(query_text):
+        # Check all messages and system prompt metadata for credentials or secrets BEFORE caching/embedding
+        all_msg_texts = [getattr(m, "content", "") or "" for m in request.messages]
+        raw_sys = request.metadata.get("system_prompt") if isinstance(request.metadata, dict) else None
+        if isinstance(raw_sys, str) and raw_sys.strip():
+            all_msg_texts.append(raw_sys)
+        for candidate_txt in all_msg_texts:
+            if contains_sensitive_material(candidate_txt) or any(p.search(candidate_txt) for p in _SENSITIVE_PATTERNS):
                 return EligibilityResult(
                     False,
                     "Query appears to contain sensitive credentials, keys, or secrets.",
+                    context_assessment=ctx_eval,
                 )
 
-        # Technical/programming query classification
-        if not self._is_technical_query(query_text):
+        # Fail closed when context is compacted, incomplete, or unverifiable (e.g. dangling follow-up)
+        if ctx_eval.context_class == ContextClass.CONTEXT_UNCERTAIN:
+            return EligibilityResult(
+                False,
+                f"{CompatibilityReasonCode.ADMISSION_REJECTED_CONTEXT_UNCERTAIN.value}: "
+                f"Conversation context is uncertain or incomplete ({ctx_eval.contract.classification_reason}).",
+                context_assessment=ctx_eval,
+            )
+
+        # Technical/programming query classification:
+        # For CONTEXT_INDEPENDENT, require effective query itself to be technical so irrelevant prior history
+        # cannot make casual chatter eligible. For CONTEXT_DEPENDENT, include relevant prior context hints.
+        if ctx_eval.context_class == ContextClass.CONTEXT_DEPENDENT:
+            is_tech = self._is_technical_query(query_text) or (
+                bool(ctx_eval.relevant_context_hint_text)
+                and self._is_technical_query(ctx_eval.relevant_context_hint_text)
+            )
+        else:
+            is_tech = self._is_technical_query(query_text)
+        if not is_tech:
             return EligibilityResult(
                 False,
                 "Query does not match technical or programming criteria.",
+                context_assessment=ctx_eval,
             )
 
-        # Stage 3.1: Deterministic requirement extraction and materiality validation
+        # Stage 3.1 + 3.6: Deterministic requirement and context-contract extraction
         try:
-            req_meta = self.extractor.extract(request, self.configured_model)
+            req_meta = self.extractor.extract(
+                request,
+                self.configured_model,
+                context_assessment=ctx_eval,
+            )
         except Exception as exc:
             return EligibilityResult(
                 False,
                 f"Compatibility metadata extraction failed: {exc}",
+                context_assessment=ctx_eval,
             )
 
         # 1. Task kind must be known
@@ -221,6 +258,7 @@ class SemanticCachePolicy:
             return EligibilityResult(
                 False,
                 "Query task kind could not be determined deterministically.",
+                context_assessment=ctx_eval,
             )
 
         # 2. Material dimension requirements:
@@ -231,14 +269,23 @@ class SemanticCachePolicy:
                 return EligibilityResult(
                     False,
                     "Code-generation request without an established programming language is ineligible for semantic caching.",
+                    context_assessment=ctx_eval,
                 )
 
-        # 2b. Freshness and single-turn context boundaries
+        # 2b. Freshness and context boundaries
         ctx_dim = req_meta.dimensions.get("context_dependency")
-        if ctx_dim and ctx_dim.status != MetadataStatus.NOT_APPLICABLE:
+        if ctx_eval.context_class == ContextClass.CONTEXT_DEPENDENT:
+            if not req_meta.context_contract or not req_meta.context_contract.context_fingerprint:
+                return EligibilityResult(
+                    False,
+                    "Context-dependent request is missing a deterministic context fingerprint.",
+                    context_assessment=ctx_eval,
+                )
+        elif ctx_dim and ctx_dim.status != MetadataStatus.NOT_APPLICABLE:
             return EligibilityResult(
                 False,
                 "Single-turn request contains unresolved prior-context dependencies.",
+                context_assessment=ctx_eval,
             )
 
         fresh_dim = req_meta.dimensions.get("freshness")
@@ -246,6 +293,7 @@ class SemanticCachePolicy:
             return EligibilityResult(
                 False,
                 "Time-sensitive or freshness-dependent requests are excluded from unverified semantic caching.",
+                context_assessment=ctx_eval,
             )
 
         # 3. Check for contradictory or ambiguous dimensions
@@ -254,9 +302,15 @@ class SemanticCachePolicy:
                 return EligibilityResult(
                     False,
                     f"Query contains ambiguous or contradictory technical requirements for '{dim_name}'.",
+                    context_assessment=ctx_eval,
                 )
 
-        return EligibilityResult(True, "Eligible for semantic caching.", metadata=req_meta)
+        return EligibilityResult(
+            True,
+            "Eligible for semantic caching.",
+            metadata=req_meta,
+            context_assessment=ctx_eval,
+        )
 
     def _is_technical_query(self, text: str) -> bool:
         """Determines if query contains technical markers, keywords, or code structures."""
@@ -308,9 +362,11 @@ class SemanticCachePolicy:
                 dimension="embedding_contract",
             )
 
-        req_vis = normalize_cache_visibility(getattr(request, "visibility", CACHE_VISIBILITY_PRIVATE))
-        req_own = normalize_principal_id(getattr(request, "principal_id", None))
-        allow_shared = bool(getattr(request, "allow_shared_reads", False))
+        req_ctx = analyze_request_context(request)
+        scope = resolve_context_cache_scope(request, req_ctx, "")
+        req_vis = scope.effective_visibility
+        req_own = scope.effective_owner
+        allow_shared = scope.allow_shared_reads
         if req_vis == CACHE_VISIBILITY_UNKNOWN:
             code = CompatibilityReasonCode.VISIBILITY_MISSING_OR_UNKNOWN
             return CompatibilityDecision(
@@ -390,6 +446,18 @@ class SemanticCachePolicy:
                 dimension="schema_version",
                 evidence={"schema_version": meta_dict.get("schema_version")},
             )
+
+        if "context_contract" in meta_dict and meta_dict["context_contract"] is not None:
+            try:
+                ContextCompatibilityContract.from_dict(meta_dict["context_contract"])
+            except Exception as exc:
+                code = CompatibilityReasonCode.CONTEXT_METADATA_INVALID
+                return CompatibilityDecision(
+                    status=CompatibilityStatus.UNCERTAIN,
+                    reason_code=code,
+                    message=f"{code}: Candidate context_contract malformed: {exc}.",
+                    dimension="context_dependency",
+                )
 
         try:
             cand_meta = SemanticCompatibilityMetadata.from_dict(meta_dict)
@@ -523,7 +591,23 @@ class SemanticCachePolicy:
         Rejects both INCOMPATIBLE and UNCERTAIN candidates while continuing evaluation across
         lower-ranked candidates, before applying similarity threshold and ambiguity margin rules.
         """
+        import time as _time
+        compat_start = _time.perf_counter()
+
+        def _base_diag_fields(ctx_ms: float, compat_ms: float) -> Dict[str, Any]:
+            return {
+                "context_validation_latency_ms": round(ctx_ms, 4),
+                "compatibility_validation_latency_ms": round(compat_ms, 4),
+                "context_compatibility_matches": 0,
+                "context_compatibility_rejections": 0,
+                "context_metadata_missing": 0,
+                "context_fingerprint_mismatches": 0,
+                "private_scope_rejections": 0,
+                "tenant_shared_authorization_rejections": 0,
+            }
+
         if not candidates:
+            compat_ms = (_time.perf_counter() - compat_start) * 1000.0
             self._last_evaluation_diagnostics = {
                 "outcome": "empty_candidates",
                 "decision_status": CompatibilityStatus.UNCERTAIN.value,
@@ -540,9 +624,11 @@ class SemanticCachePolicy:
                 "all_candidates_rejected": False,
                 "retrieval_budget_exhausted": False,
                 "retrieval_budget": self.retrieval_budget,
+                **_base_diag_fields(0.0, compat_ms),
             }
             return None, "No vector candidates retrieved."
 
+        ctx_start = _time.perf_counter()
         req_meta = request_metadata
         if req_meta is None:
             try:
@@ -550,6 +636,7 @@ class SemanticCachePolicy:
             except Exception as exc:
                 logger.debug("Failed to extract request metadata in evaluate_candidates: %s", exc)
                 req_meta = None
+        ctx_elapsed_ms = (_time.perf_counter() - ctx_start) * 1000.0
 
         compatible_candidates: List[VectorSearchResult] = []
         rejected_decisions: List[Tuple[VectorSearchResult, CompatibilityDecision]] = []
@@ -557,25 +644,63 @@ class SemanticCachePolicy:
         incompatible_count = 0
         uncertain_count = 0
         legacy_count = 0
+        context_matches = 0
+        context_rejections = 0
+        context_missing = 0
+        context_fp_mismatch = 0
+        private_scope_rejections = 0
+        tenant_shared_auth_rejections = 0
+
+        _ctx_rejection_codes = {
+            CompatibilityReasonCode.CONTEXT_CLASS_MISMATCH.value,
+            CompatibilityReasonCode.CONTEXT_FINGERPRINT_MISMATCH.value,
+            CompatibilityReasonCode.CONTEXT_METADATA_MISSING.value,
+            CompatibilityReasonCode.CONTEXT_METADATA_INVALID.value,
+            CompatibilityReasonCode.CONTEXT_DEPENDENCY_UNRESOLVED.value,
+        }
 
         for cand in candidates:
             raw_sv = (cand.metadata or {}).get("schema_version")
             if raw_sv is None or raw_sv == 2:
                 legacy_count += 1
+            cand_ctx_t0 = _time.perf_counter()
             decision = self.validate_candidate(cand, request, request_metadata=req_meta)
+            cand_val_ms = (_time.perf_counter() - cand_ctx_t0) * 1000.0
+            if decision.dimension == "context_dependency" or decision.is_compatible:
+                ctx_elapsed_ms += cand_val_ms
+            cand_src_digest = (cand.metadata or {}).get("source_conversation_digest")
             decision_records.append({
                 "fingerprint_prefix": (cand.fingerprint or "")[:12],
                 "similarity": cand.similarity,
+                "source_conversation_digest": cand_src_digest,
                 "decision": decision.to_dict(),
             })
             if decision.is_compatible:
                 compatible_candidates.append(cand)
+                context_matches += 1
             else:
                 rejected_decisions.append((cand, decision))
                 if decision.is_incompatible:
                     incompatible_count += 1
                 elif decision.is_uncertain:
                     uncertain_count += 1
+                r_code = decision.reason_code.value
+                if r_code in _ctx_rejection_codes:
+                    context_rejections += 1
+                    if r_code == CompatibilityReasonCode.CONTEXT_METADATA_MISSING.value:
+                        context_missing += 1
+                    elif r_code == CompatibilityReasonCode.CONTEXT_FINGERPRINT_MISMATCH.value:
+                        context_fp_mismatch += 1
+                if r_code in (
+                    CompatibilityReasonCode.PRINCIPAL_IDENTITY_MISSING.value,
+                    CompatibilityReasonCode.PRINCIPAL_ISOLATION_MISMATCH.value,
+                ):
+                    private_scope_rejections += 1
+                elif r_code in (
+                    CompatibilityReasonCode.VISIBILITY_MISMATCH.value,
+                    CompatibilityReasonCode.TENANT_SHARED_AUTH_REJECTED.value,
+                ):
+                    tenant_shared_auth_rejections += 1
                 logger.debug(
                     "Candidate fingerprint='%s...' rejected (%s / %s): %s",
                     (cand.fingerprint or "")[:12],
@@ -584,7 +709,20 @@ class SemanticCachePolicy:
                     decision.message,
                 )
 
+        def _stage36_diag(compat_ms: float) -> Dict[str, Any]:
+            return {
+                "context_validation_latency_ms": round(ctx_elapsed_ms, 4),
+                "compatibility_validation_latency_ms": round(compat_ms, 4),
+                "context_compatibility_matches": context_matches,
+                "context_compatibility_rejections": context_rejections,
+                "context_metadata_missing": context_missing,
+                "context_fingerprint_mismatches": context_fp_mismatch,
+                "private_scope_rejections": private_scope_rejections,
+                "tenant_shared_authorization_rejections": tenant_shared_auth_rejections,
+            }
+
         if not compatible_candidates:
+            compat_ms = (_time.perf_counter() - compat_start) * 1000.0
             primary_decision = rejected_decisions[0][1] if rejected_decisions else CompatibilityDecision(
                 status=CompatibilityStatus.UNCERTAIN,
                 reason_code=CompatibilityReasonCode.ALL_CANDIDATES_REJECTED,
@@ -607,6 +745,7 @@ class SemanticCachePolicy:
                 "all_candidates_rejected": True,
                 "retrieval_budget_exhausted": budget_exhausted,
                 "retrieval_budget": self.retrieval_budget,
+                **_stage36_diag(compat_ms),
             }
             return (
                 None,
@@ -621,6 +760,7 @@ class SemanticCachePolicy:
         top_cand = compatible_pool[0]
 
         if top_cand.similarity < self.min_similarity:
+            compat_ms = (_time.perf_counter() - compat_start) * 1000.0
             self._last_evaluation_diagnostics = {
                 "outcome": "below_threshold",
                 "decision_status": CompatibilityStatus.COMPATIBLE.value,
@@ -640,6 +780,7 @@ class SemanticCachePolicy:
                 "all_candidates_rejected": False,
                 "retrieval_budget_exhausted": False,
                 "retrieval_budget": self.retrieval_budget,
+                **_stage36_diag(compat_ms),
             }
             return (
                 None,
@@ -652,6 +793,7 @@ class SemanticCachePolicy:
             if margin < self.min_margin:
                 other_response = (other.cached_response or "").strip()
                 if other_response != top_response:
+                    compat_ms = (_time.perf_counter() - compat_start) * 1000.0
                     self._last_evaluation_diagnostics = {
                         "outcome": "ambiguous",
                         "decision_status": CompatibilityStatus.UNCERTAIN.value,
@@ -671,6 +813,7 @@ class SemanticCachePolicy:
                         "all_candidates_rejected": False,
                         "retrieval_budget_exhausted": False,
                         "retrieval_budget": self.retrieval_budget,
+                        **_stage36_diag(compat_ms),
                     }
                     return (
                         None,
@@ -678,6 +821,7 @@ class SemanticCachePolicy:
                         f"is below minimum margin ({self.min_margin:.4f}) with a different answer.",
                     )
 
+        compat_ms = (_time.perf_counter() - compat_start) * 1000.0
         self._last_evaluation_diagnostics = {
             "outcome": "compatible",
             "decision_status": CompatibilityStatus.COMPATIBLE.value,
@@ -694,5 +838,6 @@ class SemanticCachePolicy:
             "all_candidates_rejected": False,
             "retrieval_budget_exhausted": False,
             "retrieval_budget": self.retrieval_budget,
+            **_stage36_diag(compat_ms),
         }
         return top_cand, None

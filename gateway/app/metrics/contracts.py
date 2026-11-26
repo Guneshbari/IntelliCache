@@ -78,6 +78,21 @@ class SemanticMetrics(BaseModel):
     admission_verified: int = 0
     admission_rejected: int = 0
     admission_uncertain: int = 0
+    # Stage 3.6 context-aware centralized semantic cache metrics
+    context_independent_requests: int = 0
+    context_dependent_requests: int = 0
+    context_uncertain_requests: int = 0
+    context_compatibility_matches: int = 0
+    context_compatibility_rejections: int = 0
+    context_metadata_missing: int = 0
+    context_fingerprint_mismatches: int = 0
+    cross_conversation_semantic_hits: int = 0
+    cross_conversation_semantic_misses: int = 0
+    private_scope_rejections: int = 0
+    tenant_shared_authorization_rejections: int = 0
+    semantic_admission_successes: int = 0
+    semantic_admission_rejections: int = 0
+    semantic_fallbacks: int = 0
 
 
 class ShadowMetrics(BaseModel):
@@ -127,6 +142,8 @@ class LatencyMetrics(BaseModel):
     shadow_embedding_latency_ms: LatencySummary = Field(default_factory=LatencySummary)
     shadow_retrieval_latency_ms: LatencySummary = Field(default_factory=LatencySummary)
     shadow_policy_latency_ms: LatencySummary = Field(default_factory=LatencySummary)
+    context_validation_latency_ms: LatencySummary = Field(default_factory=LatencySummary)
+    compatibility_validation_latency_ms: LatencySummary = Field(default_factory=LatencySummary)
 
 
 class DerivedRates(BaseModel):

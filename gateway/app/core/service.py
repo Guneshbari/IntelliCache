@@ -43,6 +43,9 @@ from ..semantic_cache.control import (
 from ..semantic_cache.interfaces import BaseSemanticCache
 
 
+from ..semantic_cache.context import analyze_request_context, resolve_context_cache_scope
+
+
 class IntelliCacheCore:
     """
     Core engine managing caching decisions, single-flight coalescing,
@@ -172,18 +175,14 @@ class IntelliCacheCore:
         )
         fingerprint = derive_variant_exact_fingerprint(base_fingerprint, request.metadata)
 
-        req_vis = normalize_cache_visibility(getattr(request, "visibility", CACHE_VISIBILITY_PRIVATE))
+        req_ctx = analyze_request_context(request)
+        scope = resolve_context_cache_scope(request, req_ctx, fingerprint)
+        req_vis = scope.effective_visibility
         req_own = normalize_principal_id(getattr(request, "principal_id", None))
-        allow_shared = bool(getattr(request, "allow_shared_reads", False))
-        can_cache_privately = (req_vis == CACHE_VISIBILITY_PRIVATE and req_own is not None)
-        can_cache_shared = (req_vis == CACHE_VISIBILITY_TENANT_SHARED)
-        can_use_exact_cache = can_cache_privately or can_cache_shared
-        entry_owner = req_own if req_vis == CACHE_VISIBILITY_PRIVATE else None
-        exact_storage_key = (
-            derive_scoped_exact_key(fingerprint, req_vis, entry_owner)
-            if can_use_exact_cache
-            else None
-        )
+        allow_shared = scope.allow_shared_reads
+        can_use_exact_cache = scope.can_cache_exact
+        entry_owner = scope.effective_owner
+        exact_storage_key = scope.exact_storage_key
 
         # 1. Exact Cache Read
         if self.cache_enabled and not request.bypass_cache:
@@ -364,6 +363,7 @@ class IntelliCacheCore:
                             collector.record_upstream_fallback_after_semantic_miss(ns)
                             self._record_semantic_stat_attr(self.semantic_cache, "runtime_disabled_skips")
                             self._record_semantic_stat_attr(self.semantic_cache, "upstream_fallbacks_after_miss")
+                            self._record_semantic_stat_attr(self.semantic_cache, "semantic_fallbacks")
                         else:
                             # Intended operational policy: once Checkpoint 2 authorizes delivery,
                             # the leader completes metrics commit, SingleFlight follower resolution,
@@ -374,7 +374,13 @@ class IntelliCacheCore:
 
                             # Commit semantic hit counters ONLY after Checkpoint 2 passes
                             if hasattr(self.semantic_cache, "record_served_hit"):
-                                self.semantic_cache.record_served_hit(ns)
+                                try:
+                                    self.semantic_cache.record_served_hit(
+                                        ns,
+                                        cross_conversation=bool(getattr(semantic_hit, "is_cross_conversation", False)),
+                                    )
+                                except TypeError:
+                                    self.semantic_cache.record_served_hit(ns)
                             await self.cache.record_semantic_hit(tokens_saved, latency_saved_ms)
                             collector.record_semantic_hit(
                                 ns,
@@ -425,6 +431,7 @@ class IntelliCacheCore:
                     else:
                         collector.record_upstream_fallback_after_semantic_miss(ns)
                         self._record_semantic_stat_attr(self.semantic_cache, "upstream_fallbacks_after_miss")
+                        self._record_semantic_stat_attr(self.semantic_cache, "semantic_fallbacks")
 
             # 5. Leader: Semantic miss or disabled -> call provider
             await self.cache.record_miss()
@@ -605,18 +612,14 @@ class IntelliCacheCore:
         )
         fingerprint = derive_variant_exact_fingerprint(base_fingerprint, request.metadata)
 
-        req_vis = normalize_cache_visibility(getattr(request, "visibility", CACHE_VISIBILITY_PRIVATE))
+        req_ctx = analyze_request_context(request)
+        scope = resolve_context_cache_scope(request, req_ctx, fingerprint)
+        req_vis = scope.effective_visibility
         req_own = normalize_principal_id(getattr(request, "principal_id", None))
-        allow_shared = bool(getattr(request, "allow_shared_reads", False))
-        can_use_exact_cache = (req_vis == CACHE_VISIBILITY_PRIVATE and req_own is not None) or (
-            req_vis == CACHE_VISIBILITY_TENANT_SHARED
-        )
-        entry_owner = req_own if req_vis == CACHE_VISIBILITY_PRIVATE else None
-        exact_storage_key = (
-            derive_scoped_exact_key(fingerprint, req_vis, entry_owner)
-            if can_use_exact_cache
-            else None
-        )
+        allow_shared = scope.allow_shared_reads
+        can_use_exact_cache = scope.can_cache_exact
+        entry_owner = scope.effective_owner
+        exact_storage_key = scope.exact_storage_key
 
         # 1. Cache Read for Streaming
         if self.cache_enabled and not request.bypass_cache:

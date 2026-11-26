@@ -1087,6 +1087,7 @@ class TestStage353EndToEndInMemory(unittest.IsolatedAsyncioTestCase):
             generation_contract=target_meta.generation_contract,
             embedding_contract=target_meta.embedding_contract,
             compatibility_evidence=ev,
+            context_contract=target_meta.context_contract,
         ).to_dict()
         vk_target = compute_variant_key(target_meta)
         m_target["variant_key"] = vk_target
@@ -1444,6 +1445,7 @@ class TestStage353PostgresPgvectorLifecycle(unittest.IsolatedAsyncioTestCase):
             generation_contract=m_v3.generation_contract,
             embedding_contract=m_v3.embedding_contract,
             compatibility_evidence=ev_target,
+            context_contract=m_v3.context_contract,
         ).to_dict()
         m_v3_dict["variant_key"] = compute_variant_key(m_v3)
         await self._seed_raw_row(

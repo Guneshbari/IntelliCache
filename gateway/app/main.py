@@ -617,6 +617,20 @@ def create_app() -> FastAPI:
             "runtime_control_changes": 0,
             "runtime_control_failures": 0,
             "privacy_violation_attempts": 0,
+            "context_independent_requests": 0,
+            "context_dependent_requests": 0,
+            "context_uncertain_requests": 0,
+            "context_compatibility_matches": 0,
+            "context_compatibility_rejections": 0,
+            "context_metadata_missing": 0,
+            "context_fingerprint_mismatches": 0,
+            "cross_conversation_semantic_hits": 0,
+            "cross_conversation_semantic_misses": 0,
+            "private_scope_rejections": 0,
+            "tenant_shared_authorization_rejections": 0,
+            "semantic_admission_successes": 0,
+            "semantic_admission_rejections": 0,
+            "semantic_fallbacks": 0,
         }
 
     @app.get(

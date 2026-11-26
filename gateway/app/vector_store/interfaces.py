@@ -38,6 +38,8 @@ class BaseVectorStore(ABC):
         visibility: Optional[str] = None,
         principal_id: Optional[str] = None,
         allow_shared_reads: bool = False,
+        context_class: Optional[str] = None,
+        context_fingerprint: Optional[str] = None,
     ) -> List[VectorSearchResult]:
         """
         Searches for the top-k nearest records by cosine distance.

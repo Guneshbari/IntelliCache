@@ -535,15 +535,29 @@ class TestApiAcceptance(unittest.TestCase):
 
     def test_09_multi_turn_and_context_semantic_cache_bypass(self):
         """
-        Scenario 9:
-        Multi-turn requests (multiple messages), requests with conversation_id, or system prompts
-        must be deemed ineligible for semantic cache and bypass semantic lookup completely.
+        Scenario 9 (Stage 3.6 context-aware update):
+        1. Unresolved/uncertain context requests (dangling follow-ups without substantive prior context
+           or compacted/incomplete context status) bypass semantic embedding & lookup cleanly.
+        2. Standalone queries with conversation_id or irrelevant multi-turn chatter remain eligible
+           without polluting distinct context-dependent system-prompt scopes.
         """
         headers = {"X-Client-Token": "token-alpha"}
 
-        # 1. Explicit conversation_id payload (client-managed conversation turn)
+        # 1. Dangling follow-up without prior history -> CONTEXT_UNCERTAIN (must not invoke embedding/search)
         initial_embeds = len(self.embedding_provider.embed_calls)
         initial_searches = self.vector_store.search_call_count
+        uncertain_payload = {
+            "messages": [{"role": "user", "content": "Modify the previous implementation to handle empty lists"}],
+            "conversation_id": "conv-test-uncertain-12345",
+        }
+        resp_uncertain = self.client.post("/query", json=uncertain_payload, headers=headers)
+        self.assertEqual(resp_uncertain.status_code, 200)
+        self.assertFalse(resp_uncertain.json()["cached"])
+        self.assertEqual(resp_uncertain.json()["cache_type"], "none")
+        self.assertEqual(len(self.embedding_provider.embed_calls), initial_embeds, "CONTEXT_UNCERTAIN must not invoke embedding generation")
+        self.assertEqual(self.vector_store.search_call_count, initial_searches, "CONTEXT_UNCERTAIN must not invoke vector search")
+
+        # 2. Standalone query inside a conversation_id seeds cleanly, and context-dependent system prompt differs cleanly
         conv_payload = {
             "messages": [{"role": "user", "content": "How do I write a binary search in Python?"}],
             "conversation_id": "conv-test-bypass-id-12345",
@@ -551,39 +565,22 @@ class TestApiAcceptance(unittest.TestCase):
         resp_conv = self.client.post("/query", json=conv_payload, headers=headers)
         self.assertEqual(resp_conv.status_code, 200)
         self.assertFalse(resp_conv.json()["cached"])
-        self.assertEqual(resp_conv.json()["cache_type"], "none")
-        self.assertEqual(len(self.embedding_provider.embed_calls), initial_embeds, "conversation_id must not invoke embedding generation")
-        self.assertEqual(self.vector_store.search_call_count, initial_searches, "conversation_id must not invoke vector search")
 
-        # 2. Multi-turn messages payload
-        initial_embeds = len(self.embedding_provider.embed_calls)
-        initial_searches = self.vector_store.search_call_count
-        multi_msg_payload = {
-            "messages": [
-                {"role": "user", "content": "Explain memory ownership in Rust"},
-                {"role": "assistant", "content": "In Rust, ownership is enforced at compile time."},
-                {"role": "user", "content": "How does Rust manage memory ownership?"},
-            ]
-        }
-        resp = self.client.post("/query", json=multi_msg_payload, headers=headers)
-        self.assertEqual(resp.status_code, 200)
-        self.assertFalse(resp.json()["cached"])
-        self.assertEqual(resp.json()["cache_type"], "none")
-        self.assertEqual(len(self.embedding_provider.embed_calls), initial_embeds, "Multi-message request must not invoke embedding generation")
-        self.assertEqual(self.vector_store.search_call_count, initial_searches, "Multi-message request must not invoke vector search")
-
-        # 3. System prompt payload
-        initial_embeds = len(self.embedding_provider.embed_calls)
-        initial_searches = self.vector_store.search_call_count
-        system_payload = {
+        # Same prompt under distinct system instruction must NOT reuse standalone or mismatched context
+        sys_payload = {
             "prompt": "How does Rust manage memory ownership?",
-            "system_prompt": "You are a compiler tutor.",
+            "system_prompt": "You are a compiler tutor focusing on lifetime elision.",
         }
-        resp_sys = self.client.post("/query", json=system_payload, headers=headers)
+        resp_sys = self.client.post("/query", json=sys_payload, headers=headers)
         self.assertEqual(resp_sys.status_code, 200)
         self.assertFalse(resp_sys.json()["cached"])
-        self.assertEqual(len(self.embedding_provider.embed_calls), initial_embeds, "System prompt request must not invoke embedding generation")
-        self.assertEqual(self.vector_store.search_call_count, initial_searches, "System prompt request must not invoke vector search")
+        sys_payload_other = {
+            "prompt": "How does Rust manage memory ownership?",
+            "system_prompt": "Always respond using beginner analogies only.",
+        }
+        resp_sys_other = self.client.post("/query", json=sys_payload_other, headers=headers)
+        self.assertEqual(resp_sys_other.status_code, 200)
+        self.assertFalse(resp_sys_other.json()["cached"])
 
     # -----------------------------------------------------------------------
     # Area 6: Streaming Request Isolation & SSE Framing

@@ -282,6 +282,8 @@ class PostgresVectorStore(BaseVectorStore):
         visibility: Optional[str] = None,
         principal_id: Optional[str] = None,
         allow_shared_reads: bool = False,
+        context_class: Optional[str] = None,
+        context_fingerprint: Optional[str] = None,
     ) -> tuple[str, Optional[str], list[Any], bool]:
         """Builds parameterized single-table fallback SQL and combined UNION ALL production SQL with scope filters."""
         join_type = "JOIN" if self.table_name == "vector_records" else "LEFT JOIN"
@@ -297,6 +299,26 @@ class PostgresVectorStore(BaseVectorStore):
         )
         if fail_closed:
             return "", None, [], True
+
+        ctx_clauses_v: list[str] = []
+        ctx_clauses_sv: list[str] = []
+        ctx_params: list[Any] = []
+        next_param_idx = 5 + len(scope_params)
+        if context_class is not None:
+            norm_cls = str(context_class).strip().upper()
+            ctx_clauses_v.append(f"AND (v.metadata->'context_contract'->>'context_class') = ${next_param_idx}")
+            ctx_clauses_sv.append(f"AND (sv.metadata->'context_contract'->>'context_class') = ${next_param_idx}")
+            ctx_params.append(norm_cls)
+            next_param_idx += 1
+        if context_fingerprint is not None:
+            norm_fp = str(context_fingerprint).strip()
+            ctx_clauses_v.append(f"AND (v.metadata->'context_contract'->>'context_fingerprint') = ${next_param_idx}")
+            ctx_clauses_sv.append(f"AND (sv.metadata->'context_contract'->>'context_fingerprint') = ${next_param_idx}")
+            ctx_params.append(norm_fp)
+            next_param_idx += 1
+        ctx_sql_v = "\n                  ".join(ctx_clauses_v)
+        ctx_sql_sv = "\n                  ".join(ctx_clauses_sv)
+        all_filter_params = [*scope_params, *ctx_params]
 
         legacy_filter = "AND COALESCE((v.metadata->>'legacy_excluded')::boolean, FALSE) = FALSE"
         if self.exclude_unmigrated_legacy:
@@ -331,12 +353,13 @@ class PostgresVectorStore(BaseVectorStore):
               AND v.model = $3
               {legacy_filter}
               {scope_v}
+              {ctx_sql_v}
             ORDER BY distance ASC
             LIMIT $4;
         """
 
         if self.table_name != "vector_records":
-            return single_query, None, scope_params, False
+            return single_query, None, all_filter_params, False
 
         sv_legacy_filter = legacy_filter.replace("v.metadata", "sv.metadata")
         scope_sv, _, _ = self._build_scope_filter(
@@ -375,6 +398,7 @@ class PostgresVectorStore(BaseVectorStore):
                   AND v.model = $3
                   {legacy_filter}
                   {scope_v}
+                  {ctx_sql_v}
                 ORDER BY distance ASC
                 LIMIT $4)
                 UNION ALL
@@ -403,12 +427,13 @@ class PostgresVectorStore(BaseVectorStore):
                   AND sv.model = $3
                   {sv_legacy_filter}
                   {scope_sv}
+                  {ctx_sql_sv}
                 ORDER BY distance ASC
                 LIMIT $4)
             )
             SELECT * FROM combined ORDER BY distance ASC LIMIT $4;
         """
-        return single_query, combined_query, scope_params, False
+        return single_query, combined_query, all_filter_params, False
 
     async def search(
         self,
@@ -419,6 +444,8 @@ class PostgresVectorStore(BaseVectorStore):
         visibility: Optional[str] = None,
         principal_id: Optional[str] = None,
         allow_shared_reads: bool = False,
+        context_class: Optional[str] = None,
+        context_fingerprint: Optional[str] = None,
     ) -> List[VectorSearchResult]:
         """Searches nearest neighbors within namespace, model, and privacy scope, filtering out expired entries."""
         if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k <= 0:
@@ -438,6 +465,8 @@ class PostgresVectorStore(BaseVectorStore):
             visibility=visibility,
             principal_id=principal_id,
             allow_shared_reads=allow_shared_reads,
+            context_class=context_class,
+            context_fingerprint=context_fingerprint,
         )
         if fail_closed:
             return []

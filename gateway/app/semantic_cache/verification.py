@@ -22,6 +22,7 @@ import yaml
 from .contracts import (
     CompatibilityReasonCode,
     ConstraintItem,
+    ContextClass,
     MetadataStatus,
     ResponseVerificationResult,
     SemanticCompatibilityMetadata,
@@ -29,6 +30,7 @@ from .contracts import (
     TruncationStatus,
     VerificationStatus,
 )
+from .context import contains_sensitive_material
 from .evidence import compute_canonical_schema_digest
 
 # Supported finish reasons from LLM providers
@@ -629,6 +631,50 @@ class ResponseArtifactVerifier:
                     verified_schema_version = 1
                     verified_schema_digest = compute_canonical_schema_digest(schema_obj)
                     verified_constraints.append(f"schema_adherence={verified_schema_digest[:16]}")
+
+        # Stage 3.6 response-level context refusal and secret-leakage admission guard
+        if contains_sensitive_material(stripped):
+            code = CompatibilityReasonCode.ADMISSION_REJECTED_CONTEXT_PRIVACY
+            return ResponseVerificationResult(
+                status=VerificationStatus.FAILED,
+                truncation_status=trunc_status,
+                reason_code=code,
+                message=f"{code}: Response contains sensitive credentials or secrets; rejected from semantic cache.",
+                verifier_version=self.VERIFIER_VERSION,
+            )
+
+        req_ctx = getattr(request_metadata, "context_contract", None)
+        if req_ctx is not None and req_ctx.context_class == ContextClass.CONTEXT_UNCERTAIN:
+            code = CompatibilityReasonCode.ADMISSION_REJECTED_CONTEXT_UNCERTAIN
+            return ResponseVerificationResult(
+                status=VerificationStatus.UNCERTAIN,
+                truncation_status=trunc_status,
+                reason_code=code,
+                message=f"{code}: Cannot admit response when request context classification is CONTEXT_UNCERTAIN.",
+                verifier_version=self.VERIFIER_VERSION,
+            )
+
+        if req_ctx is not None and req_ctx.context_class == ContextClass.CONTEXT_DEPENDENT:
+            if re.search(
+                r"\b(?:"
+                r"i\s+(?:don'?t|do\s+not|cannot|can'?t)\s+(?:have|see|find|access)\s+"
+                r"(?:enough\s+context|the\s+(?:previous|above|prior|earlier)\s+\w+|your\s+(?:schema|code|config|configuration))|"
+                r"please\s+(?:provide|share|paste|include)\s+(?:the\s+|more\s+)?"
+                r"(?:context|schema|code|table|implementation|error|snippet)|"
+                r"(?:missing|without)\s+(?:the\s+)?(?:prior\s+|previous\s+|required\s+)?context|"
+                r"no\s+(?:schema|code|context|table)\s+(?:was\s+|is\s+)?provided"
+                r")\b",
+                stripped,
+                re.IGNORECASE,
+            ):
+                code = CompatibilityReasonCode.ADMISSION_REJECTED_CONTEXT_UNCERTAIN
+                return ResponseVerificationResult(
+                    status=VerificationStatus.FAILED,
+                    truncation_status=trunc_status,
+                    reason_code=code,
+                    message=f"{code}: Generated response reports missing context; rejected from semantic cache admission.",
+                    verifier_version=self.VERIFIER_VERSION,
+                )
 
         return ResponseVerificationResult(
             status=VerificationStatus.VERIFIED,

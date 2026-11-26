@@ -162,7 +162,14 @@ class ReadOnlyVectorStoreAdapter(BaseVectorStore):
         visibility: Optional[str] = None,
         principal_id: Optional[str] = None,
         allow_shared_reads: bool = False,
+        context_class: Optional[str] = None,
+        context_fingerprint: Optional[str] = None,
     ) -> List[VectorSearchResult]:
+        kwargs: Dict[str, Any] = {}
+        if context_class is not None:
+            kwargs["context_class"] = context_class
+        if context_fingerprint is not None:
+            kwargs["context_fingerprint"] = context_fingerprint
         return await self._inner.search(
             query_vector=query_vector,
             top_k=top_k,
@@ -171,6 +178,7 @@ class ReadOnlyVectorStoreAdapter(BaseVectorStore):
             visibility=visibility,
             principal_id=principal_id,
             allow_shared_reads=allow_shared_reads,
+            **kwargs,
         )
 
     async def upsert(self, record: VectorRecord) -> None:

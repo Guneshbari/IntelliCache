@@ -135,6 +135,21 @@ class _NamespaceData:
         self.admission_verified = 0
         self.admission_rejected = 0
         self.admission_uncertain = 0
+        # Stage 3.6 context-aware centralized semantic cache metrics
+        self.context_independent_requests = 0
+        self.context_dependent_requests = 0
+        self.context_uncertain_requests = 0
+        self.context_compatibility_matches = 0
+        self.context_compatibility_rejections = 0
+        self.context_metadata_missing = 0
+        self.context_fingerprint_mismatches = 0
+        self.cross_conversation_semantic_hits = 0
+        self.cross_conversation_semantic_misses = 0
+        self.private_scope_rejections = 0
+        self.tenant_shared_authorization_rejections = 0
+        self.semantic_admission_successes = 0
+        self.semantic_admission_rejections = 0
+        self.semantic_fallbacks = 0
 
         # Shadow Evaluation Diagnostics (Stage 3.3)
         self.shadow_requests_total = 0
@@ -169,6 +184,8 @@ class _NamespaceData:
             "shadow_embedding_latency_ms": deque(maxlen=max_samples),
             "shadow_retrieval_latency_ms": deque(maxlen=max_samples),
             "shadow_policy_latency_ms": deque(maxlen=max_samples),
+            "context_validation_latency_ms": deque(maxlen=max_samples),
+            "compatibility_validation_latency_ms": deque(maxlen=max_samples),
         }
 
     def record_request(self, stream: bool = False, bypass: bool = False) -> None:
@@ -320,6 +337,7 @@ class _NamespaceData:
     def record_upstream_fallback_after_semantic_miss(self) -> None:
         with self.lock:
             self.upstream_fallbacks_after_semantic_miss += 1
+            self.semantic_fallbacks += 1
 
     def record_runtime_control_change(self) -> None:
         with self.lock:
@@ -372,6 +390,59 @@ class _NamespaceData:
     def record_indexing_failure(self) -> None:
         with self.lock:
             self.indexing_failures += 1
+
+    def record_context_classification(self, context_class: str) -> None:
+        normalized = str(context_class or "").strip().lower()
+        with self.lock:
+            if normalized == "context_independent":
+                self.context_independent_requests += 1
+            elif normalized == "context_dependent":
+                self.context_dependent_requests += 1
+            elif normalized == "context_uncertain":
+                self.context_uncertain_requests += 1
+
+    def record_context_compatibility_match(self) -> None:
+        with self.lock:
+            self.context_compatibility_matches += 1
+
+    def record_context_compatibility_rejection(self) -> None:
+        with self.lock:
+            self.context_compatibility_rejections += 1
+
+    def record_context_metadata_missing(self) -> None:
+        with self.lock:
+            self.context_metadata_missing += 1
+
+    def record_context_fingerprint_mismatch(self) -> None:
+        with self.lock:
+            self.context_fingerprint_mismatches += 1
+
+    def record_cross_conversation_hit(self) -> None:
+        with self.lock:
+            self.cross_conversation_semantic_hits += 1
+
+    def record_cross_conversation_miss(self) -> None:
+        with self.lock:
+            self.cross_conversation_semantic_misses += 1
+
+    def record_private_scope_rejection(self) -> None:
+        with self.lock:
+            self.private_scope_rejections += 1
+
+    def record_tenant_shared_authorization_rejection(self) -> None:
+        with self.lock:
+            self.tenant_shared_authorization_rejections += 1
+
+    def record_semantic_admission_outcome(self, accepted: bool) -> None:
+        with self.lock:
+            if accepted:
+                self.semantic_admission_successes += 1
+            else:
+                self.semantic_admission_rejections += 1
+
+    def record_semantic_fallback(self) -> None:
+        with self.lock:
+            self.semantic_fallbacks += 1
 
     def record_provider_attempt(self) -> None:
         with self.lock:
@@ -536,6 +607,20 @@ class _NamespaceData:
                 admission_verified=self.admission_verified,
                 admission_rejected=self.admission_rejected,
                 admission_uncertain=self.admission_uncertain,
+                context_independent_requests=self.context_independent_requests,
+                context_dependent_requests=self.context_dependent_requests,
+                context_uncertain_requests=self.context_uncertain_requests,
+                context_compatibility_matches=self.context_compatibility_matches,
+                context_compatibility_rejections=self.context_compatibility_rejections,
+                context_metadata_missing=self.context_metadata_missing,
+                context_fingerprint_mismatches=self.context_fingerprint_mismatches,
+                cross_conversation_semantic_hits=self.cross_conversation_semantic_hits,
+                cross_conversation_semantic_misses=self.cross_conversation_semantic_misses,
+                private_scope_rejections=self.private_scope_rejections,
+                tenant_shared_authorization_rejections=self.tenant_shared_authorization_rejections,
+                semantic_admission_successes=self.semantic_admission_successes,
+                semantic_admission_rejections=self.semantic_admission_rejections,
+                semantic_fallbacks=self.semantic_fallbacks,
             )
 
             shadow = ShadowMetrics(
@@ -602,6 +687,8 @@ class _NamespaceData:
                 shadow_embedding_latency_ms=compute_latency_summary(list(self.latency_samples["shadow_embedding_latency_ms"])),
                 shadow_retrieval_latency_ms=compute_latency_summary(list(self.latency_samples["shadow_retrieval_latency_ms"])),
                 shadow_policy_latency_ms=compute_latency_summary(list(self.latency_samples["shadow_policy_latency_ms"])),
+                context_validation_latency_ms=compute_latency_summary(list(self.latency_samples["context_validation_latency_ms"])),
+                compatibility_validation_latency_ms=compute_latency_summary(list(self.latency_samples["compatibility_validation_latency_ms"])),
             )
 
             notes = {
@@ -937,6 +1024,83 @@ class RuntimeMetricsCollector:
         except Exception as e:
             logger.debug("Metrics record_indexing_failure failed: %s", e)
 
+    def record_context_classification(self, namespace: str, context_class: str) -> None:
+        try:
+            ns_data = self.get_or_create_namespace(namespace)
+            ns_data.record_context_classification(context_class)
+        except Exception as e:
+            logger.debug("Metrics record_context_classification failed: %s", e)
+
+    def record_context_compatibility_match(self, namespace: str) -> None:
+        try:
+            ns_data = self.get_or_create_namespace(namespace)
+            ns_data.record_context_compatibility_match()
+        except Exception as e:
+            logger.debug("Metrics record_context_compatibility_match failed: %s", e)
+
+    def record_context_compatibility_rejection(self, namespace: str) -> None:
+        try:
+            ns_data = self.get_or_create_namespace(namespace)
+            ns_data.record_context_compatibility_rejection()
+        except Exception as e:
+            logger.debug("Metrics record_context_compatibility_rejection failed: %s", e)
+
+    def record_context_metadata_missing(self, namespace: str) -> None:
+        try:
+            ns_data = self.get_or_create_namespace(namespace)
+            ns_data.record_context_metadata_missing()
+        except Exception as e:
+            logger.debug("Metrics record_context_metadata_missing failed: %s", e)
+
+    def record_context_fingerprint_mismatch(self, namespace: str) -> None:
+        try:
+            ns_data = self.get_or_create_namespace(namespace)
+            ns_data.record_context_fingerprint_mismatch()
+        except Exception as e:
+            logger.debug("Metrics record_context_fingerprint_mismatch failed: %s", e)
+
+    def record_cross_conversation_hit(self, namespace: str) -> None:
+        try:
+            ns_data = self.get_or_create_namespace(namespace)
+            ns_data.record_cross_conversation_hit()
+        except Exception as e:
+            logger.debug("Metrics record_cross_conversation_hit failed: %s", e)
+
+    def record_cross_conversation_miss(self, namespace: str) -> None:
+        try:
+            ns_data = self.get_or_create_namespace(namespace)
+            ns_data.record_cross_conversation_miss()
+        except Exception as e:
+            logger.debug("Metrics record_cross_conversation_miss failed: %s", e)
+
+    def record_private_scope_rejection(self, namespace: str) -> None:
+        try:
+            ns_data = self.get_or_create_namespace(namespace)
+            ns_data.record_private_scope_rejection()
+        except Exception as e:
+            logger.debug("Metrics record_private_scope_rejection failed: %s", e)
+
+    def record_tenant_shared_authorization_rejection(self, namespace: str) -> None:
+        try:
+            ns_data = self.get_or_create_namespace(namespace)
+            ns_data.record_tenant_shared_authorization_rejection()
+        except Exception as e:
+            logger.debug("Metrics record_tenant_shared_authorization_rejection failed: %s", e)
+
+    def record_semantic_admission_outcome(self, namespace: str, accepted: bool) -> None:
+        try:
+            ns_data = self.get_or_create_namespace(namespace)
+            ns_data.record_semantic_admission_outcome(accepted=accepted)
+        except Exception as e:
+            logger.debug("Metrics record_semantic_admission_outcome failed: %s", e)
+
+    def record_semantic_fallback(self, namespace: str) -> None:
+        try:
+            ns_data = self.get_or_create_namespace(namespace)
+            ns_data.record_semantic_fallback()
+        except Exception as e:
+            logger.debug("Metrics record_semantic_fallback failed: %s", e)
+
     def record_provider_attempt(self, namespace: str) -> None:
         try:
             ns_data = self.get_or_create_namespace(namespace)
@@ -1054,6 +1218,8 @@ class RuntimeMetricsCollector:
             "shadow_embedding_latency_ms": [],
             "shadow_retrieval_latency_ms": [],
             "shadow_policy_latency_ms": [],
+            "context_validation_latency_ms": [],
+            "compatibility_validation_latency_ms": [],
         }
 
         for snap in ns_snapshots.values():
@@ -1125,6 +1291,20 @@ class RuntimeMetricsCollector:
             agg_sem.admission_verified += s.admission_verified
             agg_sem.admission_rejected += s.admission_rejected
             agg_sem.admission_uncertain += s.admission_uncertain
+            agg_sem.context_independent_requests += s.context_independent_requests
+            agg_sem.context_dependent_requests += s.context_dependent_requests
+            agg_sem.context_uncertain_requests += s.context_uncertain_requests
+            agg_sem.context_compatibility_matches += s.context_compatibility_matches
+            agg_sem.context_compatibility_rejections += s.context_compatibility_rejections
+            agg_sem.context_metadata_missing += s.context_metadata_missing
+            agg_sem.context_fingerprint_mismatches += s.context_fingerprint_mismatches
+            agg_sem.cross_conversation_semantic_hits += s.cross_conversation_semantic_hits
+            agg_sem.cross_conversation_semantic_misses += s.cross_conversation_semantic_misses
+            agg_sem.private_scope_rejections += s.private_scope_rejections
+            agg_sem.tenant_shared_authorization_rejections += s.tenant_shared_authorization_rejections
+            agg_sem.semantic_admission_successes += s.semantic_admission_successes
+            agg_sem.semantic_admission_rejections += s.semantic_admission_rejections
+            agg_sem.semantic_fallbacks += s.semantic_fallbacks
 
             sh = snap.shadow
             agg_shadow.shadow_requests_total += sh.shadow_requests_total
@@ -1194,6 +1374,8 @@ class RuntimeMetricsCollector:
             shadow_embedding_latency_ms=compute_latency_summary(merged_samples["shadow_embedding_latency_ms"]),
             shadow_retrieval_latency_ms=compute_latency_summary(merged_samples["shadow_retrieval_latency_ms"]),
             shadow_policy_latency_ms=compute_latency_summary(merged_samples["shadow_policy_latency_ms"]),
+            context_validation_latency_ms=compute_latency_summary(merged_samples["context_validation_latency_ms"]),
+            compatibility_validation_latency_ms=compute_latency_summary(merged_samples["compatibility_validation_latency_ms"]),
         )
 
         aggregate_snapshot = NamespaceMetricsSnapshot(

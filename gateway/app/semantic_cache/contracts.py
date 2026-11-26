@@ -114,9 +114,164 @@ class CompatibilityReasonCode(str, Enum):
     PRINCIPAL_ISOLATION_MISMATCH = "PRINCIPAL_ISOLATION_MISMATCH"
     PRIVACY_POLICY_VIOLATION = "PRIVACY_POLICY_VIOLATION"
     EVIDENCE_SCOPE_MISMATCH = "EVIDENCE_SCOPE_MISMATCH"
+    # Stage 3.6: Context-aware semantic caching reason codes
+    CONTEXT_CLASS_MISMATCH = "CONTEXT_CLASS_MISMATCH"
+    CONTEXT_FINGERPRINT_MISMATCH = "CONTEXT_FINGERPRINT_MISMATCH"
+    CONTEXT_METADATA_MISSING = "CONTEXT_METADATA_MISSING"
+    CONTEXT_METADATA_INVALID = "CONTEXT_METADATA_INVALID"
+    ADMISSION_REJECTED_CONTEXT_UNCERTAIN = "ADMISSION_REJECTED_CONTEXT_UNCERTAIN"
+    ADMISSION_REJECTED_CONTEXT_PRIVACY = "ADMISSION_REJECTED_CONTEXT_PRIVACY"
+    TENANT_SHARED_AUTH_REJECTED = "TENANT_SHARED_AUTH_REJECTED"
 
     def __str__(self) -> str:
         return self.value
+
+
+CONTEXT_CONTRACT_SCHEMA_VERSION = 1
+SUPPORTED_CONTEXT_CONTRACT_VERSIONS = frozenset({CONTEXT_CONTRACT_SCHEMA_VERSION})
+CONTEXT_INDEPENDENT_SENTINEL = "ctx-v1:independent"
+ALLOWED_CONTEXT_DOMAINS = frozenset({
+    "system",
+    "schema",
+    "code",
+    "config",
+    "framework",
+    "constraints",
+    "decisions",
+    "assistant_artifact",
+})
+
+
+class ContextClass(str, Enum):
+    """Explicit classification of a request's dependency on conversation context."""
+    CONTEXT_INDEPENDENT = "CONTEXT_INDEPENDENT"
+    CONTEXT_DEPENDENT = "CONTEXT_DEPENDENT"
+    CONTEXT_UNCERTAIN = "CONTEXT_UNCERTAIN"
+
+    def __str__(self) -> str:
+        return self.value
+
+
+@dataclass(frozen=True)
+class ContextCompatibilityContract:
+    """
+    Versioned structural representation of conversation context dependencies without
+    persisting raw private conversation transcripts inside shared vector records.
+    """
+    context_version: int = CONTEXT_CONTRACT_SCHEMA_VERSION
+    context_class: ContextClass = ContextClass.CONTEXT_INDEPENDENT
+    context_fingerprint: Optional[str] = CONTEXT_INDEPENDENT_SENTINEL
+    material_domains: Tuple[str, ...] = ()
+    has_system_instructions: bool = False
+    history_turn_count: int = 0
+    source_conversation_present: bool = False
+    eligible_for_shared_reuse: bool = False
+    classification_reason: str = "STANDALONE_TECHNICAL"
+
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        if (
+            not isinstance(self.context_version, int)
+            or isinstance(self.context_version, bool)
+            or self.context_version not in SUPPORTED_CONTEXT_CONTRACT_VERSIONS
+        ):
+            raise ValueError(
+                f"Unsupported context_version: {self.context_version}. Expected {sorted(SUPPORTED_CONTEXT_CONTRACT_VERSIONS)}."
+            )
+        if not isinstance(self.context_class, ContextClass):
+            object.__setattr__(self, "context_class", ContextClass(self.context_class))
+
+        if not isinstance(self.has_system_instructions, bool):
+            raise ValueError("has_system_instructions must be bool.")
+        if not isinstance(self.source_conversation_present, bool):
+            raise ValueError("source_conversation_present must be bool.")
+        if not isinstance(self.eligible_for_shared_reuse, bool):
+            raise ValueError("eligible_for_shared_reuse must be bool.")
+        if (
+            not isinstance(self.history_turn_count, int)
+            or isinstance(self.history_turn_count, bool)
+            or self.history_turn_count < 0
+        ):
+            raise ValueError("history_turn_count must be a non-negative integer.")
+        if not isinstance(self.classification_reason, str) or not self.classification_reason.strip():
+            raise ValueError("classification_reason must be a non-empty string.")
+        object.__setattr__(self, "classification_reason", self.classification_reason.strip())
+
+        norm_domains = tuple(
+            sorted({str(d).strip().lower() for d in (self.material_domains or ()) if str(d).strip()})
+        )
+        for d in norm_domains:
+            if d not in ALLOWED_CONTEXT_DOMAINS:
+                raise ValueError(f"Unsupported context material domain '{d}'.")
+        object.__setattr__(self, "material_domains", norm_domains)
+
+        fp = self.context_fingerprint
+        if fp is not None:
+            if not isinstance(fp, str) or not fp.strip():
+                raise ValueError("context_fingerprint must be None or a non-empty string.")
+            fp = fp.strip().lower()
+            object.__setattr__(self, "context_fingerprint", fp)
+
+        if self.context_class == ContextClass.CONTEXT_INDEPENDENT:
+            if fp != CONTEXT_INDEPENDENT_SENTINEL:
+                raise ValueError(
+                    f"CONTEXT_INDEPENDENT requires context_fingerprint == '{CONTEXT_INDEPENDENT_SENTINEL}'."
+                )
+        elif self.context_class == ContextClass.CONTEXT_DEPENDENT:
+            if not fp or not fp.startswith("ctx-v1:") or len(fp) != len("ctx-v1:") + 64:
+                raise ValueError(
+                    "CONTEXT_DEPENDENT requires a canonical 64-hex 'ctx-v1:<sha256>' context_fingerprint."
+                )
+            hex_part = fp.split(":", 1)[1]
+            if any(ch not in "0123456789abcdef" for ch in hex_part):
+                raise ValueError("CONTEXT_DEPENDENT context_fingerprint contains non-hex characters.")
+        elif self.context_class == ContextClass.CONTEXT_UNCERTAIN:
+            if self.eligible_for_shared_reuse:
+                raise ValueError("CONTEXT_UNCERTAIN cannot set eligible_for_shared_reuse=True.")
+
+    def to_binding_dict(self) -> Dict[str, Any]:
+        """Minimal security-critical payload hashed into variant keys and HMAC evidence."""
+        return {
+            "context_version": self.context_version,
+            "context_class": self.context_class.value,
+            "context_fingerprint": self.context_fingerprint,
+            "material_domains": list(self.material_domains),
+            "has_system_instructions": self.has_system_instructions,
+            "eligible_for_shared_reuse": self.eligible_for_shared_reuse,
+        }
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            **self.to_binding_dict(),
+            "history_turn_count": self.history_turn_count,
+            "source_conversation_present": self.source_conversation_present,
+            "classification_reason": self.classification_reason,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ContextCompatibilityContract":
+        if not isinstance(data, dict):
+            raise ValueError(f"Expected dict for ContextCompatibilityContract, got {type(data).__name__}")
+        raw_ver = data.get("context_version")
+        raw_cls = data.get("context_class")
+        if raw_ver is None or raw_cls is None:
+            raise ValueError("ContextCompatibilityContract missing 'context_version' or 'context_class'.")
+        raw_domains = data.get("material_domains", ())
+        if not isinstance(raw_domains, (list, tuple)):
+            raise ValueError("ContextCompatibilityContract 'material_domains' must be a list or tuple.")
+        return cls(
+            context_version=raw_ver,
+            context_class=ContextClass(raw_cls),
+            context_fingerprint=data.get("context_fingerprint"),
+            material_domains=tuple(raw_domains),
+            has_system_instructions=bool(data.get("has_system_instructions", False)),
+            history_turn_count=int(data.get("history_turn_count", 0)),
+            source_conversation_present=bool(data.get("source_conversation_present", False)),
+            eligible_for_shared_reuse=bool(data.get("eligible_for_shared_reuse", False)),
+            classification_reason=str(data.get("classification_reason") or "CONTEXT_CLASSIFIED"),
+        )
 
 
 class VerificationStatus(str, Enum):
@@ -813,6 +968,7 @@ class SemanticCompatibilityMetadata:
     embedding_contract: EmbeddingContract
     indexed_at: Optional[str] = None
     compatibility_evidence: Optional[CompatibilityEvidence] = None
+    context_contract: Optional[ContextCompatibilityContract] = None
 
     def __post_init__(self) -> None:
         self.validate()
@@ -868,6 +1024,12 @@ class SemanticCompatibilityMetadata:
             raise ValueError(
                 f"compatibility_evidence must be CompatibilityEvidence or None, got {type(self.compatibility_evidence).__name__}"
             )
+        if self.context_contract is not None:
+            if not isinstance(self.context_contract, ContextCompatibilityContract):
+                raise ValueError(
+                    f"context_contract must be ContextCompatibilityContract or None, got {type(self.context_contract).__name__}"
+                )
+            self.context_contract.validate()
 
     def to_dict(self) -> Dict[str, Any]:
         """Serializes metadata to standard JSON-compatible dictionary."""
@@ -888,6 +1050,8 @@ class SemanticCompatibilityMetadata:
             "temperature": self.generation_contract.temperature,
             "max_tokens": self.generation_contract.max_tokens,
         }
+        if self.context_contract is not None:
+            payload["context_contract"] = self.context_contract.to_dict()
         return payload
 
     @classmethod
@@ -944,6 +1108,10 @@ class SemanticCompatibilityMetadata:
         if raw_ev is not None:
             compatibility_evidence = CompatibilityEvidence.from_dict(raw_ev)
 
+        context_contract: Optional[ContextCompatibilityContract] = None
+        if "context_contract" in data and data.get("context_contract") is not None:
+            context_contract = ContextCompatibilityContract.from_dict(data["context_contract"])
+
         return cls(
             schema_version=ver,
             extractor_version=ext_ver,
@@ -953,6 +1121,7 @@ class SemanticCompatibilityMetadata:
             embedding_contract=embedding_contract,
             indexed_at=data.get("indexed_at"),
             compatibility_evidence=compatibility_evidence,
+            context_contract=context_contract,
         )
 
 
@@ -1107,6 +1276,8 @@ def compute_variant_key(
         canonical_obj["visibility"] = ev_visibility.strip().lower()
     if isinstance(ev_owner, str) and ev_owner.strip():
         canonical_obj["owner_principal_id"] = ev_owner.strip()
+    if metadata.context_contract is not None:
+        canonical_obj["context_contract"] = metadata.context_contract.to_binding_dict()
     encoded = json.dumps(canonical_obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     digest = hashlib.sha256(encoded).hexdigest()
     return f"v{metadata.schema_version}:{digest}"
@@ -1118,6 +1289,7 @@ class EligibilityResult:
     eligible: bool
     reason: str
     metadata: Optional["SemanticCompatibilityMetadata"] = None
+    context_assessment: Optional[Any] = None
 
 
 @dataclass(frozen=True)
@@ -1137,6 +1309,7 @@ class SemanticHit:
     total_tokens: int = 0
     original_latency_ms: float = 0.0
     metadata: Dict[str, Any] = field(default_factory=dict)
+    is_cross_conversation: bool = False
     matched_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
@@ -1147,6 +1320,7 @@ class SemanticCacheStats:
     """Diagnostic observability counters for semantic cache operations."""
     lookups: int = 0
     hits: int = 0
+    coalesced_semantic_hits: int = 0
     misses: int = 0
     rejected_candidates: int = 0
     uncertain_candidates: int = 0
@@ -1170,11 +1344,26 @@ class SemanticCacheStats:
     principal_isolation_rejections: int = 0
     evidence_validation_rejections: int = 0
     upstream_fallbacks_after_miss: int = 0
+    context_independent_requests: int = 0
+    context_dependent_requests: int = 0
+    context_uncertain_requests: int = 0
+    context_compatibility_matches: int = 0
+    context_compatibility_rejections: int = 0
+    context_metadata_missing: int = 0
+    context_fingerprint_mismatches: int = 0
+    cross_conversation_semantic_hits: int = 0
+    cross_conversation_semantic_misses: int = 0
+    private_scope_rejections: int = 0
+    tenant_shared_authorization_rejections: int = 0
+    semantic_admission_successes: int = 0
+    semantic_admission_rejections: int = 0
+    semantic_fallbacks: int = 0
 
     def to_dict(self) -> Dict[str, int]:
         return {
             "lookups": self.lookups,
             "hits": self.hits,
+            "coalesced_semantic_hits": self.coalesced_semantic_hits,
             "misses": self.misses,
             "rejected_candidates": self.rejected_candidates,
             "uncertain_candidates": self.uncertain_candidates,
@@ -1198,4 +1387,18 @@ class SemanticCacheStats:
             "principal_isolation_rejections": self.principal_isolation_rejections,
             "evidence_validation_rejections": self.evidence_validation_rejections,
             "upstream_fallbacks_after_miss": self.upstream_fallbacks_after_miss,
+            "context_independent_requests": self.context_independent_requests,
+            "context_dependent_requests": self.context_dependent_requests,
+            "context_uncertain_requests": self.context_uncertain_requests,
+            "context_compatibility_matches": self.context_compatibility_matches,
+            "context_compatibility_rejections": self.context_compatibility_rejections,
+            "context_metadata_missing": self.context_metadata_missing,
+            "context_fingerprint_mismatches": self.context_fingerprint_mismatches,
+            "cross_conversation_semantic_hits": self.cross_conversation_semantic_hits,
+            "cross_conversation_semantic_misses": self.cross_conversation_semantic_misses,
+            "private_scope_rejections": self.private_scope_rejections,
+            "tenant_shared_authorization_rejections": self.tenant_shared_authorization_rejections,
+            "semantic_admission_successes": self.semantic_admission_successes,
+            "semantic_admission_rejections": self.semantic_admission_rejections,
+            "semantic_fallbacks": self.semantic_fallbacks,
         }

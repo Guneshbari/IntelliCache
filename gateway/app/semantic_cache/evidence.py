@@ -116,6 +116,9 @@ def compute_evidence_binding_digest(
         payload["visibility"] = visibility.strip().lower()
     if owner_principal_id is not None:
         payload["owner_principal_id"] = owner_principal_id.strip()
+    ctx_contract = getattr(metadata, "context_contract", None)
+    if ctx_contract is not None:
+        payload["context_contract"] = ctx_contract.to_binding_dict()
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
@@ -236,6 +239,15 @@ class EvidenceAuthority:
             raise ValueError("Cannot mint response_verified evidence for a truncated response.")
         if verification.unverified_constraints:
             raise ValueError("Cannot mint response_verified evidence when unverified constraints remain.")
+
+        ctx_contract = getattr(metadata, "context_contract", None)
+        if ctx_contract is not None:
+            from .contracts import ContextClass
+
+            if ctx_contract.context_class == ContextClass.CONTEXT_UNCERTAIN:
+                raise ValueError("Cannot mint verified evidence for CONTEXT_UNCERTAIN requests.")
+            if ctx_contract.context_class == ContextClass.CONTEXT_DEPENDENT and context_independent:
+                raise ValueError("Cannot mark CONTEXT_DEPENDENT evidence as context_independent=True.")
 
         bound_vis: Optional[str] = None
         bound_owner: Optional[str] = None

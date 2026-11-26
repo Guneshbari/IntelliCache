@@ -115,6 +115,11 @@ _CLIENT_FORBIDDEN_EVIDENCE_FIELDS = frozenset({
     "allow_shared_reads",
     "client_token",
     "tenant_id",
+    "context_fingerprint",
+    "context_class",
+    "context_version",
+    "context_contract",
+    "context_metadata",
 })
 
 _SPOOFED_IGNORED_BODY_KEYS = (b'"namespace"', b'"cache_namespace"', b'"tenant"')
