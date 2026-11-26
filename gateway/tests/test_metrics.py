@@ -114,18 +114,21 @@ class TestRuntimeMetricsCollector(unittest.TestCase):
         self.collector.record_exact_hit(ns, total_tokens=100)
         self.collector.record_exact_hit(ns, total_tokens=150)
         self.collector.record_semantic_hit(ns, total_tokens=200)
-        self.collector.record_coalesced_success(ns, total_tokens=300)
+        self.collector.record_coalesced_success(ns, total_tokens=300, cache_type="exact")
+        self.collector.record_coalesced_success(ns, total_tokens=120, cache_type="semantic")
 
         snap = self.collector.get_namespace_snapshot(ns)
         prov = snap.provider_and_savings
 
         self.assertEqual(snap.request_and_cache.exact_cache_hits, 2)
         self.assertEqual(snap.request_and_cache.semantic_hits, 1)
-        self.assertEqual(snap.request_and_cache.coalesced_successes, 1)
-        # Avoided = 2 + 1 + 1 = 4
-        self.assertEqual(prov.provider_calls_avoided, 4)
-        # Tokens = 100 + 150 + 200 + 300 = 750
-        self.assertEqual(prov.total_tokens_saved, 750)
+        self.assertEqual(snap.request_and_cache.coalesced_successes, 2)
+        self.assertEqual(snap.request_and_cache.coalesced_semantic_hits, 1)
+        self.assertEqual(snap.semantic.coalesced_semantic_hits, 1)
+        # Avoided = 2 + 1 + 2 = 5
+        self.assertEqual(prov.provider_calls_avoided, 5)
+        # Tokens = 100 + 150 + 200 + 300 + 120 = 870
+        self.assertEqual(prov.total_tokens_saved, 870)
 
     def test_admin_snapshot_aggregation(self):
         """Admin snapshot aggregates totals across all namespaces and includes per-namespace details."""

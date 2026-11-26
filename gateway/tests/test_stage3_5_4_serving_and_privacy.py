@@ -610,8 +610,10 @@ class TestStage354ConfigAndControl(unittest.IsolatedAsyncioTestCase):
 
         snap = collector.get_namespace_snapshot("ns_post_cp2")
         self.assertEqual(snap.semantic.semantic_hits, 1)
+        self.assertEqual(snap.semantic.coalesced_semantic_hits, 1)
         self.assertEqual(snap.request_and_cache.coalesced_joins, 1)
         self.assertEqual(snap.request_and_cache.coalesced_successes, 1)
+        self.assertEqual(snap.request_and_cache.coalesced_semantic_hits, 1)
         self.assertEqual(snap.provider_and_savings.provider_calls_avoided, 2)
 
         # Very next paraphrase request MUST immediately see disabled runtime state and fall back

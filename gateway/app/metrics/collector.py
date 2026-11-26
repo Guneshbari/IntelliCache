@@ -93,6 +93,7 @@ class _NamespaceData:
         self.streaming_requests = 0
         self.coalesced_joins = 0
         self.coalesced_successes = 0
+        self.coalesced_semantic_hits = 0
         self.coalesced_failures = 0
         self.request_cancellations = 0
 
@@ -217,9 +218,12 @@ class _NamespaceData:
         prompt_tokens: int = 0,
         completion_tokens: int = 0,
         total_tokens: int = 0,
+        cache_type: str = "exact",
     ) -> None:
         with self.lock:
             self.coalesced_successes += 1
+            if str(cache_type).strip().lower() == "semantic":
+                self.coalesced_semantic_hits += 1
             self.provider_calls_avoided += 1
             self.prompt_tokens_saved += max(0, prompt_tokens)
             self.completion_tokens_saved += max(0, completion_tokens)
@@ -483,6 +487,7 @@ class _NamespaceData:
                 streaming_requests=self.streaming_requests,
                 coalesced_joins=self.coalesced_joins,
                 coalesced_successes=self.coalesced_successes,
+                coalesced_semantic_hits=self.coalesced_semantic_hits,
                 coalesced_failures=self.coalesced_failures,
                 request_cancellations=self.request_cancellations,
             )
@@ -504,6 +509,7 @@ class _NamespaceData:
                 semantic_eligibility_rejections=self.semantic_eligibility_rejections,
                 semantic_lookup_attempts=self.semantic_lookups,
                 semantic_hits=self.semantic_hits,
+                coalesced_semantic_hits=self.coalesced_semantic_hits,
                 semantic_misses=self.semantic_misses,
                 ambiguous_candidate_rejections=self.ambiguous_candidate_rejections,
                 incompatible_candidate_rejections=self.incompatible_candidate_rejections,
@@ -703,6 +709,7 @@ class RuntimeMetricsCollector:
         prompt_tokens: int = 0,
         completion_tokens: int = 0,
         total_tokens: int = 0,
+        cache_type: str = "exact",
     ) -> None:
         try:
             ns_data = self.get_or_create_namespace(namespace)
@@ -710,6 +717,7 @@ class RuntimeMetricsCollector:
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 total_tokens=total_tokens,
+                cache_type=cache_type,
             )
         except Exception as e:
             logger.debug("Metrics record_coalesced_success failed: %s", e)
@@ -1067,6 +1075,7 @@ class RuntimeMetricsCollector:
             agg_req.streaming_requests += r.streaming_requests
             agg_req.coalesced_joins += r.coalesced_joins
             agg_req.coalesced_successes += r.coalesced_successes
+            agg_req.coalesced_semantic_hits += r.coalesced_semantic_hits
             agg_req.coalesced_failures += r.coalesced_failures
             agg_req.request_cancellations += r.request_cancellations
 
@@ -1086,6 +1095,7 @@ class RuntimeMetricsCollector:
             agg_sem.semantic_eligibility_rejections += s.semantic_eligibility_rejections
             agg_sem.semantic_lookup_attempts += s.semantic_lookup_attempts
             agg_sem.semantic_hits += s.semantic_hits
+            agg_sem.coalesced_semantic_hits += s.coalesced_semantic_hits
             agg_sem.semantic_misses += s.semantic_misses
             agg_sem.ambiguous_candidate_rejections += s.ambiguous_candidate_rejections
             agg_sem.incompatible_candidate_rejections += s.incompatible_candidate_rejections

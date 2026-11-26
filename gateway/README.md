@@ -291,7 +291,7 @@ EMBEDDING_TIMEOUT_SECONDS=30.0
 - **Admin Endpoint Protection (`POST /cache/clear`, `GET/POST /admin/semantic-cache/serving`)**: Administrative operations require `ADMIN_API_TOKEN` to be set on the server. Clients must supply the token via `X-Admin-Token: <token>` or `Authorization: Bearer <token>`. Requests are validated using constant-time comparison (`hmac.compare_digest`). If unset or invalid, the endpoint responds with HTTP 403 Forbidden.
 - **Controlled Semantic Serving Kill Switch (Stage 3.5.4)**: Startup wiring (`SEMANTIC_CACHE_ENABLED=false` default) is decoupled from runtime serving (`SEMANTIC_CACHE_SERVING_ENABLED=false` default). Semantic cache hits are served **only** when BOTH startup infrastructure and the server-side `SemanticServingController` permit serving, checked pre-lookup (Checkpoint 1) and immediately pre-delivery/pre-commit (Checkpoint 2). Missing, malformed, or failing runtime state fails closed (falls back to upstream generation). Operators can inspect or toggle global or per-namespace serving atomically via `GET /admin/semantic-cache/serving` and `POST /admin/semantic-cache/serving` (`{"enabled": bool, "namespace": optional, "clear_namespace_override": bool, "reason": optional}`).
   - **Single-Process Limitation (P1)**: `SemanticServingController` is process-local (in-memory singleton). Runtime administration is supported only for a **single gateway worker process**: toggling via `/admin/semantic-cache/serving` on Worker A does **not** disable Worker B in multi-worker deployments, and gateway restarts restore `SEMANTIC_CACHE_SERVING_ENABLED` (`false` by default) rather than persisting runtime changes. Keep `SEMANTIC_CACHE_SERVING_ENABLED=false` in production until shared runtime-control persistence is introduced.
-  - **Delivery Boundary After Checkpoint 2 & Coalesced Followers (P2)**: Checkpoint 2 is non-atomic with respect to downstream return delivery—once a leader request passes Checkpoint 2, it is authorized to complete delivery (including metrics recording and resolving waiting followers) even if the runtime flag is subsequently disabled before return returns. Coalesced SingleFlight followers receive the leader's validated result (`cache_type="semantic"`) without an independent Checkpoint 2 check and are accounted under `coalesced_joins` / `coalesced_successes` (avoiding upstream calls without double-counting `semantic_hits`).
+  - **Delivery Boundary After Checkpoint 2 & Coalesced Followers (P2)**: Checkpoint 2 is non-atomic with respect to downstream return delivery—once a leader request passes Checkpoint 2, it is authorized to complete delivery (including metrics recording and resolving waiting followers) even if the runtime flag is subsequently disabled before return returns. Coalesced SingleFlight followers receive the leader's validated result (`cache_type="semantic"`) without an independent Checkpoint 2 check and are accounted under `coalesced_joins` / `coalesced_successes` / `coalesced_semantic_hits` (avoiding upstream calls without double-counting `semantic_hits`).
 - **Per-Principal Privacy Isolation (`private` vs `tenant_shared`)**:
   - Client identities are derived strictly on the server as `principal_id = HMAC-SHA256(PRINCIPAL_IDENTITY_SECRET, token)` when both token auth and `PRINCIPAL_IDENTITY_SECRET` (or fallback `CONVERSATION_IDENTITY_SECRET`) are configured. Plaintext tokens are never stored or returned.
   - **Credential-Scoped Identity Limitation (P2)**: At Stage 3.5.4, `principal_id` represents **credential identity**, not a decoupled user identity. Issuing two API tokens to the same user produces two distinct `principal_id`s, and rotating a token changes its `principal_id` (making earlier token-scoped `private` entries unreachable under the rotated token, fail-safe against cross-credential leakage until Stage 5 adds stable server-assigned principal identifiers).
@@ -698,8 +698,17 @@ python -m unittest tests/test_evaluation.py    # Semantic evaluation, threshold 
 python -m unittest tests/test_stage3_5_2_compatibility.py # Attribute-aware compatibility policy & validator hardening
 python -m unittest tests/test_stage3_5_3_admission_and_coexistence.py # Response verification, evidence HMAC, variant coexistence
 python -m unittest tests/test_stage3_5_4_serving_and_privacy.py # Runtime kill switch, per-principal privacy isolation & HTTP scenarios
+python -m unittest tests/test_stage3_5_5_http_operational_evaluation.py # Stage 3.5.5 local-first HTTP FastEmbed + PostgreSQL operational evaluation
 python -m unittest tests/test_config.py        # Configuration tests
 python -m unittest tests/test_main.py          # Application integration tests
+```
+
+To run the reproducible Stage 3.5.5 local-first HTTP operational evaluation against live FastEmbed (`BAAI/bge-small-en-v1.5`) and PostgreSQL + pgvector (`384-d`):
+
+```bash
+cd gateway
+TEST_DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:5433/intellicache_fastembed_test" \
+    .venv/bin/python scripts/evaluate_stage3_5_5_operational.py --iterations 25
 ```
 
 ---

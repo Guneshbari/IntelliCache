@@ -301,12 +301,24 @@ jobs:
         run: |
           python -m unittest -v tests.test_semantic_pipeline_evaluation
 
-      - name: Upload Stage 3.2.5 evaluation reports
+      - name: Run Stage 3.5.5 FastEmbed + PostgreSQL HTTP operational verification
+        working-directory: gateway
+        env:
+          RUN_FASTEMBED_PGVECTOR_TEST: '1'
+          REQUIRE_FASTEMBED_PGVECTOR_TEST: '1'
+          TEST_DATABASE_URL: 'postgresql://postgres:postgres@localhost:5432/intellicache_fastembed_test'
+        run: |
+          python -m unittest -v tests.test_stage3_5_5_http_operational_evaluation
+          python scripts/evaluate_stage3_5_5_operational.py --iterations 20 --output-dir /tmp/stage3_5_5_eval
+
+      - name: Upload Stage 3.2.5 and 3.5.5 evaluation reports
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: stage-3-2-5-evaluation-reports
+          name: stage-3-5-5-evaluation-reports
           path: |
             gateway/evaluation/reports/stage3_2_5_end_to_end_evaluation.json
             gateway/evaluation/reports/stage3_2_5_end_to_end_evaluation.md
+            /tmp/stage3_5_5_eval/stage3_5_5_operational_evaluation.json
+            /tmp/stage3_5_5_eval/stage3_5_5_operational_evaluation.md
           retention-days: 14

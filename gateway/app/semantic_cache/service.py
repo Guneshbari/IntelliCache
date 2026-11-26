@@ -743,6 +743,7 @@ class SemanticCacheService(BaseSemanticCache):
         return {
             "lookups": snap.request_and_cache.semantic_lookups,
             "hits": s.semantic_hits,
+            "coalesced_semantic_hits": s.coalesced_semantic_hits,
             "misses": s.semantic_misses,
             "rejected_candidates": s.incompatible_candidate_rejections + s.uncertain_candidate_rejections,
             "uncertain_candidates": s.uncertain_candidate_rejections,

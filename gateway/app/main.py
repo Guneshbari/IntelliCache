@@ -599,6 +599,7 @@ def create_app() -> FastAPI:
             "effective_enabled": False,
             "lookups": 0,
             "hits": 0,
+            "coalesced_semantic_hits": 0,
             "misses": 0,
             "rejected_candidates": 0,
             "ambiguous_candidates": 0,

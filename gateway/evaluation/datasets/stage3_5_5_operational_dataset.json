@@ -1,0 +1,223 @@
+{
+  "dataset_version": "3.5.5",
+  "description": "Stage 3.5.5 local-first HTTP semantic-serving evaluation dataset aligned with production defaults (threshold=0.92, min_margin=0.03, FastEmbed BAAI/bge-small-en-v1.5 384-d).",
+  "metadata": {
+    "embedding_model": "BAAI/bge-small-en-v1.5",
+    "vector_dimensions": 384,
+    "production_defaults": {
+      "semantic_cache_enabled": false,
+      "semantic_cache_serving_enabled": false,
+      "shadow_evaluation_enabled": false,
+      "default_visibility": "private",
+      "min_similarity": 0.92,
+      "min_margin": 0.03,
+      "top_k": 5,
+      "max_retrieval_candidates": 25
+    }
+  },
+  "positive": [
+    {
+      "id": "pos_python_reverse_str",
+      "category": "paraphrase_reuse",
+      "seed_prompt": "How do I reverse a string in Python?",
+      "seed_response": "```python\ndef reverse_string(text: str) -> str:\n    return text[::-1]\n```",
+      "exact_repeat_prompt": "How do I reverse a string in Python?",
+      "paraphrases": [
+        "What is the Python syntax to reverse a string?",
+        "Reverse a string in Python"
+      ],
+      "expected_decision": "compatible",
+      "expected_cache_type_paraphrase": "semantic"
+    },
+    {
+      "id": "pos_python_sort_list",
+      "category": "paraphrase_reuse",
+      "seed_prompt": "How do I sort a list in Python?",
+      "seed_response": "```python\ndef sort_list(items: list) -> list:\n    return sorted(items)\n```",
+      "exact_repeat_prompt": "How do I sort a list in Python?",
+      "paraphrases": [
+        "How to sort a Python list?"
+      ],
+      "expected_decision": "compatible",
+      "expected_cache_type_paraphrase": "semantic"
+    },
+    {
+      "id": "pos_python_merge_dicts",
+      "category": "paraphrase_reuse",
+      "seed_prompt": "How do I merge two dictionaries in Python?",
+      "seed_response": "```python\ndef merge_dicts(a: dict, b: dict) -> dict:\n    return {**a, **b}\n```",
+      "exact_repeat_prompt": "How do I merge two dictionaries in Python?",
+      "paraphrases": [
+        "How to merge two dicts in Python?"
+      ],
+      "expected_decision": "compatible",
+      "expected_cache_type_paraphrase": "semantic"
+    },
+    {
+      "id": "pos_python_json_id_name",
+      "category": "structured_json_reuse",
+      "seed_prompt": "Write a Python helper to serialize a dict and output JSON with required keys: id, name",
+      "seed_response": "{\"id\": 1, \"name\": \"alice\", \"code\": \"import json; json.dumps({'id': 1, 'name': 'alice'})\"}",
+      "exact_repeat_prompt": "Write a Python helper to serialize a dict and output JSON with required keys: id, name",
+      "paraphrases": [
+        "Create a Python helper to serialize a dictionary and output JSON with required keys: id, name"
+      ],
+      "expected_decision": "compatible",
+      "expected_cache_type_paraphrase": "semantic"
+    }
+  ],
+  "negative": [
+    {
+      "id": "neg_language_python_vs_java",
+      "category": "language_mismatch",
+      "seed_prompt": "How do I sort a list in Python?",
+      "seed_response": "```python\ndef sort_list(items: list) -> list:\n    return sorted(items)\n```",
+      "query_prompt": "How do I sort a list in Java?",
+      "query_response": "```java\nimport java.util.Collections;\nimport java.util.List;\npublic static <T extends Comparable<? super T>> List<T> sortList(List<T> items) { Collections.sort(items); return items; }\n```",
+      "expected_cached": false,
+      "expected_cache_type": "none",
+      "expected_rejection_reason": "LANGUAGE_MISMATCH"
+    },
+    {
+      "id": "neg_framework_react18_vs_react19",
+      "category": "framework_version_mismatch",
+      "seed_prompt": "How do I fetch data with useEffect in React 18 using JavaScript?",
+      "seed_response": "```javascript\nimport { useEffect, useState } from 'react';\nexport function useData(url) {\n  const [data, setData] = useState(null);\n  useEffect(() => { fetch(url).then(r => r.json()).then(setData); }, [url]);\n  return data;\n}\n```",
+      "query_prompt": "How do I fetch data with useEffect in React 19 using JavaScript?",
+      "query_response": "```javascript\nimport { useEffect, useState } from 'react';\nexport function useDataReact19(url) {\n  const [data, setData] = useState(null);\n  useEffect(() => { fetch(url).then(r => r.json()).then(setData); }, [url]);\n  return data;\n}\n```",
+      "expected_cached": false,
+      "expected_cache_type": "none",
+      "expected_rejection_reason": "FRAMEWORK_VERSION_MISMATCH"
+    },
+    {
+      "id": "neg_output_format_json_vs_markdown",
+      "category": "output_format_mismatch",
+      "seed_prompt": "Write a Python helper to serialize a dict and output JSON",
+      "seed_response": "{\"status\": \"ok\", \"helper\": \"import json; json.dumps(payload)\"}",
+      "query_prompt": "Write a Python helper to serialize a dict and output Markdown",
+      "query_response": "```python\nimport json\n\ndef to_json_markdown(data: dict) -> str:\n    return f\"# Output\\n\\n```json\\n{json.dumps(data)}\\n```\"\n```",
+      "expected_cached": false,
+      "expected_cache_type": "none",
+      "expected_rejection_reason": "OUTPUT_FORMAT_MISMATCH"
+    },
+    {
+      "id": "neg_constraint_keys_id_name_vs_id_email",
+      "category": "output_constraint_mismatch",
+      "seed_prompt": "Write a Python helper to serialize a dict and output JSON with required keys: id, name",
+      "seed_response": "{\"id\": 1, \"name\": \"alice\"}",
+      "query_prompt": "Write a Python helper to serialize a dict and output JSON with required keys: id, email",
+      "query_response": "{\"id\": 1, \"email\": \"alice@example.com\"}",
+      "expected_cached": false,
+      "expected_cache_type": "none",
+      "expected_rejection_reason": "OUTPUT_CONSTRAINT_MISMATCH"
+    },
+    {
+      "id": "neg_low_similarity_unrelated",
+      "category": "cross_domain_miss",
+      "seed_prompt": "How do I reverse a string in Python?",
+      "seed_response": "```python\ndef reverse_string(text: str) -> str:\n    return text[::-1]\n```",
+      "query_prompt": "How do I configure connection pooling in PostgreSQL 16 with asyncpg?",
+      "query_response": "```python\nimport asyncpg\npool = await asyncpg.create_pool(dsn, min_size=2, max_size=10)\n```",
+      "expected_cached": false,
+      "expected_cache_type": "none",
+      "expected_rejection_reason": "LANGUAGE_MISMATCH"
+    },
+    {
+      "id": "neg_same_language_threshold_miss",
+      "category": "threshold_miss",
+      "seed_prompt": "How do I reverse a string in Python?",
+      "seed_response": "```python\ndef reverse_string(text: str) -> str:\n    return text[::-1]\n```",
+      "query_prompt": "How do I compute a SHA-256 hex digest in Python?",
+      "query_response": "```python\nimport hashlib\ndef sha256_hex(text: str) -> str:\n    return hashlib.sha256(text.encode('utf-8')).hexdigest()\n```",
+      "expected_cached": false,
+      "expected_cache_type": "none",
+      "expected_rejection_reason": "THRESHOLD_MISS"
+    },
+    {
+      "id": "neg_ambiguous_close_candidates",
+      "category": "ambiguity_margin_rejection",
+      "seed_candidates": [
+        {
+          "prompt": "Show how to check if a file exists in Python using os.path",
+          "response": "```python\nimport os\nexists = os.path.exists('data.txt')\n```"
+        },
+        {
+          "prompt": "Show how to check if a file exists in Python using pathlib",
+          "response": "```python\nfrom pathlib import Path\nexists = Path('data.txt').exists()\n```"
+        }
+      ],
+      "query_prompt": "How do I check if a file exists in Python?",
+      "query_response": "```python\nfrom pathlib import Path\nprint(Path('data.txt').is_file())\n```",
+      "expected_cached": false,
+      "expected_cache_type": "none",
+      "expected_rejection_reason": "AMBIGUOUS"
+    }
+  ],
+  "privacy": [
+    {
+      "id": "priv_same_tenant_private_isolation",
+      "seed_actor": {"token": "tok_alice", "namespace": "team_alpha", "visibility": "private", "allow_shared_reads": false},
+      "probe_actor": {"token": "tok_bob", "namespace": "team_alpha", "visibility": "private", "allow_shared_reads": false},
+      "seed_prompt": "How do I reverse a string in Python?",
+      "exact_probe_prompt": "How do I reverse a string in Python?",
+      "semantic_seed_prompt": "How do I sort a list in Python?",
+      "semantic_probe_prompt": "How to sort a Python list?",
+      "expected_hit_for_probe": false
+    },
+    {
+      "id": "priv_same_tenant_shared_and_opt_in",
+      "seed_actor": {"token": "tok_carol", "namespace": "team_beta", "visibility": "tenant_shared", "allow_shared_reads": true},
+      "shared_reader": {"token": "tok_dave", "namespace": "team_beta", "visibility": "tenant_shared", "allow_shared_reads": true},
+      "opt_in_private_reader": {"token": "tok_erin", "namespace": "team_beta", "visibility": "private", "allow_shared_reads": true},
+      "seed_prompt": "How do I reverse a string in Python?",
+      "semantic_probe_prompt": "What is the Python syntax to reverse a string?",
+      "private_seed_prompt_by_opt_in": "How do I sort a list in Python?",
+      "expected_shared_hit": true,
+      "expected_opt_in_hit": true,
+      "expected_shared_reading_private_hit": false
+    },
+    {
+      "id": "priv_cross_tenant_isolation",
+      "seed_actor": {"token": "tok_carol", "namespace": "team_beta", "visibility": "tenant_shared", "allow_shared_reads": true},
+      "probe_actor": {"token": "tok_frank", "namespace": "team_gamma", "visibility": "tenant_shared", "allow_shared_reads": true},
+      "seed_prompt": "How do I reverse a string in Python?",
+      "semantic_probe_prompt": "What is the Python syntax to reverse a string?",
+      "expected_hit_for_probe": false
+    }
+  ],
+  "control": [
+    {
+      "id": "ctrl_startup_runtime_matrix",
+      "cases": [
+        {"startup_enabled": false, "runtime_enabled": false, "expected_semantic_served": false},
+        {"startup_enabled": false, "runtime_enabled": true, "expected_semantic_served": false},
+        {"startup_enabled": true, "runtime_enabled": false, "expected_semantic_served": false},
+        {"startup_enabled": true, "runtime_enabled": true, "expected_semantic_served": true}
+      ]
+    },
+    {
+      "id": "ctrl_live_kill_switch_and_namespace_override",
+      "seed_prompt": "How do I reverse a string in Python?",
+      "paraphrase_prompt": "What is the Python syntax to reverse a string?",
+      "exact_prompt": "How do I reverse a string in Python?"
+    }
+  ],
+  "failure": [
+    {
+      "id": "fail_embedding_fallback",
+      "seed_prompt": "How do I reverse a string in Python?",
+      "paraphrase_prompt": "What is the Python syntax to reverse a string?",
+      "fault_mode": "embedding_error",
+      "expected_status_code": 200,
+      "expected_cached": false
+    },
+    {
+      "id": "fail_vector_store_fallback",
+      "seed_prompt": "How do I reverse a string in Python?",
+      "paraphrase_prompt": "What is the Python syntax to reverse a string?",
+      "fault_mode": "vector_store_error",
+      "expected_status_code": 200,
+      "expected_cached": false
+    }
+  ]
+}

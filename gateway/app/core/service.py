@@ -305,17 +305,19 @@ class IntelliCacheCore:
                 # Record successful reuse for tokens; followers receive the leader's result
                 # (including semantic hits with cache_type="semantic") without an independent
                 # Checkpoint 2 check and are tracked via coalesced_joins/coalesced_successes
-                # rather than incrementing semantic_hits twice.
+                # (and coalesced_semantic_hits when riding a semantic leader) rather than
+                # incrementing semantic_hits twice.
+                cache_type = cached_entry.metadata.get("cache_type", "exact")
                 await self.cache.record_coalesced_success(cached_entry)
                 collector.record_coalesced_success(
                     ns,
                     prompt_tokens=p_tok,
                     completion_tokens=c_tok,
                     total_tokens=t_tok,
+                    cache_type=cache_type,
                 )
                 collector.record_latency(ns, "total_request_latency_ms", total_latency_ms)
 
-                cache_type = cached_entry.metadata.get("cache_type", "exact")
                 return GenerationResult(
                     text=cached_entry.response,
                     model=cached_entry.model,

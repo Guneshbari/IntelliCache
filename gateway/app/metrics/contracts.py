@@ -19,6 +19,7 @@ class RequestAndCacheMetrics(BaseModel):
     semantic_eligibility_rejections: int = 0
     semantic_lookups: int = 0
     semantic_hits: int = 0
+    coalesced_semantic_hits: int = 0
     semantic_misses: int = 0
     provider_generation_attempts: int = 0
     provider_generation_successes: int = 0
@@ -27,6 +28,7 @@ class RequestAndCacheMetrics(BaseModel):
     streaming_requests: int = 0
     coalesced_joins: int = 0
     coalesced_successes: int = 0
+    coalesced_semantic_hits: int = 0
     coalesced_failures: int = 0
     request_cancellations: int = 0
 
@@ -52,6 +54,7 @@ class SemanticMetrics(BaseModel):
     semantic_runtime_disabled_skips: int = 0
     semantic_candidates_retrieved: int = 0
     semantic_hits: int = 0
+    coalesced_semantic_hits: int = 0
     semantic_misses: int = 0
     ambiguous_candidate_rejections: int = 0
     incompatible_candidate_rejections: int = 0
