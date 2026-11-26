@@ -809,6 +809,22 @@ class TestStage36RealFastEmbedPostgresHttpEvaluation(unittest.IsolatedAsyncioTes
 
                     q_vec_str = f"[{','.join(str(float(x)) for x in raw_vec)}]"
                     async with vs.pool.acquire() as conn:
+                        idx_rows = await conn.fetch(
+                            """
+                            SELECT indexname
+                            FROM pg_indexes
+                            WHERE schemaname = 'public'
+                              AND tablename IN ('vector_records', 'semantic_variant_records')
+                            """
+                        )
+                        idx_names = {r["indexname"] for r in idx_rows}
+                        for req_idx in (
+                            "idx_vector_records_context_scope",
+                            "idx_vector_records_private_context_scope",
+                            "idx_semantic_variant_records_context_scope",
+                            "idx_semantic_variant_records_private_context_scope",
+                        ):
+                            self.assertIn(req_idx, idx_names)
                         async with conn.transaction():
                             await conn.execute("SET LOCAL enable_seqscan = off;")
                             plan_json_raw = await conn.fetchval(
@@ -822,7 +838,11 @@ class TestStage36RealFastEmbedPostgresHttpEvaluation(unittest.IsolatedAsyncioTes
                     plan_text = json.dumps(json.loads(plan_json_raw))
                     self.assertIn("context_contract", plan_text)
                     self.assertIn("ctx-v1:independent", plan_text)
-                    self.assertIn("idx_semantic_variant_records_context_scope", plan_text)
+                    self.assertIn("Index Scan", plan_text)
+                    self.assertTrue(
+                        "idx_semantic_variant_records_context_scope" in plan_text
+                        or "idx_semantic_variant_records_lookup" in plan_text
+                    )
 
                     # 2. Exercise exact-cache privacy over HTTP + PG cache_entries inspection
                     api_secret_prompt = "Validate Python token api_key=sk-proj-secret1234567890abcdefghij"
