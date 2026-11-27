@@ -169,7 +169,7 @@ jobs:
         env:
           TEST_DATABASE_URL: 'postgresql://postgres:postgres@localhost:5432/intellicache_test'
         run: |
-          python -m unittest tests.test_multi_client tests.test_vector_store tests.test_semantic_cache tests.test_conversations
+          python -m unittest tests.test_multi_client tests.test_vector_store tests.test_semantic_cache tests.test_conversations tests.test_stage3_7_1_closure
 
       - name: Run Full Gateway Regression Suite with Live PostgreSQL
         working-directory: gateway
@@ -301,7 +301,7 @@ jobs:
         run: |
           python -m unittest -v tests.test_semantic_pipeline_evaluation
 
-      - name: Run Stage 3.5.5, 3.6, and 3.7 FastEmbed + PostgreSQL HTTP verification
+      - name: Run Stage 3.5.5, 3.6, 3.7, and 3.7.1 FastEmbed + PostgreSQL HTTP verification
         working-directory: gateway
         env:
           RUN_FASTEMBED_PGVECTOR_TEST: '1'
@@ -314,8 +314,10 @@ jobs:
           python scripts/evaluate_stage3_6_context_cache.py --test-database-url 'postgresql://postgres:postgres@localhost:5432/intellicache_fastembed_test' --output-dir /tmp/stage3_6_eval
           python -m unittest -v tests.test_stage3_7_workload
           python scripts/evaluate_stage3_7_workload.py --test-database-url 'postgresql://postgres:postgres@localhost:5432/intellicache_fastembed_test' --scalability-sizes 100 1000 --perf-iterations 10 --output-dir /tmp/stage3_7_eval
+          python -m unittest -v tests.test_stage3_7_1_closure
+          python scripts/evaluate_stage3_7_1_closure.py --test-database-url 'postgresql://postgres:postgres@localhost:5432/intellicache_fastembed_test' --output-dir /tmp/stage3_7_1_eval --adaptive-iterations 15
 
-      - name: Upload Stage 3.2.5, 3.5.5, 3.6, and 3.7 evaluation reports
+      - name: Upload Stage 3.2.5, 3.5.5, 3.6, 3.7, and 3.7.1 evaluation reports
         uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -329,4 +331,6 @@ jobs:
             /tmp/stage3_6_eval/stage3_6_context_evaluation.md
             /tmp/stage3_7_eval/stage3_7_evaluation.json
             /tmp/stage3_7_eval/stage3_7_evaluation.md
+            /tmp/stage3_7_1_eval/stage3_7_1_closure.json
+            /tmp/stage3_7_1_eval/stage3_7_1_closure.md
           retention-days: 14

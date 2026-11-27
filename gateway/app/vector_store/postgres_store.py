@@ -9,6 +9,7 @@ import logging
 import math
 from pathlib import Path
 import re
+import secrets
 from typing import Any, Dict, List, Optional, Sequence
 
 import asyncpg
@@ -471,6 +472,63 @@ class PostgresVectorStore(BaseVectorStore):
             return out_sql, out_params[:-1]
         return sql, params
 
+    _VALID_PLAN_CACHE_MODES = ("auto", "force_generic_plan", "force_custom_plan")
+
+    def _prepare_search_queries(
+        self,
+        *,
+        vec_str: str,
+        namespace: str,
+        target_model: str,
+        top_k: int,
+        visibility: Optional[str] = None,
+        principal_id: Optional[str] = None,
+        allow_shared_reads: bool = False,
+        context_class: Optional[str] = None,
+        context_fingerprint: Optional[str] = None,
+    ) -> tuple[str, Optional[str], list[Any], bool, bool]:
+        """
+        Shared query construction and low-selectivity context specialization helper
+        used identically by `search()` and `explain_search()`.
+        Returns `(exec_single, exec_combined, params, fail_closed, sql_specialized)`.
+        """
+        single_query, combined_query, scope_params, fail_closed = self._build_search_queries(
+            visibility=visibility,
+            principal_id=principal_id,
+            allow_shared_reads=allow_shared_reads,
+            context_class=context_class,
+            context_fingerprint=context_fingerprint,
+        )
+        if fail_closed:
+            return "", None, [], True, False
+
+        base_params: list[Any] = [vec_str, namespace, target_model, top_k, *scope_params]
+        exec_single, params = self._specialize_low_selectivity_context_sql(
+            single_query, base_params, context_class, context_fingerprint
+        )
+        exec_combined = combined_query
+        if combined_query is not None:
+            exec_combined, _ = self._specialize_low_selectivity_context_sql(
+                combined_query, base_params, context_class, context_fingerprint
+            )
+        sql_specialized = len(params) != len(base_params)
+        return exec_single, exec_combined, params, False, sql_specialized
+
+    @staticmethod
+    def _format_execute_literal(value: Any) -> str:
+        """Formats a parameter value safely using nonce dollar-quoting for PREPARE/EXECUTE."""
+        if value is None:
+            return "NULL"
+        if isinstance(value, bool):
+            return "TRUE" if value else "FALSE"
+        if isinstance(value, int):
+            return str(value)
+        text = str(value)
+        tag = f"ic_{secrets.token_hex(6)}"
+        while f"${tag}$" in text:
+            tag = f"ic_{secrets.token_hex(6)}"
+        return f"${tag}${text}${tag}$"
+
     async def search(
         self,
         query_vector: Sequence[float],
@@ -497,7 +555,12 @@ class PostgresVectorStore(BaseVectorStore):
 
         self._validate_vector_dimensions(query_vector, context="Query vector")
 
-        query, combined_query, scope_params, fail_closed = self._build_search_queries(
+        vec_str = _format_vector(query_vector)
+        exec_single, exec_combined, params, fail_closed, _ = self._prepare_search_queries(
+            vec_str=vec_str,
+            namespace=ns,
+            target_model=target_model,
+            top_k=top_k,
             visibility=visibility,
             principal_id=principal_id,
             allow_shared_reads=allow_shared_reads,
@@ -506,17 +569,6 @@ class PostgresVectorStore(BaseVectorStore):
         )
         if fail_closed:
             return []
-
-        vec_str = _format_vector(query_vector)
-        base_params: list[Any] = [vec_str, ns, target_model, top_k, *scope_params]
-        exec_single, params = self._specialize_low_selectivity_context_sql(
-            query, base_params, context_class, context_fingerprint
-        )
-        exec_combined = combined_query
-        if combined_query is not None:
-            exec_combined, _ = self._specialize_low_selectivity_context_sql(
-                combined_query, base_params, context_class, context_fingerprint
-            )
 
         try:
             async with self.pool.acquire() as conn:
@@ -899,21 +951,40 @@ class PostgresVectorStore(BaseVectorStore):
         allow_shared_reads: bool = False,
         context_class: Optional[str] = None,
         context_fingerprint: Optional[str] = None,
+        plan_cache_mode: Optional[str] = None,
+        ef_search: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Executes EXPLAIN (or EXPLAIN ANALYZE) on the exact production nearest-neighbour
-        search query (combined UNION ALL across vector_records and semantic_variant_records
-        when table_name == 'vector_records', with single-table fallback).
-        Returns whether HNSW indexes were selected by the query planner,
-        the retrieval method classification, and sanitized execution plan lines.
+        search query produced by `_prepare_search_queries`.
+        Supports optional allowlisted `plan_cache_mode` (`auto`, `force_generic_plan`,
+        `force_custom_plan` via `PREPARE`/`EXECUTE`) and bounded `ef_search` for
+        deterministic planner regression inspection.
         """
+        if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k <= 0:
+            raise VectorInvalidError(f"top_k must be a positive integer >= 1, got {top_k}.")
+        mode_norm: Optional[str] = None
+        if plan_cache_mode is not None:
+            mode_norm = str(plan_cache_mode).strip().lower()
+            if mode_norm not in self._VALID_PLAN_CACHE_MODES:
+                raise VectorInvalidError(
+                    f"Unsupported plan_cache_mode '{plan_cache_mode}'; expected one of {self._VALID_PLAN_CACHE_MODES}."
+                )
+        if ef_search is not None:
+            if isinstance(ef_search, bool) or not isinstance(ef_search, int) or ef_search < 1 or ef_search > 10000:
+                raise VectorInvalidError(f"ef_search must be an integer between 1 and 10000, got {ef_search}.")
+
         self._validate_vector_dimensions(query_vector, context="Query vector")
         ns = (namespace or self.default_namespace).strip()
         target_model = (model or self.default_model).strip()
         vec_str = _format_vector(query_vector)
 
         explain_cmd = "EXPLAIN (ANALYZE, BUFFERS)" if analyze else "EXPLAIN (BUFFERS)"
-        single_query, combined_query, scope_params, fail_closed = self._build_search_queries(
+        exec_single, exec_combined, params, fail_closed, sql_specialized = self._prepare_search_queries(
+            vec_str=vec_str,
+            namespace=ns,
+            target_model=target_model,
+            top_k=top_k,
             visibility=visibility,
             principal_id=principal_id,
             allow_shared_reads=allow_shared_reads,
@@ -925,42 +996,55 @@ class PostgresVectorStore(BaseVectorStore):
                 "vector_index_used": False,
                 "vector_records_hnsw_used": False,
                 "semantic_variant_records_hnsw_used": False,
+                "context_index_used": False,
                 "retrieval_method": "Fail-closed empty scope",
+                "sql_specialized": False,
+                "parameters_count": 0,
+                "plan_cache_mode": mode_norm,
+                "ef_search": ef_search,
                 "execution_plan_summary": [],
             }
-        base_params: list[Any] = [vec_str, ns, target_model, top_k, *scope_params]
-        exec_single, params = self._specialize_low_selectivity_context_sql(
-            single_query, base_params, context_class, context_fingerprint
-        )
-        exec_combined = combined_query
-        if combined_query is not None:
-            exec_combined, _ = self._specialize_low_selectivity_context_sql(
-                combined_query, base_params, context_class, context_fingerprint
-            )
+
+        async def _run_explain_sql(conn: asyncpg.Connection, target_sql: str) -> list[asyncpg.Record]:
+            if mode_norm is None and ef_search is None:
+                return await conn.fetch(f"{explain_cmd}\n{target_sql}", *params)
+            async with conn.transaction(readonly=True):
+                if ef_search is not None:
+                    await conn.execute(f"SET LOCAL hnsw.ef_search = {int(ef_search)};")
+                if mode_norm is None:
+                    return await conn.fetch(f"{explain_cmd}\n{target_sql}", *params)
+                await conn.execute(f"SET LOCAL plan_cache_mode = '{mode_norm}';")
+                stmt_name = f"_ic_explain_{secrets.token_hex(6)}"
+                type_names = ", ".join(["text", "text", "text", "integer"] + ["text"] * max(0, len(params) - 4))
+                lit_args = ", ".join(self._format_execute_literal(p) for p in params)
+                await conn.execute(f"PREPARE {stmt_name} ({type_names}) AS {target_sql}")
+                try:
+                    return await conn.fetch(f"{explain_cmd} EXECUTE {stmt_name}({lit_args})")
+                finally:
+                    try:
+                        await conn.execute(f"DEALLOCATE {stmt_name};")
+                    except Exception:
+                        pass
+
         try:
             async with self.pool.acquire() as conn:
                 if exec_combined is not None:
                     try:
-                        rows = await conn.fetch(
-                            f"{explain_cmd}\n{exec_combined}",
-                            *params,
-                        )
+                        rows = await _run_explain_sql(conn, exec_combined)
                     except asyncpg.UndefinedTableError:
-                        rows = await conn.fetch(
-                            f"{explain_cmd}\n{exec_single}",
-                            *params,
-                        )
+                        rows = await _run_explain_sql(conn, exec_single)
                 else:
-                    rows = await conn.fetch(
-                        f"{explain_cmd}\n{exec_single}",
-                        *params,
-                    )
+                    rows = await _run_explain_sql(conn, exec_single)
             plan_lines = [r[0] for r in rows]
             plan_text = " ".join(plan_lines).lower()
 
             vr_hnsw_used = "idx_vector_records_embedding_hnsw" in plan_text
             sv_hnsw_used = "idx_semantic_variant_records_hnsw" in plan_text
             hnsw_used = vr_hnsw_used or sv_hnsw_used
+            ctx_idx_used = (
+                "idx_vector_records_context_scope" in plan_text
+                or "idx_semantic_variant_records_context_scope" in plan_text
+            )
             retrieval_method = (
                 "HNSW approximate nearest-neighbour search"
                 if hnsw_used
@@ -969,13 +1053,19 @@ class PostgresVectorStore(BaseVectorStore):
             sanitized_lines = []
             for line in plan_lines:
                 sanitized = re.sub(r"\'?\[[0-9\.\,\s\-eE]+\]\'?::vector", "[vector(...)]", line)
+                sanitized = re.sub(r"\$ic_[0-9a-f]+\$\[[0-9\.\,\s\-eE]+\]\$ic_[0-9a-f]+\$::vector", "[vector(...)]", sanitized)
                 sanitized_lines.append(sanitized)
 
             return {
                 "vector_index_used": hnsw_used,
                 "vector_records_hnsw_used": vr_hnsw_used,
                 "semantic_variant_records_hnsw_used": sv_hnsw_used,
+                "context_index_used": ctx_idx_used,
                 "retrieval_method": retrieval_method,
+                "sql_specialized": sql_specialized,
+                "parameters_count": len(params),
+                "plan_cache_mode": mode_norm,
+                "ef_search": ef_search,
                 "execution_plan_summary": sanitized_lines[:80],
             }
         except Exception as e:
@@ -984,7 +1074,12 @@ class PostgresVectorStore(BaseVectorStore):
                 "vector_index_used": False,
                 "vector_records_hnsw_used": False,
                 "semantic_variant_records_hnsw_used": False,
+                "context_index_used": False,
                 "retrieval_method": "Unknown",
+                "sql_specialized": sql_specialized,
+                "parameters_count": len(params),
+                "plan_cache_mode": mode_norm,
+                "ef_search": ef_search,
                 "error": str(e),
                 "execution_plan_summary": [],
             }

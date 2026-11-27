@@ -363,6 +363,11 @@ VECTOR_DIMENSIONS=768
     - **Conclusion & Scan Limits**: Iterative scanning can improve candidate completeness under post-filtering by continuing HNSW traversal, subject to configured scan limits; it is not a latency reduction optimization. Where PostgreSQL selects a B-tree or sequential scan, iterative HNSW scanning is not applicable. Furthermore, iterative scans continue until enough results are found or configured scan limits are reached; they do not guarantee unlimited candidate completeness (relevant limits: `hnsw.max_scan_tuples` and `hnsw.scan_mem_multiplier`).
   - **Tracked Evidence Artifact**: Results are exported and tracked in the repository at [`gateway/evaluation/reports/iterative_hnsw_benchmark.json`](file:///home/gnx/Projects/IntelliCache/gateway/evaluation/reports/iterative_hnsw_benchmark.json) (`schema_version: "1.0"`) and formatted with plan summaries in [`gateway/evaluation/iterative_hnsw_evidence_export.md`](file:///home/gnx/Projects/IntelliCache/gateway/evaluation/iterative_hnsw_evidence_export.md), capturing environment metadata, execution plan summaries, recall, candidate counts, and latency percentiles.
 - **Deterministic Recall Validation**: Evaluated against 5,000+ diverse, normalized 768-dimensional float vectors generated from a fixed seed with non-degenerate cosine distance spread. Top-5 and top-10 nearest neighbours achieved Recall@5 = 1.0 and Recall@10 = 1.0 against a controlled exact nearest-neighbour baseline (`SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off;`).
+- **Generic-Plan Regression Protection & HNSW Recall Closure (Stage 3.7.1)**:
+  - **Shared Production Query Builder (`_prepare_search_queries`)**: Both `PostgresVectorStore.search()` and `PostgresVectorStore.explain_search()` share one SQL preparation path. `explain_search()` optionally accepts allowlisted `plan_cache_mode` (`"auto"`, `"force_generic_plan"`, `"force_custom_plan"`) via `PREPARE`/`EXECUTE` and bounded `ef_search` (`1..10000`) via `SET LOCAL hnsw.ef_search`, reporting `context_index_used`, `sql_specialized`, and `parameters_count`.
+  - **Context-Independent Low-Selectivity Specialization**: For `CONTEXT_INDEPENDENT` queries (`context_class='CONTEXT_INDEPENDENT'`, `context_fingerprint='ctx-v1:independent'`), the context predicates and literal `visibility` are specialized directly in the SQL expression rather than passed as generic bind parameters (`$5/$6`). On PostgreSQL `16.16` + pgvector `0.8.7`, this prevents `force_generic_plan` from falling back to `idx_semantic_variant_records_context_scope` + `Sort` and keeps HNSW `Index Scan` active under both `force_generic_plan` and `force_custom_plan`. `CONTEXT_DEPENDENT` queries remain parameterized (`6` bind parameters) and continue using the partial JSONB B-tree indexes (`idx_vector_records_context_scope` / `idx_semantic_variant_records_context_scope`) before `LIMIT`.
+  - **HNSW Low-Recall Safety & Global `hnsw.ef_search`**: Global `hnsw.ef_search` remains unchanged at pgvector's default (`40`). In skewed HNSW topologies where a low `ef_search` misses a valid candidate relative to exact scan (`enable_indexscan=off; enable_bitmapscan=off`), the gateway never synthesizes compatibility and always fails open safely to upstream HTTP `200` (`cached=false`); candidates recovered at higher `ef_search` (`400`) still undergo full compatibility and HMAC evidence validation.
+  - **Adaptive Retrieval Decision (`DEFER`)**: Benchmarked `single_ef40`, `always_ef400`, `adaptive_ef400`, and `adaptive_exact` across `normal_hit`, `true_miss`, and `skewed_singleton` slices (`384-d` FastEmbed + PostgreSQL `16.16`). Unconditional second passes double retrieval/validation work on 100% of genuine misses while exact-scan fallback degrades true-miss `p50` by `>10x` (`40.01 ms` vs `3.52 ms`), and missed HNSW candidates already fail open safely to upstream generation. Adaptive second-pass HNSW retry is therefore explicitly deferred in favor of conservative single-pass HNSW retrieval.
 
 ### Distance & Similarity Formulas
 
@@ -702,6 +707,7 @@ python -m unittest tests/test_stage3_5_4_serving_and_privacy.py # Runtime kill s
 python -m unittest tests/test_stage3_5_5_http_operational_evaluation.py # Stage 3.5.5 local-first HTTP FastEmbed + PostgreSQL operational evaluation
 python -m unittest tests/test_stage3_6_context_cache.py # Stage 3.6 context-aware centralized semantic cache, index & HTTP suite
 python -m unittest tests/test_stage3_7_workload.py # Stage 3.7 workload, optimization & failure-recovery regression suite
+python -m unittest tests/test_stage3_7_1_closure.py # Stage 3.7.1 PG generic-plan regression, HNSW recall & HTTP closure suite
 python -m unittest tests/test_config.py        # Configuration tests
 python -m unittest tests/test_main.py          # Application integration tests
 ```
@@ -743,6 +749,21 @@ RUN_FASTEMBED_PGVECTOR_TEST=1 REQUIRE_FASTEMBED_PGVECTOR_TEST=1 \
     .venv/bin/python -m unittest -v tests.test_stage3_7_workload
 ```
 
+To run the reproducible Stage 3.7.1 generic-plan regression, HNSW low-recall fixture, Phase 4 adaptive retrieval benchmark (`DEFER` decision), and `GEN-001`..`GEN-010` HTTP closure verification against PostgreSQL `16+` + `pgvector` + FastEmbed (`384-d`):
+
+```bash
+cd gateway
+RUN_FASTEMBED_PGVECTOR_TEST=1 REQUIRE_FASTEMBED_PGVECTOR_TEST=1 \
+    TEST_DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:5433/intellicache_fastembed_test" \
+    .venv/bin/python -m unittest -v tests.test_stage3_7_1_closure
+
+RUN_FASTEMBED_PGVECTOR_TEST=1 REQUIRE_FASTEMBED_PGVECTOR_TEST=1 \
+    .venv/bin/python scripts/evaluate_stage3_7_1_closure.py \
+    --test-database-url postgresql://postgres:postgres@127.0.0.1:5433/intellicache_fastembed_test \
+    --output-dir /tmp/stage3_7_1_eval \
+    --adaptive-iterations 15
+```
+
 ---
 
 ## Frontend Web Interface & End-to-End Integration
@@ -777,3 +798,8 @@ The following capabilities represent the current implementation state:
 - **Credential-Scoped Principal Identity**: `principal_id` is HMAC-derived from each client API token rather than a stable server-assigned user ID; token rotation changes the derived `principal_id`.
 - **Context-Aware Semantic Caching Policy (Stage 3.6 & 3.6.1)**: Requests are deterministically classified into `CONTEXT_INDEPENDENT`, `CONTEXT_DEPENDENT` (versioned `context-v1:` SHA-256 `context_fingerprint` covering schemas, code, configs, framework versions, and system instructions), or `CONTEXT_UNCERTAIN` (fail closed on dangling references, incomplete/compacted history, or missing referents). PostgreSQL migration `006_add_vector_context_indexes.sql` adds partial JSONB context-scope indexes (`idx_vector_records_context_scope`, `idx_vector_records_private_context_scope`, `idx_semantic_variant_records_context_scope`, `idx_semantic_variant_records_private_context_scope`), and the PostgreSQL runtime enables `sql_context_prefilter=True` so vector candidate retrieval filters by `context_class` and `context_fingerprint` before `LIMIT`. Unified exact/semantic scope resolution (`resolve_context_cache_scope`) enforces full cache bypass (neither exact nor semantic persistence) when credentials, API keys, private keys, or credentialed DSNs are detected or when private isolation lacks a verified `principal_id`, and downgrades personal or conversation-bound `tenant_shared` requests with a verified principal into `private` scope with `allow_shared_reads=False`. Secret detection remains regex-based against documented credential patterns and cannot guarantee catching every possible secret format.
 - **Persistent Conversation Store**: Persistent conversation management, bounded context windows, HMAC principal isolation, and concurrency safety are fully implemented and integrated across the gateway and demo client.
+- **Stage 3.7 / 3.7.1 Operational Boundaries & Known Limitations**:
+  - **Safe Defaults Disabled**: `SEMANTIC_CACHE_ENABLED=false` and `SEMANTIC_CACHE_SERVING_ENABLED=false` remain the out-of-the-box gateway defaults; semantic serving is enabled explicitly only inside controlled evaluation runs or via authenticated `/admin/semantic-cache/serving`.
+  - **HNSW Approximate Recall & Deferred Adaptive Retrieval**: At pgvector's default `hnsw.ef_search=40`, heavily skewed clusters or high-similarity incompatible bridges can cause approximate recall misses relative to exact search. Stage 3.7.1 proves missed candidates safely fall back to upstream `HTTP 200` (`cached=false`) without corrupting compatibility evidence, and explicitly defers automatic 2nd-pass retrieval due to unnecessary latency/CPU cost on true misses.
+  - **Controlled vs Production Traffic**: Stage 3.7/3.7.1 latency and recall numbers measure local PostgreSQL `16.16` + pgvector `0.8.7` + local CPU FastEmbed (`BAAI/bge-small-en-v1.5`) paired with a synthetic `ControlledEvalProvider`; live multi-tenant production traffic distributions and real external LLM provider latency remain unverified here.
+  - **Zero Redis Architecture**: All exact, vector, semantic-variant, and conversation state resides strictly in PostgreSQL (`pgvector` + JSONB indexes) with zero Redis dependency.
