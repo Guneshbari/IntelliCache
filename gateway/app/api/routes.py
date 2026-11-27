@@ -372,7 +372,11 @@ def get_groq_client_factory(settings: Settings = Depends(get_settings)) -> Any:
                 ),
             )
         from groq import AsyncGroq
-        return AsyncGroq(api_key=settings.groq_api_key)
+        return AsyncGroq(
+            api_key=settings.groq_api_key,
+            timeout=settings.groq_timeout_seconds,
+            max_retries=0,
+        )
 
     return _create_client
 
@@ -510,6 +514,8 @@ def get_llm_provider(
             api_key=settings.groq_api_key,
             default_model=settings.groq_model,
             client_factory=client_factory,
+            timeout_seconds=settings.groq_timeout_seconds,
+            max_retries=settings.groq_max_retries,
         )
     return ProviderFactory.create(
         name=settings.llm_provider,

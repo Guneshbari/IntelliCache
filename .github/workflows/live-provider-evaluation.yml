@@ -1,0 +1,101 @@
+name: Stage 3.8A Controlled Live Upstream Provider Evaluation
+
+on:
+  workflow_dispatch:
+    inputs:
+      live_model:
+        description: 'Explicit Groq model identifier to evaluate'
+        required: true
+        type: string
+      max_requests:
+        description: 'Maximum live Groq API request cap (1-100)'
+        required: true
+        default: '40'
+        type: string
+      max_cost_usd:
+        description: 'Optional maximum spend cap in USD (leave empty to disable pricing cap)'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  live-provider-evaluation:
+    name: Controlled Live Groq Provider Evaluation (Manual Opt-In)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: intellicache_fastembed_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        working-directory: gateway
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-fastembed.txt
+
+      - name: Verify live evaluation configuration without exposing secrets
+        env:
+          HAS_GROQ_KEY: ${{ secrets.GROQ_API_KEY != '' }}
+        run: |
+          if [ "$HAS_GROQ_KEY" != "true" ]; then
+            echo "::error::Repository secret GROQ_API_KEY is not configured."
+            exit 1
+          fi
+
+      - name: Run opt-in Stage 3.8A live evaluation
+        working-directory: gateway
+        env:
+          LIVE_PROVIDER_EVALUATION_ENABLED: 'true'
+          LIVE_PROVIDER_CONFIRM_SPEND: 'true'
+          LIVE_PROVIDER_NAME: 'groq'
+          LIVE_PROVIDER_MODEL: ${{ inputs.live_model }}
+          LIVE_PROVIDER_MAX_REQUESTS: ${{ inputs.max_requests }}
+          LIVE_PROVIDER_MAX_COST: ${{ inputs.max_cost_usd }}
+          LIVE_PROVIDER_TIMEOUT_SECONDS: '30.0'
+          LIVE_PROVIDER_MAX_RETRIES: '1'
+          LIVE_PROVIDER_REPORT_DIR: '/tmp/stage3_8a_eval'
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          RUN_FASTEMBED_PGVECTOR_TEST: '1'
+          REQUIRE_FASTEMBED_PGVECTOR_TEST: '1'
+          TEST_DATABASE_URL: 'postgresql://postgres:postgres@localhost:5432/intellicache_fastembed_test'
+        run: |
+          python scripts/evaluate_stage3_8a_live_provider.py \
+            --confirm-live \
+            --test-database-url "$TEST_DATABASE_URL" \
+            --output-dir /tmp/stage3_8a_eval \
+            --max-requests "$LIVE_PROVIDER_MAX_REQUESTS"
+
+      - name: Upload Stage 3.8A sanitized evaluation report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage3-8a-live-provider-evaluation
+          path: |
+            /tmp/stage3_8a_eval/stage3_8a_live_provider_evaluation.json
+            /tmp/stage3_8a_eval/stage3_8a_live_provider_evaluation.md
+          retention-days: 14

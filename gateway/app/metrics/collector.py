@@ -101,6 +101,10 @@ class _NamespaceData:
         self.provider_calls_attempted = 0
         self.provider_calls_succeeded = 0
         self.provider_calls_failed = 0
+        self.provider_timeouts_total = 0
+        self.provider_rate_limits_total = 0
+        self.provider_retries_total = 0
+        self.provider_usage_metadata_missing_total = 0
         self.provider_prompt_tokens_used = 0
         self.provider_completion_tokens_used = 0
         self.provider_total_tokens_used = 0
@@ -177,6 +181,8 @@ class _NamespaceData:
             "vector_search_latency_ms": deque(maxlen=max_samples),
             "candidate_policy_latency_ms": deque(maxlen=max_samples),
             "provider_generation_latency_ms": deque(maxlen=max_samples),
+            "stream_time_to_first_token_ms": deque(maxlen=max_samples),
+            "stream_completion_latency_ms": deque(maxlen=max_samples),
             "exact_cache_write_latency_ms": deque(maxlen=max_samples),
             "vector_indexing_latency_ms": deque(maxlen=max_samples),
             "estimated_latency_saved_ms": deque(maxlen=max_samples),
@@ -470,6 +476,24 @@ class _NamespaceData:
             self.provider_generation_failures += 1
             self.provider_calls_failed += 1
 
+    def record_provider_timeout(self) -> None:
+        with self.lock:
+            self.provider_timeouts_total += 1
+
+    def record_provider_rate_limit(self) -> None:
+        with self.lock:
+            self.provider_rate_limits_total += 1
+
+    def record_provider_retries(self, count: int = 1) -> None:
+        if count <= 0:
+            return
+        with self.lock:
+            self.provider_retries_total += int(count)
+
+    def record_provider_usage_metadata_missing(self) -> None:
+        with self.lock:
+            self.provider_usage_metadata_missing_total += 1
+
     def record_latency(self, metric_name: str, latency_ms: float) -> None:
         with self.lock:
             target = self.latency_samples.get(metric_name)
@@ -567,6 +591,10 @@ class _NamespaceData:
                 provider_calls_attempted=self.provider_calls_attempted,
                 provider_calls_succeeded=self.provider_calls_succeeded,
                 provider_calls_failed=self.provider_calls_failed,
+                provider_timeouts_total=self.provider_timeouts_total,
+                provider_rate_limits_total=self.provider_rate_limits_total,
+                provider_retries_total=self.provider_retries_total,
+                provider_usage_metadata_missing_total=self.provider_usage_metadata_missing_total,
                 provider_prompt_tokens_used=self.provider_prompt_tokens_used,
                 provider_completion_tokens_used=self.provider_completion_tokens_used,
                 provider_total_tokens_used=self.provider_total_tokens_used,
@@ -680,6 +708,8 @@ class _NamespaceData:
                 vector_search_latency_ms=compute_latency_summary(list(self.latency_samples["vector_search_latency_ms"])),
                 candidate_policy_latency_ms=compute_latency_summary(list(self.latency_samples["candidate_policy_latency_ms"])),
                 provider_generation_latency_ms=compute_latency_summary(list(self.latency_samples["provider_generation_latency_ms"])),
+                stream_time_to_first_token_ms=compute_latency_summary(list(self.latency_samples["stream_time_to_first_token_ms"])),
+                stream_completion_latency_ms=compute_latency_summary(list(self.latency_samples["stream_completion_latency_ms"])),
                 exact_cache_write_latency_ms=compute_latency_summary(list(self.latency_samples["exact_cache_write_latency_ms"])),
                 vector_indexing_latency_ms=compute_latency_summary(list(self.latency_samples["vector_indexing_latency_ms"])),
                 estimated_latency_saved_ms=compute_latency_summary(list(self.latency_samples["estimated_latency_saved_ms"])),
@@ -1134,6 +1164,34 @@ class RuntimeMetricsCollector:
         except Exception as e:
             logger.debug("Metrics record_provider_failure failed: %s", e)
 
+    def record_provider_timeout(self, namespace: str) -> None:
+        try:
+            ns_data = self.get_or_create_namespace(namespace)
+            ns_data.record_provider_timeout()
+        except Exception as e:
+            logger.debug("Metrics record_provider_timeout failed: %s", e)
+
+    def record_provider_rate_limit(self, namespace: str) -> None:
+        try:
+            ns_data = self.get_or_create_namespace(namespace)
+            ns_data.record_provider_rate_limit()
+        except Exception as e:
+            logger.debug("Metrics record_provider_rate_limit failed: %s", e)
+
+    def record_provider_retries(self, namespace: str, count: int = 1) -> None:
+        try:
+            ns_data = self.get_or_create_namespace(namespace)
+            ns_data.record_provider_retries(count)
+        except Exception as e:
+            logger.debug("Metrics record_provider_retries failed: %s", e)
+
+    def record_provider_usage_metadata_missing(self, namespace: str) -> None:
+        try:
+            ns_data = self.get_or_create_namespace(namespace)
+            ns_data.record_provider_usage_metadata_missing()
+        except Exception as e:
+            logger.debug("Metrics record_provider_usage_metadata_missing failed: %s", e)
+
     def record_latency(self, namespace: str, metric_name: str, latency_ms: float) -> None:
         try:
             ns_data = self.get_or_create_namespace(namespace)
@@ -1211,6 +1269,8 @@ class RuntimeMetricsCollector:
             "vector_search_latency_ms": [],
             "candidate_policy_latency_ms": [],
             "provider_generation_latency_ms": [],
+            "stream_time_to_first_token_ms": [],
+            "stream_completion_latency_ms": [],
             "exact_cache_write_latency_ms": [],
             "vector_indexing_latency_ms": [],
             "estimated_latency_saved_ms": [],
@@ -1249,6 +1309,10 @@ class RuntimeMetricsCollector:
             agg_prov.provider_calls_attempted += p.provider_calls_attempted
             agg_prov.provider_calls_succeeded += p.provider_calls_succeeded
             agg_prov.provider_calls_failed += p.provider_calls_failed
+            agg_prov.provider_timeouts_total += p.provider_timeouts_total
+            agg_prov.provider_rate_limits_total += p.provider_rate_limits_total
+            agg_prov.provider_retries_total += p.provider_retries_total
+            agg_prov.provider_usage_metadata_missing_total += p.provider_usage_metadata_missing_total
             agg_prov.provider_prompt_tokens_used += p.provider_prompt_tokens_used
             agg_prov.provider_completion_tokens_used += p.provider_completion_tokens_used
             agg_prov.provider_total_tokens_used += p.provider_total_tokens_used
@@ -1367,6 +1431,8 @@ class RuntimeMetricsCollector:
             vector_search_latency_ms=compute_latency_summary(merged_samples["vector_search_latency_ms"]),
             candidate_policy_latency_ms=compute_latency_summary(merged_samples["candidate_policy_latency_ms"]),
             provider_generation_latency_ms=compute_latency_summary(merged_samples["provider_generation_latency_ms"]),
+            stream_time_to_first_token_ms=compute_latency_summary(merged_samples["stream_time_to_first_token_ms"]),
+            stream_completion_latency_ms=compute_latency_summary(merged_samples["stream_completion_latency_ms"]),
             exact_cache_write_latency_ms=compute_latency_summary(merged_samples["exact_cache_write_latency_ms"]),
             vector_indexing_latency_ms=compute_latency_summary(merged_samples["vector_indexing_latency_ms"]),
             estimated_latency_saved_ms=compute_latency_summary(merged_samples["estimated_latency_saved_ms"]),

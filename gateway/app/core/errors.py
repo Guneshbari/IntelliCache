@@ -21,6 +21,13 @@ def sanitize_error_message(message: str) -> str:
     # Redact Authorization bearer tokens
     redacted = re.sub(r"(?i)bearer\s+[a-zA-Z0-9_\-\.]+", "Bearer ***", redacted)
 
+    # Redact generic API key assignments
+    redacted = re.sub(
+        r"(?i)\b(api[_-]?key|x-api-key|authorization)\s*[:=]\s*['\"]?([A-Za-z0-9_\-\.]{6,})['\"]?",
+        r"\1=***",
+        redacted,
+    )
+
     # Redact absolute filesystem paths (Unix and Windows style)
     redacted = re.sub(r"(?:/home|/root|/var|/usr|/tmp|[A-Z]:\\[a-zA-Z0-9_-]+)(?:/[a-zA-Z0-9_.\-]+)+", "<redacted_path>", redacted)
 
@@ -53,7 +60,10 @@ class SingleFlightLeaderCancelledError(SingleFlightError):
 
 class ProviderError(IntelliCacheError):
     """Base exception for LLM provider failures."""
-    pass
+
+    def __init__(self, message: str, *, retry_count: int = 0):
+        self.retry_count = max(0, int(retry_count))
+        super().__init__(message)
 
 
 class ProviderAuthenticationError(ProviderError):
@@ -71,12 +81,17 @@ class ProviderConnectionError(ProviderError):
     pass
 
 
+class ProviderTimeoutError(ProviderConnectionError):
+    """Timed out while waiting for the upstream LLM provider."""
+    pass
+
+
 class ProviderUpstreamError(ProviderError):
     """Upstream LLM provider returned an unexpected HTTP error status."""
 
-    def __init__(self, message: str, status_code: int = 502):
+    def __init__(self, message: str, status_code: int = 502, *, retry_count: int = 0):
         self.status_code = status_code
-        super().__init__(message)
+        super().__init__(message, retry_count=retry_count)
 
 
 class ProviderConfigurationError(ProviderError):

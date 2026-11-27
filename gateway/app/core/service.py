@@ -27,6 +27,7 @@ from .errors import (
     ProviderAuthenticationError,
     ProviderConnectionError,
     ProviderRateLimitError,
+    ProviderTimeoutError,
     ProviderUpstreamError,
     SingleFlightLeaderCancelledError,
     sanitize_error_message,
@@ -205,6 +206,51 @@ class IntelliCacheCore:
             except Exception:
                 pass
 
+    @staticmethod
+    def _record_provider_outcome_telemetry(
+        collector: RuntimeMetricsCollector,
+        ns: str,
+        outcome: Any,
+        latency_ms: float,
+    ) -> None:
+        """Records provider success tokens, retry counts, and missing-usage telemetry uniformly."""
+        usage = getattr(outcome, "usage", None)
+        p_tok = getattr(usage, "prompt_tokens", 0) or 0
+        c_tok = getattr(usage, "completion_tokens", 0) or 0
+        t_tok = getattr(usage, "total_tokens", 0) or 0
+        collector.record_provider_success(
+            ns,
+            prompt_tokens=p_tok,
+            completion_tokens=c_tok,
+            total_tokens=t_tok,
+            latency_ms=latency_ms,
+        )
+        meta = getattr(outcome, "metadata", None) or {}
+        if isinstance(meta, dict):
+            retries = int(meta.get("retry_count") or 0)
+            if retries > 0:
+                collector.record_provider_retries(ns, retries)
+            if usage is None or meta.get("usage_available") is False:
+                collector.record_provider_usage_metadata_missing(ns)
+
+    @staticmethod
+    def _record_provider_failure_metrics(
+        collector: RuntimeMetricsCollector,
+        ns: str,
+        exc: BaseException,
+        latency_ms: float,
+    ) -> None:
+        """Classifies provider timeout, rate-limit, retry, and failure counters uniformly."""
+        collector.record_provider_failure(ns)
+        if isinstance(exc, ProviderTimeoutError):
+            collector.record_provider_timeout(ns)
+        elif isinstance(exc, ProviderRateLimitError):
+            collector.record_provider_rate_limit(ns)
+        retries = int(getattr(exc, "retry_count", 0) or 0)
+        if retries > 0:
+            collector.record_provider_retries(ns, retries)
+        collector.record_latency(ns, "provider_generation_latency_ms", latency_ms)
+
     async def execute_query(
         self,
         request: GenerationRequest,
@@ -328,17 +374,8 @@ class IntelliCacheCore:
                 result = await provider.generate(request)
                 prov_latency_ms = (time.perf_counter() - prov_start) * 1000.0
                 total_latency_ms = (time.perf_counter() - start_time) * 1000.0
-                p_tok = getattr(result.usage, "prompt_tokens", 0) or 0
-                c_tok = getattr(result.usage, "completion_tokens", 0) or 0
-                t_tok = getattr(result.usage, "total_tokens", 0) or 0
 
-                collector.record_provider_success(
-                    ns,
-                    prompt_tokens=p_tok,
-                    completion_tokens=c_tok,
-                    total_tokens=t_tok,
-                    latency_ms=prov_latency_ms,
-                )
+                self._record_provider_outcome_telemetry(collector, ns, result, prov_latency_ms)
                 collector.record_latency(ns, "total_request_latency_ms", total_latency_ms)
 
                 result.fingerprint = fingerprint
@@ -349,11 +386,10 @@ class IntelliCacheCore:
                 prov_latency_ms = (time.perf_counter() - prov_start) * 1000.0
                 collector.record_latency(ns, "provider_generation_latency_ms", prov_latency_ms)
                 raise
-            except BaseException:
+            except BaseException as exc:
                 prov_latency_ms = (time.perf_counter() - prov_start) * 1000.0
                 total_latency_ms = (time.perf_counter() - start_time) * 1000.0
-                collector.record_provider_failure(ns)
-                collector.record_latency(ns, "provider_generation_latency_ms", prov_latency_ms)
+                self._record_provider_failure_metrics(collector, ns, exc, prov_latency_ms)
                 collector.record_latency(ns, "total_request_latency_ms", total_latency_ms)
                 raise
 
@@ -521,24 +557,13 @@ class IntelliCacheCore:
                 prov_latency_ms = (time.perf_counter() - prov_start) * 1000.0
                 collector.record_latency(ns, "provider_generation_latency_ms", prov_latency_ms)
                 raise
-            except BaseException:
+            except BaseException as exc:
                 prov_latency_ms = (time.perf_counter() - prov_start) * 1000.0
-                collector.record_provider_failure(ns)
-                collector.record_latency(ns, "provider_generation_latency_ms", prov_latency_ms)
+                self._record_provider_failure_metrics(collector, ns, exc, prov_latency_ms)
                 raise
 
             prov_latency_ms = (time.perf_counter() - prov_start) * 1000.0
-            p_tok = getattr(result.usage, "prompt_tokens", 0) or 0
-            c_tok = getattr(result.usage, "completion_tokens", 0) or 0
-            t_tok = getattr(result.usage, "total_tokens", 0) or 0
-
-            collector.record_provider_success(
-                ns,
-                prompt_tokens=p_tok,
-                completion_tokens=c_tok,
-                total_tokens=t_tok,
-                latency_ms=prov_latency_ms,
-            )
+            self._record_provider_outcome_telemetry(collector, ns, result, prov_latency_ms)
 
             result.fingerprint = fingerprint
             result.metadata = request.metadata
@@ -734,6 +759,8 @@ class IntelliCacheCore:
                         latency_saved_ms=latency_saved_ms,
                     )
                     collector.record_latency(ns, "total_request_latency_ms", total_latency_ms)
+                    collector.record_latency(ns, "stream_time_to_first_token_ms", total_latency_ms)
+                    collector.record_latency(ns, "stream_completion_latency_ms", total_latency_ms)
 
                     yield StreamChunk(
                         delta=cached_entry.response,
@@ -764,11 +791,16 @@ class IntelliCacheCore:
         prov_start = time.perf_counter()
         accumulated_text: list[str] = []
         stream_success = False
+        first_token_recorded = False
 
         try:
             async for chunk in provider.stream(request):
                 if chunk.delta:
                     accumulated_text.append(chunk.delta)
+                    if not first_token_recorded:
+                        ttft_ms = (time.perf_counter() - start_time) * 1000.0
+                        collector.record_latency(ns, "stream_time_to_first_token_ms", ttft_ms)
+                        first_token_recorded = True
                 if not chunk.done:
                     yield StreamChunk(
                         delta=chunk.delta,
@@ -782,19 +814,14 @@ class IntelliCacheCore:
                     stream_success = True
                     elapsed_ms = (time.perf_counter() - start_time) * 1000.0
                     prov_latency_ms = (time.perf_counter() - prov_start) * 1000.0
+                    if not first_token_recorded:
+                        collector.record_latency(ns, "stream_time_to_first_token_ms", elapsed_ms)
+                        first_token_recorded = True
                     full_text = "".join(accumulated_text)
                     usage = chunk.usage or UsageMetrics()
-                    p_tok = getattr(usage, "prompt_tokens", 0) or 0
-                    c_tok = getattr(usage, "completion_tokens", 0) or 0
-                    t_tok = getattr(usage, "total_tokens", 0) or 0
 
-                    collector.record_provider_success(
-                        ns,
-                        prompt_tokens=p_tok,
-                        completion_tokens=c_tok,
-                        total_tokens=t_tok,
-                        latency_ms=prov_latency_ms,
-                    )
+                    self._record_provider_outcome_telemetry(collector, ns, chunk, prov_latency_ms)
+                    collector.record_latency(ns, "stream_completion_latency_ms", elapsed_ms)
                     collector.record_latency(ns, "total_request_latency_ms", elapsed_ms)
 
                     if stream_success and full_text.strip() and self.cache_enabled and not request.bypass_cache and can_use_exact_cache:
@@ -830,6 +857,7 @@ class IntelliCacheCore:
                         model=chunk.model or request.model,
                         usage=usage,
                         latency_ms=round(elapsed_ms, 2),
+                        finish_reason=getattr(chunk, "finish_reason", None),
                     )
         except asyncio.CancelledError:
             prov_latency_ms = (time.perf_counter() - prov_start) * 1000.0
@@ -838,8 +866,7 @@ class IntelliCacheCore:
         except ProviderAuthenticationError as exc:
             prov_latency_ms = (time.perf_counter() - prov_start) * 1000.0
             elapsed_ms = (time.perf_counter() - start_time) * 1000.0
-            collector.record_provider_failure(ns)
-            collector.record_latency(ns, "provider_generation_latency_ms", prov_latency_ms)
+            self._record_provider_failure_metrics(collector, ns, exc, prov_latency_ms)
             collector.record_latency(ns, "total_request_latency_ms", elapsed_ms)
             yield StreamChunk(
                 delta="",
@@ -851,8 +878,7 @@ class IntelliCacheCore:
         except ProviderRateLimitError as exc:
             prov_latency_ms = (time.perf_counter() - prov_start) * 1000.0
             elapsed_ms = (time.perf_counter() - start_time) * 1000.0
-            collector.record_provider_failure(ns)
-            collector.record_latency(ns, "provider_generation_latency_ms", prov_latency_ms)
+            self._record_provider_failure_metrics(collector, ns, exc, prov_latency_ms)
             collector.record_latency(ns, "total_request_latency_ms", elapsed_ms)
             yield StreamChunk(
                 delta="",
@@ -864,8 +890,7 @@ class IntelliCacheCore:
         except ProviderConnectionError as exc:
             prov_latency_ms = (time.perf_counter() - prov_start) * 1000.0
             elapsed_ms = (time.perf_counter() - start_time) * 1000.0
-            collector.record_provider_failure(ns)
-            collector.record_latency(ns, "provider_generation_latency_ms", prov_latency_ms)
+            self._record_provider_failure_metrics(collector, ns, exc, prov_latency_ms)
             collector.record_latency(ns, "total_request_latency_ms", elapsed_ms)
             yield StreamChunk(
                 delta="",
@@ -877,8 +902,7 @@ class IntelliCacheCore:
         except ProviderUpstreamError as exc:
             prov_latency_ms = (time.perf_counter() - prov_start) * 1000.0
             elapsed_ms = (time.perf_counter() - start_time) * 1000.0
-            collector.record_provider_failure(ns)
-            collector.record_latency(ns, "provider_generation_latency_ms", prov_latency_ms)
+            self._record_provider_failure_metrics(collector, ns, exc, prov_latency_ms)
             collector.record_latency(ns, "total_request_latency_ms", elapsed_ms)
             yield StreamChunk(
                 delta="",
@@ -890,8 +914,7 @@ class IntelliCacheCore:
         except BaseException as exc:
             prov_latency_ms = (time.perf_counter() - prov_start) * 1000.0
             elapsed_ms = (time.perf_counter() - start_time) * 1000.0
-            collector.record_provider_failure(ns)
-            collector.record_latency(ns, "provider_generation_latency_ms", prov_latency_ms)
+            self._record_provider_failure_metrics(collector, ns, exc, prov_latency_ms)
             collector.record_latency(ns, "total_request_latency_ms", elapsed_ms)
             sanitized = sanitize_error_message(str(exc))
             yield StreamChunk(

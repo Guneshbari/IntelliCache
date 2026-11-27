@@ -1,0 +1,481 @@
+{
+  "dataset_version": "3.8a.1",
+  "description": "Stage 3.8A Controlled Live Upstream Provider Evaluation Dataset (Groq + FastEmbed + PostgreSQL/pgvector). All expected labels are defined independently from the compatibility/context implementation.",
+  "benchmark_sequence": {
+    "description": "Bounded comparable prompt sequence executed sequentially under Mode A (Upstream Only), Mode B (Exact Cache Enabled), and Mode C (Exact + Semantic Cache Enabled).",
+    "namespace_prefix": "s38a_bench",
+    "max_tokens": 650,
+    "temperature": 0.0,
+    "steps": [
+      {
+        "step_id": "BENCH-01",
+        "kind": "cold_seed",
+        "case_id": "LPE-002",
+        "expected_mode_b_cache": "none",
+        "expected_mode_c_cache": "none"
+      },
+      {
+        "step_id": "BENCH-02",
+        "kind": "cold_seed",
+        "case_id": "LPE-005",
+        "expected_mode_b_cache": "none",
+        "expected_mode_c_cache": "none"
+      },
+      {
+        "step_id": "BENCH-03",
+        "kind": "warm_exact_repeat",
+        "case_id": "LPE-002",
+        "expected_mode_b_cache": "exact",
+        "expected_mode_c_cache": "exact"
+      },
+      {
+        "step_id": "BENCH-04",
+        "kind": "warm_exact_repeat",
+        "case_id": "LPE-005",
+        "expected_mode_b_cache": "exact",
+        "expected_mode_c_cache": "exact"
+      },
+      {
+        "step_id": "BENCH-05",
+        "kind": "semantic_paraphrase",
+        "case_id": "LPE-008",
+        "expected_mode_b_cache": "none",
+        "expected_mode_c_cache": "semantic"
+      },
+      {
+        "step_id": "BENCH-06",
+        "kind": "semantic_paraphrase",
+        "case_id": "LPE-009",
+        "expected_mode_b_cache": "none",
+        "expected_mode_c_cache": "semantic"
+      }
+    ]
+  },
+  "cases": [
+    {
+      "case_id": "LPE-001",
+      "category": "simple_explanation",
+      "principal": "carol",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Explain how TLS 1.3 reduces connection handshake latency compared to TLS 1.2 in three concise sentences."
+        }
+      ],
+      "temperature": 0.0,
+      "max_tokens": 450,
+      "expected_cache_behavior": "miss_then_exact_seed",
+      "expected_compatibility": "COMPATIBLE",
+      "expected_provider_call": true,
+      "expected_cache_admission": true,
+      "expected_context_class": "CONTEXT_INDEPENDENT",
+      "expected_privacy_scope": "tenant_shared",
+      "reason": "Standalone technical explanation eligible for shared semantic and exact caching."
+    },
+    {
+      "case_id": "LPE-002",
+      "category": "programming_question",
+      "principal": "carol",
+      "messages": [
+        {
+          "role": "user",
+          "content": "In Python 3, how do you flatten a list of lists of integers into a single flat list? Include one brief code snippet."
+        }
+      ],
+      "temperature": 0.0,
+      "max_tokens": 450,
+      "expected_cache_behavior": "miss_upstream_seed",
+      "expected_compatibility": "COMPATIBLE",
+      "expected_provider_call": true,
+      "expected_cache_admission": true,
+      "expected_context_class": "CONTEXT_INDEPENDENT",
+      "expected_privacy_scope": "tenant_shared",
+      "reason": "Self-contained Python 3 programming question."
+    },
+    {
+      "case_id": "LPE-003",
+      "category": "code_generation",
+      "principal": "carol",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Write a concise Python function merge_intervals(intervals) that merges overlapping integer intervals. Return only raw Python code with no prose and no markdown code fences."
+        }
+      ],
+      "temperature": 0.0,
+      "max_tokens": 450,
+      "expected_cache_behavior": "miss_upstream_seed",
+      "expected_compatibility": "COMPATIBLE",
+      "expected_provider_call": true,
+      "expected_cache_admission": "if_verified",
+      "expected_context_class": "CONTEXT_INDEPENDENT",
+      "expected_privacy_scope": "tenant_shared",
+      "reason": "Code-only generation prompt verifying ResponseArtifactVerifier checks against actual LLM code output."
+    },
+    {
+      "case_id": "LPE-004",
+      "category": "debugging",
+      "principal": "carol",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Why does removing items from a Python list with list.remove() inside a for-in loop skip elements, and what is the clean fix?"
+        }
+      ],
+      "temperature": 0.0,
+      "max_tokens": 650,
+      "expected_cache_behavior": "miss_upstream_seed",
+      "expected_compatibility": "COMPATIBLE",
+      "expected_provider_call": true,
+      "expected_cache_admission": true,
+      "expected_context_class": "CONTEXT_INDEPENDENT",
+      "expected_privacy_scope": "tenant_shared",
+      "reason": "Self-contained Python debugging question eligible for admission."
+    },
+    {
+      "case_id": "LPE-005",
+      "category": "algorithm_explanation",
+      "principal": "carol",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Explain the time and space complexity of iterative binary search on a sorted array and show a brief Python implementation."
+        }
+      ],
+      "temperature": 0.0,
+      "max_tokens": 650,
+      "expected_cache_behavior": "miss_upstream_seed",
+      "expected_compatibility": "COMPATIBLE",
+      "expected_provider_call": true,
+      "expected_cache_admission": true,
+      "expected_context_class": "CONTEXT_INDEPENDENT",
+      "expected_privacy_scope": "tenant_shared",
+      "reason": "Standalone algorithm explanation and Python implementation."
+    },
+    {
+      "case_id": "LPE-006",
+      "category": "framework_specific",
+      "principal": "carol",
+      "messages": [
+        {
+          "role": "user",
+          "content": "In FastAPI 0.115, how do you write an async dependency with cleanup using yield in Python? Show a short code example."
+        }
+      ],
+      "temperature": 0.0,
+      "max_tokens": 450,
+      "expected_cache_behavior": "miss_upstream_seed",
+      "expected_compatibility": "COMPATIBLE",
+      "expected_provider_call": true,
+      "expected_cache_admission": true,
+      "expected_context_class": "CONTEXT_INDEPENDENT",
+      "expected_privacy_scope": "tenant_shared",
+      "reason": "Framework-specific FastAPI 0.115 question with explicit version metadata."
+    },
+    {
+      "case_id": "LPE-007",
+      "category": "exact_repeat",
+      "principal": "dave",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Explain how TLS 1.3 reduces connection handshake latency compared to TLS 1.2 in three concise sentences."
+        }
+      ],
+      "temperature": 0.0,
+      "max_tokens": 450,
+      "expected_cache_behavior": "exact_hit",
+      "expected_compatibility": "EXACT",
+      "expected_provider_call": false,
+      "expected_cache_admission": false,
+      "expected_context_class": "CONTEXT_INDEPENDENT",
+      "expected_privacy_scope": "tenant_shared",
+      "reason": "Canonical repeat of LPE-001 within tenant_shared team_beta should serve exact cache with zero Groq call."
+    },
+    {
+      "case_id": "LPE-008",
+      "category": "semantic_paraphrase",
+      "principal": "dave",
+      "messages": [
+        {
+          "role": "user",
+          "content": "In Python 3, how can you flatten a nested list of integers into a single flat list? Include one brief code snippet."
+        }
+      ],
+      "temperature": 0.0,
+      "max_tokens": 450,
+      "expected_cache_behavior": "semantic_hit",
+      "expected_compatibility": "COMPATIBLE",
+      "expected_provider_call": false,
+      "expected_cache_admission": false,
+      "expected_context_class": "CONTEXT_INDEPENDENT",
+      "expected_privacy_scope": "tenant_shared",
+      "reason": "Close Python 3 paraphrase of LPE-002 with identical language, format, and contract requirements."
+    },
+    {
+      "case_id": "LPE-009",
+      "category": "semantic_paraphrase",
+      "principal": "dave",
+      "messages": [
+        {
+          "role": "user",
+          "content": "What are the time and space complexity bounds of iterative binary search on a sorted array? Provide a brief Python implementation."
+        }
+      ],
+      "temperature": 0.0,
+      "max_tokens": 650,
+      "expected_cache_behavior": "semantic_hit",
+      "expected_compatibility": "COMPATIBLE",
+      "expected_provider_call": false,
+      "expected_cache_admission": false,
+      "expected_context_class": "CONTEXT_INDEPENDENT",
+      "expected_privacy_scope": "tenant_shared",
+      "reason": "Paraphrase of LPE-005 preserving Python algorithm intent and contract."
+    },
+    {
+      "case_id": "LPE-010",
+      "category": "semantic_paraphrase",
+      "principal": "dave",
+      "messages": [
+        {
+          "role": "user",
+          "content": "In FastAPI 0.115, how can you write an async dependency with cleanup using yield in Python? Show one brief code example."
+        }
+      ],
+      "temperature": 0.0,
+      "max_tokens": 450,
+      "expected_cache_behavior": "semantic_hit",
+      "expected_compatibility": "COMPATIBLE",
+      "expected_provider_call": false,
+      "expected_cache_admission": false,
+      "expected_context_class": "CONTEXT_INDEPENDENT",
+      "expected_privacy_scope": "tenant_shared",
+      "reason": "Paraphrase of LPE-006 preserving FastAPI 0.115, async model, and Python language."
+    },
+    {
+      "case_id": "LPE-011",
+      "category": "negative_different_language",
+      "principal": "dave",
+      "messages": [
+        {
+          "role": "user",
+          "content": "In Rust, how do you flatten a Vec of Vec<i32> into a single flat Vec<i32>? Include one brief code snippet."
+        }
+      ],
+      "temperature": 0.0,
+      "max_tokens": 450,
+      "expected_cache_behavior": "upstream_fallback",
+      "expected_compatibility": "INCOMPATIBLE",
+      "expected_provider_call": true,
+      "expected_cache_admission": true,
+      "expected_context_class": "CONTEXT_INDEPENDENT",
+      "expected_privacy_scope": "tenant_shared",
+      "reason": "Rust language must reject Python candidate LPE-002 and call Groq."
+    },
+    {
+      "case_id": "LPE-012",
+      "category": "negative_framework_version",
+      "principal": "dave",
+      "messages": [
+        {
+          "role": "user",
+          "content": "In FastAPI 0.95, how do you write an async dependency with cleanup using yield in Python? Show a short code example."
+        }
+      ],
+      "temperature": 0.0,
+      "max_tokens": 450,
+      "expected_cache_behavior": "upstream_fallback",
+      "expected_compatibility": "INCOMPATIBLE",
+      "expected_provider_call": true,
+      "expected_cache_admission": true,
+      "expected_context_class": "CONTEXT_INDEPENDENT",
+      "expected_privacy_scope": "tenant_shared",
+      "reason": "FastAPI 0.95 conflicts with FastAPI 0.115 in LPE-006; must fall back to Groq."
+    },
+    {
+      "case_id": "LPE-013",
+      "category": "negative_runtime_execution_model",
+      "principal": "dave",
+      "messages": [
+        {
+          "role": "user",
+          "content": "In FastAPI 0.115 running synchronous blocking handlers on Deno vs CPython threads, explain why a synchronous dependency replaces async yield in Python."
+        }
+      ],
+      "temperature": 0.0,
+      "max_tokens": 450,
+      "expected_cache_behavior": "upstream_fallback",
+      "expected_compatibility": "INCOMPATIBLE",
+      "expected_provider_call": true,
+      "expected_cache_admission": true,
+      "expected_context_class": "CONTEXT_INDEPENDENT",
+      "expected_privacy_scope": "tenant_shared",
+      "reason": "Runtime and execution-model difference (sync vs async) must not reuse LPE-006."
+    },
+    {
+      "case_id": "LPE-014",
+      "category": "negative_output_format_schema",
+      "principal": "dave",
+      "messages": [
+        {
+          "role": "user",
+          "content": "In Python 3, how do you flatten a list of lists of integers into a single flat list? Return strictly valid raw JSON matching schema {\"type\":\"object\",\"required\":[\"approach\",\"snippet\"],\"properties\":{\"approach\":{\"type\":\"string\"},\"snippet\":{\"type\":\"string\"}}}."
+        }
+      ],
+      "temperature": 0.0,
+      "max_tokens": 450,
+      "expected_cache_behavior": "upstream_fallback",
+      "expected_compatibility": "INCOMPATIBLE",
+      "expected_provider_call": true,
+      "expected_cache_admission": "if_verified",
+      "expected_context_class": "CONTEXT_INDEPENDENT",
+      "expected_privacy_scope": "tenant_shared",
+      "reason": "Strict JSON schema output format cannot reuse unstructured text response from LPE-002."
+    },
+    {
+      "case_id": "LPE-015",
+      "category": "negative_constraints",
+      "principal": "dave",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Why does removing items from a Python list with list.remove() inside a for-in loop skip elements? Answer in at most 20 words and 160 characters."
+        }
+      ],
+      "temperature": 0.0,
+      "max_tokens": 120,
+      "expected_cache_behavior": "upstream_fallback",
+      "expected_compatibility": "INCOMPATIBLE",
+      "expected_provider_call": true,
+      "expected_cache_admission": "if_verified",
+      "expected_context_class": "CONTEXT_INDEPENDENT",
+      "expected_privacy_scope": "tenant_shared",
+      "reason": "Added max_words and max_chars constraints must reject verbose LPE-004 entry."
+    },
+    {
+      "case_id": "LPE-016",
+      "category": "negative_system_instructions",
+      "principal": "dave",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Respond strictly as a compact YAML key-value object without any code snippets."
+        },
+        {
+          "role": "user",
+          "content": "Explain the time and space complexity of iterative binary search on a sorted array."
+        }
+      ],
+      "temperature": 0.0,
+      "max_tokens": 450,
+      "expected_cache_behavior": "upstream_fallback",
+      "expected_compatibility": "INCOMPATIBLE",
+      "expected_provider_call": true,
+      "expected_cache_admission": "if_verified",
+      "expected_context_class": "CONTEXT_DEPENDENT",
+      "expected_privacy_scope": "private",
+      "reason": "Explicit system instruction alters contract and context fingerprint; must never hit LPE-005."
+    },
+    {
+      "case_id": "LPE-017",
+      "category": "context_dependent_isolation",
+      "principal": "carol",
+      "setup_messages": [
+        {
+          "role": "user",
+          "content": "CREATE TABLE s38a_orders (order_id BIGINT PRIMARY KEY, total_cents INT);"
+        },
+        {
+          "role": "user",
+          "content": "Write one concise PostgreSQL SELECT query to fetch the 10 latest rows from the table above."
+        }
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "content": "CREATE TABLE s38a_invoices (invoice_id BIGINT PRIMARY KEY, amount_cents INT);"
+        },
+        {
+          "role": "user",
+          "content": "Write one concise PostgreSQL SELECT query to fetch the 10 latest rows from the table above."
+        }
+      ],
+      "temperature": 0.0,
+      "max_tokens": 450,
+      "expected_cache_behavior": "upstream_fallback",
+      "expected_compatibility": "INCOMPATIBLE",
+      "expected_provider_call": true,
+      "expected_cache_admission": true,
+      "expected_context_class": "CONTEXT_DEPENDENT",
+      "expected_privacy_scope": "private",
+      "reason": "Schema B (s38a_invoices) must not reuse cached answer produced for schema A (s38a_orders)."
+    },
+    {
+      "case_id": "LPE-018",
+      "category": "context_uncertain_fail_closed",
+      "principal": "carol",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Modify the helper function above to also return early when the input slice is empty."
+        }
+      ],
+      "temperature": 0.0,
+      "max_tokens": 450,
+      "expected_cache_behavior": "bypass_uncertain",
+      "expected_compatibility": "UNCERTAIN",
+      "expected_provider_call": true,
+      "expected_cache_admission": false,
+      "expected_context_class": "CONTEXT_UNCERTAIN",
+      "expected_privacy_scope": "bypass",
+      "reason": "Dangling reference without antecedent classifies as CONTEXT_UNCERTAIN, calling Groq and rejecting semantic admission."
+    },
+    {
+      "case_id": "LPE-019",
+      "category": "sensitive_cache_bypass",
+      "principal": "carol",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Check the syntax format of URI postgresql://demo_user:ExamplePlaceholderPass123@localhost:5432/demo_db in one brief sentence without repeating credentials."
+        }
+      ],
+      "temperature": 0.0,
+      "max_tokens": 100,
+      "expected_cache_behavior": "bypass_sensitive",
+      "expected_compatibility": "BYPASS",
+      "expected_provider_call": true,
+      "expected_cache_admission": false,
+      "expected_context_class": "CONTEXT_INDEPENDENT",
+      "expected_privacy_scope": "bypass",
+      "reason": "Detected credentialed DSN pattern must bypass both exact and semantic caches and redact before reporting."
+    },
+    {
+      "case_id": "LPE-020",
+      "category": "private_principal_isolation",
+      "principal": "alice",
+      "followup_principal": "bob",
+      "messages": [
+        {
+          "role": "user",
+          "content": "In Python 3, give a concise one-line helper expression to check if a string is a palindrome ignoring spaces."
+        }
+      ],
+      "followup_messages": [
+        {
+          "role": "user",
+          "content": "In Python 3, write a concise one-line helper expression that checks if a string is a palindrome ignoring spaces."
+        }
+      ],
+      "temperature": 0.0,
+      "max_tokens": 450,
+      "expected_cache_behavior": "isolated_upstream_for_second_principal",
+      "expected_compatibility": "ISOLATED",
+      "expected_provider_call": true,
+      "expected_cache_admission": true,
+      "expected_context_class": "CONTEXT_INDEPENDENT",
+      "expected_privacy_scope": "private",
+      "reason": "Private tenant_alpha response generated for alice must remain isolated from bob."
+    }
+  ]
+}

@@ -708,6 +708,7 @@ python -m unittest tests/test_stage3_5_5_http_operational_evaluation.py # Stage 
 python -m unittest tests/test_stage3_6_context_cache.py # Stage 3.6 context-aware centralized semantic cache, index & HTTP suite
 python -m unittest tests/test_stage3_7_workload.py # Stage 3.7 workload, optimization & failure-recovery regression suite
 python -m unittest tests/test_stage3_7_1_closure.py # Stage 3.7.1 PG generic-plan regression, HNSW recall & HTTP closure suite
+python -m unittest tests/test_stage3_8a_live_provider.py # Stage 3.8A live-eval contracts, Groq retries/timeout/usage, budgets & fault-injection suite
 python -m unittest tests/test_config.py        # Configuration tests
 python -m unittest tests/test_main.py          # Application integration tests
 ```
@@ -764,6 +765,27 @@ RUN_FASTEMBED_PGVECTOR_TEST=1 REQUIRE_FASTEMBED_PGVECTOR_TEST=1 \
     --adaptive-iterations 15
 ```
 
+To run **Stage 3.8A Controlled Live Upstream Provider Validation** against actual Groq Cloud (`LIVE_PROVIDER_EVALUATION_ENABLED=true`, explicit confirmation, bounded request/cost caps, see [`gateway/.env.live-eval.example`](file:///home/gnx/Projects/IntelliCache/gateway/.env.live-eval.example)):
+
+```bash
+cd gateway
+# Never commit API keys; provide GROQ_API_KEY and LIVE_PROVIDER_MODEL via environment only
+LIVE_PROVIDER_EVALUATION_ENABLED=true \
+    LIVE_PROVIDER_NAME=groq \
+    LIVE_PROVIDER_MODEL=<explicit-groq-model-id> \
+    GROQ_API_KEY=<your-groq-api-key> \
+    LIVE_PROVIDER_MAX_REQUESTS=40 \
+    RUN_FASTEMBED_PGVECTOR_TEST=1 \
+    TEST_DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:5433/intellicache_fastembed_test" \
+    .venv/bin/python scripts/evaluate_stage3_8a_live_provider.py \
+    --confirm-live \
+    --test-database-url postgresql://postgres:postgres@127.0.0.1:5433/intellicache_fastembed_test \
+    --output-dir /tmp/stage3_8a_eval
+```
+
+- **Selecting cases / budget caps**: Pass `--cases LPE-001 LPE-007` or `--max-requests 15` (and optional `--skip-mode-comparison`) for bounded smoke validation. Cost is calculated strictly when real provider usage tokens AND explicit `LIVE_PROVIDER_INPUT_COST_PER_MILLION` / `LIVE_PROVIDER_OUTPUT_COST_PER_MILLION` / `LIVE_PROVIDER_PRICING_SOURCE` settings are provided; otherwise cost reports as `unavailable`.
+- **Ordinary CI separation**: Ordinary push/PR CI executes offline unit, budget, redaction, and mock fault-injection coverage in `tests/test_stage3_8a_live_provider.py` only; live Groq requests run exclusively on manual trigger via [`.github/workflows/live-provider-evaluation.yml`](file:///home/gnx/Projects/IntelliCache/.github/workflows/live-provider-evaluation.yml).
+
 ---
 
 ## Frontend Web Interface & End-to-End Integration
@@ -802,4 +824,5 @@ The following capabilities represent the current implementation state:
   - **Safe Defaults Disabled**: `SEMANTIC_CACHE_ENABLED=false` and `SEMANTIC_CACHE_SERVING_ENABLED=false` remain the out-of-the-box gateway defaults; semantic serving is enabled explicitly only inside controlled evaluation runs or via authenticated `/admin/semantic-cache/serving`.
   - **HNSW Approximate Recall & Deferred Adaptive Retrieval**: At pgvector's default `hnsw.ef_search=40`, heavily skewed clusters or high-similarity incompatible bridges can cause approximate recall misses relative to exact search. Stage 3.7.1 proves missed candidates safely fall back to upstream `HTTP 200` (`cached=false`) without corrupting compatibility evidence, and explicitly defers automatic 2nd-pass retrieval due to unnecessary latency/CPU cost on true misses.
   - **Controlled vs Production Traffic**: Stage 3.7/3.7.1 latency and recall numbers measure local PostgreSQL `16.16` + pgvector `0.8.7` + local CPU FastEmbed (`BAAI/bge-small-en-v1.5`) paired with a synthetic `ControlledEvalProvider`; live multi-tenant production traffic distributions and real external LLM provider latency remain unverified here.
+  - **Live-Provider Evaluation Boundaries (Stage 3.8A)**: Controlled live Groq validation (`evaluate_stage3_8a_live_provider.py`) measures real API latency/TTFT/usage and compatibility/privacy enforcement under bounded opt-in runs, NOT production readiness. `execute_stream()` intentionally supports **exact-match caching only** (semantic streaming is unsupported), multi-worker runtime control synchronization and stable human identity migration remain deferred, and `ResponseArtifactVerifier` fails closed (`UNCERTAIN`) on constraints without deterministic verifiers (e.g., arbitrary `required_sections`).
   - **Zero Redis Architecture**: All exact, vector, semantic-variant, and conversation state resides strictly in PostgreSQL (`pgvector` + JSONB indexes) with zero Redis dependency.

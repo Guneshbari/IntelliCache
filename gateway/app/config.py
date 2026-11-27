@@ -69,6 +69,53 @@ class Settings(BaseModel):
     groq_model: str = Field(
         default_factory=lambda: os.getenv("GROQ_MODEL", "qwen/qwen3.8-27b")
     )
+    groq_timeout_seconds: float = Field(
+        default_factory=lambda: float(os.getenv("GROQ_TIMEOUT_SECONDS", "30.0"))
+    )
+    groq_max_retries: int = Field(
+        default_factory=lambda: int(os.getenv("GROQ_MAX_RETRIES", "0"))
+    )
+
+    # Isolated Live-Provider Evaluation Configuration (Stage 3.8A, disabled by default)
+    live_provider_evaluation_enabled: bool = Field(
+        default_factory=lambda: os.getenv("LIVE_PROVIDER_EVALUATION_ENABLED", "false").lower() in ("true", "1", "yes")
+    )
+    live_provider_name: str = Field(
+        default_factory=lambda: os.getenv("LIVE_PROVIDER_NAME", "groq").strip().lower()
+    )
+    live_provider_model: str = Field(
+        default_factory=lambda: os.getenv("LIVE_PROVIDER_MODEL", "").strip()
+    )
+    live_provider_timeout_seconds: float = Field(
+        default_factory=lambda: float(os.getenv("LIVE_PROVIDER_TIMEOUT_SECONDS", "30.0"))
+    )
+    live_provider_max_retries: int = Field(
+        default_factory=lambda: int(os.getenv("LIVE_PROVIDER_MAX_RETRIES", "1"))
+    )
+    live_provider_max_requests: int = Field(
+        default_factory=lambda: int(os.getenv("LIVE_PROVIDER_MAX_REQUESTS", "40"))
+    )
+    live_provider_max_cost: Optional[float] = Field(
+        default_factory=lambda: float(os.getenv("LIVE_PROVIDER_MAX_COST"))
+        if (os.getenv("LIVE_PROVIDER_MAX_COST") or "").strip()
+        else None
+    )
+    live_provider_report_dir: str = Field(
+        default_factory=lambda: os.getenv("LIVE_PROVIDER_REPORT_DIR", "/tmp/stage3_8a_eval").strip()
+    )
+    live_provider_input_cost_per_million: Optional[float] = Field(
+        default_factory=lambda: float(os.getenv("LIVE_PROVIDER_INPUT_COST_PER_MILLION"))
+        if (os.getenv("LIVE_PROVIDER_INPUT_COST_PER_MILLION") or "").strip()
+        else None
+    )
+    live_provider_output_cost_per_million: Optional[float] = Field(
+        default_factory=lambda: float(os.getenv("LIVE_PROVIDER_OUTPUT_COST_PER_MILLION"))
+        if (os.getenv("LIVE_PROVIDER_OUTPUT_COST_PER_MILLION") or "").strip()
+        else None
+    )
+    live_provider_pricing_source: Optional[str] = Field(
+        default_factory=lambda: (os.getenv("LIVE_PROVIDER_PRICING_SOURCE") or "").strip() or None
+    )
 
     # Server Configuration
     host: str = Field(
@@ -286,6 +333,54 @@ class Settings(BaseModel):
                 "SEMANTIC_CACHE_MAX_RETRIEVAL_CANDIDATES must be between SEMANTIC_CACHE_TOP_K and 50."
             )
 
+        return self
+
+    @model_validator(mode="after")
+    def validate_provider_and_live_eval_config(self) -> "Settings":
+        if self.groq_timeout_seconds <= 0 or self.groq_timeout_seconds > 300.0:
+            raise ValueError(
+                f"GROQ_TIMEOUT_SECONDS must be > 0 and <= 300.0, got {self.groq_timeout_seconds}."
+            )
+        if self.groq_max_retries < 0 or self.groq_max_retries > 5:
+            raise ValueError(
+                f"GROQ_MAX_RETRIES must be between 0 and 5, got {self.groq_max_retries}."
+            )
+        if self.live_provider_timeout_seconds <= 0 or self.live_provider_timeout_seconds > 300.0:
+            raise ValueError(
+                f"LIVE_PROVIDER_TIMEOUT_SECONDS must be > 0 and <= 300.0, got {self.live_provider_timeout_seconds}."
+            )
+        if self.live_provider_max_retries < 0 or self.live_provider_max_retries > 5:
+            raise ValueError(
+                f"LIVE_PROVIDER_MAX_RETRIES must be between 0 and 5, got {self.live_provider_max_retries}."
+            )
+        if self.live_provider_max_requests < 1 or self.live_provider_max_requests > 500:
+            raise ValueError(
+                f"LIVE_PROVIDER_MAX_REQUESTS must be between 1 and 500, got {self.live_provider_max_requests}."
+            )
+        if self.live_provider_max_cost is not None and self.live_provider_max_cost <= 0.0:
+            raise ValueError(
+                f"LIVE_PROVIDER_MAX_COST must be strictly positive when configured, got {self.live_provider_max_cost}."
+            )
+        for cost_name, cost_val in (
+            ("LIVE_PROVIDER_INPUT_COST_PER_MILLION", self.live_provider_input_cost_per_million),
+            ("LIVE_PROVIDER_OUTPUT_COST_PER_MILLION", self.live_provider_output_cost_per_million),
+        ):
+            if cost_val is not None and cost_val < 0.0:
+                raise ValueError(f"{cost_name} must be >= 0.0, got {cost_val}.")
+
+        if self.live_provider_evaluation_enabled:
+            if self.live_provider_name != "groq":
+                raise ValueError(
+                    f"Unsupported LIVE_PROVIDER_NAME '{self.live_provider_name}'; Stage 3.8A supports 'groq'."
+                )
+            if not self.live_provider_model:
+                raise ValueError(
+                    "LIVE_PROVIDER_MODEL must be explicitly configured when LIVE_PROVIDER_EVALUATION_ENABLED=true."
+                )
+            if not self.groq_api_key.strip() or self.groq_api_key.strip() == "replace_with_your_key":
+                raise ValueError(
+                    "Valid GROQ_API_KEY is required when LIVE_PROVIDER_EVALUATION_ENABLED=true."
+                )
         return self
 
     @model_validator(mode="after")

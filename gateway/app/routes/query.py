@@ -50,6 +50,7 @@ from ..core.errors import (
     ProviderConnectionError,
     ProviderError,
     ProviderRateLimitError,
+    ProviderTimeoutError,
     ProviderUpstreamError,
     sanitize_error_message,
 )
@@ -86,6 +87,7 @@ __all__ = [
     "ProviderError",
     "ProviderFactory",
     "ProviderRateLimitError",
+    "ProviderTimeoutError",
     "ProviderUpstreamError",
     "QueryCache",
     "QueryRequest",

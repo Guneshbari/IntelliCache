@@ -37,6 +37,10 @@ class ProviderAndSavingsMetrics(BaseModel):
     provider_calls_attempted: int = 0
     provider_calls_succeeded: int = 0
     provider_calls_failed: int = 0
+    provider_timeouts_total: int = 0
+    provider_rate_limits_total: int = 0
+    provider_retries_total: int = 0
+    provider_usage_metadata_missing_total: int = 0
     provider_prompt_tokens_used: int = 0
     provider_completion_tokens_used: int = 0
     provider_total_tokens_used: int = 0
@@ -135,6 +139,8 @@ class LatencyMetrics(BaseModel):
     vector_search_latency_ms: LatencySummary = Field(default_factory=LatencySummary)
     candidate_policy_latency_ms: LatencySummary = Field(default_factory=LatencySummary)
     provider_generation_latency_ms: LatencySummary = Field(default_factory=LatencySummary)
+    stream_time_to_first_token_ms: LatencySummary = Field(default_factory=LatencySummary)
+    stream_completion_latency_ms: LatencySummary = Field(default_factory=LatencySummary)
     exact_cache_write_latency_ms: LatencySummary = Field(default_factory=LatencySummary)
     vector_indexing_latency_ms: LatencySummary = Field(default_factory=LatencySummary)
     estimated_latency_saved_ms: LatencySummary = Field(default_factory=LatencySummary)
