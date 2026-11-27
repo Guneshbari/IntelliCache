@@ -107,18 +107,25 @@ class PhysicalRequestReservation:
         reserved_cost: float,
         is_streaming: bool,
         attempt: int,
+        ledger_entry: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.guard = guard
         self.reserved_cost = float(reserved_cost)
         self.is_streaming = is_streaming
         self.attempt = attempt
+        self.ledger_entry = ledger_entry
         self._settled = False
 
     async def record_success(self, usage: Optional[UsageMetrics], *, usage_available: bool) -> None:
         if self._settled:
             return
         self._settled = True
-        await self.guard._reconcile_success(self.reserved_cost, usage, usage_available=usage_available)
+        await self.guard._reconcile_success(
+            self.reserved_cost,
+            usage,
+            usage_available=usage_available,
+            ledger_entry=self.ledger_entry,
+        )
 
     async def record_failure(
         self,
@@ -139,6 +146,7 @@ class PhysicalRequestReservation:
             partial_output=partial_output,
             usage=usage,
             usage_available=usage_available,
+            ledger_entry=self.ledger_entry,
         )
 
 
@@ -235,7 +243,15 @@ class LiveEvalBudgetGuard:
         self.usage_missing_calls = 0
 
         self.terminated_early_reason: Optional[str] = None
+        self._dispatch_phase: str = "unspecified"
+        self._dispatch_case_id: str = "unspecified"
+        self.dispatch_ledger: List[Dict[str, Any]] = []
         self._lock = asyncio.Lock()
+
+    def set_dispatch_context(self, phase: str, case_id: str) -> None:
+        """Annotates subsequent physical provider dispatches with sanitized provenance labels."""
+        self._dispatch_phase = str(phase or "unspecified")
+        self._dispatch_case_id = str(case_id or "unspecified")
 
     @property
     def accumulated_cost(self) -> float:
@@ -379,11 +395,27 @@ class LiveEvalBudgetGuard:
             self.active_reserved_cost += reserved_cost
             self.accumulated_reserved_cost += reserved_cost
 
+            ledger_entry: Dict[str, Any] = {
+                "dispatch_seq": self.physical_requests_dispatched,
+                "phase": self._dispatch_phase,
+                "case_id": self._dispatch_case_id,
+                "operation": "stream" if is_streaming else "generate",
+                "attempt": attempt,
+                "status": "dispatched_pending",
+                "usage_available": False,
+                "prompt_tokens": None,
+                "completion_tokens": None,
+                "reserved_cost_usd": round(reserved_cost, 6) if self.pricing_configured else None,
+                "actual_cost_usd": None,
+            }
+            self.dispatch_ledger.append(ledger_entry)
+
             return PhysicalRequestReservation(
                 guard=self,
                 reserved_cost=reserved_cost,
                 is_streaming=is_streaming,
                 attempt=attempt,
+                ledger_entry=ledger_entry,
             )
 
     @staticmethod
@@ -424,6 +456,8 @@ class LiveEvalBudgetGuard:
         self,
         reserved_cost: float,
         usage: UsageMetrics,
+        *,
+        ledger_entry: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.usage_reported_calls += 1
         pt = max(0, int(usage.prompt_tokens))
@@ -434,6 +468,12 @@ class LiveEvalBudgetGuard:
         self.total_tokens += tt
 
         actual_cost = self.calculate_cost(pt, ct)
+        if ledger_entry is not None:
+            ledger_entry["usage_available"] = True
+            ledger_entry["prompt_tokens"] = pt
+            ledger_entry["completion_tokens"] = ct
+            if actual_cost is not None:
+                ledger_entry["actual_cost_usd"] = round(actual_cost, 6)
         if actual_cost is not None:
             self.actual_reported_cost += actual_cost
             if actual_cost > reserved_cost:
@@ -453,17 +493,20 @@ class LiveEvalBudgetGuard:
         usage: Optional[UsageMetrics],
         *,
         usage_available: bool,
+        ledger_entry: Optional[Dict[str, Any]] = None,
     ) -> None:
         async with self._lock:
             self.active_reserved_cost = max(0.0, self.active_reserved_cost - reserved_cost)
             self.successful_responses += 1
+            if ledger_entry is not None:
+                ledger_entry["status"] = "succeeded"
             if not usage_available or usage is None:
                 self.usage_missing_calls += 1
                 if self.pricing_configured and reserved_cost > 0.0:
                     self.uncertain_estimated_cost += reserved_cost
                 return
 
-            self._record_reported_usage_locked(reserved_cost, usage)
+            self._record_reported_usage_locked(reserved_cost, usage, ledger_entry=ledger_entry)
 
     async def _reconcile_failure(
         self,
@@ -474,11 +517,14 @@ class LiveEvalBudgetGuard:
         partial_output: bool = False,
         usage: Optional[UsageMetrics] = None,
         usage_available: bool = False,
+        ledger_entry: Optional[Dict[str, Any]] = None,
     ) -> None:
         async with self._lock:
             self.active_reserved_cost = max(0.0, self.active_reserved_cost - reserved_cost)
             self.failed_attempts += 1
             classification = self._classify_failure(err, dispatched=dispatched, partial_output=partial_output)
+            if ledger_entry is not None:
+                ledger_entry["status"] = f"failed_{classification}"
 
             if classification == "unprocessed":
                 self.unprocessed_failures_count += 1
@@ -491,7 +537,7 @@ class LiveEvalBudgetGuard:
                 self.partial_stream_failures_count += 1
 
             if usage_available and usage is not None:
-                self._record_reported_usage_locked(reserved_cost, usage)
+                self._record_reported_usage_locked(reserved_cost, usage, ledger_entry=ledger_entry)
             elif self.pricing_configured and reserved_cost > 0.0:
                 self.uncertain_estimated_cost += reserved_cost
 
@@ -598,6 +644,9 @@ class BudgetedProviderProxy(LLMProvider):
             elapsed = time.monotonic() - self._last_call_mono
             if elapsed < self.min_interval_seconds:
                 await asyncio.sleep(self.min_interval_seconds - elapsed)
+
+    def set_dispatch_context(self, phase: str, case_id: str) -> None:
+        self.budget.set_dispatch_context(phase, case_id)
 
     async def generate(self, request: GenerationRequest) -> GenerationResult:
         self.budget.logical_operations += 1
@@ -1127,7 +1176,9 @@ async def evaluate_artifact_verifier_live(
     verifier = ResponseArtifactVerifier()
     extractor = CompatibilityExtractor()
 
-    async def _call(prompt: str, max_tokens: int = 160, system: Optional[str] = None) -> GenerationResult:
+    async def _call(prompt: str, max_tokens: int = 160, system: Optional[str] = None, *, check_id: str = "ART-LIVE") -> GenerationResult:
+        if hasattr(groq_provider, "set_dispatch_context"):
+            groq_provider.set_dispatch_context("direct_artifact_verifier", check_id)
         if hasattr(groq_provider, "pace_before_upstream"):
             await groq_provider.pace_before_upstream()
         msgs: List[ChatMessage] = []
@@ -1145,7 +1196,7 @@ async def evaluate_artifact_verifier_live(
         '"properties":{"language":{"type":"string"},"year":{"type":"integer"}}} for Python first release 1991. '
         'No markdown fences, no prose.'
     )
-    r_json = await _call(schema_prompt, max_tokens=120)
+    r_json = await _call(schema_prompt, max_tokens=120, check_id="ART-LIVE-JSON-SCHEMA")
     req_json = GenerationRequest(model=model_name, messages=[ChatMessage(role="user", content=schema_prompt)], temperature=0.0)
     meta_json = extractor.extract(req_json, "BAAI/bge-small-en-v1.5")
     ver_json = verifier.verify(
@@ -1190,7 +1241,11 @@ async def evaluate_artifact_verifier_live(
     })
 
     # 3. Complete Markdown prose returned when raw JSON required -> FAILED (format mismatch, NOT truncation)
-    r_md = await _call("Explain Python tuples in two short sentences with one tiny fenced python snippet.", max_tokens=450)
+    r_md = await _call(
+        "Explain Python tuples in two short sentences with one tiny fenced python snippet.",
+        max_tokens=450,
+        check_id="ART-LIVE-MARKDOWN-WHEN-JSON-REQUIRED",
+    )
     ver_md_as_json = verifier.verify(
         response_text=r_md.text,
         request_metadata=meta_json,
@@ -1206,7 +1261,11 @@ async def evaluate_artifact_verifier_live(
     })
 
     # 4. Forced truncation via tiny max_tokens=8 -> finish_reason=length -> FAILED
-    r_trunc = await _call("Write a detailed four-paragraph essay explaining TCP congestion control.", max_tokens=8)
+    r_trunc = await _call(
+        "Write a detailed four-paragraph essay explaining TCP congestion control.",
+        max_tokens=8,
+        check_id="ART-LIVE-TRUNCATED-MAX-TOKENS",
+    )
     meta_plain = extractor.extract(GenerationRequest(model=model_name, messages=[ChatMessage(role="user", content="Explain TCP.")], temperature=0.0), "BAAI/bge-small-en-v1.5")
     ver_trunc = verifier.verify(
         response_text=r_trunc.text,
@@ -1227,7 +1286,7 @@ async def evaluate_artifact_verifier_live(
 
     # 5. Live code_only + max_words boundary checks on real Groq output
     code_prompt = "Return ONLY a raw Python function def square(n): return n * n. Return ONLY raw Python code with no prose and no markdown code fences."
-    r_code = await _call(code_prompt, max_tokens=200)
+    r_code = await _call(code_prompt, max_tokens=200, check_id="ART-LIVE-CODE-ONLY")
     meta_code = extractor.extract(GenerationRequest(model=model_name, messages=[ChatMessage(role="user", content=code_prompt)], temperature=0.0), "BAAI/bge-small-en-v1.5")
     ver_code = verifier.verify(
         response_text=r_code.text,
@@ -1328,7 +1387,7 @@ async def run_live_provider_evaluation(
         max_output_tokens=max_output_tokens_override,
     )
     resolved_db_url = db_url or await resolve_fastembed_database_url()
-    await reset_pg_tables(resolved_db_url)
+    await reset_pg_tables(resolved_db_url, include_runtime_control=True)
 
     dataset_bytes = DATASET_PATH.read_bytes()
     dataset_sha256 = hashlib.sha256(dataset_bytes).hexdigest()
@@ -1391,6 +1450,7 @@ async def run_live_provider_evaluation(
         if not skip_mode_comparison:
             for st in bench_steps:
                 case = cases_by_id[st["case_id"]]
+                budgeted_provider.set_dispatch_context("mode_a_upstream_only", st["case_id"])
                 req = GenerationRequest(
                     model=profile["model"],
                     messages=[ChatMessage(**m) for m in case["messages"]],
@@ -1465,7 +1525,7 @@ async def run_live_provider_evaluation(
             )
 
         # 3. Mode C — Isolated Gateway Exact + Semantic Cache Enabled
-        await reset_pg_tables(resolved_db_url)
+        await reset_pg_tables(resolved_db_url, include_runtime_control=True)
         env_c = build_stage38a_env(
             resolved_db_url, profile=profile, semantic_enabled=True, semantic_serving_enabled=True
         )
@@ -1483,7 +1543,7 @@ async def run_live_provider_evaluation(
             )
 
         # 4. Full Stage 3.8A Workload & Privacy/Compatibility Cases in fresh Mode C namespace
-        await reset_pg_tables(resolved_db_url)
+        await reset_pg_tables(resolved_db_url, include_runtime_control=True)
         workload_outcomes, http_metrics_snap = await _run_full_workload_cases(
             env=env_c,
             dataset=dataset,
@@ -1505,10 +1565,22 @@ async def run_live_provider_evaluation(
         await budgeted_provider.close()
         reset_semantic_serving_controller()
         # Clean up strictly evaluation-owned PG records cleanly
-        await reset_pg_tables(resolved_db_url)
+        await reset_pg_tables(resolved_db_url, include_runtime_control=True)
 
     # 6. Fault-injection recovery matrix (safe controlled mocks)
     fault_matrix = await run_fault_injection_matrix(resolved_db_url)
+
+    phase_counts: Dict[str, int] = {}
+    for item in budget.dispatch_ledger:
+        ph = str(item.get("phase") or "unspecified")
+        phase_counts[ph] = phase_counts.get(ph, 0) + 1
+    gw_attempted = (
+        (http_metrics_snap or {})
+        .get("aggregate", {})
+        .get("provider_and_savings", {})
+        .get("provider_calls_attempted", 0)
+    )
+    gw_dispatches = phase_counts.get("gateway_workload", 0)
 
     report: Dict[str, Any] = {
         "stage": "3.8A.2",
@@ -1520,6 +1592,7 @@ async def run_live_provider_evaluation(
             "sha256": dataset_sha256,
         },
         "production_readiness": False,
+        "benchmark_status": "not_run_mode_comparison_skipped" if skip_mode_comparison else "completed",
         "provider": profile["provider"],
         "model": profile["model"],
         "environment": {
@@ -1529,15 +1602,28 @@ async def run_live_provider_evaluation(
             "upstream_pacing_seconds": pacing_seconds,
         },
         "budget": budget.summary(),
+        "dispatch_reconciliation": {
+            "physical_dispatches_total": budget.physical_requests_dispatched,
+            "by_phase": phase_counts,
+            "gateway_metrics_provider_calls_attempted": gw_attempted,
+            "gateway_ledger_matches_metrics": gw_dispatches == gw_attempted,
+            "ledger_total_matches_physical_dispatches": sum(phase_counts.values()) == budget.physical_requests_dispatched,
+        },
+        "dispatch_ledger": budget.dispatch_ledger,
+        "latency_diagnostic_note": (
+            "Gateway latency percentiles calculated on small sample counts (<20) are diagnostic "
+            "smoke observations only and do not establish tail-latency guarantees."
+        ),
         "real_provider_errors": budgeted_provider.real_provider_errors,
         "mode_a_upstream_only": {
             "source": "real_groq_api",
+            "status": "not_run_skipped" if skip_mode_comparison else "completed",
             "latency_summary": _mode_stats(mode_a_latencies),
             "usage_records": mode_a_usage,
             "streaming": mode_a_stream_obs,
         },
-        "mode_b_exact_only": mode_b_results,
-        "mode_c_exact_plus_semantic": mode_c_results,
+        "mode_b_exact_only": mode_b_results if mode_b_results else {"status": "not_run_skipped" if skip_mode_comparison else "empty"},
+        "mode_c_exact_plus_semantic": mode_c_results if mode_c_results else {"status": "not_run_skipped" if skip_mode_comparison else "empty"},
         "workload_validation": workload_outcomes,
         "artifact_verification": artifact_report,
         "failure_recovery_matrix": fault_matrix,
@@ -1547,11 +1633,25 @@ async def run_live_provider_evaluation(
             "Streaming responses only support exact match caching, not semantic cache admission or lookup.",
             "Pre-dispatch token estimation uses heuristic_char_ratio_v1; strict mode enforces an estimated-cost reservation ceiling with explicit output bounds, not a guaranteed billing ceiling.",
             "Ambiguous failures (timeouts, connection drops, cancellations after dispatch) and partial stream failures conservatively retain reserved estimates as uncertain spend.",
+            "Small-sample latency percentiles (<20 samples) are diagnostic observations only; comparative Mode A/B/C benchmarks remain empty when --skip-mode-comparison is used.",
             "Live evaluation opt-in only; safe production defaults remain disabled.",
         ],
         "epistemic_labels": {
-            "real_groq": ["mode_a_upstream_only", "mode_b_exact_only misses", "mode_c_exact_plus_semantic misses", "workload_validation", "artifact_verification live checks"],
-            "local_pg_fastembed": ["exact_hits", "semantic_hits", "vector_search_latency_ms", "embedding_latency_ms"],
+            "real_groq": [
+                "mode_a_upstream_only",
+                "mode_b_exact_only misses",
+                "mode_c_exact_plus_semantic misses",
+                "workload_validation misses",
+                "artifact_verification live checks",
+                "dispatch_ledger",
+            ],
+            "local_pg_fastembed": [
+                "exact_hits",
+                "semantic_hits",
+                "vector_search_latency_ms",
+                "embedding_latency_ms",
+                "LPE-SECURITY-CHECKS db queries",
+            ],
             "controlled_fault_injection": ["failure_recovery_matrix"],
         },
     }
@@ -1607,6 +1707,7 @@ async def _run_http_benchmark_mode(
                     for st in bench_steps:
                         case = cases_by_id[st["case_id"]]
                         hdr = hdr_carol if st["kind"] == "cold_seed" else hdr_dave
+                        budgeted_provider.set_dispatch_context(mode_name, st["case_id"])
                         if st["kind"] in ("cold_seed", "semantic_paraphrase") and not (
                             mode_name == "mode_c_exact_plus_semantic" and st["kind"] == "semantic_paraphrase"
                         ):
@@ -1733,7 +1834,11 @@ async def _run_full_workload_cases(
                         if sel_set is not None and cid not in sel_set:
                             continue
                         hdr = token_hdrs[case["principal"]]
+                        sem_svc = getattr(app.state, "semantic_cache", None)
+                        budgeted_provider.set_dispatch_context("gateway_workload", cid)
                         if case.get("setup_messages"):
+                            if sem_svc is not None:
+                                sem_svc.last_admission_decision = None
                             await client.post(
                                 "/query",
                                 headers=hdr,
@@ -1744,6 +1849,8 @@ async def _run_full_workload_cases(
                                     "max_tokens": int(case["max_tokens"]),
                                 },
                             )
+                        if sem_svc is not None:
+                            sem_svc.last_admission_decision = None
                         await budgeted_provider.pace_before_upstream()
                         r1 = await client.post(
                             "/query",
@@ -1768,14 +1875,19 @@ async def _run_full_workload_cases(
                             "expected_cache_behavior": case["expected_cache_behavior"],
                             "response_length": len(d1.get("response", "") or ""),
                         }
-                        sem_svc = getattr(app.state, "semantic_cache", None)
                         adm = getattr(sem_svc, "last_admission_decision", None) if sem_svc is not None else None
-                        if adm is not None and not entry["cached"]:
-                            entry["admission_status"] = adm.status.value
-                            entry["admission_reason_code"] = adm.reason_code.value
+                        if not entry["cached"]:
+                            if adm is not None:
+                                entry["admission_status"] = adm.status.value
+                                entry["admission_reason_code"] = adm.reason_code.value
+                            else:
+                                entry["admission_status"] = "BYPASS"
+                                entry["admission_reason_code"] = "CACHE_BYPASSED_SENSITIVE_OR_INELIGIBLE"
 
                         if case.get("followup_messages") and case.get("followup_principal"):
                             hdr_fu = token_hdrs[case["followup_principal"]]
+                            if sem_svc is not None:
+                                sem_svc.last_admission_decision = None
                             await budgeted_provider.pace_before_upstream()
                             r2 = await client.post(
                                 "/query",
@@ -1797,6 +1909,9 @@ async def _run_full_workload_cases(
                         outcomes.append(entry)
 
                     # Cross-tenant isolation spot check
+                    if sem_svc is not None:
+                        sem_svc.last_admission_decision = None
+                    budgeted_provider.set_dispatch_context("gateway_workload", "LPE-CROSS-TENANT")
                     r_xt = await client.post(
                         "/query",
                         headers=token_hdrs["frank"],
@@ -1876,6 +1991,8 @@ def render_stage38a_markdown(report: Dict[str, Any]) -> str:
     mc = report.get("mode_c_exact_plus_semantic") or {}
     ds = report.get("dataset") or {}
     env = report.get("environment") or {}
+    rec = report.get("dispatch_reconciliation") or {}
+    ledger = report.get("dispatch_ledger") or []
     curr = b.get("currency", "USD")
 
     lines = [
@@ -1885,9 +2002,10 @@ def render_stage38a_markdown(report: Dict[str, Any]) -> str:
         f"- Commit SHA: `{report.get('commit_sha', 'unknown')}`",
         f"- Dataset: `{ds.get('name', 'stage3_8a')}` v`{ds.get('version', '1.0')}` (SHA-256: `{ds.get('sha256', 'unknown')}`)",
         f"- Provider / Model: `{report.get('provider')}` / `{report.get('model')}`",
-        f"- Production Readiness Claim: `{report.get('production_readiness')}`",
+        f"- Benchmark Status: `{report.get('benchmark_status', 'unknown')}` | Production Readiness Claim: `{report.get('production_readiness')}`",
         f"- Streaming Semantic Cache Supported: `{env.get('streaming_semantic_cache_supported')}` (exact streaming only)",
         f"- Physical Groq Dispatches: `{b.get('physical_requests_dispatched', b.get('requests_made', 0))}` / `{b.get('max_requests')}`",
+        f"- Dispatch Reconciliation: `{rec.get('by_phase')}` | Gateway `/admin/metrics` provider calls: `{rec.get('gateway_metrics_provider_calls_attempted')}` | Reconciled: `{rec.get('gateway_ledger_matches_metrics')}`",
         f"- Logical Operations: `{b.get('logical_operations', 0)}` | Retries: `{b.get('retry_attempts', 0)}`",
         f"- Successful Responses: `{b.get('successful_responses', 0)}` | Failed Attempts: `{b.get('failed_attempts', 0)}` (Unprocessed: `{b.get('unprocessed_failures_count', 0)}`, Uncertain/Ambiguous: `{b.get('uncertain_failures_count', 0)}`, Partial Stream: `{b.get('partial_stream_failures_count', 0)}`) | Budget Rejections: `{b.get('budget_rejections', 0)}`",
         f"- Token Ceilings (Input Heuristic / Output Cap): `{b.get('max_input_tokens')}` / `{b.get('max_output_tokens')}`",
@@ -1901,15 +2019,33 @@ def render_stage38a_markdown(report: Dict[str, Any]) -> str:
         "",
         "## Comparable Benchmark Summary (Cold vs Warm)",
         "",
+        f"- **Benchmark Status:** `{report.get('benchmark_status', 'unknown')}`",
         f"- **Mode A (Upstream Only):** `{ma.get('latency_summary')}`",
         f"- **Mode B (Exact Cache Only) Cold Miss:** `{mb.get('cold_miss_latency')}` | **Warm Exact Hit:** `{mb.get('warm_exact_hit_latency')}`",
         f"- **Mode C (Exact + Semantic) Cold Miss:** `{mc.get('cold_miss_latency')}` | **Warm Exact Hit:** `{mc.get('warm_exact_hit_latency')}` | **Warm Semantic Hit:** `{mc.get('warm_semantic_hit_latency')}`",
+    ]
+    if ledger:
+        lines.extend([
+            "",
+            "## Physical Dispatch Ledger (Sanitized)",
+            "",
+            "| Seq | Phase | Case / Check ID | Op | Attempt | Status | Tokens (In/Out) | Actual Cost USD |",
+            "|---|---|---|---|---|---|---|---|",
+        ])
+        for row in ledger:
+            lines.append(
+                f"| `{row.get('dispatch_seq')}` | `{row.get('phase')}` | `{row.get('case_id')}` | "
+                f"`{row.get('operation')}` | `{row.get('attempt')}` | `{row.get('status')}` | "
+                f"`{row.get('prompt_tokens')}/{row.get('completion_tokens')}` | `{row.get('actual_cost_usd')}` |"
+            )
+
+    lines.extend([
         "",
         "## Controlled Fault-Injection Matrix",
         "",
         "| Case | Scenario | Source | Passed |",
         "|---|---|---|---|",
-    ]
+    ])
     for item in report.get("failure_recovery_matrix", []):
         lines.append(f"| `{item['id']}` | {item['scenario']} | `{item['source']}` | `{item['passed']}` |")
 

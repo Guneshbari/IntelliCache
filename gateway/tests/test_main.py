@@ -194,6 +194,7 @@ class TestLifespanStartupAndShutdown(unittest.IsolatedAsyncioTestCase):
             with patch("asyncpg.create_pool", new_callable=AsyncMock, return_value=mock_pool), \
                  patch("app.main.run_migrations", new_callable=AsyncMock) as mock_migrations, \
                  patch("app.main.run_vector_migrations", new_callable=AsyncMock) as mock_vec_migrations, \
+                 patch("app.main.sync_semantic_serving_controller_with_postgres", new_callable=AsyncMock), \
                  patch("app.main.EmbeddingProviderFactory.create") as mock_factory:
 
                 mock_provider = MagicMock()
@@ -384,6 +385,7 @@ class TestLifespanStartupAndShutdown(unittest.IsolatedAsyncioTestCase):
             with patch("asyncpg.create_pool", new_callable=AsyncMock, return_value=mock_pool), \
                  patch("app.main.run_migrations", new_callable=AsyncMock), \
                  patch("app.main.run_vector_migrations", new_callable=AsyncMock), \
+                 patch("app.main.sync_semantic_serving_controller_with_postgres", new_callable=AsyncMock), \
                  patch("app.main.EmbeddingProviderFactory.create") as mock_factory:
 
                 mock_provider = MagicMock()

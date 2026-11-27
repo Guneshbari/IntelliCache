@@ -58,11 +58,14 @@ from .legacy import (
 )
 from .policy import SemanticCachePolicy
 from .control import (
+    PostgresRuntimeControlStore,
     RuntimeServingControlState,
     SemanticServingController,
+    detach_postgres_runtime_control,
     get_semantic_serving_controller,
     reset_semantic_serving_controller,
     sync_semantic_serving_controller_from_settings,
+    sync_semantic_serving_controller_with_postgres,
 )
 from .service import SemanticCacheService
 from .verification import ResponseArtifactVerifier
@@ -90,6 +93,7 @@ __all__ = [
     "LegacyMigrationReport",
     "MetadataStatus",
     "PostgresLegacyLifecycleManager",
+    "PostgresRuntimeControlStore",
     "REQUIRED_DIMENSIONS",
     "ResponseArtifactVerifier",
     "ResponseVerificationResult",
@@ -116,9 +120,11 @@ __all__ = [
     "compute_evidence_binding_digest",
     "compute_response_digest",
     "compute_variant_key",
+    "detach_postgres_runtime_control",
     "extract_effective_user_query",
     "get_default_evidence_authority",
     "get_semantic_serving_controller",
     "reset_semantic_serving_controller",
     "sync_semantic_serving_controller_from_settings",
+    "sync_semantic_serving_controller_with_postgres",
 ]

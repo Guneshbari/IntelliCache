@@ -316,19 +316,23 @@ async def resolve_fastembed_database_url() -> str:
     return validate_test_database_url(raw_url)
 
 
-async def reset_pg_tables(db_url: str) -> None:
-    """Truncates all cache, vector, variant, and conversation tables if present."""
+async def reset_pg_tables(db_url: str, *, include_runtime_control: bool = False) -> None:
+    """Truncates cache, vector, variant, and conversation tables (and optionally shared runtime control)."""
+    tables = [
+        "conversation_messages",
+        "conversation_turns",
+        "conversations",
+        "shadow_evaluations",
+        "semantic_variant_records",
+        "vector_records",
+        "cache_entries",
+    ]
+    if include_runtime_control:
+        tables = ["semantic_runtime_namespace_overrides", "semantic_runtime_control", *tables]
+
     conn = await asyncpg.connect(db_url)
     try:
-        for table in (
-            "conversation_messages",
-            "conversation_turns",
-            "conversations",
-            "shadow_evaluations",
-            "semantic_variant_records",
-            "vector_records",
-            "cache_entries",
-        ):
+        for table in tables:
             exists = await conn.fetchval(
                 """
                 SELECT 1
@@ -529,6 +533,8 @@ async def run_operational_evaluation(
     benchmark_report: Dict[str, Any] = {}
 
     get_metrics_collector().reset()
+    if resolved_db_url:
+        await reset_pg_tables(resolved_db_url, include_runtime_control=True)
     reset_semantic_serving_controller(False)
 
     patch_ctx: Any
@@ -1178,6 +1184,8 @@ async def run_operational_evaluation(
             set_query_cache(saved_cache)
             set_semantic_cache(saved_sem)
             set_vector_store(saved_vs)
+            if resolved_db_url:
+                await reset_pg_tables(resolved_db_url, include_runtime_control=True)
             reset_semantic_serving_controller(False)
             get_metrics_collector().reset()
             reload_settings()

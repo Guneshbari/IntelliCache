@@ -678,6 +678,52 @@ class TestStage38APhysicalRequestAccounting(unittest.IsolatedAsyncioTestCase):
         res = await provider.generate(req)
         self.assertEqual(res.text, "Prod answer")
 
+    async def test_sensitive_bypass_clears_stale_admission_and_records_dispatch_ledger(self) -> None:
+        cache = ExactCache(max_entries=10)
+        core = IntelliCacheCore(cache=cache)
+        mock_sem = MagicMock()
+        mock_sem.last_admission_decision = MagicMock(status="ADMIT", reason_code="ADMISSION_ADMITTED")
+        core.semantic_cache = mock_sem
+
+        budget = LiveEvalBudgetGuard(
+            max_requests=5,
+            max_cost=1.0,
+            input_cost_per_million=10.0,
+            output_cost_per_million=20.0,
+            pricing_source="unit_test",
+            pricing_effective_date="2026-11-27",
+        )
+        client = AsyncMock()
+        resp = MagicMock()
+        resp.choices = [MagicMock(message=MagicMock(content="Sensitive URI ok"), finish_reason="stop")]
+        resp.usage = MagicMock(prompt_tokens=15, completion_tokens=5, total_tokens=20)
+        client.chat.completions.create = AsyncMock(return_value=resp)
+        client.close = AsyncMock()
+
+        provider = GroqProvider(api_key="gsk_test", client_factory=lambda: client)
+        proxy = BudgetedProviderProxy(inner=provider, budget=budget)
+        proxy.set_dispatch_context("gateway_workload", "LPE-019")
+
+        req_sensitive = GenerationRequest(
+            model="llama-3.3-70b-versatile",
+            messages=[ChatMessage(role="user", content="Check postgresql://user:Pass123@localhost:5432/db")],
+            max_tokens=50,
+            visibility="tenant_shared",
+            temperature=0.0,
+        )
+        res = await core.execute_query(req_sensitive, proxy)
+        self.assertFalse(res.cached)
+        # Sensitive bypass must clear stale last_admission_decision so runners never misattribute previous decision
+        self.assertIsNone(mock_sem.last_admission_decision)
+        self.assertEqual(len(budget.dispatch_ledger), 1)
+        entry = budget.dispatch_ledger[0]
+        self.assertEqual(entry["phase"], "gateway_workload")
+        self.assertEqual(entry["case_id"], "LPE-019")
+        self.assertEqual(entry["status"], "succeeded")
+        self.assertEqual(entry["prompt_tokens"], 15)
+        self.assertEqual(entry["completion_tokens"], 5)
+        self.assertNotIn("Pass123", json.dumps(entry))
+
 
 class TestStage38AMonetaryCostEnforcement(unittest.IsolatedAsyncioTestCase):
     """Verifies strict monetary cost-budget enforcement, conservative estimation, and reconciliation."""

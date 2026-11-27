@@ -538,10 +538,11 @@ class TestStage371HttpEndToEndClosure(unittest.IsolatedAsyncioTestCase):
         )
 
     async def asyncTearDown(self) -> None:
+        await reset_pg_tables(self.db_url, include_runtime_control=True)
         reset_semantic_serving_controller()
 
     async def test_gen001_through_gen010_http_closure_and_observability(self) -> None:
-        await reset_pg_tables(self.db_url)
+        await reset_pg_tables(self.db_url, include_runtime_control=True)
         env = build_stage37_env(self.db_url)
         indep_seed = "How do I reverse a string cleanly in Python?"
         indep_para = "Reverse a string cleanly in Python"

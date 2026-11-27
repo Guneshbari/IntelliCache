@@ -147,7 +147,7 @@ class IntelliCacheCore:
         collector: RuntimeMetricsCollector,
     ) -> bool:
         """
-        Fail-closed runtime serving kill-switch check.
+        Synchronous fail-closed runtime serving kill-switch check.
         Effective serving requires BOTH startup enablement AND runtime controller True.
         """
         if self.semantic_cache is None or not self.semantic_cache_startup_enabled:
@@ -158,6 +158,34 @@ class IntelliCacheCore:
             return False
         try:
             allowed = controller.is_serving_enabled(ns)
+        except Exception:
+            collector.record_runtime_control_failure(ns)
+            return False
+        if not isinstance(allowed, bool):
+            collector.record_runtime_control_failure(ns)
+            return False
+        return allowed
+
+    async def _acheck_semantic_serving_runtime(
+        self,
+        ns: str,
+        collector: RuntimeMetricsCollector,
+    ) -> bool:
+        """
+        Authoritative async fail-closed runtime serving kill-switch check (Stage 3.8B).
+        Uses PostgreSQL-backed shared state when configured so workers share runtime toggles.
+        """
+        if self.semantic_cache is None or not self.semantic_cache_startup_enabled:
+            return False
+        controller = self._get_serving_controller()
+        if controller is None:
+            collector.record_runtime_control_failure(ns)
+            return False
+        try:
+            if hasattr(controller, "acheck_serving_enabled"):
+                allowed = await controller.acheck_serving_enabled(ns)
+            else:
+                allowed = controller.is_serving_enabled(ns)
         except Exception:
             collector.record_runtime_control_failure(ns)
             return False
@@ -368,6 +396,8 @@ class IntelliCacheCore:
 
         # 2. Strict Bypass or Fail-Closed Unidentifiable Privacy Scope
         if request.bypass_cache or not self.cache_enabled or not can_use_exact_cache:
+            if self.semantic_cache is not None and hasattr(self.semantic_cache, "last_admission_decision"):
+                self.semantic_cache.last_admission_decision = None
             await self._safe_cache_counter(self.cache.record_miss(), op_name="record_miss", namespace=ns)
             collector.record_provider_attempt(ns)
             prov_start = time.perf_counter()
@@ -458,9 +488,9 @@ class IntelliCacheCore:
         # Leader execution lifecycle
         flight_completed = False
         try:
-            # 4. Leader: Semantic Cache Lookup (two-point runtime serving control check)
+            # 4. Leader: Semantic Cache Lookup (two-point authoritative runtime serving control check)
             if self.semantic_cache is not None and self.semantic_cache_startup_enabled:
-                if not self._check_semantic_serving_runtime(ns, collector):
+                if not await self._acheck_semantic_serving_runtime(ns, collector):
                     # Checkpoint 1 (pre-lookup): runtime kill switch disabled or failed closed
                     collector.record_semantic_runtime_disabled_skip(ns)
                     self._record_semantic_stat_attr(self.semantic_cache, "runtime_disabled_skips")
@@ -468,7 +498,7 @@ class IntelliCacheCore:
                     semantic_hit = await self.semantic_cache.lookup(request)
 
                     if semantic_hit is not None:
-                        if not self._check_semantic_serving_runtime(ns, collector):
+                        if not await self._acheck_semantic_serving_runtime(ns, collector):
                             # Checkpoint 2 (pre-delivery): runtime serving disabled while lookup was in-flight
                             collector.record_semantic_runtime_disabled_skip(ns)
                             collector.record_upstream_fallback_after_semantic_miss(ns)

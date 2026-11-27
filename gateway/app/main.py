@@ -33,8 +33,10 @@ from app.semantic_cache import (
     get_default_evidence_authority,
 )
 from app.semantic_cache.control import (
+    detach_postgres_runtime_control,
     get_semantic_serving_controller,
     sync_semantic_serving_controller_from_settings,
+    sync_semantic_serving_controller_with_postgres,
 )
 from app.semantic_cache.shadow import (
     ReadOnlySemanticCacheService,
@@ -366,7 +368,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         app.state.vector_store = vector_store
         app.state.semantic_cache = semantic_cache
         app.state.shadow_service = shadow_service
-        app.state.semantic_serving_controller = sync_semantic_serving_controller_from_settings(settings)
+        if settings.cache_backend == "postgres" and pool is not None:
+            app.state.semantic_serving_controller = await sync_semantic_serving_controller_with_postgres(
+                settings, pool
+            )
+        else:
+            app.state.semantic_serving_controller = sync_semantic_serving_controller_from_settings(settings)
 
         set_query_cache(cache)
         set_vector_store(vector_store)
@@ -385,7 +392,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 shadow_service=shadow_service,
             )
         finally:
-            sync_semantic_serving_controller_from_settings(settings)
+            if settings.cache_backend == "postgres":
+                detach_postgres_runtime_control()
+            else:
+                sync_semantic_serving_controller_from_settings(settings)
             set_shadow_service(None)
             set_semantic_cache(None)
             set_vector_store(None)
@@ -412,7 +422,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 shadow_service=shadow_service,
             )
         finally:
-            sync_semantic_serving_controller_from_settings(settings)
+            if settings.cache_backend == "postgres":
+                detach_postgres_runtime_control()
+            else:
+                sync_semantic_serving_controller_from_settings(settings)
             set_shadow_service(None)
             set_semantic_cache(None)
             set_vector_store(None)
@@ -587,7 +600,7 @@ def create_app() -> FastAPI:
         is_admin, client_ns = auth_info
         target_ns = None if is_admin else client_ns
         controller = get_semantic_serving_controller()
-        runtime_enabled = controller.is_serving_enabled(target_ns)
+        runtime_enabled = await controller.acheck_serving_enabled(target_ns)
         if hasattr(request.app.state, "semantic_cache") and request.app.state.semantic_cache is not None:
             stats_dict = request.app.state.semantic_cache.get_stats(namespace=target_ns)
             stats_dict["enabled"] = bool(current_settings.semantic_cache_enabled)
@@ -646,7 +659,13 @@ def create_app() -> FastAPI:
     ) -> Dict[str, Any]:
         """Inspects server-side runtime semantic serving control state. Requires administrative token."""
         controller = get_semantic_serving_controller()
-        state = controller.get_state()
+        try:
+            state = await controller.aget_state()
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Runtime semantic serving state store is unavailable.",
+            )
         return {
             "status": "ok",
             **state.to_dict(
@@ -668,7 +687,7 @@ def create_app() -> FastAPI:
         """Atomically enables or disables runtime semantic cache serving. Requires administrative token."""
         controller = get_semantic_serving_controller()
         try:
-            state = controller.set_serving_enabled(
+            state = await controller.aset_serving_enabled(
                 payload.enabled,
                 namespace=payload.namespace,
                 clear_namespace_override=payload.clear_namespace_override,
@@ -679,6 +698,11 @@ def create_app() -> FastAPI:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=str(val_err),
+            )
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Failed to persist runtime semantic serving state update.",
             )
         return {
             "status": "ok",
