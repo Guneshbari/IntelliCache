@@ -131,6 +131,11 @@ class Settings(BaseModel):
         if (os.getenv("LIVE_PROVIDER_MAX_INPUT_TOKENS") or "").strip()
         else None
     )
+    live_provider_max_output_tokens: Optional[int] = Field(
+        default_factory=lambda: int(os.getenv("LIVE_PROVIDER_MAX_OUTPUT_TOKENS"))
+        if (os.getenv("LIVE_PROVIDER_MAX_OUTPUT_TOKENS") or "").strip()
+        else None
+    )
 
     # Server Configuration
     host: str = Field(
@@ -411,6 +416,10 @@ class Settings(BaseModel):
         if self.live_provider_max_input_tokens is not None and self.live_provider_max_input_tokens < 1:
             raise ValueError(
                 f"LIVE_PROVIDER_MAX_INPUT_TOKENS must be >= 1, got {self.live_provider_max_input_tokens}."
+            )
+        if self.live_provider_max_output_tokens is not None and self.live_provider_max_output_tokens < 1:
+            raise ValueError(
+                f"LIVE_PROVIDER_MAX_OUTPUT_TOKENS must be >= 1, got {self.live_provider_max_output_tokens}."
             )
 
         if self.live_provider_evaluation_enabled:

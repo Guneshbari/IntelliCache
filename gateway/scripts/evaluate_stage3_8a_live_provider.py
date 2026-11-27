@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -119,15 +120,38 @@ class PhysicalRequestReservation:
         self._settled = True
         await self.guard._reconcile_success(self.reserved_cost, usage, usage_available=usage_available)
 
-    async def record_failure(self, err: BaseException) -> None:
+    async def record_failure(
+        self,
+        err: BaseException,
+        *,
+        dispatched: bool = True,
+        partial_output: bool = False,
+        usage: Optional[UsageMetrics] = None,
+        usage_available: bool = False,
+    ) -> None:
         if self._settled:
             return
         self._settled = True
-        await self.guard._reconcile_failure(self.reserved_cost, err)
+        await self.guard._reconcile_failure(
+            self.reserved_cost,
+            err,
+            dispatched=dispatched,
+            partial_output=partial_output,
+            usage=usage,
+            usage_available=usage_available,
+        )
 
 
 class LiveEvalBudgetGuard:
-    """Enforces hard upper bounds on physical live provider dispatches and strict monetary cost ceilings."""
+    """
+    Enforces hard physical provider request ceilings, token ceilings, and heuristic
+    pre-dispatch estimated-cost reservation limits.
+
+    Note: Because Groq serves diverse models without a single bundled model-exact tokenizer,
+    pre-dispatch token/cost reservations use `heuristic_char_ratio_v1` and cannot alone
+    guarantee an exact provider-billing ceiling; `strict` mode conservatively retains
+    uncertain spend on ambiguous failures and tracks overruns against actual usage.
+    """
 
     def __init__(
         self,
@@ -140,9 +164,19 @@ class LiveEvalBudgetGuard:
         pricing_source: Optional[str] = None,
         pricing_effective_date: Optional[str] = None,
         cost_mode: str = "strict",
+        max_input_tokens: Optional[int] = None,
+        max_output_tokens: Optional[int] = None,
     ) -> None:
         if max_requests < 1:
             raise ValueError(f"max_requests must be >= 1, got {max_requests}.")
+
+        if cost_mode not in ("strict", "report_only"):
+            raise ValueError(f"cost_mode must be 'strict' or 'report_only', got '{cost_mode}'.")
+
+        if max_input_tokens is not None and (isinstance(max_input_tokens, bool) or int(max_input_tokens) < 1):
+            raise ValueError(f"max_input_tokens must be >= 1, got {max_input_tokens}.")
+        if max_output_tokens is not None and (isinstance(max_output_tokens, bool) or int(max_output_tokens) < 1):
+            raise ValueError(f"max_output_tokens must be >= 1, got {max_output_tokens}.")
 
         for name, val in (
             ("input_cost_per_million", input_cost_per_million),
@@ -169,6 +203,8 @@ class LiveEvalBudgetGuard:
         self.pricing_source = pricing_source
         self.pricing_effective_date = pricing_effective_date
         self.cost_mode = cost_mode
+        self.max_input_tokens = int(max_input_tokens) if max_input_tokens is not None else None
+        self.max_output_tokens = int(max_output_tokens) if max_output_tokens is not None else None
 
         # Physical and logical attempt counters
         self.physical_requests_dispatched = 0
@@ -177,14 +213,20 @@ class LiveEvalBudgetGuard:
         self.retry_attempts = 0
         self.successful_responses = 0
         self.failed_attempts = 0
+        self.unprocessed_failures_count = 0
+        self.uncertain_failures_count = 0
+        self.partial_stream_failures_count = 0
         self.budget_rejections = 0
 
-        # Cost and token tracking
+        # Cost and token tracking (kept cleanly separated: actual vs uncertain vs released vs reserved)
         self.active_reserved_cost: float = 0.0
         self.accumulated_reserved_cost: float = 0.0
         self.reservation_overrun_cost: float = 0.0
         self.reservation_overrun_count: int = 0
-        self.accumulated_cost: float = 0.0
+        self.actual_reported_cost: float = 0.0
+        self.uncertain_estimated_cost: float = 0.0
+        self.released_unprocessed_cost: float = 0.0
+        self.cost_ceiling_exceeded_in_report_only: bool = False
 
         self.prompt_tokens = 0
         self.completion_tokens = 0
@@ -194,6 +236,11 @@ class LiveEvalBudgetGuard:
 
         self.terminated_early_reason: Optional[str] = None
         self._lock = asyncio.Lock()
+
+    @property
+    def accumulated_cost(self) -> float:
+        """Total accounted spend (reported actual cost plus conservatively retained uncertain estimates)."""
+        return self.actual_reported_cost + self.uncertain_estimated_cost
 
     @property
     def pricing_configured(self) -> bool:
@@ -212,16 +259,16 @@ class LiveEvalBudgetGuard:
 
     def estimate_tokens(self, request: GenerationRequest) -> Tuple[int, int]:
         """
-        Conservative token estimation using char_ratio_with_safety_margin_v1.
-        Prompt: ceil(chars / 3.0 * 1.5) + 32
-        Completion: request.max_tokens if provided and > 0, else 2048 ceiling.
+        Heuristic pre-dispatch token estimation (`heuristic_char_ratio_v1`).
+        Prompt: ceil(chars / 3.0 * 1.5) + 32 (heuristic estimate; tokenization varies by content/model).
+        Completion: request.max_tokens if positive, else max_output_tokens ceiling or 2048 fallback.
         """
         total_chars = sum(len(m.role or "") + len(m.content or "") for m in request.messages)
         prompt_tokens_est = int(math.ceil((total_chars / 3.0) * 1.5)) + 32
         if request.max_tokens is not None and request.max_tokens > 0:
             completion_tokens_est = int(request.max_tokens)
         else:
-            completion_tokens_est = 2048
+            completion_tokens_est = self.max_output_tokens if self.max_output_tokens is not None else 2048
         return prompt_tokens_est, completion_tokens_est
 
     async def reserve_attempt(
@@ -232,14 +279,14 @@ class LiveEvalBudgetGuard:
         is_streaming: bool,
     ) -> PhysicalRequestReservation:
         """
-        Atomically reserves 1 physical provider request attempt and its conservative cost.
-        Blocks and raises LiveEvalBudgetExceededError before outbound HTTP dispatch if limits are reached.
+        Atomically reserves 1 physical provider request attempt and its heuristic estimated cost.
+        Blocks and raises LiveEvalBudgetExceededError before outbound HTTP dispatch if configured limits fail.
         """
         prompt_est, comp_est = self.estimate_tokens(request)
         reserved_cost = self.calculate_cost(prompt_est, comp_est) or 0.0
 
         async with self._lock:
-            # 1. Enforce physical request limit
+            # 1. Enforce physical request limit (always active in both strict and report_only modes)
             if self.physical_requests_dispatched >= self.max_requests:
                 self.budget_rejections += 1
                 self.terminated_early_reason = f"max_requests ({self.max_requests}) reached"
@@ -247,27 +294,84 @@ class LiveEvalBudgetGuard:
                     f"Live evaluation budget exhausted: {self.terminated_early_reason}."
                 )
 
-            # 2. Enforce monetary spend ceiling
-            if self.max_cost is not None:
-                if not self.pricing_configured:
+            # 2. Enforce configured input-token heuristic ceiling BEFORE dispatch
+            if self.max_input_tokens is not None and prompt_est > self.max_input_tokens:
+                self.budget_rejections += 1
+                self.terminated_early_reason = (
+                    f"max_input_tokens ({self.max_input_tokens}) exceeded by heuristic input estimate ({prompt_est})"
+                )
+                raise LiveEvalBudgetExceededError(
+                    f"Live evaluation input ceiling exceeded: {self.terminated_early_reason}."
+                )
+
+            # 3. Enforce configured / required output-token ceiling BEFORE dispatch
+            if self.max_output_tokens is not None:
+                if request.max_tokens is None or isinstance(request.max_tokens, bool) or request.max_tokens <= 0:
                     self.budget_rejections += 1
-                    self.terminated_early_reason = "pricing_not_configured"
-                    raise LiveEvalBudgetExceededError(
-                        "Live evaluation cost ceiling configured but pricing is not configured."
-                    )
-                potential_total = self.accumulated_cost + self.active_reserved_cost + reserved_cost
-                if potential_total > (self.max_cost + 1e-9):
-                    self.budget_rejections += 1
-                    remaining = max(0.0, self.max_cost - (self.accumulated_cost + self.active_reserved_cost))
                     self.terminated_early_reason = (
-                        f"max_cost ({self.max_cost:.6f} {self.currency}) reached: "
-                        f"estimated ${reserved_cost:.6f} exceeds remaining budget (${remaining:.6f})"
+                        f"max_output_tokens ({self.max_output_tokens}) requires explicit positive request.max_tokens"
                     )
                     raise LiveEvalBudgetExceededError(
-                        f"Live evaluation cost ceiling reached: {self.terminated_early_reason}."
+                        f"Live evaluation output ceiling requires explicit max_tokens: {self.terminated_early_reason}."
+                    )
+                if request.max_tokens > self.max_output_tokens:
+                    self.budget_rejections += 1
+                    self.terminated_early_reason = (
+                        f"max_output_tokens ({self.max_output_tokens}) exceeded by request.max_tokens ({request.max_tokens})"
+                    )
+                    raise LiveEvalBudgetExceededError(
+                        f"Live evaluation output ceiling exceeded: {self.terminated_early_reason}."
+                    )
+            elif self.cost_mode == "strict" and self.max_cost is not None:
+                if request.max_tokens is None or isinstance(request.max_tokens, bool) or request.max_tokens <= 0:
+                    self.budget_rejections += 1
+                    self.terminated_early_reason = (
+                        "strict monetary cost mode requires explicit positive request.max_tokens to bound output tokens"
+                    )
+                    raise LiveEvalBudgetExceededError(
+                        f"Live evaluation strict cost ceiling requires explicit output bound: {self.terminated_early_reason}."
                     )
 
-            # 3. Apply reservations atomically
+            # 4. Enforce or report monetary reservation ceiling depending on cost_mode
+            if self.max_cost is not None:
+                if self.cost_mode == "strict":
+                    if not self.pricing_configured:
+                        self.budget_rejections += 1
+                        self.terminated_early_reason = "pricing_not_configured"
+                        raise LiveEvalBudgetExceededError(
+                            "Live evaluation cost ceiling configured but pricing is not configured."
+                        )
+                    potential_total = (
+                        self.actual_reported_cost
+                        + self.uncertain_estimated_cost
+                        + self.active_reserved_cost
+                        + reserved_cost
+                    )
+                    if potential_total > (self.max_cost + 1e-9):
+                        self.budget_rejections += 1
+                        remaining = max(
+                            0.0,
+                            self.max_cost - (self.actual_reported_cost + self.uncertain_estimated_cost + self.active_reserved_cost),
+                        )
+                        self.terminated_early_reason = (
+                            f"max_cost ({self.max_cost:.6f} {self.currency}) reached: "
+                            f"estimated reservation ${reserved_cost:.6f} exceeds remaining budget (${remaining:.6f})"
+                        )
+                        raise LiveEvalBudgetExceededError(
+                            f"Live evaluation cost ceiling reached: {self.terminated_early_reason}."
+                        )
+                else:
+                    # report_only: never block on monetary ceiling; only record whether ceiling would be exceeded
+                    potential_total = (
+                        self.actual_reported_cost
+                        + self.uncertain_estimated_cost
+                        + self.active_reserved_cost
+                        + reserved_cost
+                    )
+                    if self.pricing_configured and potential_total > (self.max_cost + 1e-9):
+                        self.cost_ceiling_exceeded_in_report_only = True
+
+            # 5. Apply physical dispatch & heuristic reservation atomically
             self.physical_requests_dispatched += 1
             self.requests_made = self.physical_requests_dispatched
             if attempt > 0:
@@ -282,6 +386,67 @@ class LiveEvalBudgetGuard:
                 attempt=attempt,
             )
 
+    @staticmethod
+    def _classify_failure(err: BaseException, *, dispatched: bool, partial_output: bool) -> str:
+        """
+        Distinguishes definitely unprocessed rejections from ambiguous/partial failures.
+        - 'unprocessed': never reached model inference (not dispatched or 400/401/403/404/422/429 without partial stream).
+        - 'partial_stream': streaming failed/cancelled after delivering tokens.
+        - 'ambiguous': timeout, connection drop, 5xx, or cancellation after dispatch (may be billed upstream).
+        """
+        if not dispatched:
+            return "unprocessed"
+        if partial_output:
+            return "partial_stream"
+
+        non_billable_types: Tuple[type, ...] = (
+            groq.AuthenticationError,
+            groq.PermissionDeniedError,
+            groq.BadRequestError,
+            groq.NotFoundError,
+            groq.UnprocessableEntityError,
+            groq.RateLimitError,
+            ProviderAuthenticationError,
+            ProviderRateLimitError,
+            ProviderConfigurationError,
+        )
+        if isinstance(err, non_billable_types):
+            return "unprocessed"
+
+        if isinstance(err, (groq.APIStatusError, ProviderUpstreamError)):
+            code = getattr(err, "status_code", None)
+            if code in (400, 401, 403, 404, 422, 429):
+                return "unprocessed"
+
+        return "ambiguous"
+
+    def _record_reported_usage_locked(
+        self,
+        reserved_cost: float,
+        usage: UsageMetrics,
+    ) -> None:
+        self.usage_reported_calls += 1
+        pt = max(0, int(usage.prompt_tokens))
+        ct = max(0, int(usage.completion_tokens))
+        tt = max(0, int(usage.total_tokens))
+        self.prompt_tokens += pt
+        self.completion_tokens += ct
+        self.total_tokens += tt
+
+        actual_cost = self.calculate_cost(pt, ct)
+        if actual_cost is not None:
+            self.actual_reported_cost += actual_cost
+            if actual_cost > reserved_cost:
+                overrun = actual_cost - reserved_cost
+                self.reservation_overrun_cost += overrun
+                self.reservation_overrun_count += 1
+            if (
+                self.cost_mode == "report_only"
+                and self.max_cost is not None
+                and (self.actual_reported_cost + self.uncertain_estimated_cost) > (self.max_cost + 1e-9)
+            ):
+                self.cost_ceiling_exceeded_in_report_only = True
+
     async def _reconcile_success(
         self,
         reserved_cost: float,
@@ -294,34 +459,41 @@ class LiveEvalBudgetGuard:
             self.successful_responses += 1
             if not usage_available or usage is None:
                 self.usage_missing_calls += 1
-                if self.cost_mode == "strict" and self.pricing_configured and reserved_cost > 0.0:
-                    self.accumulated_cost += reserved_cost
+                if self.pricing_configured and reserved_cost > 0.0:
+                    self.uncertain_estimated_cost += reserved_cost
                 return
 
-            self.usage_reported_calls += 1
-            pt = max(0, int(usage.prompt_tokens))
-            ct = max(0, int(usage.completion_tokens))
-            tt = max(0, int(usage.total_tokens))
-            self.prompt_tokens += pt
-            self.completion_tokens += ct
-            self.total_tokens += tt
-
-            actual_cost = self.calculate_cost(pt, ct)
-            if actual_cost is not None:
-                self.accumulated_cost += actual_cost
-                if actual_cost > reserved_cost:
-                    overrun = actual_cost - reserved_cost
-                    self.reservation_overrun_cost += overrun
-                    self.reservation_overrun_count += 1
+            self._record_reported_usage_locked(reserved_cost, usage)
 
     async def _reconcile_failure(
         self,
         reserved_cost: float,
         err: BaseException,
+        *,
+        dispatched: bool = True,
+        partial_output: bool = False,
+        usage: Optional[UsageMetrics] = None,
+        usage_available: bool = False,
     ) -> None:
         async with self._lock:
             self.active_reserved_cost = max(0.0, self.active_reserved_cost - reserved_cost)
             self.failed_attempts += 1
+            classification = self._classify_failure(err, dispatched=dispatched, partial_output=partial_output)
+
+            if classification == "unprocessed":
+                self.unprocessed_failures_count += 1
+                if self.pricing_configured and reserved_cost > 0.0:
+                    self.released_unprocessed_cost += reserved_cost
+                return
+
+            self.uncertain_failures_count += 1
+            if classification == "partial_stream":
+                self.partial_stream_failures_count += 1
+
+            if usage_available and usage is not None:
+                self._record_reported_usage_locked(reserved_cost, usage)
+            elif self.pricing_configured and reserved_cost > 0.0:
+                self.uncertain_estimated_cost += reserved_cost
 
     async def reserve_request(self) -> None:
         """Backward-compatible reservation for callers not using attempt_guard hooks."""
@@ -335,16 +507,23 @@ class LiveEvalBudgetGuard:
     def summary(self) -> Dict[str, Any]:
         if not self.pricing_configured:
             cost_status = "unavailable"
-        elif self.usage_missing_calls > 0:
+        elif self.usage_missing_calls > 0 or self.uncertain_failures_count > 0:
             if self.usage_reported_calls > 0:
                 cost_status = "usage_partially_missing"
-            else:
+            elif self.usage_missing_calls > 0:
                 cost_status = "no_usage_reported"
+            else:
+                cost_status = "estimated_uncertain_only"
         elif self.usage_reported_calls > 0:
             cost_status = "calculated_from_usage"
         else:
             cost_status = "no_requests"
 
+        has_accounted_spend = (
+            self.usage_reported_calls > 0
+            or self.usage_missing_calls > 0
+            or self.uncertain_failures_count > 0
+        )
         return {
             "max_requests": self.max_requests,
             "physical_requests_dispatched": self.physical_requests_dispatched,
@@ -353,10 +532,18 @@ class LiveEvalBudgetGuard:
             "retry_attempts": self.retry_attempts,
             "successful_responses": self.successful_responses,
             "failed_attempts": self.failed_attempts,
+            "unprocessed_failures_count": self.unprocessed_failures_count,
+            "uncertain_failures_count": self.uncertain_failures_count,
+            "partial_stream_failures_count": self.partial_stream_failures_count,
             "budget_rejections": self.budget_rejections,
             "max_cost": self.max_cost,
+            "max_input_tokens": self.max_input_tokens,
+            "max_output_tokens": self.max_output_tokens,
             "currency": self.currency,
             "cost_mode": self.cost_mode,
+            "cost_estimation_method": "heuristic_char_ratio_v1",
+            "cost_guarantee": "heuristic_reservation_only_not_billing_guarantee",
+            "cost_ceiling_exceeded_in_report_only": self.cost_ceiling_exceeded_in_report_only,
             "pricing_configured": self.pricing_configured,
             "pricing_source": self.pricing_source,
             "pricing_effective_date": self.pricing_effective_date,
@@ -367,11 +554,24 @@ class LiveEvalBudgetGuard:
             "usage_missing_calls": self.usage_missing_calls,
             "accumulated_reserved_cost": round(self.accumulated_reserved_cost, 6),
             "active_reserved_cost": round(self.active_reserved_cost, 6),
+            "actual_reported_cost_usd": round(self.actual_reported_cost, 6) if self.pricing_configured else None,
+            "uncertain_estimated_cost_usd": round(self.uncertain_estimated_cost, 6) if self.pricing_configured else None,
+            "released_unprocessed_cost_usd": round(self.released_unprocessed_cost, 6) if self.pricing_configured else None,
+            "estimated_total_accounted_cost_usd": (
+                round(self.actual_reported_cost + self.uncertain_estimated_cost, 6)
+                if self.pricing_configured
+                else None
+            ),
             "reservation_overrun_cost": round(self.reservation_overrun_cost, 6),
             "reservation_overrun_count": self.reservation_overrun_count,
             "accumulated_cost_usd": (
-                round(self.accumulated_cost, 6)
-                if (self.pricing_configured and (self.usage_reported_calls > 0 or self.usage_missing_calls > 0))
+                round(
+                    (self.actual_reported_cost + self.uncertain_estimated_cost)
+                    if self.cost_mode == "strict"
+                    else self.actual_reported_cost,
+                    6,
+                )
+                if (self.pricing_configured and has_accounted_spend)
                 else None
             ),
             "cost_status": cost_status,
@@ -428,31 +628,32 @@ class BudgetedProviderProxy(LLMProvider):
         final_chunk: Optional[StreamChunk] = None
         text_parts: List[str] = []
         try:
-            async for chunk in self.inner.stream(request):
-                if not chunk.done:
-                    if chunk.delta:
-                        text_parts.append(chunk.delta)
-                        chunk_count += 1
-                        if ttft_ms is None:
-                            ttft_ms = (time.perf_counter() - t0) * 1000.0
-                    yield chunk
-                else:
-                    final_chunk = chunk
-                    self._last_call_mono = time.monotonic()
-                    total_ms = (time.perf_counter() - t0) * 1000.0
-                    meta = getattr(chunk, "metadata", None) or {}
-                    usage_avail = bool(meta.get("usage_available", False))
-                    self.stream_observations.append({
-                        "model": chunk.model or request.model,
-                        "ttft_ms": round(ttft_ms if ttft_ms is not None else total_ms, 2),
-                        "total_ms": round(total_ms, 2),
-                        "chunk_count": chunk_count,
-                        "output_char_count": len("".join(text_parts)),
-                        "finish_reason": chunk.finish_reason,
-                        "usage_available": usage_avail,
-                        "usage": chunk.usage.to_dict() if (usage_avail and chunk.usage) else None,
-                    })
-                    yield chunk
+            async with contextlib.aclosing(self.inner.stream(request)) as inner_stream:
+                async for chunk in inner_stream:
+                    if not chunk.done:
+                        if chunk.delta:
+                            text_parts.append(chunk.delta)
+                            chunk_count += 1
+                            if ttft_ms is None:
+                                ttft_ms = (time.perf_counter() - t0) * 1000.0
+                        yield chunk
+                    else:
+                        final_chunk = chunk
+                        self._last_call_mono = time.monotonic()
+                        total_ms = (time.perf_counter() - t0) * 1000.0
+                        meta = getattr(chunk, "metadata", None) or {}
+                        usage_avail = bool(meta.get("usage_available", False))
+                        self.stream_observations.append({
+                            "model": chunk.model or request.model,
+                            "ttft_ms": round(ttft_ms if ttft_ms is not None else total_ms, 2),
+                            "total_ms": round(total_ms, 2),
+                            "chunk_count": chunk_count,
+                            "output_char_count": len("".join(text_parts)),
+                            "finish_reason": chunk.finish_reason,
+                            "usage_available": usage_avail,
+                            "usage": chunk.usage.to_dict() if (usage_avail and chunk.usage) else None,
+                        })
+                        yield chunk
         except ProviderError as err:
             self._last_call_mono = time.monotonic()
             self.real_provider_errors.append({
@@ -484,6 +685,8 @@ def validate_live_eval_profile(
     pricing_source: Optional[str] = None,
     pricing_effective_date: Optional[str] = None,
     cost_mode: Optional[str] = None,
+    max_input_tokens: Optional[int] = None,
+    max_output_tokens: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     Validates explicit opt-in, credentials, provider/model configuration, and budget bounds.
@@ -521,6 +724,11 @@ def validate_live_eval_profile(
     env_max_cost = os.getenv("LIVE_PROVIDER_MAX_COST", "").strip()
     eff_max_cost = float(max_cost) if max_cost is not None else (float(env_max_cost) if env_max_cost else None)
 
+    env_max_in_tok = os.getenv("LIVE_PROVIDER_MAX_INPUT_TOKENS", "").strip()
+    eff_max_in_tok = int(max_input_tokens) if max_input_tokens is not None else (int(env_max_in_tok) if env_max_in_tok else None)
+    env_max_out_tok = os.getenv("LIVE_PROVIDER_MAX_OUTPUT_TOKENS", "").strip()
+    eff_max_out_tok = int(max_output_tokens) if max_output_tokens is not None else (int(env_max_out_tok) if env_max_out_tok else None)
+
     if eff_timeout <= 0 or eff_timeout > 300.0:
         raise ProviderConfigurationError(f"LIVE_PROVIDER_TIMEOUT_SECONDS out of bounds: {eff_timeout}")
     if eff_retries < 0 or eff_retries > 5:
@@ -529,6 +737,10 @@ def validate_live_eval_profile(
         raise ProviderConfigurationError(f"LIVE_PROVIDER_MAX_REQUESTS out of bounds: {eff_max_req}")
     if eff_max_cost is not None and (math.isnan(eff_max_cost) or math.isinf(eff_max_cost) or eff_max_cost <= 0):
         raise ProviderConfigurationError(f"LIVE_PROVIDER_MAX_COST must be a finite number > 0, got {eff_max_cost}")
+    if eff_max_in_tok is not None and eff_max_in_tok < 1:
+        raise ProviderConfigurationError(f"LIVE_PROVIDER_MAX_INPUT_TOKENS must be >= 1, got {eff_max_in_tok}")
+    if eff_max_out_tok is not None and eff_max_out_tok < 1:
+        raise ProviderConfigurationError(f"LIVE_PROVIDER_MAX_OUTPUT_TOKENS must be >= 1, got {eff_max_out_tok}")
 
     env_in_cost = os.getenv("LIVE_PROVIDER_INPUT_COST_PER_MILLION", "").strip()
     env_out_cost = os.getenv("LIVE_PROVIDER_OUTPUT_COST_PER_MILLION", "").strip()
@@ -581,6 +793,8 @@ def validate_live_eval_profile(
         "pricing_effective_date": eff_date,
         "currency": curr,
         "cost_mode": mode,
+        "max_input_tokens": eff_max_in_tok,
+        "max_output_tokens": eff_max_out_tok,
     }
 
 
@@ -624,7 +838,7 @@ def build_stage38a_env(
     semantic_serving_enabled: bool,
 ) -> Dict[str, str]:
     """Builds isolated gateway env vars for Mode B or Mode C without changing repo defaults."""
-    return {
+    env: Dict[str, str] = {
         "LLM_PROVIDER": "groq",
         "GROQ_API_KEY": profile["api_key"],
         "GROQ_MODEL": profile["model"],
@@ -636,6 +850,7 @@ def build_stage38a_env(
         "LIVE_PROVIDER_TIMEOUT_SECONDS": str(profile["timeout_seconds"]),
         "LIVE_PROVIDER_MAX_RETRIES": str(profile["max_retries"]),
         "LIVE_PROVIDER_MAX_REQUESTS": str(profile["max_requests"]),
+        "LIVE_PROVIDER_COST_MODE": str(profile.get("cost_mode", "strict")),
         "CLIENT_API_TOKENS": json.dumps(STAGE38A_CLIENT_TOKENS),
         "ADMIN_API_TOKEN": STAGE_3_5_5_ADMIN_TOKEN,
         "PRINCIPAL_IDENTITY_SECRET": STAGE_3_5_5_IDENTITY_SECRET,
@@ -659,6 +874,11 @@ def build_stage38a_env(
         "SEMANTIC_CACHE_TOP_K": "5",
         "SEMANTIC_CACHE_MAX_RETRIEVAL_CANDIDATES": "25",
     }
+    if profile.get("max_input_tokens") is not None:
+        env["LIVE_PROVIDER_MAX_INPUT_TOKENS"] = str(profile["max_input_tokens"])
+    if profile.get("max_output_tokens") is not None:
+        env["LIVE_PROVIDER_MAX_OUTPUT_TOKENS"] = str(profile["max_output_tokens"])
+    return env
 
 
 def _mode_stats(samples: Sequence[float]) -> Dict[str, Any]:
@@ -1086,6 +1306,8 @@ async def run_live_provider_evaluation(
     pricing_source_override: Optional[str] = None,
     pricing_effective_date_override: Optional[str] = None,
     cost_mode_override: Optional[str] = None,
+    max_input_tokens_override: Optional[int] = None,
+    max_output_tokens_override: Optional[int] = None,
     case_ids: Optional[Sequence[str]] = None,
     skip_mode_comparison: bool = False,
     pacing_seconds: float = 5.5,
@@ -1102,6 +1324,8 @@ async def run_live_provider_evaluation(
         pricing_source=pricing_source_override,
         pricing_effective_date=pricing_effective_date_override,
         cost_mode=cost_mode_override,
+        max_input_tokens=max_input_tokens_override,
+        max_output_tokens=max_output_tokens_override,
     )
     resolved_db_url = db_url or await resolve_fastembed_database_url()
     await reset_pg_tables(resolved_db_url)
@@ -1126,6 +1350,8 @@ async def run_live_provider_evaluation(
         pricing_source=profile["pricing_source"],
         pricing_effective_date=profile["pricing_effective_date"],
         cost_mode=profile["cost_mode"],
+        max_input_tokens=profile["max_input_tokens"],
+        max_output_tokens=profile["max_output_tokens"],
     )
 
     _, forbidden_values = build_forbidden_disclosure_values(
@@ -1285,7 +1511,7 @@ async def run_live_provider_evaluation(
     fault_matrix = await run_fault_injection_matrix(resolved_db_url)
 
     report: Dict[str, Any] = {
-        "stage": "3.8A.1",
+        "stage": "3.8A.2",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "commit_sha": commit_sha,
         "dataset": {
@@ -1319,7 +1545,8 @@ async def run_live_provider_evaluation(
         "limitations": [
             "Evaluated against Groq tier-1/free rate limits (requires upstream pacing).",
             "Streaming responses only support exact match caching, not semantic cache admission or lookup.",
-            "Token costs reflect conservative pre-dispatch estimation reconciled with actual provider usage.",
+            "Pre-dispatch token estimation uses heuristic_char_ratio_v1; strict mode enforces an estimated-cost reservation ceiling with explicit output bounds, not a guaranteed billing ceiling.",
+            "Ambiguous failures (timeouts, connection drops, cancellations after dispatch) and partial stream failures conservatively retain reserved estimates as uncertain spend.",
             "Live evaluation opt-in only; safe production defaults remain disabled.",
         ],
         "epistemic_labels": {
@@ -1662,10 +1889,13 @@ def render_stage38a_markdown(report: Dict[str, Any]) -> str:
         f"- Streaming Semantic Cache Supported: `{env.get('streaming_semantic_cache_supported')}` (exact streaming only)",
         f"- Physical Groq Dispatches: `{b.get('physical_requests_dispatched', b.get('requests_made', 0))}` / `{b.get('max_requests')}`",
         f"- Logical Operations: `{b.get('logical_operations', 0)}` | Retries: `{b.get('retry_attempts', 0)}`",
-        f"- Successful Responses: `{b.get('successful_responses', 0)}` | Failed Attempts: `{b.get('failed_attempts', 0)}` | Budget Rejections: `{b.get('budget_rejections', 0)}`",
+        f"- Successful Responses: `{b.get('successful_responses', 0)}` | Failed Attempts: `{b.get('failed_attempts', 0)}` (Unprocessed: `{b.get('unprocessed_failures_count', 0)}`, Uncertain/Ambiguous: `{b.get('uncertain_failures_count', 0)}`, Partial Stream: `{b.get('partial_stream_failures_count', 0)}`) | Budget Rejections: `{b.get('budget_rejections', 0)}`",
+        f"- Token Ceilings (Input Heuristic / Output Cap): `{b.get('max_input_tokens')}` / `{b.get('max_output_tokens')}`",
         f"- Usage Reported Calls / Missing Calls: `{b.get('usage_reported_calls', 0)}` / `{b.get('usage_missing_calls', 0)}`",
         f"- Tokens Reported (Total): `{b.get('total_tokens_reported')}` (Prompt: `{b.get('prompt_tokens_reported')}`, Completion: `{b.get('completion_tokens_reported')}`)",
-        f"- Cost Ceiling: `{b.get('max_cost')}` {curr} | Accumulated Spend: `{b.get('accumulated_cost_usd')}` {curr}",
+        f"- Cost Ceiling ({b.get('cost_mode', 'strict')}): `{b.get('max_cost')}` {curr} | Accounted Total Spend: `{b.get('accumulated_cost_usd')}` {curr}",
+        f"- Spend Breakdown — Actual Reported: `{b.get('actual_reported_cost_usd')}` {curr} | Uncertain Retained: `{b.get('uncertain_estimated_cost_usd')}` {curr} | Released Unprocessed: `{b.get('released_unprocessed_cost_usd')}` {curr} | Pre-Dispatch Reserved Total: `{b.get('accumulated_reserved_cost')}` {curr}",
+        f"- Cost Estimation Method / Guarantee: `{b.get('cost_estimation_method', 'heuristic_char_ratio_v1')}` (`{b.get('cost_guarantee', 'heuristic_reservation_only_not_billing_guarantee')}`)",
         f"- Cost Status: `{b.get('cost_status')}` | Pricing Source: `{b.get('pricing_source')}` ({b.get('pricing_effective_date')})",
         f"- Reservation Overruns: count=`{b.get('reservation_overrun_count', 0)}`, cost=`{b.get('reservation_overrun_cost', 0.0)}`",
         "",
@@ -1706,6 +1936,8 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     p.add_argument("--pricing-source", type=str, default=None, help="Documentation/pricing source reference")
     p.add_argument("--pricing-effective-date", type=str, default=None, help="Effective date of pricing rates (e.g. 2026-11-27)")
     p.add_argument("--cost-mode", type=str, default=None, choices=["strict", "report_only"], help="Cost enforcement mode")
+    p.add_argument("--max-input-tokens", type=int, default=None, help="Heuristic max input token ceiling per attempt")
+    p.add_argument("--max-output-tokens", type=int, default=None, help="Hard max output token ceiling per attempt")
     p.add_argument("--cases", nargs="*", default=None, help="Optional subset of dataset case IDs (e.g. LPE-001 LPE-002)")
     p.add_argument("--skip-mode-comparison", action="store_true", help="Skip Mode A/B/C comparison loop")
     p.add_argument("--pacing-seconds", type=float, default=5.5, help="Delay between consecutive real Groq calls to avoid OTPM throttling (0 on cache hits)")
@@ -1729,6 +1961,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             pricing_source_override=args.pricing_source,
             pricing_effective_date_override=args.pricing_effective_date,
             cost_mode_override=args.cost_mode,
+            max_input_tokens_override=args.max_input_tokens,
+            max_output_tokens_override=args.max_output_tokens,
             case_ids=args.cases,
             skip_mode_comparison=args.skip_mode_comparison,
             pacing_seconds=args.pacing_seconds,

@@ -5,6 +5,7 @@ This module MUST NOT import FastAPI or any provider-specific SDK.
 """
 
 import asyncio
+import contextlib
 import logging
 import time
 from typing import Any, AsyncGenerator, Optional
@@ -794,72 +795,73 @@ class IntelliCacheCore:
         first_token_recorded = False
 
         try:
-            async for chunk in provider.stream(request):
-                if chunk.delta:
-                    accumulated_text.append(chunk.delta)
-                    if not first_token_recorded:
-                        ttft_ms = (time.perf_counter() - start_time) * 1000.0
-                        collector.record_latency(ns, "stream_time_to_first_token_ms", ttft_ms)
-                        first_token_recorded = True
-                if not chunk.done:
-                    yield StreamChunk(
-                        delta=chunk.delta,
-                        done=False,
-                        cached=False,
-                        fingerprint=fingerprint,
-                        model=chunk.model or request.model,
-                    )
-                else:
-                    # Final completion chunk
-                    stream_success = True
-                    elapsed_ms = (time.perf_counter() - start_time) * 1000.0
-                    prov_latency_ms = (time.perf_counter() - prov_start) * 1000.0
-                    if not first_token_recorded:
-                        collector.record_latency(ns, "stream_time_to_first_token_ms", elapsed_ms)
-                        first_token_recorded = True
-                    full_text = "".join(accumulated_text)
-                    usage = chunk.usage or UsageMetrics()
+            async with contextlib.aclosing(provider.stream(request)) as provider_stream:
+                async for chunk in provider_stream:
+                    if chunk.delta:
+                        accumulated_text.append(chunk.delta)
+                        if not first_token_recorded:
+                            ttft_ms = (time.perf_counter() - start_time) * 1000.0
+                            collector.record_latency(ns, "stream_time_to_first_token_ms", ttft_ms)
+                            first_token_recorded = True
+                    if not chunk.done:
+                        yield StreamChunk(
+                            delta=chunk.delta,
+                            done=False,
+                            cached=False,
+                            fingerprint=fingerprint,
+                            model=chunk.model or request.model,
+                        )
+                    else:
+                        # Final completion chunk
+                        stream_success = True
+                        elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+                        prov_latency_ms = (time.perf_counter() - prov_start) * 1000.0
+                        if not first_token_recorded:
+                            collector.record_latency(ns, "stream_time_to_first_token_ms", elapsed_ms)
+                            first_token_recorded = True
+                        full_text = "".join(accumulated_text)
+                        usage = chunk.usage or UsageMetrics()
 
-                    self._record_provider_outcome_telemetry(collector, ns, chunk, prov_latency_ms)
-                    collector.record_latency(ns, "stream_completion_latency_ms", elapsed_ms)
-                    collector.record_latency(ns, "total_request_latency_ms", elapsed_ms)
+                        self._record_provider_outcome_telemetry(collector, ns, chunk, prov_latency_ms)
+                        collector.record_latency(ns, "stream_completion_latency_ms", elapsed_ms)
+                        collector.record_latency(ns, "total_request_latency_ms", elapsed_ms)
 
-                    if stream_success and full_text.strip() and self.cache_enabled and not request.bypass_cache and can_use_exact_cache:
-                        entry = CacheEntry(
-                            response=full_text,
+                        if stream_success and full_text.strip() and self.cache_enabled and not request.bypass_cache and can_use_exact_cache:
+                            entry = CacheEntry(
+                                response=full_text,
+                                model=chunk.model or request.model,
+                                usage=usage,
+                                latency_ms=round(elapsed_ms, 2),
+                                provider=request.provider,
+                                visibility=req_vis,
+                                owner_principal_id=entry_owner,
+                            )
+                            write_start = time.perf_counter()
+                            try:
+                                await self.cache.set(exact_storage_key, entry, namespace=ns)
+                                write_latency_ms = (time.perf_counter() - write_start) * 1000.0
+                                collector.record_latency(ns, "exact_cache_write_latency_ms", write_latency_ms)
+                            except Exception as write_err:
+                                write_latency_ms = (time.perf_counter() - write_start) * 1000.0
+                                collector.record_latency(ns, "exact_cache_write_latency_ms", write_latency_ms)
+                                collector.record_cache_write_failure(ns)
+                                logger.warning(
+                                    "Streaming exact cache write failed for namespace='%s': %s",
+                                    ns,
+                                    sanitize_error_message(str(write_err)),
+                                )
+
+                        yield StreamChunk(
+                            delta="",
+                            done=True,
+                            cached=False,
+                            fingerprint=fingerprint,
                             model=chunk.model or request.model,
                             usage=usage,
                             latency_ms=round(elapsed_ms, 2),
-                            provider=request.provider,
-                            visibility=req_vis,
-                            owner_principal_id=entry_owner,
+                            finish_reason=getattr(chunk, "finish_reason", None),
                         )
-                        write_start = time.perf_counter()
-                        try:
-                            await self.cache.set(exact_storage_key, entry, namespace=ns)
-                            write_latency_ms = (time.perf_counter() - write_start) * 1000.0
-                            collector.record_latency(ns, "exact_cache_write_latency_ms", write_latency_ms)
-                        except Exception as write_err:
-                            write_latency_ms = (time.perf_counter() - write_start) * 1000.0
-                            collector.record_latency(ns, "exact_cache_write_latency_ms", write_latency_ms)
-                            collector.record_cache_write_failure(ns)
-                            logger.warning(
-                                "Streaming exact cache write failed for namespace='%s': %s",
-                                ns,
-                                sanitize_error_message(str(write_err)),
-                            )
-
-                    yield StreamChunk(
-                        delta="",
-                        done=True,
-                        cached=False,
-                        fingerprint=fingerprint,
-                        model=chunk.model or request.model,
-                        usage=usage,
-                        latency_ms=round(elapsed_ms, 2),
-                        finish_reason=getattr(chunk, "finish_reason", None),
-                    )
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, GeneratorExit):
             prov_latency_ms = (time.perf_counter() - prov_start) * 1000.0
             collector.record_latency(ns, "provider_generation_latency_ms", prov_latency_ms)
             raise

@@ -47,6 +47,16 @@ on:
         required: false
         default: 'strict'
         type: string
+      max_input_tokens:
+        description: 'Optional heuristic max input token ceiling per attempt'
+        required: false
+        default: ''
+        type: string
+      max_output_tokens:
+        description: 'Optional hard max output token ceiling per attempt'
+        required: false
+        default: ''
+        type: string
       pacing_seconds:
         description: 'Pacing delay between upstream requests to prevent rate limit spikes'
         required: false
@@ -128,6 +138,8 @@ jobs:
           LIVE_PROVIDER_PRICING_SOURCE: ${{ inputs.pricing_source }}
           LIVE_PROVIDER_PRICING_EFFECTIVE_DATE: ${{ inputs.pricing_effective_date }}
           LIVE_PROVIDER_COST_MODE: ${{ inputs.cost_mode }}
+          LIVE_PROVIDER_MAX_INPUT_TOKENS: ${{ inputs.max_input_tokens }}
+          LIVE_PROVIDER_MAX_OUTPUT_TOKENS: ${{ inputs.max_output_tokens }}
           LIVE_PROVIDER_TIMEOUT_SECONDS: '30.0'
           LIVE_PROVIDER_MAX_RETRIES: '1'
           LIVE_PROVIDER_REPORT_DIR: '/tmp/stage3_8a_eval'

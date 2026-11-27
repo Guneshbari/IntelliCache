@@ -199,11 +199,13 @@ class GroqProvider:
 
         retries_executed = 0
         for attempt in range(self.max_retries + 1):
-            reservation = None
-            if self.attempt_guard is not None:
-                reservation = await self.attempt_guard.reserve_attempt(request, attempt=attempt, is_streaming=False)
             client = self._create_client()
+            reservation = None
             try:
+                if self.attempt_guard is not None:
+                    reservation = await self.attempt_guard.reserve_attempt(
+                        request, attempt=attempt, is_streaming=False
+                    )
                 response = await client.chat.completions.create(**kwargs)
                 elapsed_ms = (time.perf_counter() - start_time) * 1000.0
 
@@ -231,11 +233,11 @@ class GroqProvider:
                 )
             except asyncio.CancelledError as cancel_err:
                 if reservation is not None:
-                    await reservation.record_failure(cancel_err)
+                    await reservation.record_failure(cancel_err, dispatched=True, partial_output=False)
                 raise
             except Exception as err:
                 if reservation is not None:
-                    await reservation.record_failure(err)
+                    await reservation.record_failure(err, dispatched=True, partial_output=False)
                 if attempt < self.max_retries and self._is_retryable_exception(err):
                     retries_executed += 1
                     logger.warning(
@@ -263,20 +265,23 @@ class GroqProvider:
         stream_resp: Any = None
         reservation = None
         for attempt in range(self.max_retries + 1):
-            if self.attempt_guard is not None:
-                reservation = await self.attempt_guard.reserve_attempt(request, attempt=attempt, is_streaming=True)
             client = self._create_client()
+            reservation = None
             try:
+                if self.attempt_guard is not None:
+                    reservation = await self.attempt_guard.reserve_attempt(
+                        request, attempt=attempt, is_streaming=True
+                    )
                 stream_resp = await client.chat.completions.create(**kwargs)
                 break
             except asyncio.CancelledError as cancel_err:
                 if reservation is not None:
-                    await reservation.record_failure(cancel_err)
+                    await reservation.record_failure(cancel_err, dispatched=True, partial_output=False)
                 await self._close_client(client)
                 raise
             except Exception as err:
                 if reservation is not None:
-                    await reservation.record_failure(err)
+                    await reservation.record_failure(err, dispatched=True, partial_output=False)
                 await self._close_client(client)
                 if attempt < self.max_retries and self._is_retryable_exception(err):
                     retries_executed += 1
@@ -284,12 +289,14 @@ class GroqProvider:
                     continue
                 raise self._translate_exception(err, retry_count=retries_executed) from err
 
+        partial_output = False
+        captured_usage: Optional[UsageMetrics] = None
+        usage_available = False
         try:
             last_finish_reason: Optional[str] = None
-            captured_usage: Optional[UsageMetrics] = None
-            usage_available = False
 
             async for chunk in stream_resp:
+                partial_output = True
                 delta_text = ""
                 if chunk.choices and len(chunk.choices) > 0:
                     choice = chunk.choices[0]
@@ -328,11 +335,33 @@ class GroqProvider:
             )
         except asyncio.CancelledError as cancel_err:
             if reservation is not None:
-                await reservation.record_failure(cancel_err)
+                await reservation.record_failure(
+                    cancel_err,
+                    dispatched=True,
+                    partial_output=partial_output,
+                    usage=captured_usage,
+                    usage_available=usage_available,
+                )
+            raise
+        except GeneratorExit as gen_exit:
+            if reservation is not None:
+                await reservation.record_failure(
+                    gen_exit,
+                    dispatched=True,
+                    partial_output=partial_output,
+                    usage=captured_usage,
+                    usage_available=usage_available,
+                )
             raise
         except Exception as err:
             if reservation is not None:
-                await reservation.record_failure(err)
+                await reservation.record_failure(
+                    err,
+                    dispatched=True,
+                    partial_output=partial_output,
+                    usage=captured_usage,
+                    usage_available=usage_available,
+                )
             raise self._translate_exception(err, retry_count=retries_executed) from err
         finally:
             await self._close_client(client)
