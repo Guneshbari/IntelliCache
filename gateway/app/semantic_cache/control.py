@@ -404,6 +404,18 @@ class SemanticServingController:
     (`PostgresRuntimeControlStore`) and process-local fallback for in-memory mode.
     Guarantees fail-closed behavior whenever state is missing, malformed,
     or a state provider / backing store raises an exception.
+
+    Deterministic Namespace Precedence Policy:
+    1. Global serving disabled (`runtime_enabled=False`) -> serving is disabled
+       (`False`) for every namespace; namespace overrides cannot override a global disable.
+    2. Global serving enabled (`runtime_enabled=True`) -> namespace override applies
+       when present (`True` or `False`).
+    3. Global serving enabled and no namespace override -> inherits global state (`True`).
+
+    Boundary Note:
+    Checkpoint 1 (pre-lookup) and Checkpoint 2 (pre-delivery) perform direct PostgreSQL
+    checks without a local TTL cache, but Checkpoint 2 is non-atomic with downstream
+    delivery commit (a narrow race remains if disabled immediately after Checkpoint 2).
     """
 
     def __init__(

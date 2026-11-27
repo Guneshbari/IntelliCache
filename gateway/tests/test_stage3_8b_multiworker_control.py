@@ -357,6 +357,22 @@ class TestStage38BPostgresMultiWorkerCoordination(unittest.IsolatedAsyncioTestCa
         await ctrl_w1.aset_serving_enabled(True, namespace="team_a", clear_namespace_override=True, reason="resume")
         self.assertTrue(await ctrl_w2.acheck_serving_enabled("team_a"))
 
+        # Explicit deterministic precedence check:
+        # 1) Global enabled + explicit namespace=True -> enabled for team_a
+        await ctrl_w1.aset_serving_enabled(True, namespace="team_a", updated_by="ops_admin", reason="allow_team_a")
+        # 2) Global disabled -> overrides team_a=True across all workers (global kill switch wins)
+        await ctrl_w1.aset_serving_enabled(False, updated_by="ops_admin", reason="global_kill_precedence")
+        self.assertFalse(await ctrl_w1.acheck_serving_enabled("team_a"))
+        self.assertFalse(await ctrl_w2.acheck_serving_enabled("team_a"))
+        state_w2_killed = await ctrl_w2.aget_state()
+        self.assertFalse(state_w2_killed.to_dict(startup_enabled=True, namespace="team_a")["namespace_runtime_enabled"])
+        self.assertTrue(state_w2_killed.namespace_overrides["team_a"])
+        # 3) Global re-enabled -> team_a override (True) applies and unoverridden team_b inherits global True
+        await ctrl_w1.aset_serving_enabled(True, updated_by="ops_admin", reason="global_re_enable")
+        self.assertTrue(await ctrl_w2.acheck_serving_enabled("team_a"))
+        self.assertTrue(await ctrl_w2.acheck_serving_enabled("team_b"))
+        await ctrl_w1.aset_serving_enabled(True, namespace="team_a", clear_namespace_override=True, reason="cleanup_override")
+
         orig_lookup = svc2.lookup
         in_lookup = asyncio.Event()
         allow_return = asyncio.Event()
