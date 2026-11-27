@@ -8,14 +8,49 @@ on:
         required: true
         type: string
       max_requests:
-        description: 'Maximum live Groq API request cap (1-100)'
+        description: 'Maximum physical Groq API request attempts cap (1-100)'
         required: true
         default: '40'
         type: string
       max_cost_usd:
-        description: 'Optional maximum spend cap in USD (leave empty to disable pricing cap)'
+        description: 'Optional maximum spend cap in USD (fails closed if pricing not provided)'
         required: false
         default: ''
+        type: string
+      input_cost_per_million:
+        description: 'Input token cost per million in USD (required if max_cost_usd is set)'
+        required: false
+        default: ''
+        type: string
+      output_cost_per_million:
+        description: 'Output token cost per million in USD (required if max_cost_usd is set)'
+        required: false
+        default: ''
+        type: string
+      currency:
+        description: '3-letter currency code (default USD)'
+        required: false
+        default: 'USD'
+        type: string
+      pricing_source:
+        description: 'Source of pricing data (required if max_cost_usd is set)'
+        required: false
+        default: ''
+        type: string
+      pricing_effective_date:
+        description: 'Effective date of pricing data (e.g. 2026-11-27, required if max_cost_usd is set)'
+        required: false
+        default: ''
+        type: string
+      cost_mode:
+        description: 'Cost enforcement mode (strict or report_only)'
+        required: false
+        default: 'strict'
+        type: string
+      pacing_seconds:
+        description: 'Pacing delay between upstream requests to prevent rate limit spikes'
+        required: false
+        default: '5.5'
         type: string
 
 permissions:
@@ -58,13 +93,24 @@ jobs:
           pip install -r requirements.txt
           pip install -r requirements-fastembed.txt
 
-      - name: Verify live evaluation configuration without exposing secrets
+      - name: Verify live evaluation configuration and pricing inputs
         env:
           HAS_GROQ_KEY: ${{ secrets.GROQ_API_KEY != '' }}
+          MAX_COST: ${{ inputs.max_cost_usd }}
+          IN_CPM: ${{ inputs.input_cost_per_million }}
+          OUT_CPM: ${{ inputs.output_cost_per_million }}
+          SRC: ${{ inputs.pricing_source }}
+          EFF_DATE: ${{ inputs.pricing_effective_date }}
         run: |
           if [ "$HAS_GROQ_KEY" != "true" ]; then
             echo "::error::Repository secret GROQ_API_KEY is not configured."
             exit 1
+          fi
+          if [ -n "$MAX_COST" ]; then
+            if [ -z "$IN_CPM" ] || [ -z "$OUT_CPM" ] || [ -z "$SRC" ] || [ -z "$EFF_DATE" ]; then
+              echo "::error::When max_cost_usd is configured, input_cost_per_million, output_cost_per_million, pricing_source, and pricing_effective_date are mandatory."
+              exit 1
+            fi
           fi
 
       - name: Run opt-in Stage 3.8A live evaluation
@@ -76,6 +122,12 @@ jobs:
           LIVE_PROVIDER_MODEL: ${{ inputs.live_model }}
           LIVE_PROVIDER_MAX_REQUESTS: ${{ inputs.max_requests }}
           LIVE_PROVIDER_MAX_COST: ${{ inputs.max_cost_usd }}
+          LIVE_PROVIDER_INPUT_COST_PER_MILLION: ${{ inputs.input_cost_per_million }}
+          LIVE_PROVIDER_OUTPUT_COST_PER_MILLION: ${{ inputs.output_cost_per_million }}
+          LIVE_PROVIDER_CURRENCY: ${{ inputs.currency }}
+          LIVE_PROVIDER_PRICING_SOURCE: ${{ inputs.pricing_source }}
+          LIVE_PROVIDER_PRICING_EFFECTIVE_DATE: ${{ inputs.pricing_effective_date }}
+          LIVE_PROVIDER_COST_MODE: ${{ inputs.cost_mode }}
           LIVE_PROVIDER_TIMEOUT_SECONDS: '30.0'
           LIVE_PROVIDER_MAX_RETRIES: '1'
           LIVE_PROVIDER_REPORT_DIR: '/tmp/stage3_8a_eval'
@@ -88,7 +140,8 @@ jobs:
             --confirm-live \
             --test-database-url "$TEST_DATABASE_URL" \
             --output-dir /tmp/stage3_8a_eval \
-            --max-requests "$LIVE_PROVIDER_MAX_REQUESTS"
+            --max-requests "$LIVE_PROVIDER_MAX_REQUESTS" \
+            --pacing-seconds "${{ inputs.pacing_seconds }}"
 
       - name: Upload Stage 3.8A sanitized evaluation report
         uses: actions/upload-artifact@v4
@@ -96,6 +149,8 @@ jobs:
         with:
           name: stage3-8a-live-provider-evaluation
           path: |
+            /tmp/stage3_8a_eval/stage3_8a_live_provider_report.json
+            /tmp/stage3_8a_eval/stage3_8a_live_provider_report.md
             /tmp/stage3_8a_eval/stage3_8a_live_provider_evaluation.json
             /tmp/stage3_8a_eval/stage3_8a_live_provider_evaluation.md
           retention-days: 14

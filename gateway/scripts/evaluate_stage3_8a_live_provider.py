@@ -18,13 +18,16 @@ from __future__ import annotations
 import argparse
 import asyncio
 from datetime import datetime, timezone
+import hashlib
 import json
 import logging
+import math
 import os
 from pathlib import Path
+import subprocess
 import sys
 import time
-from typing import Any, AsyncGenerator, Dict, List, Optional, Sequence
+from typing import Any, AsyncGenerator, Dict, List, Optional, Sequence, Tuple
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import asyncpg
@@ -94,8 +97,37 @@ class LiveEvalBudgetExceededError(ProviderError):
     """Raised when live-provider request count or spend ceiling is reached."""
 
 
+class PhysicalRequestReservation:
+    """Represents an atomically reserved physical provider request attempt and its reserved cost."""
+
+    def __init__(
+        self,
+        guard: "LiveEvalBudgetGuard",
+        reserved_cost: float,
+        is_streaming: bool,
+        attempt: int,
+    ) -> None:
+        self.guard = guard
+        self.reserved_cost = float(reserved_cost)
+        self.is_streaming = is_streaming
+        self.attempt = attempt
+        self._settled = False
+
+    async def record_success(self, usage: Optional[UsageMetrics], *, usage_available: bool) -> None:
+        if self._settled:
+            return
+        self._settled = True
+        await self.guard._reconcile_success(self.reserved_cost, usage, usage_available=usage_available)
+
+    async def record_failure(self, err: BaseException) -> None:
+        if self._settled:
+            return
+        self._settled = True
+        await self.guard._reconcile_failure(self.reserved_cost, err)
+
+
 class LiveEvalBudgetGuard:
-    """Enforces hard upper bounds on live provider calls and optional spend."""
+    """Enforces hard upper bounds on physical live provider dispatches and strict monetary cost ceilings."""
 
     def __init__(
         self,
@@ -104,24 +136,62 @@ class LiveEvalBudgetGuard:
         max_cost: Optional[float] = None,
         input_cost_per_million: Optional[float] = None,
         output_cost_per_million: Optional[float] = None,
+        currency: str = "USD",
         pricing_source: Optional[str] = None,
+        pricing_effective_date: Optional[str] = None,
+        cost_mode: str = "strict",
     ) -> None:
         if max_requests < 1:
             raise ValueError(f"max_requests must be >= 1, got {max_requests}.")
-        if max_cost is not None and max_cost <= 0.0:
-            raise ValueError(f"max_cost must be > 0, got {max_cost}.")
+
+        for name, val in (
+            ("input_cost_per_million", input_cost_per_million),
+            ("output_cost_per_million", output_cost_per_million),
+        ):
+            if val is not None and (math.isnan(val) or math.isinf(val) or val < 0.0):
+                raise ValueError(f"{name} must be a finite non-negative number, got {val}.")
+
+        if max_cost is not None:
+            if math.isnan(max_cost) or math.isinf(max_cost) or max_cost <= 0.0:
+                raise ValueError(f"max_cost must be a finite strictly positive number, got {max_cost}.")
+            if input_cost_per_million is None or output_cost_per_million is None:
+                raise ValueError("input_cost_per_million and output_cost_per_million are required when max_cost is set.")
+            if not pricing_source:
+                raise ValueError("pricing_source is required when max_cost is set.")
+            if not pricing_effective_date:
+                raise ValueError("pricing_effective_date is required when max_cost is set.")
+
         self.max_requests = int(max_requests)
         self.max_cost = float(max_cost) if max_cost is not None else None
-        self.input_cost_per_million = input_cost_per_million
-        self.output_cost_per_million = output_cost_per_million
+        self.input_cost_per_million = float(input_cost_per_million) if input_cost_per_million is not None else None
+        self.output_cost_per_million = float(output_cost_per_million) if output_cost_per_million is not None else None
+        self.currency = currency
         self.pricing_source = pricing_source
-        self.requests_made = 0
+        self.pricing_effective_date = pricing_effective_date
+        self.cost_mode = cost_mode
+
+        # Physical and logical attempt counters
+        self.physical_requests_dispatched = 0
+        self.requests_made = 0  # alias for backward-compatibility
+        self.logical_operations = 0
+        self.retry_attempts = 0
+        self.successful_responses = 0
+        self.failed_attempts = 0
+        self.budget_rejections = 0
+
+        # Cost and token tracking
+        self.active_reserved_cost: float = 0.0
+        self.accumulated_reserved_cost: float = 0.0
+        self.reservation_overrun_cost: float = 0.0
+        self.reservation_overrun_count: int = 0
+        self.accumulated_cost: float = 0.0
+
         self.prompt_tokens = 0
         self.completion_tokens = 0
         self.total_tokens = 0
         self.usage_reported_calls = 0
         self.usage_missing_calls = 0
-        self.accumulated_cost: float = 0.0
+
         self.terminated_early_reason: Optional[str] = None
         self._lock = asyncio.Lock()
 
@@ -140,47 +210,171 @@ class LiveEvalBudgetGuard:
             + (max(0, completion_tokens) / 1_000_000.0) * float(self.output_cost_per_million or 0.0)
         )
 
-    async def reserve_request(self) -> None:
+    def estimate_tokens(self, request: GenerationRequest) -> Tuple[int, int]:
+        """
+        Conservative token estimation using char_ratio_with_safety_margin_v1.
+        Prompt: ceil(chars / 3.0 * 1.5) + 32
+        Completion: request.max_tokens if provided and > 0, else 2048 ceiling.
+        """
+        total_chars = sum(len(m.role or "") + len(m.content or "") for m in request.messages)
+        prompt_tokens_est = int(math.ceil((total_chars / 3.0) * 1.5)) + 32
+        if request.max_tokens is not None and request.max_tokens > 0:
+            completion_tokens_est = int(request.max_tokens)
+        else:
+            completion_tokens_est = 2048
+        return prompt_tokens_est, completion_tokens_est
+
+    async def reserve_attempt(
+        self,
+        request: GenerationRequest,
+        *,
+        attempt: int,
+        is_streaming: bool,
+    ) -> PhysicalRequestReservation:
+        """
+        Atomically reserves 1 physical provider request attempt and its conservative cost.
+        Blocks and raises LiveEvalBudgetExceededError before outbound HTTP dispatch if limits are reached.
+        """
+        prompt_est, comp_est = self.estimate_tokens(request)
+        reserved_cost = self.calculate_cost(prompt_est, comp_est) or 0.0
+
         async with self._lock:
-            if self.requests_made >= self.max_requests:
+            # 1. Enforce physical request limit
+            if self.physical_requests_dispatched >= self.max_requests:
+                self.budget_rejections += 1
                 self.terminated_early_reason = f"max_requests ({self.max_requests}) reached"
                 raise LiveEvalBudgetExceededError(
                     f"Live evaluation budget exhausted: {self.terminated_early_reason}."
                 )
-            if self.max_cost is not None and self.pricing_configured and self.accumulated_cost >= self.max_cost:
-                self.terminated_early_reason = f"max_cost ({self.max_cost:.6f}) reached"
-                raise LiveEvalBudgetExceededError(
-                    f"Live evaluation cost ceiling reached: {self.terminated_early_reason}."
-                )
-            self.requests_made += 1
 
-    async def record_usage(self, usage: Optional[UsageMetrics], *, usage_available: bool) -> None:
+            # 2. Enforce monetary spend ceiling
+            if self.max_cost is not None:
+                if not self.pricing_configured:
+                    self.budget_rejections += 1
+                    self.terminated_early_reason = "pricing_not_configured"
+                    raise LiveEvalBudgetExceededError(
+                        "Live evaluation cost ceiling configured but pricing is not configured."
+                    )
+                potential_total = self.accumulated_cost + self.active_reserved_cost + reserved_cost
+                if potential_total > (self.max_cost + 1e-9):
+                    self.budget_rejections += 1
+                    remaining = max(0.0, self.max_cost - (self.accumulated_cost + self.active_reserved_cost))
+                    self.terminated_early_reason = (
+                        f"max_cost ({self.max_cost:.6f} {self.currency}) reached: "
+                        f"estimated ${reserved_cost:.6f} exceeds remaining budget (${remaining:.6f})"
+                    )
+                    raise LiveEvalBudgetExceededError(
+                        f"Live evaluation cost ceiling reached: {self.terminated_early_reason}."
+                    )
+
+            # 3. Apply reservations atomically
+            self.physical_requests_dispatched += 1
+            self.requests_made = self.physical_requests_dispatched
+            if attempt > 0:
+                self.retry_attempts += 1
+            self.active_reserved_cost += reserved_cost
+            self.accumulated_reserved_cost += reserved_cost
+
+            return PhysicalRequestReservation(
+                guard=self,
+                reserved_cost=reserved_cost,
+                is_streaming=is_streaming,
+                attempt=attempt,
+            )
+
+    async def _reconcile_success(
+        self,
+        reserved_cost: float,
+        usage: Optional[UsageMetrics],
+        *,
+        usage_available: bool,
+    ) -> None:
         async with self._lock:
+            self.active_reserved_cost = max(0.0, self.active_reserved_cost - reserved_cost)
+            self.successful_responses += 1
             if not usage_available or usage is None:
                 self.usage_missing_calls += 1
+                if self.cost_mode == "strict" and self.pricing_configured and reserved_cost > 0.0:
+                    self.accumulated_cost += reserved_cost
                 return
+
             self.usage_reported_calls += 1
-            self.prompt_tokens += max(0, int(usage.prompt_tokens))
-            self.completion_tokens += max(0, int(usage.completion_tokens))
-            self.total_tokens += max(0, int(usage.total_tokens))
-            call_cost = self.calculate_cost(usage.prompt_tokens, usage.completion_tokens)
-            if call_cost is not None:
-                self.accumulated_cost += call_cost
+            pt = max(0, int(usage.prompt_tokens))
+            ct = max(0, int(usage.completion_tokens))
+            tt = max(0, int(usage.total_tokens))
+            self.prompt_tokens += pt
+            self.completion_tokens += ct
+            self.total_tokens += tt
+
+            actual_cost = self.calculate_cost(pt, ct)
+            if actual_cost is not None:
+                self.accumulated_cost += actual_cost
+                if actual_cost > reserved_cost:
+                    overrun = actual_cost - reserved_cost
+                    self.reservation_overrun_cost += overrun
+                    self.reservation_overrun_count += 1
+
+    async def _reconcile_failure(
+        self,
+        reserved_cost: float,
+        err: BaseException,
+    ) -> None:
+        async with self._lock:
+            self.active_reserved_cost = max(0.0, self.active_reserved_cost - reserved_cost)
+            self.failed_attempts += 1
+
+    async def reserve_request(self) -> None:
+        """Backward-compatible reservation for callers not using attempt_guard hooks."""
+        req = GenerationRequest(model="default", messages=[ChatMessage(role="user", content="hello")], max_tokens=10)
+        await self.reserve_attempt(req, attempt=0, is_streaming=False)
+
+    async def record_usage(self, usage: Optional[UsageMetrics], *, usage_available: bool = True) -> None:
+        """Backward-compatible usage recorder for callers not using reservation objects."""
+        await self._reconcile_success(0.0, usage, usage_available=usage_available)
 
     def summary(self) -> Dict[str, Any]:
+        if not self.pricing_configured:
+            cost_status = "unavailable"
+        elif self.usage_missing_calls > 0:
+            if self.usage_reported_calls > 0:
+                cost_status = "usage_partially_missing"
+            else:
+                cost_status = "no_usage_reported"
+        elif self.usage_reported_calls > 0:
+            cost_status = "calculated_from_usage"
+        else:
+            cost_status = "no_requests"
+
         return {
             "max_requests": self.max_requests,
-            "requests_made": self.requests_made,
+            "physical_requests_dispatched": self.physical_requests_dispatched,
+            "requests_made": self.physical_requests_dispatched,
+            "logical_operations": self.logical_operations,
+            "retry_attempts": self.retry_attempts,
+            "successful_responses": self.successful_responses,
+            "failed_attempts": self.failed_attempts,
+            "budget_rejections": self.budget_rejections,
             "max_cost": self.max_cost,
+            "currency": self.currency,
+            "cost_mode": self.cost_mode,
             "pricing_configured": self.pricing_configured,
             "pricing_source": self.pricing_source,
+            "pricing_effective_date": self.pricing_effective_date,
             "prompt_tokens_reported": self.prompt_tokens if self.usage_reported_calls > 0 else None,
             "completion_tokens_reported": self.completion_tokens if self.usage_reported_calls > 0 else None,
             "total_tokens_reported": self.total_tokens if self.usage_reported_calls > 0 else None,
             "usage_reported_calls": self.usage_reported_calls,
             "usage_missing_calls": self.usage_missing_calls,
-            "accumulated_cost_usd": round(self.accumulated_cost, 6) if self.pricing_configured and self.usage_reported_calls > 0 else None,
-            "cost_status": "calculated_from_usage" if (self.pricing_configured and self.usage_reported_calls > 0) else "unavailable",
+            "accumulated_reserved_cost": round(self.accumulated_reserved_cost, 6),
+            "active_reserved_cost": round(self.active_reserved_cost, 6),
+            "reservation_overrun_cost": round(self.reservation_overrun_cost, 6),
+            "reservation_overrun_count": self.reservation_overrun_count,
+            "accumulated_cost_usd": (
+                round(self.accumulated_cost, 6)
+                if (self.pricing_configured and (self.usage_reported_calls > 0 or self.usage_missing_calls > 0))
+                else None
+            ),
+            "cost_status": cost_status,
             "terminated_early_reason": self.terminated_early_reason,
         }
 
@@ -191,6 +385,8 @@ class BudgetedProviderProxy(LLMProvider):
     def __init__(self, inner: GroqProvider, budget: LiveEvalBudgetGuard, *, min_interval_seconds: float = 0.0) -> None:
         self.inner = inner
         self.budget = budget
+        if hasattr(self.inner, "set_attempt_guard"):
+            self.inner.set_attempt_guard(self.budget)
         self.min_interval_seconds = max(0.0, float(min_interval_seconds))
         self._last_call_mono: Optional[float] = None
         self.stream_observations: List[Dict[str, Any]] = []
@@ -204,7 +400,10 @@ class BudgetedProviderProxy(LLMProvider):
                 await asyncio.sleep(self.min_interval_seconds - elapsed)
 
     async def generate(self, request: GenerationRequest) -> GenerationResult:
-        await self.budget.reserve_request()
+        self.budget.logical_operations += 1
+        if getattr(self.inner, "attempt_guard", None) is None and not hasattr(self.inner, "set_attempt_guard"):
+            # Fallback for custom mocks that do not support attempt_guard hooks
+            await self.budget.reserve_attempt(request, attempt=0, is_streaming=False)
         try:
             res = await self.inner.generate(request)
         except ProviderError as err:
@@ -217,13 +416,12 @@ class BudgetedProviderProxy(LLMProvider):
             })
             raise
         self._last_call_mono = time.monotonic()
-        meta = getattr(res, "metadata", None) or {}
-        usage_avail = bool(meta.get("usage_available", True))
-        await self.budget.record_usage(res.usage, usage_available=usage_avail)
         return res
 
     async def stream(self, request: GenerationRequest) -> AsyncGenerator[StreamChunk, None]:
-        await self.budget.reserve_request()
+        self.budget.logical_operations += 1
+        if getattr(self.inner, "attempt_guard", None) is None and not hasattr(self.inner, "set_attempt_guard"):
+            await self.budget.reserve_attempt(request, attempt=0, is_streaming=True)
         t0 = time.perf_counter()
         ttft_ms: Optional[float] = None
         chunk_count = 0
@@ -244,7 +442,6 @@ class BudgetedProviderProxy(LLMProvider):
                     total_ms = (time.perf_counter() - t0) * 1000.0
                     meta = getattr(chunk, "metadata", None) or {}
                     usage_avail = bool(meta.get("usage_available", False))
-                    await self.budget.record_usage(chunk.usage, usage_available=usage_avail)
                     self.stream_observations.append({
                         "model": chunk.model or request.model,
                         "ttft_ms": round(ttft_ms if ttft_ms is not None else total_ms, 2),
@@ -283,7 +480,10 @@ def validate_live_eval_profile(
     max_cost: Optional[float] = None,
     input_cost_per_million: Optional[float] = None,
     output_cost_per_million: Optional[float] = None,
+    currency: Optional[str] = None,
     pricing_source: Optional[str] = None,
+    pricing_effective_date: Optional[str] = None,
+    cost_mode: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Validates explicit opt-in, credentials, provider/model configuration, and budget bounds.
@@ -327,14 +527,45 @@ def validate_live_eval_profile(
         raise ProviderConfigurationError(f"LIVE_PROVIDER_MAX_RETRIES out of bounds: {eff_retries}")
     if eff_max_req < 1 or eff_max_req > 500:
         raise ProviderConfigurationError(f"LIVE_PROVIDER_MAX_REQUESTS out of bounds: {eff_max_req}")
-    if eff_max_cost is not None and eff_max_cost <= 0:
-        raise ProviderConfigurationError(f"LIVE_PROVIDER_MAX_COST must be > 0, got {eff_max_cost}")
+    if eff_max_cost is not None and (math.isnan(eff_max_cost) or math.isinf(eff_max_cost) or eff_max_cost <= 0):
+        raise ProviderConfigurationError(f"LIVE_PROVIDER_MAX_COST must be a finite number > 0, got {eff_max_cost}")
 
     env_in_cost = os.getenv("LIVE_PROVIDER_INPUT_COST_PER_MILLION", "").strip()
     env_out_cost = os.getenv("LIVE_PROVIDER_OUTPUT_COST_PER_MILLION", "").strip()
-    in_cpm = input_cost_per_million if input_cost_per_million is not None else (float(env_in_cost) if env_in_cost else None)
-    out_cpm = output_cost_per_million if output_cost_per_million is not None else (float(env_out_cost) if env_out_cost else None)
+    in_cpm = float(input_cost_per_million) if input_cost_per_million is not None else (float(env_in_cost) if env_in_cost else None)
+    out_cpm = float(output_cost_per_million) if output_cost_per_million is not None else (float(env_out_cost) if env_out_cost else None)
+
+    for cost_name, cost_val in (
+        ("LIVE_PROVIDER_INPUT_COST_PER_MILLION", in_cpm),
+        ("LIVE_PROVIDER_OUTPUT_COST_PER_MILLION", out_cpm),
+    ):
+        if cost_val is not None and (math.isnan(cost_val) or math.isinf(cost_val) or cost_val < 0.0):
+            raise ProviderConfigurationError(f"{cost_name} must be finite and >= 0.0, got {cost_val}")
+
     src = pricing_source or (os.getenv("LIVE_PROVIDER_PRICING_SOURCE", "").strip() or None)
+    eff_date = pricing_effective_date or (os.getenv("LIVE_PROVIDER_PRICING_EFFECTIVE_DATE", "").strip() or None)
+    curr = (currency or os.getenv("LIVE_PROVIDER_CURRENCY", "USD")).strip().upper()
+    mode = (cost_mode or os.getenv("LIVE_PROVIDER_COST_MODE", "strict")).strip().lower()
+
+    if eff_max_cost is not None:
+        if in_cpm is None or out_cpm is None:
+            raise ProviderConfigurationError(
+                "When LIVE_PROVIDER_MAX_COST is configured, both LIVE_PROVIDER_INPUT_COST_PER_MILLION and LIVE_PROVIDER_OUTPUT_COST_PER_MILLION are required."
+            )
+        if not src:
+            raise ProviderConfigurationError(
+                "When LIVE_PROVIDER_MAX_COST is configured, LIVE_PROVIDER_PRICING_SOURCE is required."
+            )
+        if not eff_date:
+            raise ProviderConfigurationError(
+                "When LIVE_PROVIDER_MAX_COST is configured, LIVE_PROVIDER_PRICING_EFFECTIVE_DATE is required."
+            )
+
+    if len(curr) != 3 or not curr.isalpha():
+        raise ProviderConfigurationError(f"LIVE_PROVIDER_CURRENCY must be a valid 3-letter currency code, got '{curr}'.")
+
+    if mode not in ("strict", "report_only"):
+        raise ProviderConfigurationError(f"LIVE_PROVIDER_COST_MODE must be 'strict' or 'report_only', got '{mode}'.")
 
     return {
         "provider": prov,
@@ -347,6 +578,9 @@ def validate_live_eval_profile(
         "input_cost_per_million": in_cpm,
         "output_cost_per_million": out_cpm,
         "pricing_source": src,
+        "pricing_effective_date": eff_date,
+        "currency": curr,
+        "cost_mode": mode,
     }
 
 
@@ -845,6 +1079,13 @@ async def run_live_provider_evaluation(
     output_dir: Optional[Path] = None,
     model_override: Optional[str] = None,
     max_requests_override: Optional[int] = None,
+    max_cost_override: Optional[float] = None,
+    input_cost_override: Optional[float] = None,
+    output_cost_override: Optional[float] = None,
+    currency_override: Optional[str] = None,
+    pricing_source_override: Optional[str] = None,
+    pricing_effective_date_override: Optional[str] = None,
+    cost_mode_override: Optional[str] = None,
     case_ids: Optional[Sequence[str]] = None,
     skip_mode_comparison: bool = False,
     pacing_seconds: float = 5.5,
@@ -854,19 +1095,37 @@ async def run_live_provider_evaluation(
         confirm_live=confirm_live,
         model_name=model_override,
         max_requests=max_requests_override,
+        max_cost=max_cost_override,
+        input_cost_per_million=input_cost_override,
+        output_cost_per_million=output_cost_override,
+        currency=currency_override,
+        pricing_source=pricing_source_override,
+        pricing_effective_date=pricing_effective_date_override,
+        cost_mode=cost_mode_override,
     )
     resolved_db_url = db_url or await resolve_fastembed_database_url()
     await reset_pg_tables(resolved_db_url)
 
-    with open(DATASET_PATH, "r", encoding="utf-8") as fh:
-        dataset = json.load(fh)
+    dataset_bytes = DATASET_PATH.read_bytes()
+    dataset_sha256 = hashlib.sha256(dataset_bytes).hexdigest()
+    dataset = json.loads(dataset_bytes.decode("utf-8"))
+
+    commit_sha = os.getenv("GITHUB_SHA")
+    if not commit_sha:
+        try:
+            commit_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+        except Exception:
+            commit_sha = "unknown"
 
     budget = LiveEvalBudgetGuard(
         max_requests=profile["max_requests"],
         max_cost=profile["max_cost"],
         input_cost_per_million=profile["input_cost_per_million"],
         output_cost_per_million=profile["output_cost_per_million"],
+        currency=profile["currency"],
         pricing_source=profile["pricing_source"],
+        pricing_effective_date=profile["pricing_effective_date"],
+        cost_mode=profile["cost_mode"],
     )
 
     _, forbidden_values = build_forbidden_disclosure_values(
@@ -1026,8 +1285,14 @@ async def run_live_provider_evaluation(
     fault_matrix = await run_fault_injection_matrix(resolved_db_url)
 
     report: Dict[str, Any] = {
-        "stage": "3.8A",
+        "stage": "3.8A.1",
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "commit_sha": commit_sha,
+        "dataset": {
+            "name": dataset.get("metadata", {}).get("dataset_name", "stage3_8a_live_provider_dataset"),
+            "version": dataset.get("metadata", {}).get("version", "1.0.0"),
+            "sha256": dataset_sha256,
+        },
         "production_readiness": False,
         "provider": profile["provider"],
         "model": profile["model"],
@@ -1051,6 +1316,12 @@ async def run_live_provider_evaluation(
         "artifact_verification": artifact_report,
         "failure_recovery_matrix": fault_matrix,
         "gateway_metrics_snapshot": http_metrics_snap,
+        "limitations": [
+            "Evaluated against Groq tier-1/free rate limits (requires upstream pacing).",
+            "Streaming responses only support exact match caching, not semantic cache admission or lookup.",
+            "Token costs reflect conservative pre-dispatch estimation reconciled with actual provider usage.",
+            "Live evaluation opt-in only; safe production defaults remain disabled.",
+        ],
         "epistemic_labels": {
             "real_groq": ["mode_a_upstream_only", "mode_b_exact_only misses", "mode_c_exact_plus_semantic misses", "workload_validation", "artifact_verification live checks"],
             "local_pg_fastembed": ["exact_hits", "semantic_hits", "vector_search_latency_ms", "embedding_latency_ms"],
@@ -1059,14 +1330,21 @@ async def run_live_provider_evaluation(
     }
 
     sanitized = sanitize_report_payload(report, extra_secrets=[profile["api_key"], resolved_db_url])
-    verify_no_sensitive_leaks(sanitized, forbidden_values, "stage3_8a_report", check_forbidden_keys=False)
+    verify_no_sensitive_leaks(sanitized, forbidden_values, "stage3_8a_report_json", check_forbidden_keys=False)
+
+    md_content = render_stage38a_markdown(sanitized)
+    verify_no_sensitive_leaks(md_content, forbidden_values, "stage3_8a_report_markdown", check_forbidden_keys=False)
 
     out_dir = output_dir or Path(os.getenv("LIVE_PROVIDER_REPORT_DIR", "/tmp/stage3_8a_eval"))
     out_dir.mkdir(parents=True, exist_ok=True)
-    json_path = out_dir / "stage3_8a_live_provider_evaluation.json"
-    md_path = out_dir / "stage3_8a_live_provider_evaluation.md"
+    json_path = out_dir / "stage3_8a_live_provider_report.json"
+    md_path = out_dir / "stage3_8a_live_provider_report.md"
     json_path.write_text(json.dumps(sanitized, indent=2), encoding="utf-8")
-    md_path.write_text(render_stage38a_markdown(sanitized), encoding="utf-8")
+    md_path.write_text(md_content, encoding="utf-8")
+
+    # Backward-compatible aliases
+    (out_dir / "stage3_8a_live_provider_evaluation.json").write_text(json.dumps(sanitized, indent=2), encoding="utf-8")
+    (out_dir / "stage3_8a_live_provider_evaluation.md").write_text(md_content, encoding="utf-8")
     return sanitized
 
 
@@ -1365,24 +1643,35 @@ async def _run_full_workload_cases(
 
 
 def render_stage38a_markdown(report: Dict[str, Any]) -> str:
-    b = report["budget"]
-    ma = report["mode_a_upstream_only"]
+    b = report.get("budget", {})
+    ma = report.get("mode_a_upstream_only") or {}
     mb = report.get("mode_b_exact_only") or {}
     mc = report.get("mode_c_exact_plus_semantic") or {}
+    ds = report.get("dataset") or {}
+    env = report.get("environment") or {}
+    curr = b.get("currency", "USD")
+
     lines = [
         "# Stage 3.8A — Controlled Live Upstream Provider Evaluation",
         "",
-        f"- Generated at: `{report['generated_at']}`",
-        f"- Provider / Model: `{report['provider']}` / `{report['model']}`",
-        f"- Production Readiness Claim: `{report['production_readiness']}`",
-        f"- Streaming Semantic Cache Supported: `{report['environment']['streaming_semantic_cache_supported']}` (exact streaming only)",
-        f"- Actual Groq Requests Made: `{b['requests_made']}` / `{b['max_requests']}`",
-        f"- Usage Reported Calls / Missing Calls: `{b['usage_reported_calls']}` / `{b['usage_missing_calls']}`",
-        f"- Tokens Reported (Total): `{b['total_tokens_reported']}` | Cost Status: `{b['cost_status']}` (`{b['accumulated_cost_usd']}`)",
+        f"- Generated at: `{report.get('generated_at')}`",
+        f"- Commit SHA: `{report.get('commit_sha', 'unknown')}`",
+        f"- Dataset: `{ds.get('name', 'stage3_8a')}` v`{ds.get('version', '1.0')}` (SHA-256: `{ds.get('sha256', 'unknown')}`)",
+        f"- Provider / Model: `{report.get('provider')}` / `{report.get('model')}`",
+        f"- Production Readiness Claim: `{report.get('production_readiness')}`",
+        f"- Streaming Semantic Cache Supported: `{env.get('streaming_semantic_cache_supported')}` (exact streaming only)",
+        f"- Physical Groq Dispatches: `{b.get('physical_requests_dispatched', b.get('requests_made', 0))}` / `{b.get('max_requests')}`",
+        f"- Logical Operations: `{b.get('logical_operations', 0)}` | Retries: `{b.get('retry_attempts', 0)}`",
+        f"- Successful Responses: `{b.get('successful_responses', 0)}` | Failed Attempts: `{b.get('failed_attempts', 0)}` | Budget Rejections: `{b.get('budget_rejections', 0)}`",
+        f"- Usage Reported Calls / Missing Calls: `{b.get('usage_reported_calls', 0)}` / `{b.get('usage_missing_calls', 0)}`",
+        f"- Tokens Reported (Total): `{b.get('total_tokens_reported')}` (Prompt: `{b.get('prompt_tokens_reported')}`, Completion: `{b.get('completion_tokens_reported')}`)",
+        f"- Cost Ceiling: `{b.get('max_cost')}` {curr} | Accumulated Spend: `{b.get('accumulated_cost_usd')}` {curr}",
+        f"- Cost Status: `{b.get('cost_status')}` | Pricing Source: `{b.get('pricing_source')}` ({b.get('pricing_effective_date')})",
+        f"- Reservation Overruns: count=`{b.get('reservation_overrun_count', 0)}`, cost=`{b.get('reservation_overrun_cost', 0.0)}`",
         "",
         "## Comparable Benchmark Summary (Cold vs Warm)",
         "",
-        f"- **Mode A (Upstream Only):** `{ma['latency_summary']}`",
+        f"- **Mode A (Upstream Only):** `{ma.get('latency_summary')}`",
         f"- **Mode B (Exact Cache Only) Cold Miss:** `{mb.get('cold_miss_latency')}` | **Warm Exact Hit:** `{mb.get('warm_exact_hit_latency')}`",
         f"- **Mode C (Exact + Semantic) Cold Miss:** `{mc.get('cold_miss_latency')}` | **Warm Exact Hit:** `{mc.get('warm_exact_hit_latency')}` | **Warm Semantic Hit:** `{mc.get('warm_semantic_hit_latency')}`",
         "",
@@ -1393,6 +1682,13 @@ def render_stage38a_markdown(report: Dict[str, Any]) -> str:
     ]
     for item in report.get("failure_recovery_matrix", []):
         lines.append(f"| `{item['id']}` | {item['scenario']} | `{item['source']}` | `{item['passed']}` |")
+
+    lims = report.get("limitations", [])
+    if lims:
+        lines.extend(["", "## Limitations and Operational Scope", ""])
+        for lim in lims:
+            lines.append(f"- {lim}")
+
     return "\n".join(lines) + "\n"
 
 
@@ -1402,7 +1698,14 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     p.add_argument("--model", type=str, default=None, help="Explicit Groq model override (defaults to LIVE_PROVIDER_MODEL)")
     p.add_argument("--test-database-url", type=str, default=None, help="384-d PostgreSQL + pgvector connection string")
     p.add_argument("--output-dir", type=Path, default=Path("/tmp/stage3_8a_eval"))
-    p.add_argument("--max-requests", type=int, default=None, help="Hard live API call ceiling")
+    p.add_argument("--max-requests", type=int, default=None, help="Hard live API physical call ceiling")
+    p.add_argument("--max-cost", type=float, default=None, help="Hard live API spend ceiling in USD")
+    p.add_argument("--input-cost", type=float, default=None, help="Input tokens price per million")
+    p.add_argument("--output-cost", type=float, default=None, help="Output tokens price per million")
+    p.add_argument("--currency", type=str, default=None, help="Currency code (default USD)")
+    p.add_argument("--pricing-source", type=str, default=None, help="Documentation/pricing source reference")
+    p.add_argument("--pricing-effective-date", type=str, default=None, help="Effective date of pricing rates (e.g. 2026-11-27)")
+    p.add_argument("--cost-mode", type=str, default=None, choices=["strict", "report_only"], help="Cost enforcement mode")
     p.add_argument("--cases", nargs="*", default=None, help="Optional subset of dataset case IDs (e.g. LPE-001 LPE-002)")
     p.add_argument("--skip-mode-comparison", action="store_true", help="Skip Mode A/B/C comparison loop")
     p.add_argument("--pacing-seconds", type=float, default=5.5, help="Delay between consecutive real Groq calls to avoid OTPM throttling (0 on cache hits)")
@@ -1419,6 +1722,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             output_dir=args.output_dir,
             model_override=args.model,
             max_requests_override=args.max_requests,
+            max_cost_override=args.max_cost,
+            input_cost_override=args.input_cost,
+            output_cost_override=args.output_cost,
+            currency_override=args.currency,
+            pricing_source_override=args.pricing_source,
+            pricing_effective_date_override=args.pricing_effective_date,
+            cost_mode_override=args.cost_mode,
             case_ids=args.cases,
             skip_mode_comparison=args.skip_mode_comparison,
             pacing_seconds=args.pacing_seconds,

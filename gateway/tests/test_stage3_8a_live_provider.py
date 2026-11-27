@@ -8,6 +8,7 @@ Stage 3.8A Verification Tests:
 
 import asyncio
 import json
+import math
 import os
 from pathlib import Path
 import sys
@@ -40,8 +41,11 @@ from app.routes.query import get_groq_client_factory, get_query_cache, set_seman
 from scripts.evaluate_stage3_5_5_operational import verify_no_sensitive_leaks
 from scripts.evaluate_stage3_8a_live_provider import (
     DATASET_PATH,
+    BudgetedProviderProxy,
     LiveEvalBudgetExceededError,
     LiveEvalBudgetGuard,
+    PhysicalRequestReservation,
+    render_stage38a_markdown,
     run_fault_injection_matrix,
     run_live_provider_evaluation,
     sanitize_report_payload,
@@ -286,13 +290,14 @@ class TestStage38ABudgetRedactionAndFaultRecovery(unittest.IsolatedAsyncioTestCa
 
         g_cost = LiveEvalBudgetGuard(
             max_requests=10,
-            max_cost=0.001,
+            max_cost=0.01,
             input_cost_per_million=100.0,
             output_cost_per_million=100.0,
             pricing_source="unit_test_rate",
+            pricing_effective_date="2026-11-27",
         )
         await g_cost.reserve_request()
-        await g_cost.record_usage(UsageMetrics(prompt_tokens=10, completion_tokens=10, total_tokens=20), usage_available=True)
+        await g_cost.record_usage(UsageMetrics(prompt_tokens=100, completion_tokens=100, total_tokens=200), usage_available=True)
         with self.assertRaises(LiveEvalBudgetExceededError):
             await g_cost.reserve_request()
         self.assertEqual(g_cost.summary()["cost_status"], "calculated_from_usage")
@@ -355,6 +360,517 @@ class TestStage38ABudgetRedactionAndFaultRecovery(unittest.IsolatedAsyncioTestCa
             finally:
                 app.dependency_overrides.clear()
                 reload_settings()
+
+
+class TestStage38APhysicalRequestAccounting(unittest.IsolatedAsyncioTestCase):
+    """Verifies that physical provider request attempts are strictly accounted."""
+
+    async def test_single_generation_consumes_one_physical_request(self) -> None:
+        budget = LiveEvalBudgetGuard(max_requests=5)
+        client = AsyncMock()
+        resp = MagicMock()
+        resp.choices = [MagicMock(message=MagicMock(content="Hello"), finish_reason="stop")]
+        resp.usage = MagicMock(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+        client.chat.completions.create = AsyncMock(return_value=resp)
+        client.close = AsyncMock()
+
+        provider = GroqProvider(api_key="gsk_test", client_factory=lambda: client)
+        proxy = BudgetedProviderProxy(inner=provider, budget=budget)
+
+        req = GenerationRequest(
+            model="llama-3.3-70b-versatile",
+            messages=[ChatMessage(role="user", content="Test")],
+        )
+        res = await proxy.generate(req)
+        self.assertEqual(res.text, "Hello")
+        self.assertEqual(budget.physical_requests_dispatched, 1)
+        self.assertEqual(budget.logical_operations, 1)
+        self.assertEqual(budget.successful_responses, 1)
+        self.assertEqual(budget.failed_attempts, 0)
+        self.assertEqual(budget.retry_attempts, 0)
+
+    async def test_single_failure_consumes_one_physical_request(self) -> None:
+        budget = LiveEvalBudgetGuard(max_requests=5)
+        client = AsyncMock()
+        req_obj = httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions")
+        client.chat.completions.create = AsyncMock(
+            side_effect=groq.AuthenticationError(
+                message="Invalid API Key",
+                response=httpx.Response(401, request=req_obj),
+                body=None,
+            )
+        )
+        client.close = AsyncMock()
+
+        provider = GroqProvider(api_key="gsk_bad", client_factory=lambda: client, max_retries=2)
+        proxy = BudgetedProviderProxy(inner=provider, budget=budget)
+
+        req = GenerationRequest(
+            model="llama-3.3-70b-versatile",
+            messages=[ChatMessage(role="user", content="Test")],
+        )
+        with self.assertRaises(ProviderAuthenticationError):
+            await proxy.generate(req)
+
+        self.assertEqual(budget.physical_requests_dispatched, 1)
+        self.assertEqual(budget.logical_operations, 1)
+        self.assertEqual(budget.failed_attempts, 1)
+        self.assertEqual(budget.successful_responses, 0)
+
+    async def test_retries_consume_physical_requests_individually(self) -> None:
+        budget = LiveEvalBudgetGuard(max_requests=5)
+        client = AsyncMock()
+        req_obj = httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions")
+        resp = MagicMock()
+        resp.choices = [MagicMock(message=MagicMock(content="Retried answer"), finish_reason="stop")]
+        resp.usage = MagicMock(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+
+        # 2 timeouts followed by 1 success -> 3 physical dispatches
+        client.chat.completions.create = AsyncMock(
+            side_effect=[
+                groq.APITimeoutError(request=req_obj),
+                groq.APITimeoutError(request=req_obj),
+                resp,
+            ]
+        )
+        client.close = AsyncMock()
+
+        provider = GroqProvider(api_key="gsk_test", client_factory=lambda: client, max_retries=2, retry_backoff_seconds=0.0)
+        proxy = BudgetedProviderProxy(inner=provider, budget=budget)
+
+        req = GenerationRequest(
+            model="llama-3.3-70b-versatile",
+            messages=[ChatMessage(role="user", content="Test retry")],
+        )
+        res = await proxy.generate(req)
+        self.assertEqual(res.text, "Retried answer")
+        self.assertEqual(client.chat.completions.create.await_count, 3)
+        self.assertEqual(budget.physical_requests_dispatched, 3)
+        self.assertEqual(budget.logical_operations, 1)
+        self.assertEqual(budget.retry_attempts, 2)
+        self.assertEqual(budget.successful_responses, 1)
+        self.assertEqual(budget.failed_attempts, 2)
+
+    async def test_retry_blocked_before_dispatch_when_budget_exhausted(self) -> None:
+        # Cap is strictly 2 physical requests. Provider has max_retries=3.
+        budget = LiveEvalBudgetGuard(max_requests=2)
+        client = AsyncMock()
+        req_obj = httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions")
+        client.chat.completions.create = AsyncMock(side_effect=groq.APITimeoutError(request=req_obj))
+        client.close = AsyncMock()
+
+        provider = GroqProvider(api_key="gsk_test", client_factory=lambda: client, max_retries=3, retry_backoff_seconds=0.0)
+        proxy = BudgetedProviderProxy(inner=provider, budget=budget)
+
+        req = GenerationRequest(
+            model="llama-3.3-70b-versatile",
+            messages=[ChatMessage(role="user", content="Test exhaustion")],
+        )
+        with self.assertRaises(LiveEvalBudgetExceededError):
+            await proxy.generate(req)
+
+        # Attempt 0: dispatched (count=1, failed)
+        # Attempt 1 (retry 1): dispatched (count=2, failed)
+        # Attempt 2 (retry 2): reserve_attempt raises LiveEvalBudgetExceededError BEFORE dispatch!
+        self.assertEqual(client.chat.completions.create.await_count, 2)
+        self.assertEqual(budget.physical_requests_dispatched, 2)
+        self.assertGreaterEqual(budget.budget_rejections, 1)
+
+    async def test_streaming_physical_attempts_and_chunk_safety(self) -> None:
+        budget = LiveEvalBudgetGuard(max_requests=5)
+
+        async def _stream_generator():
+            for i in range(50):
+                c = MagicMock()
+                c.choices = [MagicMock(delta=MagicMock(content=f"word{i} "), finish_reason=None)]
+                c.usage = None
+                c.x_groq = None
+                yield c
+            end_chunk = MagicMock()
+            end_chunk.choices = [MagicMock(delta=MagicMock(content="done"), finish_reason="stop")]
+            end_chunk.usage = MagicMock(prompt_tokens=20, completion_tokens=50, total_tokens=70)
+            end_chunk.x_groq = None
+            yield end_chunk
+
+        client = AsyncMock()
+        client.chat.completions.create = AsyncMock(return_value=_stream_generator())
+        client.close = AsyncMock()
+
+        provider = GroqProvider(api_key="gsk_test", client_factory=lambda: client)
+        proxy = BudgetedProviderProxy(inner=provider, budget=budget)
+
+        req = GenerationRequest(
+            model="llama-3.3-70b-versatile",
+            messages=[ChatMessage(role="user", content="Stream test")],
+            stream=True,
+        )
+        chunks = [c async for c in proxy.stream(req)]
+        self.assertGreaterEqual(len(chunks), 50)
+        # 50 delta chunks must consume exactly 1 physical request unit!
+        self.assertEqual(budget.physical_requests_dispatched, 1)
+        self.assertEqual(budget.successful_responses, 1)
+
+    async def test_streaming_connection_retry_consumes_physical_requests(self) -> None:
+        budget = LiveEvalBudgetGuard(max_requests=5)
+        req_obj = httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions")
+
+        async def _stream_generator():
+            c = MagicMock()
+            c.choices = [MagicMock(delta=MagicMock(content="ok"), finish_reason="stop")]
+            c.usage = MagicMock(prompt_tokens=5, completion_tokens=2, total_tokens=7)
+            c.x_groq = None
+            yield c
+
+        client = AsyncMock()
+        client.chat.completions.create = AsyncMock(
+            side_effect=[
+                groq.APITimeoutError(request=req_obj),
+                _stream_generator(),
+            ]
+        )
+        client.close = AsyncMock()
+
+        provider = GroqProvider(api_key="gsk_test", client_factory=lambda: client, max_retries=1, retry_backoff_seconds=0.0)
+        proxy = BudgetedProviderProxy(inner=provider, budget=budget)
+
+        req = GenerationRequest(
+            model="llama-3.3-70b-versatile",
+            messages=[ChatMessage(role="user", content="Stream retry")],
+            stream=True,
+        )
+        chunks = [c async for c in proxy.stream(req)]
+        self.assertTrue(chunks[-1].done)
+        self.assertEqual(client.chat.completions.create.await_count, 2)
+        self.assertEqual(budget.physical_requests_dispatched, 2)
+        self.assertEqual(budget.retry_attempts, 1)
+
+    async def test_concurrent_physical_request_budget_enforcement(self) -> None:
+        budget = LiveEvalBudgetGuard(max_requests=5)
+        req = GenerationRequest(
+            model="llama-3.3-70b-versatile",
+            messages=[ChatMessage(role="user", content="Concurrent test")],
+        )
+
+        async def _worker():
+            try:
+                res = await budget.reserve_attempt(req, attempt=0, is_streaming=False)
+                await res.record_success(UsageMetrics(prompt_tokens=10, completion_tokens=10, total_tokens=20), usage_available=True)
+                return True
+            except LiveEvalBudgetExceededError:
+                return False
+
+        results = await asyncio.gather(*[_worker() for _ in range(25)])
+        successes = sum(1 for r in results if r is True)
+        rejections = sum(1 for r in results if r is False)
+
+        self.assertEqual(successes, 5)
+        self.assertEqual(rejections, 20)
+        self.assertEqual(budget.physical_requests_dispatched, 5)
+        self.assertEqual(budget.budget_rejections, 20)
+
+    async def test_cancellation_settles_reservation_and_releases_reserved_cost(self) -> None:
+        budget = LiveEvalBudgetGuard(
+            max_requests=5,
+            max_cost=1.0,
+            input_cost_per_million=10.0,
+            output_cost_per_million=10.0,
+            pricing_source="unit_test",
+            pricing_effective_date="2026-11-27",
+        )
+        req = GenerationRequest(
+            model="llama-3.3-70b-versatile",
+            messages=[ChatMessage(role="user", content="Cancel test")],
+        )
+        res = await budget.reserve_attempt(req, attempt=0, is_streaming=False)
+        self.assertGreater(budget.active_reserved_cost, 0.0)
+
+        await res.record_failure(asyncio.CancelledError())
+        self.assertEqual(budget.active_reserved_cost, 0.0)
+        self.assertEqual(budget.failed_attempts, 1)
+
+    async def test_cache_hits_consume_zero_provider_budget(self) -> None:
+        cache = ExactCache(max_entries=10)
+        core = IntelliCacheCore(cache=cache)
+        budget = LiveEvalBudgetGuard(max_requests=5)
+
+        client = AsyncMock()
+        resp = MagicMock()
+        resp.choices = [MagicMock(message=MagicMock(content="Cached response"), finish_reason="stop")]
+        resp.usage = MagicMock(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+        client.chat.completions.create = AsyncMock(return_value=resp)
+        client.close = AsyncMock()
+
+        provider = GroqProvider(api_key="gsk_test", client_factory=lambda: client)
+        proxy = BudgetedProviderProxy(inner=provider, budget=budget)
+
+        req = GenerationRequest(
+            model="llama-3.3-70b-versatile",
+            messages=[ChatMessage(role="user", content="Cache me")],
+            visibility="tenant_shared",
+            temperature=0.0,
+        )
+
+        # 1st call: Cold miss (consumes 1)
+        r1 = await core.execute_query(req, proxy)
+        self.assertFalse(r1.cached)
+        self.assertEqual(budget.physical_requests_dispatched, 1)
+
+        # 2nd call: Warm exact hit (consumes 0)
+        r2 = await core.execute_query(req, proxy)
+        self.assertTrue(r2.cached)
+        self.assertEqual(budget.physical_requests_dispatched, 1)
+        self.assertEqual(client.chat.completions.create.await_count, 1)
+
+    async def test_production_groq_provider_works_with_no_guard(self) -> None:
+        client = AsyncMock()
+        resp = MagicMock()
+        resp.choices = [MagicMock(message=MagicMock(content="Prod answer"), finish_reason="stop")]
+        resp.usage = MagicMock(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+        client.chat.completions.create = AsyncMock(return_value=resp)
+        client.close = AsyncMock()
+
+        provider = GroqProvider(api_key="gsk_test", client_factory=lambda: client, attempt_guard=None)
+        req = GenerationRequest(
+            model="llama-3.3-70b-versatile",
+            messages=[ChatMessage(role="user", content="Prod test")],
+        )
+        res = await provider.generate(req)
+        self.assertEqual(res.text, "Prod answer")
+
+
+class TestStage38AMonetaryCostEnforcement(unittest.IsolatedAsyncioTestCase):
+    """Verifies strict monetary cost-budget enforcement, conservative estimation, and reconciliation."""
+
+    def test_pricing_config_validation_rules(self) -> None:
+        # 1. max_cost set without pricing rates fails validation
+        with patch.dict(os.environ, {"LIVE_PROVIDER_MAX_COST": "0.50"}, clear=True):
+            with self.assertRaises(ValueError):
+                Settings()
+
+        # 2. negative pricing rate fails validation
+        with patch.dict(
+            os.environ,
+            {
+                "LIVE_PROVIDER_INPUT_COST_PER_MILLION": "-0.05",
+                "LIVE_PROVIDER_OUTPUT_COST_PER_MILLION": "0.08",
+            },
+            clear=True,
+        ):
+            with self.assertRaises(ValueError):
+                Settings()
+
+        # 3. validate_live_eval_profile fails closed on max_cost without full pricing
+        with self.assertRaises(ProviderConfigurationError):
+            validate_live_eval_profile(
+                confirm_live=True,
+                live_enabled=True,
+                model_name="llama-3.3-70b-versatile",
+                api_key="gsk_test123",
+                max_cost=0.50,
+                input_cost_per_million=None,
+                output_cost_per_million=0.08,
+                pricing_source="groq",
+                pricing_effective_date="2026-11-27",
+            )
+
+        # 4. validate_live_eval_profile fails on invalid currency
+        with self.assertRaises(ProviderConfigurationError):
+            validate_live_eval_profile(
+                confirm_live=True,
+                live_enabled=True,
+                model_name="llama-3.3-70b-versatile",
+                api_key="gsk_test123",
+                max_cost=0.50,
+                input_cost_per_million=0.05,
+                output_cost_per_million=0.08,
+                currency="INVALID_CURRENCY",
+                pricing_source="groq",
+                pricing_effective_date="2026-11-27",
+            )
+
+    def test_conservative_token_estimation_formula(self) -> None:
+        guard = LiveEvalBudgetGuard(max_requests=10)
+        req = GenerationRequest(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                ChatMessage(role="system", content="You are a helpful assistant."),
+                ChatMessage(role="user", content="Hello world!"),
+            ],
+            max_tokens=150,
+        )
+        total_chars = sum(len(m.role or "") + len(m.content or "") for m in req.messages)
+        expected_prompt = int(math.ceil((total_chars / 3.0) * 1.5)) + 32
+        prompt_est, comp_est = guard.estimate_tokens(req)
+        self.assertEqual(prompt_est, expected_prompt)
+        self.assertEqual(comp_est, 150)
+
+        # Default completion tokens when max_tokens is None
+        req_no_max = GenerationRequest(model="llama-3.3-70b-versatile", messages=[ChatMessage(role="user", content="Hi")])
+        _, comp_default = guard.estimate_tokens(req_no_max)
+        self.assertEqual(comp_default, 2048)
+
+    async def test_pre_dispatch_cost_cap_blocks_excessive_request(self) -> None:
+        guard = LiveEvalBudgetGuard(
+            max_requests=10,
+            max_cost=0.00005,
+            input_cost_per_million=10.0,
+            output_cost_per_million=100.0,
+            pricing_source="test_source",
+            pricing_effective_date="2026-11-27",
+        )
+        req = GenerationRequest(model="llama-3.3-70b-versatile", messages=[ChatMessage(role="user", content="Hello")])
+        with self.assertRaises(LiveEvalBudgetExceededError) as ctx:
+            await guard.reserve_attempt(req, attempt=0, is_streaming=False)
+
+        self.assertIn("cost ceiling reached", str(ctx.exception).lower())
+        self.assertEqual(guard.physical_requests_dispatched, 0)
+        self.assertEqual(guard.budget_rejections, 1)
+
+    async def test_fitting_request_reconciled_with_actual_usage_and_tracks_overrun(self) -> None:
+        guard = LiveEvalBudgetGuard(
+            max_requests=10,
+            max_cost=1.00,
+            input_cost_per_million=10.0,
+            output_cost_per_million=20.0,
+            pricing_source="test_rates",
+            pricing_effective_date="2026-11-27",
+        )
+        req = GenerationRequest(
+            model="llama-3.3-70b-versatile",
+            messages=[ChatMessage(role="user", content="Short prompt")],
+            max_tokens=50,
+        )
+        # 1. Reserve attempt
+        res = await guard.reserve_attempt(req, attempt=0, is_streaming=False)
+        self.assertGreater(guard.active_reserved_cost, 0.0)
+        self.assertEqual(guard.accumulated_cost, 0.0)
+
+        # 2. Response returns actual usage: 100 prompt tokens, 40 completion tokens
+        # Actual cost: (100 / 1M * 10) + (40 / 1M * 20) = 0.001 + 0.0008 = 0.0018
+        await res.record_success(
+            UsageMetrics(prompt_tokens=100, completion_tokens=40, total_tokens=140),
+            usage_available=True,
+        )
+        self.assertEqual(guard.active_reserved_cost, 0.0)
+        self.assertAlmostEqual(guard.accumulated_cost, 0.0018, places=6)
+        self.assertEqual(guard.successful_responses, 1)
+        self.assertEqual(guard.summary()["cost_status"], "calculated_from_usage")
+
+        # Overrun check: prompt estimation for "user" (4) + "Short prompt" (12) = 16 chars:
+        # prompt_est = ceil(16 / 3 * 1.5) + 32 = 8 + 32 = 40.
+        # comp_est = 50.
+        # Reserved cost = (40/1M * 10) + (50/1M * 20) = 0.0004 + 0.0010 = 0.0014.
+        # Actual cost was 0.0018 > 0.0014, so overrun is 0.0004!
+        self.assertEqual(guard.reservation_overrun_count, 1)
+        self.assertAlmostEqual(guard.reservation_overrun_cost, 0.0004, places=6)
+
+    async def test_missing_usage_tracking_and_cost_status(self) -> None:
+        guard = LiveEvalBudgetGuard(
+            max_requests=10,
+            max_cost=1.00,
+            input_cost_per_million=10.0,
+            output_cost_per_million=20.0,
+            pricing_source="test_rates",
+            pricing_effective_date="2026-11-27",
+        )
+        req = GenerationRequest(model="llama-3.3-70b-versatile", messages=[ChatMessage(role="user", content="Hi")])
+        res = await guard.reserve_attempt(req, attempt=0, is_streaming=False)
+        await res.record_success(None, usage_available=False)
+
+        self.assertEqual(guard.usage_missing_calls, 1)
+        self.assertEqual(guard.usage_reported_calls, 0)
+        self.assertEqual(guard.summary()["cost_status"], "no_usage_reported")
+
+    async def test_concurrent_cost_reservation_invariants(self) -> None:
+        # Cap is $0.005. Each request reserves approx $0.0014.
+        # Exactly 3 requests can fit under the ceiling (3 * 0.0014 = 0.0042 <= 0.005, 4 * 0.0014 = 0.0056 > 0.005).
+        guard = LiveEvalBudgetGuard(
+            max_requests=20,
+            max_cost=0.005,
+            input_cost_per_million=10.0,
+            output_cost_per_million=20.0,
+            pricing_source="test_rates",
+            pricing_effective_date="2026-11-27",
+        )
+        req = GenerationRequest(
+            model="llama-3.3-70b-versatile",
+            messages=[ChatMessage(role="user", content="Concurrency cost test")],
+            max_tokens=50,
+        )
+
+        async def _worker():
+            try:
+                res = await guard.reserve_attempt(req, attempt=0, is_streaming=False)
+                # Keep active_reserved_cost held during concurrency test
+                await asyncio.sleep(0.01)
+                await res.record_success(UsageMetrics(prompt_tokens=10, completion_tokens=10, total_tokens=20), usage_available=True)
+                return True
+            except LiveEvalBudgetExceededError:
+                return False
+
+        results = await asyncio.gather(*[_worker() for _ in range(10)])
+        successes = sum(1 for r in results if r is True)
+        rejections = sum(1 for r in results if r is False)
+
+        self.assertEqual(successes, 3)
+        self.assertEqual(rejections, 7)
+        self.assertLessEqual(guard.accumulated_cost, 0.005)
+
+
+class TestStage38AReportProvenanceAndSanitization(unittest.IsolatedAsyncioTestCase):
+    """Verifies that generated evaluation reports include complete provenance and zero leaks."""
+
+    def test_markdown_report_includes_provenance_and_accounting(self) -> None:
+        report = {
+            "stage": "3.8A.1",
+            "generated_at": "2026-11-27T12:00:00Z",
+            "commit_sha": "ddd7bd43ce2e36898c472f2bccbdfed596b9dbd8",
+            "dataset": {
+                "name": "stage3_8a_live_provider_dataset",
+                "version": "1.0.0",
+                "sha256": "abcdef1234567890",
+            },
+            "production_readiness": False,
+            "provider": "groq",
+            "model": "llama-3.3-70b-versatile",
+            "environment": {"streaming_semantic_cache_supported": False},
+            "budget": {
+                "max_requests": 40,
+                "physical_requests_dispatched": 25,
+                "logical_operations": 20,
+                "retry_attempts": 5,
+                "successful_responses": 20,
+                "failed_attempts": 5,
+                "budget_rejections": 0,
+                "max_cost": 0.50,
+                "currency": "USD",
+                "accumulated_cost_usd": 0.042,
+                "cost_status": "calculated_from_usage",
+                "pricing_source": "https://groq.com/pricing",
+                "pricing_effective_date": "2026-11-27",
+                "reservation_overrun_count": 0,
+                "reservation_overrun_cost": 0.0,
+                "total_tokens_reported": 12500,
+                "prompt_tokens_reported": 8000,
+                "completion_tokens_reported": 4500,
+                "usage_reported_calls": 20,
+                "usage_missing_calls": 0,
+            },
+            "mode_a_upstream_only": {"latency_summary": "p50: 250ms"},
+            "failure_recovery_matrix": [
+                {"id": "F-01", "scenario": "Rate limit", "source": "groq", "passed": True}
+            ],
+            "limitations": ["Live evaluation opt-in only; safe production defaults remain disabled."],
+        }
+        md = render_stage38a_markdown(report)
+        self.assertIn("ddd7bd43ce2e36898c472f2bccbdfed596b9dbd8", md)
+        self.assertIn("abcdef1234567890", md)
+        self.assertIn("Physical Groq Dispatches", md)
+        self.assertIn("Cost Ceiling", md)
+        self.assertIn("Limitations and Operational Scope", md)
+
+        secret_sample = "gsk_testsecretsample12345"
+        verify_no_sensitive_leaks(md, [secret_sample], "markdown_disclosure_test")
 
 
 @unittest.skipUnless(

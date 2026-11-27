@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import json
 import logging
+import math
 import os
 import sys
 from typing import Dict, List, Optional
@@ -115,6 +116,20 @@ class Settings(BaseModel):
     )
     live_provider_pricing_source: Optional[str] = Field(
         default_factory=lambda: (os.getenv("LIVE_PROVIDER_PRICING_SOURCE") or "").strip() or None
+    )
+    live_provider_currency: str = Field(
+        default_factory=lambda: (os.getenv("LIVE_PROVIDER_CURRENCY") or "USD").strip().upper()
+    )
+    live_provider_pricing_effective_date: Optional[str] = Field(
+        default_factory=lambda: (os.getenv("LIVE_PROVIDER_PRICING_EFFECTIVE_DATE") or "").strip() or None
+    )
+    live_provider_cost_mode: str = Field(
+        default_factory=lambda: (os.getenv("LIVE_PROVIDER_COST_MODE") or "strict").strip().lower()
+    )
+    live_provider_max_input_tokens: Optional[int] = Field(
+        default_factory=lambda: int(os.getenv("LIVE_PROVIDER_MAX_INPUT_TOKENS"))
+        if (os.getenv("LIVE_PROVIDER_MAX_INPUT_TOKENS") or "").strip()
+        else None
     )
 
     # Server Configuration
@@ -357,16 +372,46 @@ class Settings(BaseModel):
             raise ValueError(
                 f"LIVE_PROVIDER_MAX_REQUESTS must be between 1 and 500, got {self.live_provider_max_requests}."
             )
-        if self.live_provider_max_cost is not None and self.live_provider_max_cost <= 0.0:
+        if self.live_provider_max_cost is not None:
+            if math.isnan(self.live_provider_max_cost) or math.isinf(self.live_provider_max_cost) or self.live_provider_max_cost <= 0.0:
+                raise ValueError(
+                    f"LIVE_PROVIDER_MAX_COST must be a finite strictly positive number when configured, got {self.live_provider_max_cost}."
+                )
+            if self.live_provider_input_cost_per_million is None or self.live_provider_output_cost_per_million is None:
+                raise ValueError(
+                    "LIVE_PROVIDER_INPUT_COST_PER_MILLION and LIVE_PROVIDER_OUTPUT_COST_PER_MILLION are required when LIVE_PROVIDER_MAX_COST is configured."
+                )
+            if not self.live_provider_pricing_source:
+                raise ValueError(
+                    "LIVE_PROVIDER_PRICING_SOURCE is required when LIVE_PROVIDER_MAX_COST is configured."
+                )
+            if not self.live_provider_pricing_effective_date:
+                raise ValueError(
+                    "LIVE_PROVIDER_PRICING_EFFECTIVE_DATE is required when LIVE_PROVIDER_MAX_COST is configured."
+                )
+
+        if len(self.live_provider_currency) != 3 or not self.live_provider_currency.isalpha():
             raise ValueError(
-                f"LIVE_PROVIDER_MAX_COST must be strictly positive when configured, got {self.live_provider_max_cost}."
+                f"LIVE_PROVIDER_CURRENCY must be a valid 3-letter currency code, got '{self.live_provider_currency}'."
             )
+
+        if self.live_provider_cost_mode not in ("strict", "report_only"):
+            raise ValueError(
+                f"LIVE_PROVIDER_COST_MODE must be 'strict' or 'report_only', got '{self.live_provider_cost_mode}'."
+            )
+
         for cost_name, cost_val in (
             ("LIVE_PROVIDER_INPUT_COST_PER_MILLION", self.live_provider_input_cost_per_million),
             ("LIVE_PROVIDER_OUTPUT_COST_PER_MILLION", self.live_provider_output_cost_per_million),
         ):
-            if cost_val is not None and cost_val < 0.0:
-                raise ValueError(f"{cost_name} must be >= 0.0, got {cost_val}.")
+            if cost_val is not None:
+                if math.isnan(cost_val) or math.isinf(cost_val) or cost_val < 0.0:
+                    raise ValueError(f"{cost_name} must be a finite non-negative number, got {cost_val}.")
+
+        if self.live_provider_max_input_tokens is not None and self.live_provider_max_input_tokens < 1:
+            raise ValueError(
+                f"LIVE_PROVIDER_MAX_INPUT_TOKENS must be >= 1, got {self.live_provider_max_input_tokens}."
+            )
 
         if self.live_provider_evaluation_enabled:
             if self.live_provider_name != "groq":

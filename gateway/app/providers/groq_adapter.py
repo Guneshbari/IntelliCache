@@ -50,6 +50,7 @@ class GroqProvider:
         timeout_seconds: float = 30.0,
         max_retries: int = 0,
         retry_backoff_seconds: float = 0.25,
+        attempt_guard: Optional[Any] = None,
     ):
         if isinstance(timeout_seconds, bool) or timeout_seconds <= 0:
             raise ProviderConfigurationError(f"timeout_seconds must be > 0, got {timeout_seconds}.")
@@ -61,7 +62,12 @@ class GroqProvider:
         self.timeout_seconds = float(timeout_seconds)
         self.max_retries = int(max_retries)
         self.retry_backoff_seconds = max(0.0, float(retry_backoff_seconds))
+        self.attempt_guard = attempt_guard
         self._cached_client: Optional[AsyncGroq] = None
+
+    def set_attempt_guard(self, guard: Optional[Any]) -> None:
+        """Configures or clears the physical attempt reservation guard."""
+        self.attempt_guard = guard
 
     def _create_client(self) -> AsyncGroq:
         """Lazily creates and returns an AsyncGroq instance with bounded timeout."""
@@ -114,6 +120,8 @@ class GroqProvider:
 
     @staticmethod
     def _is_retryable_exception(err: BaseException) -> bool:
+        if isinstance(err, ProviderError):
+            return False
         timeout_cls = getattr(groq, "APITimeoutError", None)
         if timeout_cls is not None and isinstance(err, timeout_cls):
             return True
@@ -191,6 +199,9 @@ class GroqProvider:
 
         retries_executed = 0
         for attempt in range(self.max_retries + 1):
+            reservation = None
+            if self.attempt_guard is not None:
+                reservation = await self.attempt_guard.reserve_attempt(request, attempt=attempt, is_streaming=False)
             client = self._create_client()
             try:
                 response = await client.chat.completions.create(**kwargs)
@@ -205,6 +216,8 @@ class GroqProvider:
                     finish_reason = raw_fr if isinstance(raw_fr, str) else None
 
                 usage, usage_available = self._extract_usage(getattr(response, "usage", None))
+                if reservation is not None:
+                    await reservation.record_success(usage, usage_available=usage_available)
                 return GenerationResult(
                     text=content,
                     model=effective_model,
@@ -216,9 +229,13 @@ class GroqProvider:
                         "retry_count": retries_executed,
                     },
                 )
-            except asyncio.CancelledError:
+            except asyncio.CancelledError as cancel_err:
+                if reservation is not None:
+                    await reservation.record_failure(cancel_err)
                 raise
             except Exception as err:
+                if reservation is not None:
+                    await reservation.record_failure(err)
                 if attempt < self.max_retries and self._is_retryable_exception(err):
                     retries_executed += 1
                     logger.warning(
@@ -244,15 +261,22 @@ class GroqProvider:
         retries_executed = 0
         client: Optional[AsyncGroq] = None
         stream_resp: Any = None
+        reservation = None
         for attempt in range(self.max_retries + 1):
+            if self.attempt_guard is not None:
+                reservation = await self.attempt_guard.reserve_attempt(request, attempt=attempt, is_streaming=True)
             client = self._create_client()
             try:
                 stream_resp = await client.chat.completions.create(**kwargs)
                 break
-            except asyncio.CancelledError:
+            except asyncio.CancelledError as cancel_err:
+                if reservation is not None:
+                    await reservation.record_failure(cancel_err)
                 await self._close_client(client)
                 raise
             except Exception as err:
+                if reservation is not None:
+                    await reservation.record_failure(err)
                 await self._close_client(client)
                 if attempt < self.max_retries and self._is_retryable_exception(err):
                     retries_executed += 1
@@ -288,6 +312,8 @@ class GroqProvider:
                 yield StreamChunk(delta=delta_text, done=False, model=effective_model)
 
             elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+            if reservation is not None:
+                await reservation.record_success(captured_usage, usage_available=usage_available)
             yield StreamChunk(
                 delta="",
                 done=True,
@@ -300,9 +326,13 @@ class GroqProvider:
                     "retry_count": retries_executed,
                 },
             )
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as cancel_err:
+            if reservation is not None:
+                await reservation.record_failure(cancel_err)
             raise
         except Exception as err:
+            if reservation is not None:
+                await reservation.record_failure(err)
             raise self._translate_exception(err, retry_count=retries_executed) from err
         finally:
             await self._close_client(client)
