@@ -601,20 +601,23 @@ class TestStage354ConfigAndControl(unittest.IsolatedAsyncioTestCase):
         proceed_lookup.set()
 
         leader_out, follower_out = await asyncio.gather(leader_task, follower_task)
+        # Leader already passed Checkpoint 2 before disable, so leader completes cleanly.
         self.assertTrue(leader_out.cached)
         self.assertEqual(leader_out.cache_type, "semantic")
-        self.assertTrue(follower_out.cached)
-        self.assertEqual(follower_out.cache_type, "semantic")
-        self.assertEqual(leader_out.text, follower_out.text)
-        self.assertEqual(len(prov.calls), 0)
+        # Follower independently enforces Checkpoint 2 (Stage 3.8B.1), sees disabled state,
+        # rejects the coalesced semantic entry, and safely falls back to upstream generation.
+        self.assertFalse(follower_out.cached)
+        self.assertEqual(follower_out.cache_type, "none")
+        self.assertEqual(len(prov.calls), 1)
 
         snap = collector.get_namespace_snapshot("ns_post_cp2")
         self.assertEqual(snap.semantic.semantic_hits, 1)
-        self.assertEqual(snap.semantic.coalesced_semantic_hits, 1)
+        self.assertEqual(snap.semantic.coalesced_semantic_hits, 0)
         self.assertEqual(snap.request_and_cache.coalesced_joins, 1)
-        self.assertEqual(snap.request_and_cache.coalesced_successes, 1)
-        self.assertEqual(snap.request_and_cache.coalesced_semantic_hits, 1)
-        self.assertEqual(snap.provider_and_savings.provider_calls_avoided, 2)
+        self.assertEqual(snap.request_and_cache.coalesced_successes, 0)
+        self.assertEqual(snap.request_and_cache.coalesced_semantic_hits, 0)
+        self.assertEqual(snap.provider_and_savings.provider_calls_avoided, 1)
+        self.assertGreaterEqual(snap.semantic.semantic_runtime_disabled_skips, 1)
 
         # Very next paraphrase request MUST immediately see disabled runtime state and fall back
         svc.lookup = orig_lookup  # type: ignore[method-assign]
@@ -629,9 +632,9 @@ class TestStage354ConfigAndControl(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(next_out.cached)
         self.assertEqual(next_out.cache_type, "none")
-        self.assertEqual(len(prov.calls), 1)
+        self.assertEqual(len(prov.calls), 2)
         snap_after = collector.get_namespace_snapshot("ns_post_cp2")
-        self.assertEqual(snap_after.semantic.semantic_runtime_disabled_skips, 1)
+        self.assertGreaterEqual(snap_after.semantic.semantic_runtime_disabled_skips, 2)
 
 
 class TestStage354PrivacyIsolationInMemory(unittest.IsolatedAsyncioTestCase):

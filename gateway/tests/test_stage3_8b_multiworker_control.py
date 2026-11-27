@@ -32,6 +32,7 @@ from app.cache.postgres_cache import PostgresCache
 from app.config import Settings, reload_settings
 from app.core.contracts import ChatMessage, GenerationRequest, GenerationResult, UsageMetrics
 from app.core.service import IntelliCacheCore
+from app.core.singleflight import SingleFlightCoordinator
 from app.embeddings.contracts import EmbeddingResult, EmbeddingTask
 from app.embeddings.interfaces import EmbeddingProvider
 from app.main import create_app
@@ -518,3 +519,246 @@ class TestStage38BPostgresMultiWorkerCoordination(unittest.IsolatedAsyncioTestCa
                     r_stats = await client.get("/cache/semantic/stats", headers={"X-Admin-Token": admin_tok})
                     self.assertEqual(r_stats.status_code, 200)
                     self.assertFalse(r_stats.json()["runtime_serving_enabled"])
+
+    async def test_follower_enforces_checkpoint2_across_workers_and_preserves_exact_cache(self) -> None:
+        """
+        Stage 3.8B.1:
+        1) Worker 1 disables global serving AFTER Worker 2 leader passes Checkpoint 2 and BEFORE
+           Worker 2 SingleFlight follower delivers -> follower independently checks PostgreSQL Checkpoint 2,
+           rejects the coalesced semantic entry, falls back to upstream, and records 0 coalesced_semantic_hits.
+        2) With semantic serving disabled, exact-cache SingleFlight coalescing and exact cache hits remain active.
+        """
+        collector = RuntimeMetricsCollector()
+        store_seed = PostgresRuntimeControlStore(self.pool_w1)
+        await store_seed.ensure_initialized(initial_enabled=False, updated_by="startup")
+
+        exact_cache = ExactCache(max_entries=100, ttl_seconds=3600)
+        vstore = InMemoryVectorStore(dimensions=8, default_model="stub-model", exact_cache=exact_cache)
+
+        ctrl_w1, _svc1, core_w1, prov_w1 = self._build_worker_core(
+            pool=self.pool_w1,
+            shared_vstore=vstore,
+            shared_exact_cache=exact_cache,
+            collector=collector,
+            provider_label="W1",
+        )
+        ctrl_w2, svc2, core_w2, prov_w2 = self._build_worker_core(
+            pool=self.pool_w2,
+            shared_vstore=vstore,
+            shared_exact_cache=exact_cache,
+            collector=collector,
+            provider_label="W2",
+        )
+
+        # Seed semantic entry while serving is OFF
+        seed_req = GenerationRequest(
+            model="qwen/qwen3.8-27b",
+            messages=[ChatMessage(role="user", content="How to reverse a python list?")],
+            temperature=0.0,
+            max_tokens=64,
+            namespace="team_sf_38b1",
+            visibility="tenant_shared",
+        )
+        await core_w1.execute_query(seed_req, prov_w1)
+
+        # Turn serving ON via Worker 1
+        await ctrl_w1.aset_serving_enabled(True, updated_by="admin", reason="enable_for_follower_test")
+
+        sf_w2 = SingleFlightCoordinator()
+        core_w2.single_flight = sf_w2
+        in_lookup = asyncio.Event()
+        release_lookup = asyncio.Event()
+        orig_lookup = svc2.lookup
+        orig_complete = sf_w2.complete_success
+        kill_after_leader_cp2 = asyncio.Event()
+
+        async def _paused_lookup(req: GenerationRequest):
+            res = await orig_lookup(req)
+            in_lookup.set()
+            await release_lookup.wait()
+            return res
+
+        async def _kill_between_leader_cp2_and_follower_wake(key, value, **kwargs):
+            # Flip global kill switch OFF on Worker 1 AFTER leader Checkpoint 2 passed
+            # and BEFORE waiting follower runs its independent Checkpoint 2 read!
+            await ctrl_w1.aset_serving_enabled(False, updated_by="incident_ops", reason="mid_coalesce_global_kill")
+            kill_after_leader_cp2.set()
+            return await orig_complete(key, value, **kwargs)
+
+        svc2.lookup = _paused_lookup  # type: ignore[method-assign]
+        sf_w2.complete_success = _kill_between_leader_cp2_and_follower_wake  # type: ignore[method-assign]
+        try:
+            para_req = GenerationRequest(
+                model="qwen/qwen3.8-27b",
+                messages=[ChatMessage(role="user", content="Invert a python sequence cleanly?")],
+                temperature=0.0,
+                max_tokens=64,
+                namespace="team_sf_38b1",
+                visibility="tenant_shared",
+            )
+            leader_task = asyncio.create_task(core_w2.execute_query(para_req, prov_w2))
+            await in_lookup.wait()
+            follower_task = asyncio.create_task(core_w2.execute_query(para_req, prov_w2))
+            await asyncio.sleep(0.03)
+            release_lookup.set()
+            leader_res, follower_res = await asyncio.gather(leader_task, follower_task)
+        finally:
+            svc2.lookup = orig_lookup  # type: ignore[method-assign]
+            sf_w2.complete_success = orig_complete  # type: ignore[method-assign]
+
+        self.assertTrue(kill_after_leader_cp2.is_set())
+        # Leader passed CP2 prior to kill switch
+        self.assertTrue(leader_res.cached)
+        self.assertEqual(leader_res.cache_type, "semantic")
+        # Follower independently checked CP2 against PostgreSQL, saw disabled=True->False, and fell back!
+        self.assertFalse(follower_res.cached)
+        self.assertEqual(follower_res.cache_type, "none")
+        self.assertEqual(len(prov_w2.calls), 1)
+        snap = collector.get_namespace_snapshot("team_sf_38b1")
+        self.assertEqual(snap.semantic.coalesced_semantic_hits, 0)
+        self.assertGreaterEqual(snap.semantic.semantic_runtime_disabled_skips, 1)
+
+        # While semantic serving remains disabled, exact-cache coalescing + hits continue working normally!
+        in_exact_prov = asyncio.Event()
+        release_exact_prov = asyncio.Event()
+
+        class _GatedProvider(_StubProvider):
+            async def generate(self, request: GenerationRequest) -> GenerationResult:
+                if not in_exact_prov.is_set():
+                    in_exact_prov.set()
+                    await release_exact_prov.wait()
+                return await super().generate(request)
+
+        gated_prov = _GatedProvider("EXACT_SF")
+        exact_req = GenerationRequest(
+            model="qwen/qwen3.8-27b",
+            messages=[ChatMessage(role="user", content="Exact cache preservation check?")],
+            temperature=0.0,
+            max_tokens=64,
+            namespace="team_sf_38b1",
+            visibility="tenant_shared",
+        )
+        ex_leader_t = asyncio.create_task(core_w2.execute_query(exact_req, gated_prov))
+        await in_exact_prov.wait()
+        ex_follower_t = asyncio.create_task(core_w2.execute_query(exact_req, gated_prov))
+        await asyncio.sleep(0.03)
+        release_exact_prov.set()
+        ex_leader, ex_follower = await asyncio.gather(ex_leader_t, ex_follower_t)
+
+        self.assertFalse(ex_leader.cached)
+        self.assertTrue(ex_follower.cached)
+        self.assertEqual(ex_follower.cache_type, "exact")
+        self.assertEqual(len(gated_prov.calls), 1)
+
+        ex_repeat = await core_w2.execute_query(exact_req, gated_prov)
+        self.assertTrue(ex_repeat.cached)
+        self.assertEqual(ex_repeat.cache_type, "exact")
+        self.assertEqual(len(gated_prov.calls), 1)
+
+    async def test_concurrent_request_local_admission_telemetry_and_bypass_isolation(self) -> None:
+        """
+        Stage 3.8B.1: Concurrent ADMIT, BYPASS, and REJECT requests preserve per-request
+        admission_status/admission_reason_code without cross-request contamination from shared state.
+        """
+        collector = RuntimeMetricsCollector()
+        exact_cache = ExactCache(max_entries=100, ttl_seconds=3600)
+        vstore = InMemoryVectorStore(dimensions=8, default_model="stub-model", exact_cache=exact_cache)
+        _ctrl, svc, core, _prov = self._build_worker_core(
+            pool=self.pool_w1,
+            shared_vstore=vstore,
+            shared_exact_cache=exact_cache,
+            collector=collector,
+            provider_label="CONC",
+        )
+
+        class _SlowAdmitProvider(_StubProvider):
+            async def generate(self, request: GenerationRequest) -> GenerationResult:
+                text_in = request.messages[-1].content.lower()
+                if "slow admit" in text_in:
+                    # Sleep long enough for bypass + reject queries to finish first and overwrite shared state
+                    await asyncio.sleep(0.06)
+                self.calls.append(request)
+                return GenerationResult(
+                    text="list(reversed(items))",
+                    model=request.model,
+                    usage=UsageMetrics(prompt_tokens=10, completion_tokens=6, total_tokens=16),
+                    latency_ms=40.0,
+                    finish_reason="stop",
+                )
+
+        # Also test concurrency AFTER index_with_decision completes for ADMIT vs BYPASS overlap
+        admit_started = asyncio.Event()
+        allow_admit_return = asyncio.Event()
+        orig_index_wd = svc.index_with_decision
+
+        async def _paused_index_with_decision(req: GenerationRequest, res: GenerationResult):
+            admitted, dec = await orig_index_wd(req, res)
+            if "overlapping admit" in req.messages[-1].content.lower():
+                admit_started.set()
+                await allow_admit_return.wait()
+            return admitted, dec
+
+        svc.index_with_decision = _paused_index_with_decision  # type: ignore[method-assign]
+        prov = _SlowAdmitProvider("CONC")
+        try:
+            admit_req = GenerationRequest(
+                model="qwen/qwen3.8-27b",
+                messages=[ChatMessage(role="user", content="Overlapping admit python reverse list")],
+                temperature=0.0,
+                max_tokens=64,
+                namespace="team_adm_conc",
+                visibility="tenant_shared",
+            )
+            bypass_req = GenerationRequest(
+                model="qwen/qwen3.8-27b",
+                messages=[ChatMessage(role="user", content="Sensitive bypass query do not cache")],
+                temperature=0.0,
+                max_tokens=64,
+                namespace="team_adm_conc",
+                visibility="tenant_shared",
+                bypass_cache=True,
+            )
+            reject_req = GenerationRequest(
+                model="qwen/qwen3.8-27b",
+                messages=[ChatMessage(role="user", content="High temperature unsupported admit")],
+                temperature=0.9,
+                max_tokens=64,
+                namespace="team_adm_conc",
+                visibility="tenant_shared",
+            )
+            sensitive_req = GenerationRequest(
+                model="qwen/qwen3.8-27b",
+                messages=[ChatMessage(role="user", content="Store token sk-proj-sensitive1234567890abcdef")],
+                temperature=0.0,
+                max_tokens=64,
+                namespace="team_adm_conc",
+                visibility="tenant_shared",
+            )
+
+            t_admit = asyncio.create_task(core.execute_query(admit_req, prov))
+            await admit_started.wait()
+            # While ADMIT is paused before returning, BYPASS, sensitive auto-bypass, and REJECT finish concurrently
+            res_bypass, res_sensitive, res_reject = await asyncio.gather(
+                core.execute_query(bypass_req, prov),
+                core.execute_query(sensitive_req, prov),
+                core.execute_query(reject_req, prov),
+            )
+            allow_admit_return.set()
+            res_admit = await t_admit
+        finally:
+            svc.index_with_decision = orig_index_wd  # type: ignore[method-assign]
+
+        # Each result reflects its own request-local admission decision despite concurrent overlap
+        self.assertEqual(res_admit.admission_status, "ADMIT")
+        self.assertEqual(res_admit.admission_reason_code, "ADMISSION_ADMITTED")
+        self.assertIsNotNone(res_admit.admission_decision)
+        self.assertEqual(res_bypass.admission_status, "BYPASS")
+        self.assertEqual(res_bypass.admission_reason_code, "CACHE_BYPASSED_SENSITIVE_OR_INELIGIBLE")
+        self.assertIsNone(res_bypass.admission_decision)
+        self.assertEqual(res_sensitive.admission_status, "BYPASS")
+        self.assertEqual(res_sensitive.admission_reason_code, "CACHE_BYPASSED_SENSITIVE_OR_INELIGIBLE")
+        self.assertIsNone(res_sensitive.admission_decision)
+        self.assertEqual(res_reject.admission_status, "REJECT")
+        self.assertEqual(res_reject.admission_reason_code, "ADMISSION_REJECTED_INELIGIBLE")
+        # Legacy shared mirror ended on REJECT, proving res_admit/res_bypass did NOT rely on shared mutable state
+        self.assertEqual(svc.last_admission_decision.status.value, "REJECT")

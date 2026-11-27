@@ -970,9 +970,10 @@ async def run_operational_evaluation(
                         _assert(sf_adm["aggregate"]["semantic"]["coalesced_semantic_hits"] == 1, f"Admin aggregate semantic coalesced_semantic_hits mismatch: {sf_adm}")
                         _assert(sf_me["provider_and_savings"]["provider_calls_avoided"] == 2, f"Expected 2 provider calls avoided (leader+follower): {sf_me}")
 
-                        # Post-Checkpoint-2 flip over HTTP: once record_semantic_hit runs (post-CP2),
-                        # toggling serving off lets the authorized leader & waiting follower finish cleanly,
-                        # then the immediate next paraphrase falls back with runtime_disabled_skips incremented.
+                        # Post-Checkpoint-2 flip over HTTP (Stage 3.8B.1 follower enforcement):
+                        # once leader record_semantic_hit runs (post-CP2), toggling serving off lets the
+                        # authorized leader finish cleanly, while the waiting follower independently enforces
+                        # Checkpoint 2, rejects the semantic response, and falls back to upstream.
                         await _reset_state()
                         sf2_seed, _ = await _post_query(client, "tok_sf_a", "How do I reverse a string in Python?")
                         _assert(not sf2_seed.json()["cached"], "Post-CP2 seed fail")
@@ -1006,20 +1007,20 @@ async def run_operational_evaluation(
                             active_cache.record_semantic_hit = orig_cache_rec  # type: ignore[method-assign]
 
                         _assert(l2_r.json()["cached"] is True and l2_r.json()["cache_type"] == "semantic", "Post-CP2 leader must finish")
-                        _assert(f2_r.json()["cached"] is True and f2_r.json()["cache_type"] == "semantic", "Post-CP2 follower must finish")
+                        _assert(f2_r.json()["cached"] is False and f2_r.json()["cache_type"] == "none", "Post-CP2 follower must independently fail closed to upstream")
                         # Immediate next request sees disabled state and falls back
                         post_flip_next, _ = await _post_query(client, "tok_sf_a", "How do I sort a list in Python?")
                         _assert(post_flip_next.json()["cached"] is False, "Request after post-CP2 flip must fall back")
                         sf2_st = (await client.get("/cache/semantic/stats", headers=_hdr("tok_sf_a"))).json()
-                        _assert(sf2_st["runtime_disabled_skips"] >= 1, f"Expected runtime_disabled_skips >= 1 after post-CP2 flip: {sf2_st}")
-                        _assert(sf2_st["coalesced_semantic_hits"] == 1, f"Expected coalesced_semantic_hits == 1 after post-CP2 cycle: {sf2_st}")
+                        _assert(sf2_st["runtime_disabled_skips"] >= 2, f"Expected runtime_disabled_skips >= 2 (follower + next) after post-CP2 flip: {sf2_st}")
+                        _assert(sf2_st["coalesced_semantic_hits"] == 0, f"Expected coalesced_semantic_hits == 0 when follower rejected semantic hit: {sf2_st}")
                         ctrl.set_serving_enabled(True, reason="restore_after_sf")
 
                         outcomes.append(
                             ScenarioOutcome(
                                 "scenario_h_http_singleflight_semantic_coalescing",
                                 True,
-                                "HTTP SingleFlight leader+follower served identical semantic response (0 upstream calls), distinct private principal isolated, and post-CP2 delivery boundary verified.",
+                                "HTTP SingleFlight leader+follower served identical semantic response (0 upstream calls), distinct private principal isolated, and post-CP2 follower Checkpoint 2 enforcement verified.",
                                 {
                                     "semantic_hits": sf_me["semantic"]["semantic_hits"],
                                     "coalesced_joins": sf_me["request_and_cache"]["coalesced_joins"],

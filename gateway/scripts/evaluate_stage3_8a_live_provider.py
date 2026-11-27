@@ -1834,11 +1834,8 @@ async def _run_full_workload_cases(
                         if sel_set is not None and cid not in sel_set:
                             continue
                         hdr = token_hdrs[case["principal"]]
-                        sem_svc = getattr(app.state, "semantic_cache", None)
                         budgeted_provider.set_dispatch_context("gateway_workload", cid)
                         if case.get("setup_messages"):
-                            if sem_svc is not None:
-                                sem_svc.last_admission_decision = None
                             await client.post(
                                 "/query",
                                 headers=hdr,
@@ -1849,8 +1846,6 @@ async def _run_full_workload_cases(
                                     "max_tokens": int(case["max_tokens"]),
                                 },
                             )
-                        if sem_svc is not None:
-                            sem_svc.last_admission_decision = None
                         await budgeted_provider.pace_before_upstream()
                         r1 = await client.post(
                             "/query",
@@ -1875,19 +1870,14 @@ async def _run_full_workload_cases(
                             "expected_cache_behavior": case["expected_cache_behavior"],
                             "response_length": len(d1.get("response", "") or ""),
                         }
-                        adm = getattr(sem_svc, "last_admission_decision", None) if sem_svc is not None else None
                         if not entry["cached"]:
-                            if adm is not None:
-                                entry["admission_status"] = adm.status.value
-                                entry["admission_reason_code"] = adm.reason_code.value
-                            else:
-                                entry["admission_status"] = "BYPASS"
-                                entry["admission_reason_code"] = "CACHE_BYPASSED_SENSITIVE_OR_INELIGIBLE"
+                            entry["admission_status"] = d1.get("admission_status") or "BYPASS"
+                            entry["admission_reason_code"] = (
+                                d1.get("admission_reason_code") or "CACHE_BYPASSED_SENSITIVE_OR_INELIGIBLE"
+                            )
 
                         if case.get("followup_messages") and case.get("followup_principal"):
                             hdr_fu = token_hdrs[case["followup_principal"]]
-                            if sem_svc is not None:
-                                sem_svc.last_admission_decision = None
                             await budgeted_provider.pace_before_upstream()
                             r2 = await client.post(
                                 "/query",
@@ -1909,8 +1899,6 @@ async def _run_full_workload_cases(
                         outcomes.append(entry)
 
                     # Cross-tenant isolation spot check
-                    if sem_svc is not None:
-                        sem_svc.last_admission_decision = None
                     budgeted_provider.set_dispatch_context("gateway_workload", "LPE-CROSS-TENANT")
                     r_xt = await client.post(
                         "/query",

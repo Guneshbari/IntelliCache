@@ -713,6 +713,8 @@ class TestStage38APhysicalRequestAccounting(unittest.IsolatedAsyncioTestCase):
         )
         res = await core.execute_query(req_sensitive, proxy)
         self.assertFalse(res.cached)
+        self.assertEqual(res.admission_status, "BYPASS")
+        self.assertEqual(res.admission_reason_code, "CACHE_BYPASSED_SENSITIVE_OR_INELIGIBLE")
         # Sensitive bypass must clear stale last_admission_decision so runners never misattribute previous decision
         self.assertIsNone(mock_sem.last_admission_decision)
         self.assertEqual(len(budget.dispatch_ledger), 1)

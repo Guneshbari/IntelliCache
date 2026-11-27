@@ -83,6 +83,9 @@ class GenerationResult:
     metadata: Dict[str, Any] = field(default_factory=dict)
     cache_type: str = "none"
     finish_reason: Optional[str] = None
+    admission_status: Optional[str] = None
+    admission_reason_code: Optional[str] = None
+    admission_decision: Optional[Any] = None
 
 
 @dataclass

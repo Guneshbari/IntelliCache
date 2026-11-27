@@ -6,9 +6,9 @@ Can be injected into IntelliCacheCore without importing FastAPI or SDK classes.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Dict, Optional
+from typing import TYPE_CHECKING, Dict, Optional, Tuple
 
-from .contracts import EligibilityResult, SemanticHit
+from .contracts import AdmissionDecision, EligibilityResult, SemanticHit
 
 if TYPE_CHECKING:
     from ..core.contracts import GenerationRequest, GenerationResult
@@ -37,6 +37,16 @@ class BaseSemanticCache(ABC):
         Fails safely on infrastructure errors (returns False).
         """
         pass
+
+    async def index_with_decision(
+        self, request: GenerationRequest, result: GenerationResult
+    ) -> Tuple[bool, Optional[AdmissionDecision]]:
+        """
+        Indexes an eligible response and returns a request-local `(admitted, decision)` tuple
+        without relying on shared mutable state across concurrent requests.
+        """
+        admitted = await self.index(request, result)
+        return admitted, getattr(self, "last_admission_decision", None)
 
     @abstractmethod
     def get_stats(self) -> Dict[str, int]:

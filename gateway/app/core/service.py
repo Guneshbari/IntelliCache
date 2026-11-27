@@ -21,6 +21,7 @@ from .contracts import (
     StreamChunk,
     UsageMetrics,
     derive_scoped_exact_key,
+    matches_cache_scope,
     normalize_cache_visibility,
     normalize_principal_id,
 )
@@ -280,6 +281,111 @@ class IntelliCacheCore:
             collector.record_provider_retries(ns, retries)
         collector.record_latency(ns, "provider_generation_latency_ms", latency_ms)
 
+    async def _dispatch_provider_generation(
+        self,
+        *,
+        request: GenerationRequest,
+        provider: LLMProvider,
+        collector: RuntimeMetricsCollector,
+        ns: str,
+        fingerprint: str,
+    ) -> GenerationResult:
+        """Executes upstream generation and normalizes result metadata and provider telemetry."""
+        collector.record_provider_attempt(ns)
+        prov_start = time.perf_counter()
+        try:
+            result = await provider.generate(request)
+        except asyncio.CancelledError:
+            prov_latency_ms = (time.perf_counter() - prov_start) * 1000.0
+            collector.record_latency(ns, "provider_generation_latency_ms", prov_latency_ms)
+            raise
+        except BaseException as exc:
+            prov_latency_ms = (time.perf_counter() - prov_start) * 1000.0
+            self._record_provider_failure_metrics(collector, ns, exc, prov_latency_ms)
+            raise
+
+        prov_latency_ms = (time.perf_counter() - prov_start) * 1000.0
+        self._record_provider_outcome_telemetry(collector, ns, result, prov_latency_ms)
+        result.fingerprint = fingerprint
+        result.metadata = request.metadata
+        result.cache_type = "none"
+        return result
+
+    async def _run_semantic_indexing(
+        self,
+        request: GenerationRequest,
+        result: GenerationResult,
+        ns: str,
+    ) -> None:
+        """Indexes upstream output semantically and binds the request-local admission decision."""
+        if self.semantic_cache is None or not self.semantic_cache_startup_enabled:
+            return
+        try:
+            if hasattr(self.semantic_cache, "index_with_decision"):
+                admitted, decision = await self.semantic_cache.index_with_decision(request, result)
+            else:
+                admitted = await self.semantic_cache.index(request, result)
+                decision = getattr(self.semantic_cache, "last_admission_decision", None)
+            result.admission_decision = decision
+            if decision is not None:
+                result.admission_status = decision.status.value
+                result.admission_reason_code = decision.reason_code.value
+            else:
+                result.admission_status = "ADMIT" if admitted else "REJECT"
+                result.admission_reason_code = (
+                    "ADMISSION_ADMITTED" if admitted else "ADMISSION_REJECTED_INELIGIBLE"
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as idx_err:
+            logger.warning(
+                "Semantic indexing failed for namespace='%s': %s",
+                ns,
+                sanitize_error_message(str(idx_err)),
+            )
+
+    async def _persist_exact_and_index_semantic(
+        self,
+        *,
+        request: GenerationRequest,
+        result: GenerationResult,
+        entry: CacheEntry,
+        exact_storage_key: Optional[str],
+        collector: RuntimeMetricsCollector,
+        ns: str,
+        flight_key: Optional[Any] = None,
+        shared_future: Optional[Any] = None,
+    ) -> None:
+        """Persists exact cache entry, releases SingleFlight early when durable, then runs semantic indexing."""
+        write_start = time.perf_counter()
+        cache_write_succeeded = False
+        try:
+            if exact_storage_key is not None:
+                await self.cache.set(exact_storage_key, entry, namespace=ns)
+                cache_write_succeeded = True
+            write_latency_ms = (time.perf_counter() - write_start) * 1000.0
+            collector.record_latency(ns, "exact_cache_write_latency_ms", write_latency_ms)
+        except asyncio.CancelledError:
+            raise
+        except Exception as write_err:
+            write_latency_ms = (time.perf_counter() - write_start) * 1000.0
+            collector.record_latency(ns, "exact_cache_write_latency_ms", write_latency_ms)
+            collector.record_cache_write_failure(ns)
+            logger.warning(
+                "Exact cache write failed for namespace='%s': %s",
+                ns,
+                sanitize_error_message(str(write_err)),
+            )
+        finally:
+            if cache_write_succeeded and flight_key is not None and shared_future is not None:
+                await self.single_flight.release(flight_key, expected_future=shared_future)
+
+        try:
+            await self._run_semantic_indexing(request, result, ns)
+        finally:
+            if not cache_write_succeeded and flight_key is not None and shared_future is not None:
+                await self.single_flight.release(flight_key, expected_future=shared_future)
+
     async def execute_query(
         self,
         request: GenerationRequest,
@@ -399,30 +505,26 @@ class IntelliCacheCore:
             if self.semantic_cache is not None and hasattr(self.semantic_cache, "last_admission_decision"):
                 self.semantic_cache.last_admission_decision = None
             await self._safe_cache_counter(self.cache.record_miss(), op_name="record_miss", namespace=ns)
-            collector.record_provider_attempt(ns)
-            prov_start = time.perf_counter()
             try:
-                result = await provider.generate(request)
-                prov_latency_ms = (time.perf_counter() - prov_start) * 1000.0
-                total_latency_ms = (time.perf_counter() - start_time) * 1000.0
-
-                self._record_provider_outcome_telemetry(collector, ns, result, prov_latency_ms)
-                collector.record_latency(ns, "total_request_latency_ms", total_latency_ms)
-
-                result.fingerprint = fingerprint
-                result.metadata = request.metadata
-                result.cache_type = "none"
-                return result
+                result = await self._dispatch_provider_generation(
+                    request=request,
+                    provider=provider,
+                    collector=collector,
+                    ns=ns,
+                    fingerprint=fingerprint,
+                )
             except asyncio.CancelledError:
-                prov_latency_ms = (time.perf_counter() - prov_start) * 1000.0
-                collector.record_latency(ns, "provider_generation_latency_ms", prov_latency_ms)
                 raise
-            except BaseException as exc:
-                prov_latency_ms = (time.perf_counter() - prov_start) * 1000.0
+            except BaseException:
                 total_latency_ms = (time.perf_counter() - start_time) * 1000.0
-                self._record_provider_failure_metrics(collector, ns, exc, prov_latency_ms)
                 collector.record_latency(ns, "total_request_latency_ms", total_latency_ms)
                 raise
+            total_latency_ms = (time.perf_counter() - start_time) * 1000.0
+            collector.record_latency(ns, "total_request_latency_ms", total_latency_ms)
+            result.admission_decision = None
+            result.admission_status = "BYPASS"
+            result.admission_reason_code = "CACHE_BYPASSED_SENSITIVE_OR_INELIGIBLE"
+            return result
 
         # 3. Single-Flight Coordination (strictly isolated by namespace, visibility, owner principal, and fingerprint)
         flight_key = (ns, req_vis, entry_owner or "", fingerprint)
@@ -433,57 +535,133 @@ class IntelliCacheCore:
             await self.cache.record_coalesced_join()
             collector.record_coalesced_join(ns)
             try:
-                # Follower awaits leader's shared future safely via wait_flight (shielding without event-loop noise)
                 cached_entry: CacheEntry = await self.single_flight.wait_flight(
                     shared_future, key=flight_key
-                )
-                total_latency_ms = (time.perf_counter() - start_time) * 1000.0
-                p_tok = getattr(cached_entry.usage, "prompt_tokens", 0) or 0
-                c_tok = getattr(cached_entry.usage, "completion_tokens", 0) or 0
-                t_tok = getattr(cached_entry.usage, "total_tokens", 0) or 0
-
-                # Record successful reuse for tokens; followers receive the leader's result
-                # (including semantic hits with cache_type="semantic") without an independent
-                # Checkpoint 2 check and are tracked via coalesced_joins/coalesced_successes
-                # (and coalesced_semantic_hits when riding a semantic leader) rather than
-                # incrementing semantic_hits twice.
-                cache_type = cached_entry.metadata.get("cache_type", "exact")
-                await self.cache.record_coalesced_success(cached_entry)
-                collector.record_coalesced_success(
-                    ns,
-                    prompt_tokens=p_tok,
-                    completion_tokens=c_tok,
-                    total_tokens=t_tok,
-                    cache_type=cache_type,
-                )
-                collector.record_latency(ns, "total_request_latency_ms", total_latency_ms)
-
-                return GenerationResult(
-                    text=cached_entry.response,
-                    model=cached_entry.model,
-                    usage=cached_entry.usage,
-                    latency_ms=round(total_latency_ms, 2),
-                    cached=True,
-                    cache_hit_count=cached_entry.hit_count,
-                    fingerprint=fingerprint,
-                    metadata=request.metadata,
-                    cache_type=cache_type,
                 )
             except asyncio.CancelledError:
                 # Follower cancelled - leader continues unhindered; outer wrapper records cancellation
                 raise
-            except SingleFlightLeaderCancelledError:
-                # Leader cancelled - follower experiences a controlled coalesced failure
+            except (SingleFlightLeaderCancelledError, BaseException):
                 total_latency_ms = (time.perf_counter() - start_time) * 1000.0
                 collector.record_coalesced_failure(ns)
                 collector.record_latency(ns, "total_request_latency_ms", total_latency_ms)
                 raise
-            except BaseException:
-                # Leader failed - error propagated to follower
+
+            cache_type = cached_entry.metadata.get("cache_type", "exact")
+            entry_vis = getattr(cached_entry, "visibility", CACHE_VISIBILITY_UNKNOWN)
+            entry_owner_id = getattr(cached_entry, "owner_principal_id", None)
+            follower_scope_ok = bool(
+                can_use_exact_cache
+                and matches_cache_scope(
+                    entry_vis,
+                    entry_owner_id,
+                    req_vis,
+                    req_own,
+                    allow_shared,
+                )
+            )
+
+            if cache_type == "semantic":
+                # Stage 3.8B.1: Independently verify follower scope & Checkpoint 2 before serving coalesced semantic hit
+                semantic_allowed = bool(
+                    follower_scope_ok
+                    and self.semantic_cache is not None
+                    and self.semantic_cache_startup_enabled
+                    and await self._acheck_semantic_serving_runtime(ns, collector)
+                )
+                if not semantic_allowed:
+                    if not follower_scope_ok:
+                        self._record_exact_scope_rejection(collector, ns, request, scope)
+                    else:
+                        collector.record_semantic_runtime_disabled_skip(ns)
+                        self._record_semantic_stat_attr(self.semantic_cache, "runtime_disabled_skips")
+                    collector.record_upstream_fallback_after_semantic_miss(ns)
+                    self._record_semantic_stat_attr(self.semantic_cache, "upstream_fallbacks_after_miss")
+                    self._record_semantic_stat_attr(self.semantic_cache, "semantic_fallbacks")
+                    await self._safe_cache_counter(self.cache.record_miss(), op_name="record_miss", namespace=ns)
+                    try:
+                        fallback_result = await self._dispatch_provider_generation(
+                            request=request,
+                            provider=provider,
+                            collector=collector,
+                            ns=ns,
+                            fingerprint=fingerprint,
+                        )
+                    except asyncio.CancelledError:
+                        raise
+                    except BaseException:
+                        total_latency_ms = (time.perf_counter() - start_time) * 1000.0
+                        collector.record_latency(ns, "total_request_latency_ms", total_latency_ms)
+                        raise
+
+                    fallback_entry = CacheEntry(
+                        response=fallback_result.text,
+                        model=fallback_result.model,
+                        usage=fallback_result.usage,
+                        latency_ms=fallback_result.latency_ms,
+                        provider=request.provider,
+                        visibility=req_vis,
+                        owner_principal_id=entry_owner,
+                        metadata={"cache_type": "exact"},
+                    )
+                    await self._persist_exact_and_index_semantic(
+                        request=request,
+                        result=fallback_result,
+                        entry=fallback_entry,
+                        exact_storage_key=exact_storage_key,
+                        collector=collector,
+                        ns=ns,
+                    )
+                    total_latency_ms = (time.perf_counter() - start_time) * 1000.0
+                    collector.record_latency(ns, "total_request_latency_ms", total_latency_ms)
+                    return fallback_result
+            elif not follower_scope_ok:
+                self._record_exact_scope_rejection(collector, ns, request, scope)
+                await self._safe_cache_counter(self.cache.record_miss(), op_name="record_miss", namespace=ns)
+                try:
+                    fallback_result = await self._dispatch_provider_generation(
+                        request=request,
+                        provider=provider,
+                        collector=collector,
+                        ns=ns,
+                        fingerprint=fingerprint,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except BaseException:
+                    total_latency_ms = (time.perf_counter() - start_time) * 1000.0
+                    collector.record_latency(ns, "total_request_latency_ms", total_latency_ms)
+                    raise
                 total_latency_ms = (time.perf_counter() - start_time) * 1000.0
-                collector.record_coalesced_failure(ns)
                 collector.record_latency(ns, "total_request_latency_ms", total_latency_ms)
-                raise
+                return fallback_result
+
+            total_latency_ms = (time.perf_counter() - start_time) * 1000.0
+            p_tok = getattr(cached_entry.usage, "prompt_tokens", 0) or 0
+            c_tok = getattr(cached_entry.usage, "completion_tokens", 0) or 0
+            t_tok = getattr(cached_entry.usage, "total_tokens", 0) or 0
+
+            await self.cache.record_coalesced_success(cached_entry)
+            collector.record_coalesced_success(
+                ns,
+                prompt_tokens=p_tok,
+                completion_tokens=c_tok,
+                total_tokens=t_tok,
+                cache_type=cache_type,
+            )
+            collector.record_latency(ns, "total_request_latency_ms", total_latency_ms)
+
+            return GenerationResult(
+                text=cached_entry.response,
+                model=cached_entry.model,
+                usage=cached_entry.usage,
+                latency_ms=round(total_latency_ms, 2),
+                cached=True,
+                cache_hit_count=cached_entry.hit_count,
+                fingerprint=fingerprint,
+                metadata=request.metadata,
+                cache_type=cache_type,
+            )
 
         # Leader execution lifecycle
         flight_completed = False
@@ -506,14 +684,11 @@ class IntelliCacheCore:
                             self._record_semantic_stat_attr(self.semantic_cache, "upstream_fallbacks_after_miss")
                             self._record_semantic_stat_attr(self.semantic_cache, "semantic_fallbacks")
                         else:
-                            # Intended operational policy: once Checkpoint 2 authorizes delivery,
-                            # the leader completes metrics commit, SingleFlight follower resolution,
-                            # and response return even if runtime control flips afterward.
                             total_latency_ms = (time.perf_counter() - start_time) * 1000.0
                             latency_saved_ms = max(0.0, semantic_hit.original_latency_ms - total_latency_ms)
                             tokens_saved = semantic_hit.total_tokens
 
-                            # Commit semantic hit counters ONLY after Checkpoint 2 passes
+                            # Commit semantic hit counters ONLY after leader Checkpoint 2 passes
                             if hasattr(self.semantic_cache, "record_served_hit"):
                                 try:
                                     self.semantic_cache.record_served_hit(
@@ -523,10 +698,10 @@ class IntelliCacheCore:
                                 except TypeError:
                                     self.semantic_cache.record_served_hit(ns)
                             await self._safe_cache_counter(
-                self.cache.record_semantic_hit(tokens_saved, latency_saved_ms),
-                op_name="record_semantic_hit",
-                namespace=ns,
-            )
+                                self.cache.record_semantic_hit(tokens_saved, latency_saved_ms),
+                                op_name="record_semantic_hit",
+                                namespace=ns,
+                            )
                             collector.record_semantic_hit(
                                 ns,
                                 prompt_tokens=semantic_hit.prompt_tokens,
@@ -557,7 +732,8 @@ class IntelliCacheCore:
                                     "latency_saved_ms": round(latency_saved_ms, 2),
                                 },
                             )
-                            # Complete single-flight for followers with the semantic hit entry
+                            # Complete single-flight for followers with the semantic hit entry;
+                            # each follower independently enforces Checkpoint 2 before delivering it.
                             flight_completed = True
                             await self.single_flight.complete_success(
                                 flight_key, hit_entry, expected_future=shared_future, release=True
@@ -580,27 +756,15 @@ class IntelliCacheCore:
 
             # 5. Leader: Semantic miss or disabled -> call provider
             await self._safe_cache_counter(self.cache.record_miss(), op_name="record_miss", namespace=ns)
-            collector.record_provider_attempt(ns)
-            prov_start = time.perf_counter()
-            try:
-                result = await provider.generate(request)
-            except asyncio.CancelledError:
-                prov_latency_ms = (time.perf_counter() - prov_start) * 1000.0
-                collector.record_latency(ns, "provider_generation_latency_ms", prov_latency_ms)
-                raise
-            except BaseException as exc:
-                prov_latency_ms = (time.perf_counter() - prov_start) * 1000.0
-                self._record_provider_failure_metrics(collector, ns, exc, prov_latency_ms)
-                raise
+            result = await self._dispatch_provider_generation(
+                request=request,
+                provider=provider,
+                collector=collector,
+                ns=ns,
+                fingerprint=fingerprint,
+            )
 
-            prov_latency_ms = (time.perf_counter() - prov_start) * 1000.0
-            self._record_provider_outcome_telemetry(collector, ns, result, prov_latency_ms)
-
-            result.fingerprint = fingerprint
-            result.metadata = request.metadata
-            result.cache_type = "none"
-
-            # 6. Complete SingleFlight for followers IMMEDIATELY with the generated response
+            # 6. Complete SingleFlight for followers IMMEDIATELY with the generated exact response
             entry = CacheEntry(
                 response=result.text,
                 model=result.model,
@@ -616,48 +780,17 @@ class IntelliCacheCore:
                 flight_key, entry, expected_future=shared_future, release=False
             )
 
-            # 7. Write exact-cache entry under privacy-scoped key
-            write_start = time.perf_counter()
-            cache_write_succeeded = False
-            try:
-                await self.cache.set(exact_storage_key, entry, namespace=ns)
-                write_latency_ms = (time.perf_counter() - write_start) * 1000.0
-                collector.record_latency(ns, "exact_cache_write_latency_ms", write_latency_ms)
-                cache_write_succeeded = True
-            except asyncio.CancelledError:
-                raise
-            except Exception as write_err:
-                write_latency_ms = (time.perf_counter() - write_start) * 1000.0
-                collector.record_latency(ns, "exact_cache_write_latency_ms", write_latency_ms)
-                collector.record_cache_write_failure(ns)
-                logger.warning(
-                    "Exact cache write failed for namespace='%s': %s",
-                    ns,
-                    sanitize_error_message(str(write_err)),
-                )
-            finally:
-                if cache_write_succeeded:
-                    # Early flight release: If exact-cache persistence succeeded, release SingleFlight key immediately,
-                    # BEFORE optional/slow semantic indexing, so subsequent requests hit exact cache without waiting
-                    await self.single_flight.release(flight_key, expected_future=shared_future)
-
-            # 8. Post-generation: index in vector store if startup-enabled and exact persistence succeeded
-            if self.semantic_cache is not None and self.semantic_cache_startup_enabled:
-                try:
-                    await self.semantic_cache.index(request, result)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as idx_err:
-                    logger.warning(
-                        "Semantic indexing failed for namespace='%s': %s",
-                        ns,
-                        sanitize_error_message(str(idx_err)),
-                    )
-                finally:
-                    # If exact-cache write failed, retain flight key during semantic indexing so concurrent identical
-                    # requests join the completed in-flight leader rather than triggering duplicate upstream generation.
-                    if not cache_write_succeeded:
-                        await self.single_flight.release(flight_key, expected_future=shared_future)
+            # 7-8. Persist exact cache (releasing SingleFlight early) and run request-local semantic indexing
+            await self._persist_exact_and_index_semantic(
+                request=request,
+                result=result,
+                entry=entry,
+                exact_storage_key=exact_storage_key,
+                collector=collector,
+                ns=ns,
+                flight_key=flight_key,
+                shared_future=shared_future,
+            )
 
             total_latency_ms = (time.perf_counter() - start_time) * 1000.0
             collector.record_latency(ns, "total_request_latency_ms", total_latency_ms)

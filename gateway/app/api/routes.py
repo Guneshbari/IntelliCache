@@ -249,6 +249,8 @@ class QueryResponse(BaseModel):
     created_at: str
     cache_type: str = "none"
     idempotent_replay: bool = False
+    admission_status: Optional[str] = None
+    admission_reason_code: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -1208,6 +1210,8 @@ async def execute_query(
             fingerprint=result.fingerprint,
             created_at=result.created_at,
             cache_type=result.cache_type,
+            admission_status=result.admission_status,
+            admission_reason_code=result.admission_reason_code,
         )
     except asyncio.CancelledError:
         if heartbeat and heartbeat.lease_lost:

@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 import hashlib
 import logging
 import time
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Tuple
 
 from .compatibility import extract_effective_user_query
 from .context import (
@@ -581,11 +581,35 @@ class SemanticCacheService(BaseSemanticCache):
         Does not admit FAILED, UNCERTAIN, truncated, unknown visibility, missing private principal, or colliding variants.
         Fails safely without raising exceptions or invalidating the generation result.
         """
+        admitted, _ = await self._index_with_decision_impl(request, result)
+        return admitted
+
+    async def index_with_decision(
+        self, request: GenerationRequest, result: GenerationResult
+    ) -> Tuple[bool, Optional[AdmissionDecision]]:
+        """
+        Verifies and conditionally indexes an upstream generation result, returning a
+        request-local `(admitted, decision)` tuple safe for concurrent callers.
+        Honors subclass/instance overrides of `index()` for backwards compatibility.
+        """
+        inst_override = "index" in getattr(self, "__dict__", {})
+        cls_override = getattr(type(self), "index", None) is not SemanticCacheService.index
+        if inst_override or cls_override:
+            admitted = await self.index(request, result)
+            return bool(admitted), getattr(self, "last_admission_decision", None)
+        return await self._index_with_decision_impl(request, result)
+
+    async def _index_with_decision_impl(
+        self, request: GenerationRequest, result: GenerationResult
+    ) -> Tuple[bool, Optional[AdmissionDecision]]:
+        """
+        Core request-local indexing implementation. Also updates `self.last_admission_decision`
+        as a legacy diagnostic mirror.
+        """
         # Rule 8: Do not index responses from semantic hits or exact hits
         if result.cached or result.cache_type in ("exact", "semantic"):
-            return False
+            return False, None
 
-        self.last_admission_decision = None
         ns = request.namespace or self.default_namespace
         collector = self._get_collector()
 
@@ -607,12 +631,13 @@ class SemanticCacheService(BaseSemanticCache):
             self.stats.semantic_admission_rejections += 1
             collector.record_visibility_rejection(ns)
             collector.record_semantic_admission_outcome(ns, accepted=False)
-            self.last_admission_decision = AdmissionDecision(
+            decision = AdmissionDecision(
                 status=AdmissionStatus.REJECT,
                 reason_code=CompatibilityReasonCode.VISIBILITY_MISSING_OR_UNKNOWN,
                 message="Admission rejected: missing or unknown cache visibility.",
             )
-            return False
+            self.last_admission_decision = decision
+            return False, decision
         if scope.privacy_rejection_reason == "PRINCIPAL_IDENTITY_MISSING":
             self.stats.principal_isolation_rejections += 1
             self.stats.private_scope_rejections += 1
@@ -620,12 +645,13 @@ class SemanticCacheService(BaseSemanticCache):
             collector.record_principal_isolation_rejection(ns)
             collector.record_private_scope_rejection(ns)
             collector.record_semantic_admission_outcome(ns, accepted=False)
-            self.last_admission_decision = AdmissionDecision(
+            decision = AdmissionDecision(
                 status=AdmissionStatus.REJECT,
                 reason_code=CompatibilityReasonCode.PRINCIPAL_IDENTITY_MISSING,
                 message="Admission rejected: private cache scope requires verified principal_id.",
             )
-            return False
+            self.last_admission_decision = decision
+            return False, decision
         if not scope.can_admit_semantic:
             if scope.privacy_rejection_reason == "ADMISSION_REJECTED_CONTEXT_PRIVACY":
                 self.stats.admission_rejected += 1
@@ -638,7 +664,7 @@ class SemanticCacheService(BaseSemanticCache):
                 else:
                     self.stats.private_scope_rejections += 1
                     collector.record_private_scope_rejection(ns)
-                self.last_admission_decision = AdmissionDecision(
+                decision = AdmissionDecision(
                     status=AdmissionStatus.REJECT,
                     reason_code=CompatibilityReasonCode.ADMISSION_REJECTED_CONTEXT_PRIVACY,
                     message="Admission rejected: context contains sensitive credentials or restricted private scope.",
@@ -648,12 +674,13 @@ class SemanticCacheService(BaseSemanticCache):
                 self.stats.semantic_admission_rejections += 1
                 collector.record_admission_outcome(ns, AdmissionStatus.UNCERTAIN.value)
                 collector.record_semantic_admission_outcome(ns, accepted=False)
-                self.last_admission_decision = AdmissionDecision(
+                decision = AdmissionDecision(
                     status=AdmissionStatus.UNCERTAIN,
                     reason_code=CompatibilityReasonCode.ADMISSION_REJECTED_CONTEXT_UNCERTAIN,
                     message="Admission rejected: conversation context is uncertain or incomplete.",
                 )
-            return False
+            self.last_admission_decision = decision
+            return False, decision
 
         req_vis = scope.effective_visibility
         owner_to_bind = scope.effective_owner
@@ -663,12 +690,13 @@ class SemanticCacheService(BaseSemanticCache):
         if not eligibility.eligible:
             self.stats.semantic_admission_rejections += 1
             collector.record_semantic_admission_outcome(ns, accepted=False)
-            self.last_admission_decision = AdmissionDecision(
+            decision = AdmissionDecision(
                 status=AdmissionStatus.REJECT,
                 reason_code=CompatibilityReasonCode.ADMISSION_REJECTED_INELIGIBLE,
                 message=eligibility.reason,
             )
-            return False
+            self.last_admission_decision = decision
+            return False, decision
 
         query_text = extract_effective_user_query(request)
         idx_start = time.perf_counter()
@@ -688,17 +716,18 @@ class SemanticCacheService(BaseSemanticCache):
             collector.record_semantic_admission_outcome(ns, accepted=False)
             idx_lat_ms = (time.perf_counter() - idx_start) * 1000.0
             collector.record_latency(ns, "vector_indexing_latency_ms", idx_lat_ms)
-            self.last_admission_decision = AdmissionDecision(
+            decision = AdmissionDecision(
                 status=AdmissionStatus.REJECT,
                 reason_code=CompatibilityReasonCode.INVALID_METADATA_FORMAT,
                 message=f"Metadata validation failed before verification: {exc}",
             )
+            self.last_admission_decision = decision
             logger.warning(
                 "Vector indexing aborted due to metadata validation failure (%s): %s",
                 type(exc).__name__,
                 sanitize_error_message(str(exc)),
             )
-            return False
+            return False, decision
 
         req_extra = getattr(request, "metadata", None)
         completion_toks = getattr(getattr(result, "usage", None), "completion_tokens", 0) or 0
@@ -720,17 +749,18 @@ class SemanticCacheService(BaseSemanticCache):
             collector.record_semantic_admission_outcome(ns, accepted=False)
             self.stats.indexing_failures += 1
             collector.record_indexing_failure(ns)
-            self.last_admission_decision = AdmissionDecision(
+            decision = AdmissionDecision(
                 status=AdmissionStatus.UNCERTAIN,
                 reason_code=CompatibilityReasonCode.VALIDATOR_EXCEPTION,
                 message=f"Response verifier error: {exc}",
             )
+            self.last_admission_decision = decision
             logger.warning(
                 "Response verifier raised unexpected error (%s): %s",
                 type(exc).__name__,
                 sanitize_error_message(str(exc)),
             )
-            return False
+            return False, decision
         verify_lat_ms = (time.perf_counter() - verify_start) * 1000.0
 
         if verification.status != VerificationStatus.VERIFIED:
@@ -763,20 +793,21 @@ class SemanticCacheService(BaseSemanticCache):
                     collector.record_private_scope_rejection(ns)
             collector.record_admission_outcome(ns, adm_status.value)
             collector.record_semantic_admission_outcome(ns, accepted=False)
-            self.last_admission_decision = AdmissionDecision(
+            decision = AdmissionDecision(
                 status=adm_status,
                 reason_code=adm_code,
                 message=verification.message,
                 verification=verification,
                 diagnostics={"verification_latency_ms": round(verify_lat_ms, 3)},
             )
+            self.last_admission_decision = decision
             logger.info(
                 "Semantic cache admission blocked (%s / %s): %s",
                 adm_status.value,
                 verification.reason_code.value,
                 verification.message,
             )
-            return False
+            return False, decision
 
         variant_key = compute_variant_key(
             base_meta,
@@ -825,12 +856,13 @@ class SemanticCacheService(BaseSemanticCache):
             collector.record_semantic_admission_outcome(ns, accepted=False)
             idx_lat_ms = (time.perf_counter() - idx_start) * 1000.0
             collector.record_latency(ns, "vector_indexing_latency_ms", idx_lat_ms)
+            self.last_admission_decision = None
             logger.warning(
                 "Vector indexing aborted during evidence minting (%s): %s",
                 type(exc).__name__,
                 sanitize_error_message(str(exc)),
             )
-            return False
+            return False, None
 
         # 3. Generate document embedding (only after verification and admission checks pass)
         embed_start = time.perf_counter()
@@ -847,12 +879,13 @@ class SemanticCacheService(BaseSemanticCache):
             collector.record_indexing_failure(ns)
             collector.record_semantic_admission_outcome(ns, accepted=False)
             collector.record_latency(ns, "vector_indexing_latency_ms", idx_lat_ms)
+            self.last_admission_decision = None
             logger.warning(
                 "Vector indexing failed during embedding (%s): %s",
                 type(exc).__name__,
                 sanitize_error_message(str(exc)),
             )
-            return False
+            return False, None
 
         # Validate reported model identity against configured model (fail open)
         if embed_res.model != self.policy.configured_model:
@@ -862,12 +895,13 @@ class SemanticCacheService(BaseSemanticCache):
             collector.record_semantic_admission_outcome(ns, accepted=False)
             idx_lat_ms = (time.perf_counter() - idx_start) * 1000.0
             collector.record_latency(ns, "vector_indexing_latency_ms", idx_lat_ms)
+            self.last_admission_decision = None
             logger.warning(
                 "Vector indexing model mismatch: expected '%s', got '%s'",
                 self.policy.configured_model,
                 embed_res.model,
             )
-            return False
+            return False, None
 
         record = VectorRecord(
             cache_namespace=ns,
@@ -892,7 +926,7 @@ class SemanticCacheService(BaseSemanticCache):
             self.stats.indexing_successes += 1
             idx_lat_ms = (time.perf_counter() - idx_start) * 1000.0
             collector.record_indexing_success(ns, latency_ms=idx_lat_ms)
-            self.last_admission_decision = AdmissionDecision(
+            decision = AdmissionDecision(
                 status=AdmissionStatus.ADMIT,
                 reason_code=CompatibilityReasonCode.ADMISSION_ADMITTED,
                 message="Verified response artifact admitted into semantic cache.",
@@ -903,13 +937,14 @@ class SemanticCacheService(BaseSemanticCache):
                     "total_admission_indexing_latency_ms": round(idx_lat_ms, 3),
                 },
             )
+            self.last_admission_decision = decision
             logger.debug(
                 "Indexed verified vector record: fingerprint='%s...', variant_key='%s...', namespace='%s'",
                 effective_fp[:12],
                 variant_key[:20],
                 ns,
             )
-            return True
+            return True, decision
         except Exception as exc:
             self.stats.indexing_failures += 1
             self.stats.semantic_admission_rejections += 1
@@ -917,12 +952,13 @@ class SemanticCacheService(BaseSemanticCache):
             collector.record_semantic_admission_outcome(ns, accepted=False)
             idx_lat_ms = (time.perf_counter() - idx_start) * 1000.0
             collector.record_latency(ns, "vector_indexing_latency_ms", idx_lat_ms)
+            self.last_admission_decision = None
             logger.warning(
                 "Vector indexing failed during upsert (%s): %s",
                 type(exc).__name__,
                 sanitize_error_message(str(exc)),
             )
-            return False
+            return False, None
 
     def get_stats(self, namespace: Optional[str] = None) -> Dict[str, int]:
         """Returns diagnostic observability counters."""
