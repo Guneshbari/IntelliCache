@@ -34,6 +34,11 @@ from .errors import (
     SingleFlightLeaderCancelledError,
     sanitize_error_message,
 )
+from .distributed_singleflight import (
+    DistributedLease,
+    PostgresDistributedSingleFlight,
+    compute_distributed_coordination_key,
+)
 from .fingerprinting import derive_variant_exact_fingerprint, generate_fingerprint
 from .singleflight import SingleFlightCoordinator
 from ..cache.interfaces import BaseCache, CacheEntry
@@ -64,9 +69,11 @@ class IntelliCacheCore:
         metrics_collector: Optional[RuntimeMetricsCollector] = None,
         semantic_serving_controller: Optional[SemanticServingController] = None,
         semantic_cache_startup_enabled: Optional[bool] = None,
+        dist_single_flight: Optional[PostgresDistributedSingleFlight] = None,
     ):
         self.cache = cache
         self.single_flight = single_flight or SingleFlightCoordinator()
+        self.dist_single_flight = dist_single_flight
         self.cache_enabled = cache_enabled
         self.semantic_cache = semantic_cache
         self.metrics_collector = metrics_collector
@@ -344,6 +351,342 @@ class IntelliCacheCore:
                 sanitize_error_message(str(idx_err)),
             )
 
+    @staticmethod
+    async def _stop_renewal_task(renewal_task: Optional[asyncio.Task[None]]) -> None:
+        """Cancels and drains a distributed SingleFlight lease renewal background task."""
+        if renewal_task is None:
+            return
+        if not renewal_task.done():
+            renewal_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await renewal_task
+
+    async def _safe_dist_complete_failure(
+        self,
+        dist_lease: Optional[DistributedLease],
+        *,
+        failure_code: str,
+        ns: str,
+    ) -> None:
+        """Best-effort distributed failure notification without masking caller errors."""
+        if self.dist_single_flight is None or dist_lease is None:
+            return
+        try:
+            await self.dist_single_flight.complete_failure(dist_lease, failure_code=failure_code)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._get_collector().record_distributed_singleflight_coordination_error(ns)
+            logger.warning(
+                "Distributed SingleFlight complete_failure failed for ns='%s': %s",
+                ns,
+                type(exc).__name__,
+            )
+
+    async def _resolve_distributed_follower_outcome(
+        self,
+        *,
+        outcome_status: str,
+        outcome_type: Optional[str],
+        request: GenerationRequest,
+        fingerprint: str,
+        exact_storage_key: Optional[str],
+        ns: str,
+        req_vis: str,
+        req_own: Optional[str],
+        entry_owner: Optional[str],
+        allow_shared: bool,
+        can_use_exact_cache: bool,
+        scope: ScopeResolution,
+        start_time: float,
+        collector: RuntimeMetricsCollector,
+        flight_key: Any,
+        shared_future: Any,
+    ) -> tuple[str, Optional[GenerationResult]]:
+        """
+        Validates and resolves a distributed follower outcome without sharing raw results
+        or bypassing follower authorization, scope, or runtime serving controls.
+        Returns `(action, Optional[GenerationResult])`:
+          - `"resolved"`: follower obtained verified cached result and completed local flight
+          - `"reclaim_stale_completed"`: exact cache miss after completion; caller may reclaim stale row
+          - `"retry_claim"`: leader failed or lease expired; caller should try claiming next leadership
+          - `"fallback_direct_no_semantic"`: semantic hit unavailable/rejected at CP2; dispatch upstream
+          - `"fallback_direct"`: timeout/error/scope rejection; fail safe to independent generation
+        """
+        if outcome_status == "completed" and outcome_type == "exact":
+            if not can_use_exact_cache or not exact_storage_key:
+                self._record_exact_scope_rejection(collector, ns, request, scope)
+                return "fallback_direct", None
+
+            cached_entry = await self._safe_exact_lookup(
+                fingerprint=fingerprint,
+                exact_storage_key=exact_storage_key,
+                namespace=ns,
+                req_vis=req_vis,
+                entry_owner=entry_owner,
+                allow_shared=allow_shared,
+                stream=False,
+            )
+            if cached_entry is None:
+                return "reclaim_stale_completed", None
+
+            entry_vis = getattr(cached_entry, "visibility", CACHE_VISIBILITY_UNKNOWN)
+            entry_owner_id = getattr(cached_entry, "owner_principal_id", None)
+            follower_scope_ok = bool(
+                can_use_exact_cache
+                and matches_cache_scope(
+                    entry_vis,
+                    entry_owner_id,
+                    req_vis,
+                    req_own,
+                    allow_shared,
+                )
+            )
+            if not follower_scope_ok:
+                self._record_exact_scope_rejection(collector, ns, request, scope)
+                return "fallback_direct", None
+
+            total_latency_ms = (time.perf_counter() - start_time) * 1000.0
+            p_tok = getattr(cached_entry.usage, "prompt_tokens", 0) or 0
+            c_tok = getattr(cached_entry.usage, "completion_tokens", 0) or 0
+            t_tok = getattr(cached_entry.usage, "total_tokens", 0) or 0
+
+            collector.record_distributed_singleflight_coalesced_success(
+                ns,
+                prompt_tokens=p_tok,
+                completion_tokens=c_tok,
+                total_tokens=t_tok,
+            )
+            collector.record_latency(ns, "total_request_latency_ms", total_latency_ms)
+
+            cached_entry_for_local = CacheEntry(
+                response=cached_entry.response,
+                model=cached_entry.model,
+                usage=cached_entry.usage,
+                latency_ms=cached_entry.latency_ms,
+                provider=cached_entry.provider,
+                visibility=entry_vis,
+                owner_principal_id=entry_owner_id,
+                metadata={"cache_type": "exact"},
+            )
+            cached_entry_for_local.hit_count = cached_entry.hit_count
+            await self.single_flight.complete_success(
+                flight_key, cached_entry_for_local, expected_future=shared_future, release=True
+            )
+            return "resolved", GenerationResult(
+                text=cached_entry.response,
+                model=cached_entry.model,
+                usage=cached_entry.usage,
+                latency_ms=round(total_latency_ms, 2),
+                cached=True,
+                cache_hit_count=cached_entry.hit_count,
+                fingerprint=fingerprint,
+                metadata=request.metadata,
+                cache_type="exact",
+            )
+
+        if outcome_status == "completed" and outcome_type == "semantic":
+            # Stage 3.8B.1 + Stage 3.9: Follower independently executes semantic retrieval,
+            # context/privacy validation, and authoritative Checkpoint 2 serving control.
+            if self.semantic_cache is None or not self.semantic_cache_startup_enabled:
+                collector.record_upstream_fallback_after_semantic_miss(ns)
+                self._record_semantic_stat_attr(self.semantic_cache, "upstream_fallbacks_after_miss")
+                self._record_semantic_stat_attr(self.semantic_cache, "semantic_fallbacks")
+                return "fallback_direct_no_semantic", None
+
+            if not await self._acheck_semantic_serving_runtime(ns, collector):
+                collector.record_semantic_runtime_disabled_skip(ns)
+                collector.record_upstream_fallback_after_semantic_miss(ns)
+                self._record_semantic_stat_attr(self.semantic_cache, "runtime_disabled_skips")
+                self._record_semantic_stat_attr(self.semantic_cache, "upstream_fallbacks_after_miss")
+                self._record_semantic_stat_attr(self.semantic_cache, "semantic_fallbacks")
+                return "fallback_direct_no_semantic", None
+
+            semantic_hit = await self.semantic_cache.lookup(request)
+            if semantic_hit is None:
+                collector.record_upstream_fallback_after_semantic_miss(ns)
+                self._record_semantic_stat_attr(self.semantic_cache, "upstream_fallbacks_after_miss")
+                self._record_semantic_stat_attr(self.semantic_cache, "semantic_fallbacks")
+                return "fallback_direct_no_semantic", None
+
+            if not await self._acheck_semantic_serving_runtime(ns, collector):
+                collector.record_semantic_runtime_disabled_skip(ns)
+                collector.record_upstream_fallback_after_semantic_miss(ns)
+                self._record_semantic_stat_attr(self.semantic_cache, "runtime_disabled_skips")
+                self._record_semantic_stat_attr(self.semantic_cache, "upstream_fallbacks_after_miss")
+                self._record_semantic_stat_attr(self.semantic_cache, "semantic_fallbacks")
+                return "fallback_direct_no_semantic", None
+
+            total_latency_ms = (time.perf_counter() - start_time) * 1000.0
+            latency_saved_ms = max(0.0, semantic_hit.original_latency_ms - total_latency_ms)
+            tokens_saved = semantic_hit.total_tokens
+
+            if hasattr(self.semantic_cache, "record_served_hit"):
+                try:
+                    self.semantic_cache.record_served_hit(
+                        ns,
+                        cross_conversation=bool(getattr(semantic_hit, "is_cross_conversation", False)),
+                    )
+                except TypeError:
+                    self.semantic_cache.record_served_hit(ns)
+
+            collector.record_distributed_singleflight_coalesced_success(
+                ns,
+                prompt_tokens=semantic_hit.prompt_tokens,
+                completion_tokens=semantic_hit.completion_tokens,
+                total_tokens=semantic_hit.total_tokens,
+            )
+            collector.record_latency(ns, "total_request_latency_ms", total_latency_ms)
+
+            original_usage = UsageMetrics(
+                prompt_tokens=semantic_hit.prompt_tokens,
+                completion_tokens=semantic_hit.completion_tokens,
+                total_tokens=semantic_hit.total_tokens,
+            )
+            hit_entry = CacheEntry(
+                response=semantic_hit.cached_response,
+                model=request.model,
+                usage=original_usage,
+                latency_ms=round(total_latency_ms, 2),
+                provider=request.provider,
+                visibility=req_vis,
+                owner_principal_id=entry_owner,
+                metadata={
+                    "cache_type": "semantic",
+                    "candidate_fingerprint": semantic_hit.fingerprint,
+                    "tokens_saved": tokens_saved,
+                    "latency_saved_ms": round(latency_saved_ms, 2),
+                },
+            )
+            await self.single_flight.complete_success(
+                flight_key, hit_entry, expected_future=shared_future, release=True
+            )
+            return "resolved", GenerationResult(
+                text=semantic_hit.cached_response,
+                model=request.model,
+                usage=original_usage,
+                latency_ms=round(total_latency_ms, 2),
+                cached=True,
+                cache_hit_count=1,
+                fingerprint=fingerprint,
+                metadata=request.metadata,
+                cache_type="semantic",
+            )
+
+        if outcome_status in ("failed", "expired"):
+            return "retry_claim", None
+        return "fallback_direct", None
+
+    async def _acquire_or_wait_distributed_leadership(
+        self,
+        *,
+        dsf_key: str,
+        request: GenerationRequest,
+        fingerprint: str,
+        exact_storage_key: Optional[str],
+        ns: str,
+        req_vis: str,
+        req_own: Optional[str],
+        entry_owner: Optional[str],
+        allow_shared: bool,
+        can_use_exact_cache: bool,
+        scope: ScopeResolution,
+        start_time: float,
+        collector: RuntimeMetricsCollector,
+        flight_key: Any,
+        shared_future: Any,
+    ) -> tuple[str, Optional[DistributedLease], Optional[GenerationResult]]:
+        """
+        Bounded distributed claim/wait loop across PostgreSQL SingleFlight leases.
+        Returns `(mode, lease, result)` where `mode` is one of:
+          - `"leader"` (holds valid `DistributedLease`)
+          - `"resolved"` (follower retrieved verified result)
+          - `"fallback_direct"` (fail-open independent upstream/semantic execution)
+          - `"fallback_direct_no_semantic"` (fail-safe direct upstream fallback)
+        """
+        assert self.dist_single_flight is not None
+        max_attempts = self.dist_single_flight.config.max_claim_attempts
+        reclaim_completed_updated_at = None
+
+        for attempt in range(max_attempts):
+            try:
+                dist_lease, snap = await self.dist_single_flight.try_acquire_or_inspect(
+                    coordination_key=dsf_key,
+                    namespace=ns,
+                    visibility=req_vis,
+                    reclaim_completed_updated_at=reclaim_completed_updated_at,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                collector.record_distributed_singleflight_coordination_error(ns)
+                logger.warning(
+                    "Distributed SingleFlight claim error for ns='%s' (failing open to local execution): %s",
+                    ns,
+                    type(exc).__name__,
+                )
+                return "fallback_direct", None, None
+
+            if dist_lease is not None:
+                return "leader", dist_lease, None
+
+            reclaim_completed_updated_at = None
+            if snap is None:
+                continue
+
+            if snap.status == "completed":
+                outcome_status = "completed"
+                outcome_type = snap.outcome_type
+                snap_updated_at = snap.updated_at
+                collector.record_distributed_singleflight_follower_join(ns)
+            elif snap.status in ("failed", "expired"):
+                outcome_status = snap.status
+                outcome_type = None
+                snap_updated_at = snap.updated_at
+            else:
+                collector.record_distributed_singleflight_follower_join(ns)
+                wait_result = await self.dist_single_flight.wait_for_outcome(
+                    coordination_key=dsf_key,
+                    namespace=ns,
+                    expected_fencing_token=snap.fencing_token,
+                )
+                outcome_status = wait_result.status
+                outcome_type = wait_result.outcome_type
+                snap_updated_at = wait_result.snapshot.updated_at if wait_result.snapshot else None
+
+            action, resolved_res = await self._resolve_distributed_follower_outcome(
+                outcome_status=outcome_status,
+                outcome_type=outcome_type,
+                request=request,
+                fingerprint=fingerprint,
+                exact_storage_key=exact_storage_key,
+                ns=ns,
+                req_vis=req_vis,
+                req_own=req_own,
+                entry_owner=entry_owner,
+                allow_shared=allow_shared,
+                can_use_exact_cache=can_use_exact_cache,
+                scope=scope,
+                start_time=start_time,
+                collector=collector,
+                flight_key=flight_key,
+                shared_future=shared_future,
+            )
+            if action == "resolved":
+                return "resolved", None, resolved_res
+            if action == "fallback_direct_no_semantic":
+                return "fallback_direct_no_semantic", None, None
+            if action == "fallback_direct":
+                return "fallback_direct", None, None
+            if action == "reclaim_stale_completed" and snap_updated_at is not None and attempt + 1 < max_attempts:
+                reclaim_completed_updated_at = snap_updated_at
+                continue
+            if action == "retry_claim" and attempt + 1 < max_attempts:
+                continue
+            break
+
+        return "fallback_direct", None, None
+
     async def _persist_exact_and_index_semantic(
         self,
         *,
@@ -355,12 +698,17 @@ class IntelliCacheCore:
         ns: str,
         flight_key: Optional[Any] = None,
         shared_future: Optional[Any] = None,
+        dist_lease: Optional[DistributedLease] = None,
+        dist_lease_lost: bool = False,
     ) -> None:
-        """Persists exact cache entry, releases SingleFlight early when durable, then runs semantic indexing."""
+        """
+        Persists exact cache entry, commits distributed SingleFlight exact outcome AFTER durable write,
+        releases local SingleFlight early when durable, then runs semantic indexing.
+        """
         write_start = time.perf_counter()
         cache_write_succeeded = False
         try:
-            if exact_storage_key is not None:
+            if exact_storage_key is not None and not dist_lease_lost:
                 await self.cache.set(exact_storage_key, entry, namespace=ns)
                 cache_write_succeeded = True
             write_latency_ms = (time.perf_counter() - write_start) * 1000.0
@@ -377,6 +725,25 @@ class IntelliCacheCore:
                 sanitize_error_message(str(write_err)),
             )
         finally:
+            if self.dist_single_flight is not None and dist_lease is not None:
+                if cache_write_succeeded and not dist_lease_lost:
+                    try:
+                        await self.dist_single_flight.complete_success(dist_lease, outcome_type="exact")
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as dsf_err:
+                        collector.record_distributed_singleflight_coordination_error(ns)
+                        logger.warning(
+                            "Distributed SingleFlight complete_success(exact) failed for ns='%s': %s",
+                            ns,
+                            type(dsf_err).__name__,
+                        )
+                elif not dist_lease_lost:
+                    await self._safe_dist_complete_failure(
+                        dist_lease,
+                        failure_code="EXACT_CACHE_WRITE_FAILED",
+                        ns=ns,
+                    )
             if cache_write_succeeded and flight_key is not None and shared_future is not None:
                 await self.single_flight.release(flight_key, expected_future=shared_future)
 
@@ -663,11 +1030,55 @@ class IntelliCacheCore:
                 cache_type=cache_type,
             )
 
-        # Leader execution lifecycle
+        # Leader execution lifecycle (with optional PostgreSQL distributed SingleFlight coordination)
         flight_completed = False
+        dist_lease: Optional[DistributedLease] = None
+        dist_outcome_committed = False
+        renewal_task: Optional[asyncio.Task[None]] = None
+        lease_lost_event: Optional[asyncio.Event] = None
+        skip_semantic_lookup = False
+
         try:
+            if self.dist_single_flight is not None:
+                dsf_key = compute_distributed_coordination_key(
+                    namespace=ns,
+                    visibility=req_vis,
+                    owner_principal_id=entry_owner,
+                    allow_shared_reads=allow_shared,
+                    fingerprint=fingerprint,
+                    request=request,
+                    context_class=req_ctx.context_class.value,
+                    context_fingerprint=req_ctx.context_fingerprint,
+                )
+                dsf_mode, dist_lease, dsf_resolved = await self._acquire_or_wait_distributed_leadership(
+                    dsf_key=dsf_key,
+                    request=request,
+                    fingerprint=fingerprint,
+                    exact_storage_key=exact_storage_key,
+                    ns=ns,
+                    req_vis=req_vis,
+                    req_own=req_own,
+                    entry_owner=entry_owner,
+                    allow_shared=allow_shared,
+                    can_use_exact_cache=can_use_exact_cache,
+                    scope=scope,
+                    start_time=start_time,
+                    collector=collector,
+                    flight_key=flight_key,
+                    shared_future=shared_future,
+                )
+                if dsf_mode == "resolved" and dsf_resolved is not None:
+                    flight_completed = True
+                    return dsf_resolved
+                if dsf_mode == "fallback_direct_no_semantic":
+                    skip_semantic_lookup = True
+                if dist_lease is not None:
+                    renewal_task, lease_lost_event = await self.dist_single_flight.start_lease_renewal_task(
+                        dist_lease
+                    )
+
             # 4. Leader: Semantic Cache Lookup (two-point authoritative runtime serving control check)
-            if self.semantic_cache is not None and self.semantic_cache_startup_enabled:
+            if not skip_semantic_lookup and self.semantic_cache is not None and self.semantic_cache_startup_enabled:
                 if not await self._acheck_semantic_serving_runtime(ns, collector):
                     # Checkpoint 1 (pre-lookup): runtime kill switch disabled or failed closed
                     collector.record_semantic_runtime_disabled_skip(ns)
@@ -732,6 +1143,26 @@ class IntelliCacheCore:
                                     "latency_saved_ms": round(latency_saved_ms, 2),
                                 },
                             )
+                            # Stop renewal cleanly before committing distributed outcome so renewals do not race.
+                            await self._stop_renewal_task(renewal_task)
+                            renewal_task = None
+                            lease_lost_now = bool(lease_lost_event is not None and lease_lost_event.is_set())
+                            if self.dist_single_flight is not None and dist_lease is not None and not lease_lost_now:
+                                dist_outcome_committed = True
+                                try:
+                                    await self.dist_single_flight.complete_success(
+                                        dist_lease, outcome_type="semantic"
+                                    )
+                                except asyncio.CancelledError:
+                                    raise
+                                except Exception as dsf_sem_err:
+                                    collector.record_distributed_singleflight_coordination_error(ns)
+                                    logger.warning(
+                                        "Distributed SingleFlight complete_success(semantic) failed for ns='%s': %s",
+                                        ns,
+                                        type(dsf_sem_err).__name__,
+                                    )
+
                             # Complete single-flight for followers with the semantic hit entry;
                             # each follower independently enforces Checkpoint 2 before delivering it.
                             flight_completed = True
@@ -775,12 +1206,17 @@ class IntelliCacheCore:
                 owner_principal_id=entry_owner,
                 metadata={"cache_type": "exact"},
             )
+            await self._stop_renewal_task(renewal_task)
+            renewal_task = None
+            lease_lost_now = bool(lease_lost_event is not None and lease_lost_event.is_set())
+
             flight_completed = True
             await self.single_flight.complete_success(
                 flight_key, entry, expected_future=shared_future, release=False
             )
 
-            # 7-8. Persist exact cache (releasing SingleFlight early) and run request-local semantic indexing
+            # 7-8. Persist exact cache (releasing distributed + local SingleFlight) and run semantic indexing
+            dist_outcome_committed = True
             await self._persist_exact_and_index_semantic(
                 request=request,
                 result=result,
@@ -790,6 +1226,8 @@ class IntelliCacheCore:
                 ns=ns,
                 flight_key=flight_key,
                 shared_future=shared_future,
+                dist_lease=dist_lease,
+                dist_lease_lost=lease_lost_now,
             )
 
             total_latency_ms = (time.perf_counter() - start_time) * 1000.0
@@ -797,6 +1235,15 @@ class IntelliCacheCore:
             return result
 
         except asyncio.CancelledError as exc:
+            await self._stop_renewal_task(renewal_task)
+            renewal_task = None
+            if dist_lease is not None and not dist_outcome_committed:
+                dist_outcome_committed = True
+                await self._safe_dist_complete_failure(
+                    dist_lease,
+                    failure_code="LEADER_CANCELLED",
+                    ns=ns,
+                )
             if not flight_completed:
                 flight_completed = True
                 await self.single_flight.complete_failure(
@@ -806,6 +1253,15 @@ class IntelliCacheCore:
         except BaseException as exc:
             total_latency_ms = (time.perf_counter() - start_time) * 1000.0
             collector.record_latency(ns, "total_request_latency_ms", total_latency_ms)
+            await self._stop_renewal_task(renewal_task)
+            renewal_task = None
+            if dist_lease is not None and not dist_outcome_committed:
+                dist_outcome_committed = True
+                await self._safe_dist_complete_failure(
+                    dist_lease,
+                    failure_code=type(exc).__name__,
+                    ns=ns,
+                )
             if not flight_completed:
                 flight_completed = True
                 await self.single_flight.complete_failure(
@@ -813,6 +1269,16 @@ class IntelliCacheCore:
                 )
             raise
         finally:
+            await self._stop_renewal_task(renewal_task)
+            if dist_lease is not None and not dist_outcome_committed:
+                try:
+                    await self._safe_dist_complete_failure(
+                        dist_lease,
+                        failure_code="LEADER_ABORTED",
+                        ns=ns,
+                    )
+                except Exception:
+                    pass
             if not flight_completed:
                 try:
                     await self.single_flight.complete_failure(

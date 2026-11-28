@@ -64,6 +64,7 @@ from ..core.fingerprinting import (
     normalize_text,
 )
 from ..core.service import IntelliCacheCore
+from ..core.distributed_singleflight import PostgresDistributedSingleFlight
 from ..core.singleflight import SingleFlightCoordinator
 from ..metrics import (
     AdminMetricsSnapshot,
@@ -391,6 +392,7 @@ def get_groq_client(settings: Settings = Depends(get_settings)) -> Any:
 
 _cache_singleton: Optional[BaseCache] = None
 _single_flight_singleton: Optional[SingleFlightCoordinator] = None
+_dist_single_flight_singleton: Optional[PostgresDistributedSingleFlight] = None
 _core_singleton: Optional[IntelliCacheCore] = None
 
 
@@ -427,6 +429,18 @@ def get_single_flight_coordinator() -> SingleFlightCoordinator:
     if _single_flight_singleton is None:
         _single_flight_singleton = SingleFlightCoordinator()
     return _single_flight_singleton
+
+
+def get_distributed_singleflight() -> Optional[PostgresDistributedSingleFlight]:
+    """Dependency returning configured PostgresDistributedSingleFlight singleton (or None if disabled)."""
+    return _dist_single_flight_singleton
+
+
+def set_distributed_singleflight(dist_single_flight: Optional[PostgresDistributedSingleFlight]) -> None:
+    """Configures the global distributed SingleFlight coordinator singleton."""
+    global _dist_single_flight_singleton, _core_singleton
+    _dist_single_flight_singleton = dist_single_flight
+    _core_singleton = None
 
 
 _semantic_cache_singleton: Optional[BaseSemanticCache] = None
@@ -474,6 +488,7 @@ def get_core_service(
     cache: BaseCache = Depends(get_query_cache),
     single_flight: SingleFlightCoordinator = Depends(get_single_flight_coordinator),
     semantic_cache: Optional[BaseSemanticCache] = Depends(get_semantic_cache),
+    dist_single_flight: Optional[PostgresDistributedSingleFlight] = Depends(get_distributed_singleflight),
 ) -> IntelliCacheCore:
     """Dependency returning IntelliCacheCore orchestration service."""
     global _core_singleton
@@ -486,6 +501,7 @@ def get_core_service(
         or _core_singleton.cache is not cache
         or _core_singleton.single_flight is not single_flight
         or _core_singleton.semantic_cache is not semantic_cache
+        or _core_singleton.dist_single_flight is not dist_single_flight
         or _core_singleton.cache_enabled != settings.cache_enabled
         or _core_singleton.semantic_cache_startup_enabled != startup_enabled
     ):
@@ -496,6 +512,7 @@ def get_core_service(
             semantic_cache=semantic_cache,
             semantic_serving_controller=controller,
             semantic_cache_startup_enabled=startup_enabled,
+            dist_single_flight=dist_single_flight,
         )
     return _core_singleton
 

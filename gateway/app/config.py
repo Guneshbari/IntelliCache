@@ -309,6 +309,32 @@ class Settings(BaseModel):
         default_factory=lambda: int(os.getenv("SHADOW_RETENTION_DAYS", "30"))
     )
 
+    # Distributed SingleFlight Configuration (Stage 3.9, disabled by default)
+    distributed_singleflight_enabled: bool = Field(
+        default_factory=lambda: os.getenv("DISTRIBUTED_SINGLEFLIGHT_ENABLED", "false").lower() in ("true", "1", "yes")
+    )
+    distributed_singleflight_lease_seconds: float = Field(
+        default_factory=lambda: float(os.getenv("DISTRIBUTED_SINGLEFLIGHT_LEASE_SECONDS", "30.0"))
+    )
+    distributed_singleflight_renewal_interval_seconds: float = Field(
+        default_factory=lambda: float(os.getenv("DISTRIBUTED_SINGLEFLIGHT_RENEWAL_INTERVAL_SECONDS", "10.0"))
+    )
+    distributed_singleflight_follower_wait_timeout_seconds: float = Field(
+        default_factory=lambda: float(os.getenv("DISTRIBUTED_SINGLEFLIGHT_FOLLOWER_WAIT_TIMEOUT_SECONDS", "35.0"))
+    )
+    distributed_singleflight_poll_interval_seconds: float = Field(
+        default_factory=lambda: float(os.getenv("DISTRIBUTED_SINGLEFLIGHT_POLL_INTERVAL_SECONDS", "0.05"))
+    )
+    distributed_singleflight_cleanup_batch_size: int = Field(
+        default_factory=lambda: int(os.getenv("DISTRIBUTED_SINGLEFLIGHT_CLEANUP_BATCH_SIZE", "100"))
+    )
+    distributed_singleflight_max_claim_attempts: int = Field(
+        default_factory=lambda: int(os.getenv("DISTRIBUTED_SINGLEFLIGHT_MAX_CLAIM_ATTEMPTS", "3"))
+    )
+    distributed_singleflight_completion_retention_seconds: float = Field(
+        default_factory=lambda: float(os.getenv("DISTRIBUTED_SINGLEFLIGHT_COMPLETION_RETENTION_SECONDS", "5.0"))
+    )
+
     @model_validator(mode="after")
     def validate_backends(self) -> "Settings":
         valid_cache_backends = {"memory", "postgres"}
@@ -600,6 +626,53 @@ class Settings(BaseModel):
             )
         if self.shadow_evaluation_enabled and self.cache_backend == "postgres" and not self.database_url:
             raise ValueError("DATABASE_URL must be configured when SHADOW_EVALUATION_ENABLED is true.")
+        return self
+
+    @model_validator(mode="after")
+    def validate_distributed_singleflight_config(self) -> "Settings":
+        if self.distributed_singleflight_lease_seconds < 0.05 or self.distributed_singleflight_lease_seconds > 300.0:
+            raise ValueError(
+                f"DISTRIBUTED_SINGLEFLIGHT_LEASE_SECONDS must be in [0.05, 300.0], got {self.distributed_singleflight_lease_seconds}."
+            )
+        if (
+            self.distributed_singleflight_renewal_interval_seconds <= 0.0
+            or self.distributed_singleflight_renewal_interval_seconds >= self.distributed_singleflight_lease_seconds
+        ):
+            raise ValueError(
+                "DISTRIBUTED_SINGLEFLIGHT_RENEWAL_INTERVAL_SECONDS must be > 0 and < DISTRIBUTED_SINGLEFLIGHT_LEASE_SECONDS."
+            )
+        if (
+            self.distributed_singleflight_follower_wait_timeout_seconds <= 0.0
+            or self.distributed_singleflight_follower_wait_timeout_seconds > 600.0
+        ):
+            raise ValueError(
+                f"DISTRIBUTED_SINGLEFLIGHT_FOLLOWER_WAIT_TIMEOUT_SECONDS must be in (0.0, 600.0], got {self.distributed_singleflight_follower_wait_timeout_seconds}."
+            )
+        if self.distributed_singleflight_poll_interval_seconds <= 0.0 or self.distributed_singleflight_poll_interval_seconds > 5.0:
+            raise ValueError(
+                f"DISTRIBUTED_SINGLEFLIGHT_POLL_INTERVAL_SECONDS must be in (0.0, 5.0], got {self.distributed_singleflight_poll_interval_seconds}."
+            )
+        if self.distributed_singleflight_cleanup_batch_size < 1 or self.distributed_singleflight_cleanup_batch_size > 10000:
+            raise ValueError(
+                f"DISTRIBUTED_SINGLEFLIGHT_CLEANUP_BATCH_SIZE must be in [1, 10000], got {self.distributed_singleflight_cleanup_batch_size}."
+            )
+        if self.distributed_singleflight_max_claim_attempts < 1 or self.distributed_singleflight_max_claim_attempts > 10:
+            raise ValueError(
+                f"DISTRIBUTED_SINGLEFLIGHT_MAX_CLAIM_ATTEMPTS must be in [1, 10], got {self.distributed_singleflight_max_claim_attempts}."
+            )
+        if self.distributed_singleflight_completion_retention_seconds < 0.0 or self.distributed_singleflight_completion_retention_seconds > 300.0:
+            raise ValueError(
+                f"DISTRIBUTED_SINGLEFLIGHT_COMPLETION_RETENTION_SECONDS must be in [0.0, 300.0], got {self.distributed_singleflight_completion_retention_seconds}."
+            )
+        if self.distributed_singleflight_enabled:
+            if self.cache_backend != "postgres":
+                raise ValueError(
+                    "DISTRIBUTED_SINGLEFLIGHT_ENABLED=true requires CACHE_BACKEND='postgres'."
+                )
+            if not self.database_url:
+                raise ValueError(
+                    "DATABASE_URL must be configured when DISTRIBUTED_SINGLEFLIGHT_ENABLED=true."
+                )
         return self
 
     @model_validator(mode="after")

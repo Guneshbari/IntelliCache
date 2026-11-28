@@ -5,6 +5,7 @@ Runtime metrics and observability package for IntelliCache.
 from .contracts import (
     AdminMetricsSnapshot,
     DerivedRates,
+    DistributedSingleFlightMetrics,
     LatencyMetrics,
     LatencySummary,
     NamespaceMetricsSnapshot,
@@ -22,6 +23,7 @@ from .collector import (
 __all__ = [
     "AdminMetricsSnapshot",
     "DerivedRates",
+    "DistributedSingleFlightMetrics",
     "LatencyMetrics",
     "LatencySummary",
     "NamespaceMetricsSnapshot",

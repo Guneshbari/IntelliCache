@@ -84,6 +84,7 @@ class CacheStats(BaseModel):
     enabled: bool = True
     backend: str = "memory"
     semantic: Optional[Dict[str, int]] = None
+    distributed_singleflight: Optional[Dict[str, Any]] = None
 
 
 class BaseCache(ABC):

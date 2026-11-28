@@ -20,6 +20,10 @@ import uvicorn
 from app.cache.migration import run_migrations
 from app.config import Settings, get_settings
 from app.core.contracts import CACHE_VISIBILITY_UNKNOWN, normalize_cache_visibility, normalize_principal_id
+from app.core.distributed_singleflight import (
+    DistributedSingleFlightConfig,
+    PostgresDistributedSingleFlight,
+)
 from app.embeddings.factory import EmbeddingProviderFactory
 from app.metrics import (
     AdminMetricsSnapshot,
@@ -60,6 +64,7 @@ from app.routes.query import (
     get_shadow_service,
     get_vector_store,
     router as query_router,
+    set_distributed_singleflight,
     set_query_cache,
     set_semantic_cache,
     set_shadow_service,
@@ -159,6 +164,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Track resources locally as they are created
     pool: Optional[asyncpg.Pool] = None
     cache: Optional[BaseCache] = None
+    dist_single_flight: Optional[PostgresDistributedSingleFlight] = None
     vector_store: Optional[BaseVectorStore] = None
     embedding_provider: Optional[Any] = None
     semantic_cache: Optional[SemanticCacheService] = None
@@ -184,6 +190,28 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 ttl_seconds=settings.cache_ttl_seconds,
                 default_namespace=settings.cache_namespace,
             )
+
+            if settings.distributed_singleflight_enabled:
+                dsf_cfg = DistributedSingleFlightConfig(
+                    lease_seconds=settings.distributed_singleflight_lease_seconds,
+                    renewal_interval_seconds=settings.distributed_singleflight_renewal_interval_seconds,
+                    follower_wait_timeout_seconds=settings.distributed_singleflight_follower_wait_timeout_seconds,
+                    poll_interval_seconds=settings.distributed_singleflight_poll_interval_seconds,
+                    cleanup_batch_size=settings.distributed_singleflight_cleanup_batch_size,
+                    max_claim_attempts=settings.distributed_singleflight_max_claim_attempts,
+                    completion_retention_seconds=settings.distributed_singleflight_completion_retention_seconds,
+                )
+                dist_single_flight = PostgresDistributedSingleFlight(
+                    pool=pool,
+                    config=dsf_cfg,
+                    metrics_collector=collector,
+                )
+                logger.info(
+                    "Distributed SingleFlight enabled (PostgreSQL): lease=%.1fs, renewal=%.1fs, wait_timeout=%.1fs",
+                    dsf_cfg.lease_seconds,
+                    dsf_cfg.renewal_interval_seconds,
+                    dsf_cfg.follower_wait_timeout_seconds,
+                )
 
             if settings.semantic_cache_enabled:
                 if settings.vector_store_backend != "postgres":
@@ -365,6 +393,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # Register initialized components in app.state and global singletons only after full success
         app.state.db_pool = pool
         app.state.cache = cache
+        app.state.dist_single_flight = dist_single_flight
         app.state.vector_store = vector_store
         app.state.semantic_cache = semantic_cache
         app.state.shadow_service = shadow_service
@@ -375,6 +404,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         else:
             app.state.semantic_serving_controller = sync_semantic_serving_controller_from_settings(settings)
 
+        set_distributed_singleflight(dist_single_flight)
         set_query_cache(cache)
         set_vector_store(vector_store)
         set_semantic_cache(semantic_cache)
@@ -396,10 +426,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 detach_postgres_runtime_control()
             else:
                 sync_semantic_serving_controller_from_settings(settings)
+            set_distributed_singleflight(None)
             set_shadow_service(None)
             set_semantic_cache(None)
             set_vector_store(None)
             set_query_cache(None)
+            app.state.dist_single_flight = None
             app.state.shadow_service = None
             app.state.semantic_cache = None
             app.state.vector_store = None
@@ -426,10 +458,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 detach_postgres_runtime_control()
             else:
                 sync_semantic_serving_controller_from_settings(settings)
+            set_distributed_singleflight(None)
             set_shadow_service(None)
             set_semantic_cache(None)
             set_vector_store(None)
             set_query_cache(None)
+            app.state.dist_single_flight = None
             app.state.shadow_service = None
             app.state.semantic_cache = None
             app.state.vector_store = None
@@ -577,6 +611,7 @@ def create_app() -> FastAPI:
         request: Request,
         current_settings: Settings = Depends(get_settings),
         cache: BaseCache = Depends(get_query_cache),
+        collector: RuntimeMetricsCollector = Depends(get_metrics_collector),
         auth_info: tuple[bool, Optional[str]] = Depends(verify_metrics_auth),
     ) -> CacheStats:
         """Cache performance statistics endpoint. Scoped to authenticated client namespace or global for admin."""
@@ -588,6 +623,18 @@ def create_app() -> FastAPI:
         )
         if hasattr(request.app.state, "semantic_cache") and request.app.state.semantic_cache is not None:
             stats.semantic = request.app.state.semantic_cache.get_stats(namespace=target_ns)
+        snap = (
+            collector.get_admin_snapshot().aggregate
+            if target_ns is None
+            else collector.get_namespace_snapshot(target_ns)
+        )
+        dsf_metrics = snap.distributed_singleflight
+        stats.distributed_singleflight = {
+            "enabled": bool(current_settings.distributed_singleflight_enabled),
+            "local_coalesced_joins": snap.request_and_cache.coalesced_joins,
+            "local_coalesced_successes": snap.request_and_cache.coalesced_successes,
+            **dsf_metrics.model_dump(),
+        }
         return stats
 
     @app.get("/cache/semantic/stats", tags=["Cache"], summary="Semantic Cache Statistics")

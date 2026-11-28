@@ -14,6 +14,7 @@ from typing import Any, Deque, Dict, List, Optional, Sequence
 from .contracts import (
     AdminMetricsSnapshot,
     DerivedRates,
+    DistributedSingleFlightMetrics,
     LatencyMetrics,
     LatencySummary,
     NamespaceMetricsSnapshot,
@@ -172,6 +173,18 @@ class _NamespaceData:
         self.shadow_queue_depth = 0
         self.shadow_queue_dropped_total = 0
 
+        # Distributed SingleFlight Counters (Stage 3.9)
+        self.dsf_leader_claims = 0
+        self.dsf_follower_joins = 0
+        self.dsf_coalesced_successes = 0
+        self.dsf_lease_renewals = 0
+        self.dsf_lease_expirations = 0
+        self.dsf_leader_failures = 0
+        self.dsf_follower_timeouts = 0
+        self.dsf_fencing_rejections = 0
+        self.dsf_coordination_errors = 0
+        self.dsf_provider_calls_saved = 0
+
         # Bounded Latency Samples
         self.latency_samples: Dict[str, Deque[float]] = {
             "total_request_latency_ms": deque(maxlen=max_samples),
@@ -192,6 +205,8 @@ class _NamespaceData:
             "shadow_policy_latency_ms": deque(maxlen=max_samples),
             "context_validation_latency_ms": deque(maxlen=max_samples),
             "compatibility_validation_latency_ms": deque(maxlen=max_samples),
+            "distributed_singleflight_wait_latency_ms": deque(maxlen=max_samples),
+            "distributed_singleflight_database_latency_ms": deque(maxlen=max_samples),
         }
 
     def record_request(self, stream: bool = False, bypass: bool = False) -> None:
@@ -513,6 +528,53 @@ class _NamespaceData:
         with self.lock:
             self.shadow_queue_dropped_total += 1
 
+    # Distributed SingleFlight per-namespace counter methods (Stage 3.9)
+    def record_dsf_leader_claim(self) -> None:
+        with self.lock:
+            self.dsf_leader_claims += 1
+
+    def record_dsf_follower_join(self) -> None:
+        with self.lock:
+            self.dsf_follower_joins += 1
+
+    def record_dsf_coalesced_success(
+        self,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+        total_tokens: int = 0,
+    ) -> None:
+        with self.lock:
+            self.dsf_coalesced_successes += 1
+            self.dsf_provider_calls_saved += 1
+            self.provider_calls_avoided += 1
+            self.prompt_tokens_saved += max(0, prompt_tokens)
+            self.completion_tokens_saved += max(0, completion_tokens)
+            self.total_tokens_saved += max(0, total_tokens)
+
+    def record_dsf_lease_renewal(self) -> None:
+        with self.lock:
+            self.dsf_lease_renewals += 1
+
+    def record_dsf_lease_expiration(self) -> None:
+        with self.lock:
+            self.dsf_lease_expirations += 1
+
+    def record_dsf_leader_failure(self) -> None:
+        with self.lock:
+            self.dsf_leader_failures += 1
+
+    def record_dsf_follower_timeout(self) -> None:
+        with self.lock:
+            self.dsf_follower_timeouts += 1
+
+    def record_dsf_fencing_rejection(self) -> None:
+        with self.lock:
+            self.dsf_fencing_rejections += 1
+
+    def record_dsf_coordination_error(self) -> None:
+        with self.lock:
+            self.dsf_coordination_errors += 1
+
     def record_shadow_outcome(
         self,
         outcome: str,
@@ -669,6 +731,19 @@ class _NamespaceData:
                 shadow_queue_dropped_total=self.shadow_queue_dropped_total,
             )
 
+            dsf = DistributedSingleFlightMetrics(
+                leader_claims=self.dsf_leader_claims,
+                follower_joins=self.dsf_follower_joins,
+                coalesced_successes=self.dsf_coalesced_successes,
+                lease_renewals=self.dsf_lease_renewals,
+                lease_expirations=self.dsf_lease_expirations,
+                leader_failures=self.dsf_leader_failures,
+                follower_timeouts=self.dsf_follower_timeouts,
+                fencing_rejections=self.dsf_fencing_rejections,
+                coordination_errors=self.dsf_coordination_errors,
+                provider_calls_saved=self.dsf_provider_calls_saved,
+            )
+
             # Rates
             exact_rate = (
                 (self.exact_cache_hits / self.exact_cache_lookups)
@@ -681,7 +756,7 @@ class _NamespaceData:
                 if eval_outcomes > 0
                 else 0.0
             )
-            overall_hits = self.exact_cache_hits + self.semantic_hits + self.coalesced_successes
+            overall_hits = self.exact_cache_hits + self.semantic_hits + self.coalesced_successes + self.dsf_coalesced_successes
             overall_rate = (
                 (overall_hits / self.total_authenticated_requests)
                 if self.total_authenticated_requests > 0
@@ -719,6 +794,8 @@ class _NamespaceData:
                 shadow_policy_latency_ms=compute_latency_summary(list(self.latency_samples["shadow_policy_latency_ms"])),
                 context_validation_latency_ms=compute_latency_summary(list(self.latency_samples["context_validation_latency_ms"])),
                 compatibility_validation_latency_ms=compute_latency_summary(list(self.latency_samples["compatibility_validation_latency_ms"])),
+                distributed_singleflight_wait_latency_ms=compute_latency_summary(list(self.latency_samples["distributed_singleflight_wait_latency_ms"])),
+                distributed_singleflight_database_latency_ms=compute_latency_summary(list(self.latency_samples["distributed_singleflight_database_latency_ms"])),
             )
 
             notes = {
@@ -735,6 +812,7 @@ class _NamespaceData:
                 provider_and_savings=prov_savings,
                 semantic=semantic,
                 shadow=shadow,
+                distributed_singleflight=dsf,
                 derived_rates=rates,
                 latencies=latencies,
                 notes=notes,
@@ -852,6 +930,71 @@ class RuntimeMetricsCollector:
             ns_data.record_cancellation()
         except Exception as e:
             logger.debug("Metrics record_cancellation failed: %s", e)
+
+    # --- Distributed SingleFlight Facades (Stage 3.9) ---
+    def record_distributed_singleflight_leader_claim(self, namespace: str) -> None:
+        try:
+            self.get_or_create_namespace(namespace).record_dsf_leader_claim()
+        except Exception as e:
+            logger.debug("Metrics dsf_leader_claim failed: %s", e)
+
+    def record_distributed_singleflight_follower_join(self, namespace: str) -> None:
+        try:
+            self.get_or_create_namespace(namespace).record_dsf_follower_join()
+        except Exception as e:
+            logger.debug("Metrics dsf_follower_join failed: %s", e)
+
+    def record_distributed_singleflight_coalesced_success(
+        self,
+        namespace: str,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+        total_tokens: int = 0,
+    ) -> None:
+        try:
+            self.get_or_create_namespace(namespace).record_dsf_coalesced_success(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+            )
+        except Exception as e:
+            logger.debug("Metrics dsf_coalesced_success failed: %s", e)
+
+    def record_distributed_singleflight_lease_renewal(self, namespace: str) -> None:
+        try:
+            self.get_or_create_namespace(namespace).record_dsf_lease_renewal()
+        except Exception as e:
+            logger.debug("Metrics dsf_lease_renewal failed: %s", e)
+
+    def record_distributed_singleflight_lease_expiration(self, namespace: str) -> None:
+        try:
+            self.get_or_create_namespace(namespace).record_dsf_lease_expiration()
+        except Exception as e:
+            logger.debug("Metrics dsf_lease_expiration failed: %s", e)
+
+    def record_distributed_singleflight_leader_failure(self, namespace: str) -> None:
+        try:
+            self.get_or_create_namespace(namespace).record_dsf_leader_failure()
+        except Exception as e:
+            logger.debug("Metrics dsf_leader_failure failed: %s", e)
+
+    def record_distributed_singleflight_follower_timeout(self, namespace: str) -> None:
+        try:
+            self.get_or_create_namespace(namespace).record_dsf_follower_timeout()
+        except Exception as e:
+            logger.debug("Metrics dsf_follower_timeout failed: %s", e)
+
+    def record_distributed_singleflight_fencing_rejection(self, namespace: str) -> None:
+        try:
+            self.get_or_create_namespace(namespace).record_dsf_fencing_rejection()
+        except Exception as e:
+            logger.debug("Metrics dsf_fencing_rejection failed: %s", e)
+
+    def record_distributed_singleflight_coordination_error(self, namespace: str) -> None:
+        try:
+            self.get_or_create_namespace(namespace).record_dsf_coordination_error()
+        except Exception as e:
+            logger.debug("Metrics dsf_coordination_error failed: %s", e)
 
     def record_semantic_eligibility_check(self, namespace: str, eligible: bool) -> None:
         try:
@@ -1261,6 +1404,7 @@ class RuntimeMetricsCollector:
         agg_prov = ProviderAndSavingsMetrics()
         agg_sem = SemanticMetrics()
         agg_shadow = ShadowMetrics()
+        agg_dsf = DistributedSingleFlightMetrics()
         merged_samples: Dict[str, List[float]] = {
             "total_request_latency_ms": [],
             "exact_lookup_latency_ms": [],
@@ -1280,6 +1424,8 @@ class RuntimeMetricsCollector:
             "shadow_policy_latency_ms": [],
             "context_validation_latency_ms": [],
             "compatibility_validation_latency_ms": [],
+            "distributed_singleflight_wait_latency_ms": [],
+            "distributed_singleflight_database_latency_ms": [],
         }
 
         for snap in ns_snapshots.values():
@@ -1387,6 +1533,19 @@ class RuntimeMetricsCollector:
             agg_shadow.shadow_queue_depth += sh.shadow_queue_depth
             agg_shadow.shadow_queue_dropped_total += sh.shadow_queue_dropped_total
 
+        for snap in ns_snapshots.values():
+            dsf = snap.distributed_singleflight
+            agg_dsf.leader_claims += dsf.leader_claims
+            agg_dsf.follower_joins += dsf.follower_joins
+            agg_dsf.coalesced_successes += dsf.coalesced_successes
+            agg_dsf.lease_renewals += dsf.lease_renewals
+            agg_dsf.lease_expirations += dsf.lease_expirations
+            agg_dsf.leader_failures += dsf.leader_failures
+            agg_dsf.follower_timeouts += dsf.follower_timeouts
+            agg_dsf.fencing_rejections += dsf.fencing_rejections
+            agg_dsf.coordination_errors += dsf.coordination_errors
+            agg_dsf.provider_calls_saved += dsf.provider_calls_saved
+
         # Merge raw samples from ns_data
         for ns_data in all_namespaces:
             with ns_data.lock:
@@ -1404,7 +1563,7 @@ class RuntimeMetricsCollector:
             if agg_eval_outcomes > 0
             else 0.0
         )
-        overall_hits = agg_req.exact_cache_hits + agg_sem.semantic_hits + agg_req.coalesced_successes
+        overall_hits = agg_req.exact_cache_hits + agg_sem.semantic_hits + agg_req.coalesced_successes + agg_dsf.coalesced_successes
         overall_rate = (
             (overall_hits / agg_req.total_authenticated_requests)
             if agg_req.total_authenticated_requests > 0
@@ -1442,6 +1601,8 @@ class RuntimeMetricsCollector:
             shadow_policy_latency_ms=compute_latency_summary(merged_samples["shadow_policy_latency_ms"]),
             context_validation_latency_ms=compute_latency_summary(merged_samples["context_validation_latency_ms"]),
             compatibility_validation_latency_ms=compute_latency_summary(merged_samples["compatibility_validation_latency_ms"]),
+            distributed_singleflight_wait_latency_ms=compute_latency_summary(merged_samples["distributed_singleflight_wait_latency_ms"]),
+            distributed_singleflight_database_latency_ms=compute_latency_summary(merged_samples["distributed_singleflight_database_latency_ms"]),
         )
 
         aggregate_snapshot = NamespaceMetricsSnapshot(
@@ -1452,6 +1613,7 @@ class RuntimeMetricsCollector:
             provider_and_savings=agg_prov,
             semantic=agg_sem,
             shadow=agg_shadow,
+            distributed_singleflight=agg_dsf,
             derived_rates=agg_rates,
             latencies=agg_latencies,
             notes={

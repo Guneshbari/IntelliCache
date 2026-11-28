@@ -150,6 +150,22 @@ class LatencyMetrics(BaseModel):
     shadow_policy_latency_ms: LatencySummary = Field(default_factory=LatencySummary)
     context_validation_latency_ms: LatencySummary = Field(default_factory=LatencySummary)
     compatibility_validation_latency_ms: LatencySummary = Field(default_factory=LatencySummary)
+    distributed_singleflight_wait_latency_ms: LatencySummary = Field(default_factory=LatencySummary)
+    distributed_singleflight_database_latency_ms: LatencySummary = Field(default_factory=LatencySummary)
+
+
+class DistributedSingleFlightMetrics(BaseModel):
+    """Telemetry for PostgreSQL-backed distributed SingleFlight coordination (Stage 3.9)."""
+    leader_claims: int = 0
+    follower_joins: int = 0
+    coalesced_successes: int = 0
+    lease_renewals: int = 0
+    lease_expirations: int = 0
+    leader_failures: int = 0
+    follower_timeouts: int = 0
+    fencing_rejections: int = 0
+    coordination_errors: int = 0
+    provider_calls_saved: int = 0
 
 
 class DerivedRates(BaseModel):
@@ -170,6 +186,7 @@ class NamespaceMetricsSnapshot(BaseModel):
     provider_and_savings: ProviderAndSavingsMetrics = Field(default_factory=ProviderAndSavingsMetrics)
     semantic: SemanticMetrics = Field(default_factory=SemanticMetrics)
     shadow: ShadowMetrics = Field(default_factory=ShadowMetrics)
+    distributed_singleflight: DistributedSingleFlightMetrics = Field(default_factory=DistributedSingleFlightMetrics)
     derived_rates: DerivedRates = Field(default_factory=DerivedRates)
     latencies: LatencyMetrics = Field(default_factory=LatencyMetrics)
     notes: Optional[Dict[str, str]] = None
