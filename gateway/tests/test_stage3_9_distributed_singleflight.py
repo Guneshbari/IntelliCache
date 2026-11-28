@@ -668,8 +668,13 @@ class TestStage39DistributedSingleFlightPostgres(unittest.IsolatedAsyncioTestCas
             return await orig_lookup(req_arg)
 
         async def _disable_ns_after_publish(lease, *, outcome_type):
-            ok = await orig_complete(lease, outcome_type=outcome_type)
+            # Disable namespace BEFORE marking the lease completed so that any follower
+            # polling wait_for_outcome() observes the serving-disabled state at or before
+            # the moment it sees status='completed'. Reversing this order creates a race:
+            # the follower can exit wait_for_outcome() and pass Checkpoint 2 before the
+            # namespace-disable DB write commits.
             await ctrl_store_w1.set_serving_enabled(False, namespace="team_a", updated_by="admin")
+            ok = await orig_complete(lease, outcome_type=outcome_type)
             return ok
 
         prov_fallback_a = _ControlledProvider("FALLBACK_NS_A")
@@ -705,8 +710,11 @@ class TestStage39DistributedSingleFlightPostgres(unittest.IsolatedAsyncioTestCas
         w1_lookup_release.clear()
 
         async def _disable_global_after_publish(lease, *, outcome_type):
-            ok = await orig_complete(lease, outcome_type=outcome_type)
+            # Disable global serving BEFORE marking the lease completed for the same
+            # reason as _disable_ns_after_publish: prevents the follower from reading
+            # the lease as completed before the global-disable write is visible.
             await ctrl_store_w1.set_serving_enabled(False, namespace=None, updated_by="admin")
+            ok = await orig_complete(lease, outcome_type=outcome_type)
             return ok
 
         prov_fallback_b = _ControlledProvider("FALLBACK_GLOBAL_B")
